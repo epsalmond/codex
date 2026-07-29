@@ -762,6 +762,20 @@ impl ChatWidget {
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
                 self.status_line_limit_display(Some(window), &label)
             }
+            StatusLineItem::WeeklyReset => {
+                let (window, _) = self
+                    .rate_limit_snapshots_by_limit_id
+                    .get("codex")
+                    .and_then(weekly_status_window)?;
+                window
+                    .reset_at
+                    .as_ref()
+                    .map(|reset_at| format!("Reset: {}", reset_at.format("%m/%d %-I:%M %P")))
+            }
+            StatusLineItem::LastResponseClock => self
+                .last_response_clock
+                .as_ref()
+                .map(|timestamp| format!("⏱ {}", timestamp.format("%-I:%M %p"))),
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
@@ -848,6 +862,8 @@ impl ChatWidget {
             StatusSurfacePreviewItem::ContextUsed => StatusLineItem::ContextUsed,
             StatusSurfacePreviewItem::FiveHourLimit => StatusLineItem::FiveHourLimit,
             StatusSurfacePreviewItem::WeeklyLimit => StatusLineItem::WeeklyLimit,
+            StatusSurfacePreviewItem::WeeklyReset => StatusLineItem::WeeklyReset,
+            StatusSurfacePreviewItem::LastResponseClock => StatusLineItem::LastResponseClock,
             StatusSurfacePreviewItem::CodexVersion => StatusLineItem::CodexVersion,
             StatusSurfacePreviewItem::ContextWindowSize => StatusLineItem::ContextWindowSize,
             StatusSurfacePreviewItem::UsedTokens => StatusLineItem::UsedTokens,

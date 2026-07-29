@@ -113,6 +113,12 @@ pub(crate) enum StatusLineItem {
     /// Remaining usage on the secondary rate limit.
     WeeklyLimit,
 
+    /// Compact local wall-clock time when the weekly usage window resets.
+    WeeklyReset,
+
+    /// Local wall-clock time when the most recent live response completed.
+    LastResponseClock,
+
     /// Codex application version.
     CodexVersion,
 
@@ -189,6 +195,12 @@ impl StatusLineItem {
             StatusLineItem::WeeklyLimit => {
                 "Remaining usage on the secondary usage limit (omitted when unavailable)"
             }
+            StatusLineItem::WeeklyReset => {
+                "Compact local weekly reset time (omitted when unavailable)"
+            }
+            StatusLineItem::LastResponseClock => {
+                "Last completed live response time for this TUI session (omitted until available)"
+            }
             StatusLineItem::CodexVersion => "Codex application version",
             StatusLineItem::ContextWindowSize => {
                 "Total context window size in tokens (omitted when unknown)"
@@ -236,6 +248,8 @@ impl StatusLineItem {
             StatusLineItem::ContextUsed => StatusSurfacePreviewItem::ContextUsed,
             StatusLineItem::FiveHourLimit => StatusSurfacePreviewItem::FiveHourLimit,
             StatusLineItem::WeeklyLimit => StatusSurfacePreviewItem::WeeklyLimit,
+            StatusLineItem::WeeklyReset => StatusSurfacePreviewItem::WeeklyReset,
+            StatusLineItem::LastResponseClock => StatusSurfacePreviewItem::LastResponseClock,
             StatusLineItem::CodexVersion => StatusSurfacePreviewItem::CodexVersion,
             StatusLineItem::ContextWindowSize => StatusSurfacePreviewItem::ContextWindowSize,
             StatusLineItem::UsedTokens => StatusSurfacePreviewItem::UsedTokens,
