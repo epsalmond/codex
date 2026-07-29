@@ -747,6 +747,58 @@ async fn status_line_legacy_limit_items_prefer_matching_windows() {
 }
 
 #[tokio::test]
+async fn status_line_shows_weekly_reset_in_local_time() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let reset_at = 1_784_969_400;
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 94,
+            window_duration_mins: Some(7 * 24 * 60),
+            resets_at: Some(reset_at),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+        spend_control_reached: None,
+    }));
+
+    let expected = chrono::DateTime::<chrono::Utc>::from_timestamp(reset_at, 0)
+        .expect("fixed timestamp is valid")
+        .with_timezone(&chrono::Local)
+        .format("Reset: %m/%d %-I:%M %P")
+        .to_string();
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyReset),
+        Some(expected)
+    );
+}
+
+#[tokio::test]
+async fn status_line_response_clock_is_empty_until_this_session_completes() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::LastResponseClock),
+        None
+    );
+
+    let completed_at = chrono::DateTime::<chrono::Utc>::from_timestamp(1_784_969_400, 0)
+        .expect("fixed timestamp is valid")
+        .with_timezone(&chrono::Local);
+    chat.last_response_clock = Some(completed_at);
+
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::LastResponseClock),
+        Some(format!("⏱ {}", completed_at.format("%-I:%M %p")))
+    );
+}
+
+#[tokio::test]
 async fn status_line_shows_secondary_non_weekly_when_primary_is_weekly() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

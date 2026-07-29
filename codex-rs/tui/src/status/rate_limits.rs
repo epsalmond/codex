@@ -71,6 +71,8 @@ pub(crate) struct RateLimitWindowDisplay {
     pub used_percent: f64,
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
+    /// Exact local reset timestamp for compact status surfaces that need a fixed format.
+    pub reset_at: Option<DateTime<Local>>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,
 }
@@ -81,11 +83,14 @@ impl RateLimitWindowDisplay {
             .resets_at
             .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
             .map(|dt| dt.with_timezone(&Local));
-        let resets_at = resets_at_utc.map(|dt| format_reset_timestamp(dt, captured_at));
+        let resets_at = resets_at_utc
+            .as_ref()
+            .map(|dt| format_reset_timestamp(dt.clone(), captured_at));
 
         Self {
             used_percent: f64::from(window.used_percent),
             resets_at,
+            reset_at: resets_at_utc,
             window_minutes: window.window_duration_mins,
         }
     }
@@ -447,6 +452,7 @@ mod tests {
         RateLimitWindowDisplay {
             used_percent,
             resets_at: Some("soon".to_string()),
+            reset_at: None,
             window_minutes: Some(300),
         }
     }
@@ -509,11 +515,13 @@ mod tests {
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 20.0,
                 resets_at: Some("soon".to_string()),
+                reset_at: None,
                 window_minutes: Some(60),
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 40.0,
                 resets_at: Some("later".to_string()),
+                reset_at: None,
                 window_minutes: Some(2 * 60),
             }),
             credits: None,

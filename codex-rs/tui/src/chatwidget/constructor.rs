@@ -138,6 +138,7 @@ impl ChatWidget {
             token_info: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
+            last_response_clock: None,
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,
             refreshing_token_activity_output: None,
