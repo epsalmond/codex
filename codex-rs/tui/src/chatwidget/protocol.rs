@@ -310,6 +310,16 @@ impl ChatWidget {
                     );
                 }
                 self.last_non_retry_error = None;
+                if replay_kind.is_none() {
+                    self.last_response_clock = notification
+                        .turn
+                        .completed_at
+                        .and_then(|seconds| {
+                            chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0)
+                        })
+                        .map(|timestamp| timestamp.with_timezone(&chrono::Local))
+                        .or_else(|| Some(chrono::Local::now()));
+                }
                 self.on_task_complete(
                     last_agent_message.map(|(_, _, text)| text),
                     notification.turn.duration_ms,

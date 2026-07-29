@@ -65,6 +65,18 @@ Each archive contains a single entry with the platform baked into the name (e.g.
 
 </details>
 
+### Local statusline build
+
+This local fork carries two TUI-only status-line items: `weekly-reset` (an
+absolute local reset time) and `last-response-clock` (the latest successful
+live response in the current TUI session). `codex-update` updates the official
+npm install, fetches the matching `rust-v<version>` tag, rebases this branch
+onto that exact tag, and only then builds and atomically switches the local
+binary. It deliberately stops on a missing tag or rebase conflict.
+
+`codex` launches the managed local build; `codex-official` launches the npm
+installation directly as an escape hatch.
+
 ### Using Codex with your ChatGPT plan
 
 Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
