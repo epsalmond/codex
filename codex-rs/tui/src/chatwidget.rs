@@ -1830,6 +1830,7 @@ impl ChatWidget {
             AppCommand::Compact
                 | AppCommand::Review { .. }
                 | AppCommand::RunUserShellCommand { .. }
+                | AppCommand::Shake { .. }
         ) {
             self.input_queue.user_turn_pending_start = true;
         }

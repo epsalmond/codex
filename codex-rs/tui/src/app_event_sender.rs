@@ -50,6 +50,10 @@ impl AppEventSender {
         self.send(AppEvent::CodexOp(AppCommand::compact()));
     }
 
+    pub(crate) fn shake(&self, mode: codex_protocol::protocol::ShakeMode) {
+        self.send(AppEvent::CodexOp(AppCommand::shake(mode)));
+    }
+
     pub(crate) fn set_thread_name(&self, name: String) {
         self.send(AppEvent::CodexOp(AppCommand::set_thread_name(name)));
     }

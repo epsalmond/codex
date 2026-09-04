@@ -885,3 +885,69 @@ async fn app_server_mcp_startup_next_round_after_lag_can_settle_without_starting
     assert!(summary_text.contains("MCP startup incomplete (failed: alpha)"));
     assert!(!chat.bottom_pane.is_task_running());
 }
+
+#[tokio::test]
+async fn shake_submits_op_with_default_elide_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command(crate::slash_command::SlashCommand::Shake);
+
+    match rx.try_recv() {
+        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::Shake { mode })) => {
+            assert_eq!(mode, codex_protocol::protocol::ShakeMode::Elide);
+        }
+        other => panic!("expected AppEvent::CodexOp(Shake elide), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn shake_with_args_submits_selected_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        crate::slash_command::SlashCommand::Shake,
+        "images".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::Shake { mode })) => {
+            assert_eq!(mode, codex_protocol::protocol::ShakeMode::Images);
+        }
+        other => panic!("expected AppEvent::CodexOp(Shake images), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn shake_rejects_unknown_mode_without_submit() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        crate::slash_command::SlashCommand::Shake,
+        "bogus".to_string(),
+        Vec::new(),
+    );
+
+    // Unknown mode surfaces an inline error and sends no submission.
+    assert!(
+        drain_insert_history(&mut rx)
+            .iter()
+            .any(|lines| lines_to_single_string(lines).contains("Usage: /shake")),
+        "expected usage error"
+    );
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
+async fn shake_notice_releases_input_gate() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.dispatch_command(crate::slash_command::SlashCommand::Shake);
+    assert!(chat.input_queue.user_turn_pending_start);
+
+    chat.on_warning("⛭ shake: Shook 2 tool outputs (~1500 tokens freed).".to_string());
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
