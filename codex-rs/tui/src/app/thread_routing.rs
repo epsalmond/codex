@@ -846,6 +846,10 @@ impl App {
                 app_server.thread_compact_start(thread_id).await?;
                 Ok(true)
             }
+            AppCommand::Shake { mode } => {
+                app_server.thread_shake_start(thread_id, *mode).await?;
+                Ok(true)
+            }
             AppCommand::SetThreadName { name } => {
                 let name = name.to_string();
                 app_server.thread_set_name(thread_id, name.clone()).await?;

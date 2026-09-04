@@ -729,6 +729,13 @@ pub enum Op {
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
 
+    /// Surgically reduce context ("shake"): drop heavy content out of the live
+    /// history — tool-call outputs and large fenced/XML blocks ("elide"),
+    /// images ("images"), or reasoning items ("thinking") — replacing text with
+    /// short placeholders and persisting a compaction-style replacement
+    /// history. Ported from oh-my-pi's `/shake` command.
+    Shake { mode: ShakeMode },
+
     /// Set whether the thread remains eligible for memory generation.
     ///
     /// This persists thread-level memory mode metadata without involving the
@@ -768,6 +775,38 @@ pub enum Op {
 pub enum ThreadMemoryMode {
     Enabled,
     Disabled,
+}
+
+/// Mode selector for [`Op::Shake`]: what gets dropped from the context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShakeMode {
+    /// Replace whole tool-call outputs and large fenced/XML blocks with a
+    /// short placeholder.
+    Elide,
+    /// Strip every image block out of message and tool-output content.
+    Images,
+    /// Drop every reasoning (thinking) item from history.
+    Thinking,
+}
+
+impl ShakeMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Elide => "elide",
+            Self::Images => "images",
+            Self::Thinking => "thinking",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "elide" => Some(Self::Elide),
+            "images" => Some(Self::Images),
+            "thinking" => Some(Self::Thinking),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -953,6 +992,7 @@ impl Op {
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
+            Self::Shake { .. } => "shake",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",

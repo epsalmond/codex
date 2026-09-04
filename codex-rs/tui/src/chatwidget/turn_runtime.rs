@@ -512,6 +512,16 @@ impl ChatWidget {
 
     pub(super) fn on_warning(&mut self, message: impl Into<String>) {
         let message = message.into();
+        // A `/shake` completion notice arrived: release the pending input gate
+        // set by `handle_shake_slash_command`. Strip the marker prefix before
+        // rendering; the gate must open even if display dedupe suppresses the
+        // warning text. Marker is emitted by core's `handlers::shake`.
+        let message = if let Some(summary) = message.strip_prefix("⛭ shake: ") {
+            self.handle_shake_completed();
+            summary.to_string()
+        } else {
+            message
+        };
         if !self.warning_display_state.should_display(&message) {
             return;
         }

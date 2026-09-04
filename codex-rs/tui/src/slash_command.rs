@@ -39,6 +39,7 @@ pub enum SlashCommand {
     App,
     Init,
     Compact,
+    Shake,
     Recap,
     Plan,
     Goal,
@@ -92,6 +93,9 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Shake => {
+                "reclaim context by eliding tool outputs, images, or thinking blocks"
+            }
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
@@ -185,6 +189,7 @@ impl SlashCommand {
                 | SlashCommand::Btw
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
+                | SlashCommand::Shake
         )
     }
 
@@ -215,6 +220,7 @@ impl SlashCommand {
             | SlashCommand::Worktree
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Shake
             | SlashCommand::Recap
             | SlashCommand::Export
             | SlashCommand::Keymap

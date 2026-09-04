@@ -60,6 +60,64 @@ pub async fn interrupt(sess: &Arc<Session>) {
     sess.interrupt_task().await;
 }
 
+pub async fn shake(sess: &Arc<Session>, sub_id: String, mode: codex_protocol::protocol::ShakeMode) {
+
+    // Rewriting history mid-turn is unsafe (the running task holds a history
+    // snapshot); refuse while a turn is active, mirroring thread_rollback.
+    let has_active_turn = { sess.active_turn.lock().await.is_some() };
+    if has_active_turn {
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
+                message: "Cannot shake while a turn is in progress.".to_string(),
+                codex_error_info: None,
+            }),
+        })
+        .await;
+        return;
+    }
+    let turn_context = sess
+        .new_turn_with_default_settings(sub_id, Default::default())
+        .await;
+
+    // Load the live model history and apply the surgical reduction.
+    let mut envelopes = sess.clone_history().await.into_annotated_items();
+    let result = match mode {
+        codex_protocol::protocol::ShakeMode::Images => crate::shake::shake_images(&mut envelopes),
+        codex_protocol::protocol::ShakeMode::Thinking => {
+            crate::shake::shake_thinking(&mut envelopes)
+        }
+        codex_protocol::protocol::ShakeMode::Elide => crate::shake::shake_elide(&mut envelopes),
+    };
+
+    // Always surface the operator summary, even on a no-op. Prefix the message
+    // with the well-known marker so the TUI can identify the completion notice
+    // and release its input gate; the message stays human-readable for other
+    // clients.
+    let summary = format!("⛭ shake: {}", result.summary_line(mode));
+    if !result.is_noop() {
+        // Persist a full compaction checkpoint with the post-shake replacement
+        // history so a cold resume reconstructs the rewritten (not pre-shake)
+        // context, then update token accounting for the live session.
+        sess.replace_history_and_persist_after_shake(std::mem::take(&mut envelopes))
+            .await;
+        sess.recompute_token_usage(turn_context.as_ref()).await;
+    }
+
+    // Emit as a warning so the TUI renders a visible transcript notice. The
+    // marker prefix lets the TUI release the input gate it armed when the
+    // command was submitted.
+    sess.send_event(
+        turn_context.as_ref(),
+        EventMsg::Warning(WarningEvent { message: summary }),
+    )
+    .await;
+    if let Err(err) = sess.flush_rollout().await {
+        warn!("failed to flush thread persistence after shake: {err}");
+    }
+}
+
 pub async fn clean_background_terminals(sess: &Arc<Session>) {
     sess.close_unified_exec_processes().await;
 }
@@ -678,6 +736,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::Compact => {
                     compact(&sess, sub.id.clone()).await;
+                    false
+                }
+                Op::Shake { mode } => {
+                    shake(&sess, sub.id.clone(), mode).await;
                     false
                 }
                 Op::ThreadRollback { num_turns } => {

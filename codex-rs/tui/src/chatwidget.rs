@@ -1831,6 +1831,7 @@ impl ChatWidget {
             AppCommand::Compact
                 | AppCommand::Review { .. }
                 | AppCommand::RunUserShellCommand { .. }
+                | AppCommand::Shake { .. }
         ) {
             self.transcript.last_status_copy_targets = None;
             self.input_queue.user_turn_pending_start = true;

@@ -1255,6 +1255,35 @@ impl Session {
             .ok_or_else(|| anyhow::anyhow!("Session persistence is disabled; cannot {operation}."))
     }
 
+
+    /// Replace the live model history wholesale after a surgical context
+    /// reduction ("shake"), persisting a full compaction checkpoint so a cold
+    /// resume reconstructs the rewritten (not pre-shake) history.
+    ///
+    /// Shake reuses the compaction persistence channel: codex's thread store
+    /// is append-only, so the pre-shake rollout bytes cannot be rewritten. A
+    /// `CompactedItem` carrying the post-shake replacement history is the only
+    /// authoritative fixpoint the resume reader already knows how to replay.
+    /// This deliberately starts a fresh auto-compact window, exactly like a
+    /// manual `/compact`.
+    pub(crate) async fn replace_history_and_persist_after_shake(
+        &self,
+        items: Vec<codex_history::ResponseItemEnvelope>,
+    ) {
+        let (window_number, window_ids) = self.advance_auto_compact_window().await;
+        self.replace_compacted_history(
+            items,
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            crate::compact::CompactedHistoryMetadata {
+                message: "[shake] context reduced surgically".to_string(),
+                window_number,
+                window_ids,
+                compaction_response_id: None,
+            },
+        )
+        .await;
+    }
     pub(crate) fn live_thread(&self) -> Option<&LiveThread> {
         self.services.live_thread.as_ref()
     }

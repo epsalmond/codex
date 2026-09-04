@@ -76,6 +76,8 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
+use codex_app_server_protocol::ThreadShakeStartParams;
+use codex_app_server_protocol::ThreadShakeStartResponse;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -1554,6 +1556,26 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/compact/start failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_shake_start(
+        &mut self,
+        thread_id: ThreadId,
+        mode: codex_protocol::protocol::ShakeMode,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadShakeStartResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadShakeStart {
+                request_id,
+                params: ThreadShakeStartParams {
+                    thread_id: thread_id.to_string(),
+                    mode: mode.as_str().to_string(),
+                },
+            })
+            .await
+            .wrap_err("thread/shake/start failed in TUI")?;
         Ok(())
     }
 

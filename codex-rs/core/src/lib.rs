@@ -103,6 +103,7 @@ pub(crate) mod mentions {
 }
 mod sandbox_tags;
 pub mod sandboxing;
+mod shake;
 mod session_prefix;
 mod session_startup_prewarm;
 mod skills;

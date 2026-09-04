@@ -286,6 +286,7 @@ impl ChatWidget {
                 self.input_queue.user_turn_pending_start = true;
                 self.app_event_tx.compact();
             }
+            SlashCommand::Shake => self.handle_shake_slash_command(""),
             SlashCommand::Recap => {
                 let Some(thread_id) = self.thread_id else {
                     self.add_error_message(
@@ -743,6 +744,7 @@ impl ChatWidget {
                     ),
                 });
             }
+            SlashCommand::Shake => self.handle_shake_slash_command(trimmed),
             SlashCommand::Cd => self.request_working_directory_change(trimmed),
             SlashCommand::Pwd => {
                 self.add_error_message("Usage: /pwd".to_string());
@@ -1184,7 +1186,8 @@ impl ChatWidget {
             | SlashCommand::App
             | SlashCommand::Rename
             | SlashCommand::Recap
-            | SlashCommand::TestApproval => QueueDrain::Continue,
+            | SlashCommand::TestApproval
+            | SlashCommand::Shake => QueueDrain::Continue,
             SlashCommand::Cd => match self.thread_id {
                 Some(thread_id) if self.can_change_working_directory(thread_id) => QueueDrain::Stop,
                 _ => QueueDrain::Continue,
@@ -1284,5 +1287,39 @@ impl ChatWidget {
         ));
         self.bottom_pane.drain_pending_submission_state();
         false
+    }
+
+    /// Handler for `/shake [elide|images|thinking]` to surgically reduce context.
+    ///
+    /// Defaults to `elide` when no mode is supplied. Forwards the request as an
+    /// `Op` so the core rewrites the history and emits the operator summary; the
+    /// TUI stays read-only, gating only local input until the completion marker
+    /// notice arrives from the core.
+    fn handle_shake_slash_command(&mut self, args: &str) {
+        let trimmed = args.trim();
+        let mode = if trimmed.is_empty() {
+            codex_protocol::protocol::ShakeMode::parse("elide")
+        } else {
+            codex_protocol::protocol::ShakeMode::parse(trimmed.to_ascii_lowercase().as_str())
+        };
+        let Some(mode) = mode else {
+            self.add_error_message("Usage: /shake [elide|images|thinking]".to_string());
+            return;
+        };
+        if self.blocks_direct_input {
+            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            return;
+        }
+        // Gate local input until the core emits its completion marker (handled
+        // by `turn_runtime::on_warning`).
+        self.input_queue.user_turn_pending_start = true;
+        self.app_event_tx.shake(mode);
+    }
+
+    /// A `/shake` completion notice arrived from the core: release the pending
+    /// input gate. Paired with `handle_shake_slash_command`.
+    pub(super) fn handle_shake_completed(&mut self) {
+        self.input_queue.user_turn_pending_start = false;
+        self.refresh_pending_input_preview();
     }
 }

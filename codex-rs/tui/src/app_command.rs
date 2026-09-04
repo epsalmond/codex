@@ -88,6 +88,9 @@ pub(crate) enum AppCommand {
         force_reload: bool,
     },
     Compact,
+    Shake {
+        mode: codex_protocol::protocol::ShakeMode,
+    },
     SetThreadName {
         name: String,
     },
@@ -228,6 +231,10 @@ impl AppCommand {
 
     pub(crate) fn compact() -> Self {
         Self::Compact
+    }
+
+    pub(crate) fn shake(mode: codex_protocol::protocol::ShakeMode) -> Self {
+        Self::Shake { mode }
     }
 
     pub(crate) fn set_thread_name(name: String) -> Self {
