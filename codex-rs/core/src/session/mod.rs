@@ -15,6 +15,7 @@ use crate::agent::agent_status_from_event;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::artifacts::ArtifactStore;
 use crate::attestation::AttestationProvider;
 use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
@@ -838,6 +839,17 @@ impl Session {
                 .await;
         }
         let thread_id = session.thread_id;
+        if !config.ephemeral
+            && let Some(parent_thread_id) = forked_from_thread_id
+        {
+            let source = ArtifactStore::for_thread(&config.codex_home, parent_thread_id);
+            let destination = session.artifact_store().await;
+            destination.copy_from(&source).map_err(|err| {
+                CodexErr::Fatal(format!(
+                    "failed to copy forked thread artifacts from {parent_thread_id}: {err}"
+                ))
+            })?;
+        }
 
         // This task will run until Op::Shutdown is received.
         let session_for_loop = Arc::clone(&session);
@@ -1227,6 +1239,14 @@ impl Session {
         state.session_configuration.codex_home().clone()
     }
 
+    pub(crate) async fn artifact_store(&self) -> ArtifactStore {
+        let state = self.state.lock().await;
+        ArtifactStore::for_thread(
+            state.session_configuration.codex_home().as_path(),
+            self.thread_id,
+        )
+    }
+
     pub(crate) fn subscribe_elicitation_pause_state(&self) -> watch::Receiver<bool> {
         self.services.elicitations.subscribe()
     }
@@ -1254,7 +1274,6 @@ impl Session {
         self.live_thread()
             .ok_or_else(|| anyhow::anyhow!("Session persistence is disabled; cannot {operation}."))
     }
-
 
     /// Replace the live model history wholesale after a surgical context
     /// reduction ("shake"), persisting a full compaction checkpoint so a cold
