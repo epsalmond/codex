@@ -20,6 +20,7 @@ use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
 use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
+use crate::tools::handlers::ReadArtifactHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
@@ -1026,6 +1027,11 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
 
     add_shell_tools(context, registry);
     add_mcp_resource_tools(context, registry);
+    // Artifact recovery uses durable thread storage. Ephemeral threads,
+    // including tool-free structured requests, do not expose it.
+    if !context.turn_context.config.ephemeral {
+        registry.add(ReadArtifactHandler);
+    }
     add_core_utility_tools(context, registry);
     add_collaboration_tools(context, registry);
 }
