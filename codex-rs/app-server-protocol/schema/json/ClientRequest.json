@@ -5049,6 +5049,22 @@
       ],
       "type": "object"
     },
+    "ThreadShakeStartParams": {
+      "properties": {
+        "mode": {
+          "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadShellCommandParams": {
       "properties": {
         "command": {
@@ -6125,6 +6141,30 @@
         "params"
       ],
       "title": "Thread/compact/startRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/shake/start"
+          ],
+          "title": "Thread/shake/startRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadShakeStartParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/shake/startRequest",
       "type": "object"
     },
     {

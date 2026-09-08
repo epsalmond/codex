@@ -85,7 +85,7 @@ impl RateLimitWindowDisplay {
             .map(|dt| dt.with_timezone(&Local));
         let resets_at = resets_at_utc
             .as_ref()
-            .map(|dt| format_reset_timestamp(dt.clone(), captured_at));
+            .map(|dt| format_reset_timestamp(*dt, captured_at));
 
         Self {
             used_percent: f64::from(window.used_percent),
