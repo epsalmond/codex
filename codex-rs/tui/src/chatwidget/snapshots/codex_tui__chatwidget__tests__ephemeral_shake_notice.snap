@@ -1,0 +1,6 @@
+---
+source: tui/src/chatwidget/tests/mcp_startup.rs
+expression: rendered
+---
+⚠ Elide skipped for ephemeral thread; persistent threads are required for
+  artifact recovery.

@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/mcp_startup.rs
+expression: rendered
+---
+⚠ Shook 2 tool outputs (~1500 tokens freed).

@@ -61,7 +61,6 @@ pub async fn interrupt(sess: &Arc<Session>) {
 }
 
 pub async fn shake(sess: &Arc<Session>, sub_id: String, mode: codex_protocol::protocol::ShakeMode) {
-
     // Rewriting history mid-turn is unsafe (the running task holds a history
     // snapshot); refuse while a turn is active, mirroring thread_rollback.
     let has_active_turn = { sess.active_turn.lock().await.is_some() };
@@ -80,6 +79,8 @@ pub async fn shake(sess: &Arc<Session>, sub_id: String, mode: codex_protocol::pr
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
+    let ephemeral_elide =
+        mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
 
     // Load the live model history and apply the surgical reduction.
     let mut envelopes = sess.clone_history().await.into_annotated_items();
@@ -88,14 +89,33 @@ pub async fn shake(sess: &Arc<Session>, sub_id: String, mode: codex_protocol::pr
         codex_protocol::protocol::ShakeMode::Thinking => {
             crate::shake::shake_thinking(&mut envelopes)
         }
-        codex_protocol::protocol::ShakeMode::Elide => crate::shake::shake_elide(&mut envelopes),
+        codex_protocol::protocol::ShakeMode::Elide => {
+            if ephemeral_elide {
+                crate::shake::ShakeResult::default()
+            } else {
+                let store = sess.artifact_store().await;
+                let mut save = |content: &str, label: &str| match store.save(content, label) {
+                    Ok(uri) => Some(uri),
+                    Err(err) => {
+                        warn!(%err, "failed to save shake artifact; preserving original region");
+                        None
+                    }
+                };
+                crate::shake::shake_elide_with_recovery(&mut envelopes, &mut save)
+            }
+        }
     };
 
     // Always surface the operator summary, even on a no-op. Prefix the message
     // with the well-known marker so the TUI can identify the completion notice
     // and release its input gate; the message stays human-readable for other
     // clients.
-    let summary = format!("⛭ shake: {}", result.summary_line(mode));
+    let summary = if ephemeral_elide {
+        "⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery."
+            .to_string()
+    } else {
+        format!("⛭ shake: {}", result.summary_line(mode))
+    };
     if !result.is_noop() {
         // Persist a full compaction checkpoint with the post-shake replacement
         // history so a cold resume reconstructs the rewritten (not pre-shake)

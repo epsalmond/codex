@@ -1005,11 +1005,32 @@ async fn shake_rejects_unknown_mode_without_submit() {
 
 #[tokio::test]
 async fn shake_notice_releases_input_gate() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.dispatch_command(crate::slash_command::SlashCommand::Shake);
     assert!(chat.input_queue.user_turn_pending_start);
 
     chat.on_warning("⛭ shake: Shook 2 tool outputs (~1500 tokens freed).".to_string());
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("shake_notice_renders_summary", rendered);
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
+async fn ephemeral_shake_notice_releases_input() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.dispatch_command(crate::slash_command::SlashCommand::Shake);
+    assert!(chat.input_queue.user_turn_pending_start);
+
+    chat.on_warning("⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery.".to_string());
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("ephemeral_shake_notice", rendered);
     assert!(!chat.input_queue.user_turn_pending_start);
 }
