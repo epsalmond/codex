@@ -51,6 +51,7 @@ pub use codex_thread::ThreadConfigSnapshot;
 pub use session::turn_context::TurnContext;
 mod agent;
 mod agent_communication;
+pub(crate) mod artifacts;
 mod attestation;
 mod codex_delegate;
 mod command_canonicalization;
@@ -102,9 +103,9 @@ pub(crate) mod mentions {
 }
 mod sandbox_tags;
 pub mod sandboxing;
-mod shake;
 mod session_prefix;
 mod session_startup_prewarm;
+mod shake;
 mod skills;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 pub(crate) use skills::skills_load_input_from_config;

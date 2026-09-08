@@ -25,6 +25,8 @@ use crate::DeleteThreadsParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+const ARTIFACTS_SUBDIR: &str = "artifacts";
+
 struct ThreadRollouts {
     thread_id: codex_protocol::ThreadId,
     rollout_ids: HashSet<codex_protocol::ThreadId>,
@@ -211,6 +213,9 @@ async fn delete_thread_after_reference_check(
         writer_guards.push(entry.writer_lock);
     }
     let found_rollout_path = !thread_rollouts.paths.is_empty();
+    if found_rollout_path {
+        delete_thread_artifacts(store, thread_id)?;
+    }
     for rollout_path in thread_rollouts.paths {
         delete_rollout_file(store, rollout_path.as_path())?;
     }
@@ -225,6 +230,54 @@ async fn delete_thread_after_reference_check(
     }
 
     Ok(())
+}
+
+fn delete_thread_artifacts(
+    store: &LocalThreadStore,
+    thread_id: codex_protocol::ThreadId,
+) -> ThreadStoreResult<()> {
+    let artifacts_root = store.config.codex_home.join(ARTIFACTS_SUBDIR);
+    let thread_artifacts = artifacts_root.join(thread_id.to_string());
+    let inspect = |path: &Path| -> ThreadStoreResult<Option<std::fs::Metadata>> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(ThreadStoreError::Internal {
+                message: format!(
+                    "failed to inspect thread artifacts `{}`: {err}",
+                    path.display()
+                ),
+            }),
+        }
+    };
+    let Some(root_metadata) = inspect(&artifacts_root)? else {
+        return Ok(());
+    };
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Ok(());
+    }
+
+    let Some(metadata) = inspect(&thread_artifacts)? else {
+        return Ok(());
+    };
+    let remove_result = if metadata.file_type().is_symlink() {
+        std::fs::remove_file(&thread_artifacts)
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(&thread_artifacts)
+    } else {
+        return Ok(());
+    };
+
+    match remove_result {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ThreadStoreError::Internal {
+            message: format!(
+                "failed to delete thread artifacts `{}`: {err}",
+                thread_artifacts.display()
+            ),
+        }),
+    }
 }
 
 fn delete_rollout_file(store: &LocalThreadStore, rollout_path: &Path) -> ThreadStoreResult<bool> {
@@ -291,6 +344,15 @@ mod tests {
     async fn delete_thread_removes_active_and_archived_rollouts() {
         let home = TempDir::new().expect("temp dir");
         let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let artifacts_root = home.path().join(ARTIFACTS_SUBDIR);
+        let unrelated_artifact = artifacts_root.join("unrelated").join("keep.log");
+        std::fs::create_dir_all(
+            unrelated_artifact
+                .parent()
+                .expect("unrelated artifact parent"),
+        )
+        .expect("unrelated artifact directory");
+        std::fs::write(&unrelated_artifact, b"keep me").expect("unrelated artifact");
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", Uuid::from_u128(301))
                 .expect("session file");
@@ -311,14 +373,52 @@ mod tests {
 
         for (uuid, path) in cases {
             let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+            let thread_artifacts = artifacts_root.join(uuid.to_string());
+            std::fs::create_dir_all(&thread_artifacts).expect("thread artifact directory");
+            std::fs::write(thread_artifacts.join("output.log"), b"delete me")
+                .expect("thread artifact");
             store
                 .delete_thread(DeleteThreadParams { thread_id })
                 .await
                 .expect("delete thread");
 
             assert!(!path.exists());
+            assert!(!thread_artifacts.exists());
+            assert!(unrelated_artifact.exists());
         }
         assert!(!compressed_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_thread_does_not_follow_artifact_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let home = TempDir::new().expect("temp dir");
+        let outside = TempDir::new().expect("outside temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(309);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let rollout_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let outside_artifact = outside.path().join("keep.log");
+        std::fs::write(&outside_artifact, b"keep me").expect("outside artifact");
+        let artifact_link = home
+            .path()
+            .join(ARTIFACTS_SUBDIR)
+            .join(thread_id.to_string());
+        std::fs::create_dir_all(artifact_link.parent().expect("artifact link parent"))
+            .expect("artifact directory");
+        symlink(outside.path(), &artifact_link).expect("artifact directory symlink");
+
+        store
+            .delete_thread(DeleteThreadParams { thread_id })
+            .await
+            .expect("delete thread");
+
+        assert!(!rollout_path.exists());
+        assert!(!artifact_link.exists());
+        assert!(outside_artifact.exists());
     }
 
     #[tokio::test]
