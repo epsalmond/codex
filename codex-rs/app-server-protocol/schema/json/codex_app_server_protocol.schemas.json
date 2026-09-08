@@ -571,6 +571,30 @@
             },
             "method": {
               "enum": [
+                "thread/shake/start"
+              ],
+              "title": "Thread/shake/startRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadShakeStartParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/shake/startRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/shellCommand"
               ],
               "title": "Thread/shellCommandRequestMethod",
@@ -23397,6 +23421,29 @@
           "threadSettings"
         ],
         "title": "ThreadSettingsUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadShakeStartParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "mode": {
+            "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "threadId"
+        ],
+        "title": "ThreadShakeStartParams",
+        "type": "object"
+      },
+      "ThreadShakeStartResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ThreadShakeStartResponse",
         "type": "object"
       },
       "ThreadShellCommandParams": {
