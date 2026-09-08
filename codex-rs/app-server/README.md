@@ -212,6 +212,7 @@ Example with notification opt-out:
 - `thread/name/set` — set or update a thread’s user-facing name for either a loaded thread or a persisted rollout; returns `{}` on success and emits `thread/name/updated` to initialized, opted-in clients. Thread names are not required to be unique; name lookups resolve to the most recently updated thread.
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications. Parent-owned Multi-Agent V2 subagents reject direct compaction requests.
+- `thread/shake/start` — apply surgical context reduction to a thread; pass `threadId` and `mode` (`"elide"`, `"images"`, or `"thinking"`), receive `{}` immediately, and handle the completion summary from the asynchronous thread warning. Elide recovery artifacts require a persistent thread; with `elide`, ephemeral threads retain their history and do not expose artifact recovery.
 - `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Parent-owned Multi-Agent V2 subagents reject direct shell commands. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
 - `thread/approveGuardianDeniedAction` — manually approve a previously denied Guardian action; parent-owned Multi-Agent V2 subagents reject direct approvals. Replies to pending server-issued approval requests are unaffected.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
@@ -951,6 +952,17 @@ While compaction is running, the thread is effectively in a turn so clients shou
 ```json
 { "method": "thread/compact/start", "id": 25, "params": { "threadId": "thr_b" } }
 { "id": 25, "result": {} }
+```
+
+### Example: Shake thread history
+
+Use `thread/shake/start` to reduce the live context mechanically. `mode` must be
+`"elide"`, `"images"`, or `"thinking"`; the request returns `{}` and the
+completion summary arrives asynchronously as a thread warning.
+
+```json
+{ "method": "thread/shake/start", "id": 28, "params": { "threadId": "thr_b", "mode": "elide" } }
+{ "id": 28, "result": {} }
 ```
 
 ### Example: Run a thread shell command

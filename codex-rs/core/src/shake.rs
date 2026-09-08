@@ -29,6 +29,10 @@ use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 
+mod recovery;
+use self::recovery::is_artifact_recovery_output;
+use self::recovery::recovery_placeholder;
+
 pub(crate) use codex_protocol::protocol::ShakeMode;
 
 /// Rough token cost of a placeholder line; used only for the savings gate.
@@ -113,14 +117,15 @@ fn scan_text_for_block_ranges(text: &str) -> Vec<TextRange> {
 
         if !in_fence {
             let unindented = line.len() == trimmed.len(); // opening tags must start a line
-            if unindented && !trimmed.starts_with("</") {
-                if let Some(name) = parse_opening_xml_tag(&trimmed.to_ascii_lowercase()) {
-                    if tag_stack.is_empty() {
-                        xml_start = line_start;
-                    }
-                    tag_stack.push(name.to_string());
-                    continue;
+            if unindented
+                && !trimmed.starts_with("</")
+                && let Some(name) = parse_opening_xml_tag(&trimmed.to_ascii_lowercase())
+            {
+                if tag_stack.is_empty() {
+                    xml_start = line_start;
                 }
+                tag_stack.push(name.to_string());
+                continue;
             }
             let closing = trimmed.to_ascii_lowercase();
             if let Some(rest) = closing.strip_prefix("</")
@@ -192,7 +197,9 @@ fn item_model_visible_bytes(item: &ResponseItem) -> usize {
                 };
             }
         }
-        ResponseItem::FunctionCall { name, arguments, .. } => {
+        ResponseItem::FunctionCall {
+            name, arguments, ..
+        } => {
             bytes += name.len() + arguments.len();
         }
         ResponseItem::CustomToolCall { name, input, .. } => {
@@ -368,7 +375,7 @@ fn push_block_regions(
 ) {
     for range in scan_text_for_block_ranges(text) {
         let slice = &text[range.start..range.end];
-        if slice.is_empty() {
+        if slice.is_empty() || is_artifact_recovery_output(slice) {
             continue;
         }
         let tokens = approx_token_count(slice);
@@ -440,7 +447,11 @@ impl ShakeResult {
                     parts.push(format!(
                         "{} tool output{}",
                         self.tool_outputs_elided,
-                        if self.tool_outputs_elided == 1 { "" } else { "s" }
+                        if self.tool_outputs_elided == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     ));
                 }
                 if self.blocks_elided > 0 {
@@ -483,10 +494,13 @@ pub(crate) fn shake_thinking(items: &mut Vec<ResponseItemEnvelope>) -> ShakeResu
     }
 }
 
-/// Elide whole tool-call outputs and large fenced/XML blocks, replacing their
-/// text with short placeholders. Keeps the most recent `MANUAL_PROTECT_TOKENS`
-/// of context intact.
-pub(crate) fn shake_elide(items: &mut [ResponseItemEnvelope]) -> ShakeResult {
+/// Elide history while saving each original region before replacing it. A
+/// failed save leaves that region untouched, so its placeholder never promises
+/// recovery that is not durable.
+pub(crate) fn shake_elide_with_recovery(
+    items: &mut [ResponseItemEnvelope],
+    save: &mut dyn FnMut(&str, &str) -> Option<String>,
+) -> ShakeResult {
     let mut result = ShakeResult::default();
     if items.is_empty() {
         return result;
@@ -509,13 +523,17 @@ pub(crate) fn shake_elide(items: &mut [ResponseItemEnvelope]) -> ShakeResult {
         match &mut envelope.item {
             ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } => {
-                let Some((_, tokens)) = tool_output_text(output) else {
+                let Some((original, tokens)) = tool_output_text(output) else {
                     continue;
                 };
-                if tokens < FENCE_MIN_TOKENS {
+                if tokens < FENCE_MIN_TOKENS || is_artifact_recovery_output(&original) {
                     continue;
                 }
-                let placeholder = format!("[shaken ~{tokens} tokens of tool output]");
+                let Some(placeholder) =
+                    recovery_placeholder(save, &original, tokens, "tool output")
+                else {
+                    continue;
+                };
                 let freed = elide_tool_output(output, &placeholder);
                 result.tool_outputs_elided += 1;
                 result.tokens_freed += freed as i64;
@@ -536,13 +554,13 @@ pub(crate) fn shake_elide(items: &mut [ResponseItemEnvelope]) -> ShakeResult {
     // splicing one region never shifts the byte offsets of another in the same
     // text block.
     block_regions.sort_by(|a, b| {
-        (b.message_index, b.content_index, b.start).cmp(&(a.message_index, a.content_index, a.start))
+        (b.message_index, b.content_index, b.start).cmp(&(
+            a.message_index,
+            a.content_index,
+            a.start,
+        ))
     });
     for region in &block_regions {
-        let placeholder = format!(
-            "[shaken ~{} tokens from {} block]",
-            region.tokens, region.label
-        );
         let Some(envelope) = items.get_mut(region.message_index) else {
             continue;
         };
@@ -552,6 +570,15 @@ pub(crate) fn shake_elide(items: &mut [ResponseItemEnvelope]) -> ShakeResult {
         let Some(ContentItem::InputText { text } | ContentItem::OutputText { text }) =
             content.get_mut(region.content_index)
         else {
+            continue;
+        };
+        let original = &text[region.start..region.end];
+        let Some(placeholder) = recovery_placeholder(
+            save,
+            original,
+            region.tokens,
+            &format!("{} block", region.label),
+        ) else {
             continue;
         };
         text.replace_range(region.start..region.end, &placeholder);
@@ -670,9 +697,15 @@ mod tests {
     #[test]
     fn shake_elide_replaces_large_tool_output_beyond_window() {
         let big = big_lines(1200, "heavy tool output line");
-        let mut items = vec![text_item("user", "run the thing"), output_item("call-1", &big)];
+        let mut items = vec![
+            text_item("user", "run the thing"),
+            output_item("call-1", &big),
+        ];
         items.extend(tail_pad());
-        let result = shake_elide(&mut items);
+        let mut save = |_content: &str, _label: &str| {
+            Some("artifact://00000000000000000000000000000000".to_string())
+        };
+        let result = shake_elide_with_recovery(&mut items, &mut save);
         assert_eq!(result.tool_outputs_elided, 1);
         assert!(result.tokens_freed > 0);
         let ResponseItem::FunctionCallOutput { output, .. } = &items[1].item else {
@@ -686,17 +719,73 @@ mod tests {
     fn shake_elide_skips_recent_tool_output() {
         let big = big_lines(1200, "heavy tool output line");
         // The big output is the newest item -> protected (inside window).
-        let mut items = vec![text_item("user", "run the thing"), output_item("call-1", &big)];
-        let result = shake_elide(&mut items);
+        let mut items = vec![
+            text_item("user", "run the thing"),
+            output_item("call-1", &big),
+        ];
+        let mut save = |_content: &str, _label: &str| {
+            Some("artifact://00000000000000000000000000000000".to_string())
+        };
+        let result = shake_elide_with_recovery(&mut items, &mut save);
         assert_eq!(result.tool_outputs_elided, 0);
+    }
+
+    #[test]
+    fn shake_elide_preserves_original_when_artifact_save_fails() {
+        let original = big_lines(1200, "heavy tool output line");
+        let mut items = vec![output_item("call-1", &original)];
+        items.extend(tail_pad());
+        let mut save = |_content: &str, _label: &str| None;
+
+        let result = shake_elide_with_recovery(&mut items, &mut save);
+
+        assert_eq!(result.tool_outputs_elided, 0);
+        let ResponseItem::FunctionCallOutput { output, .. } = &items[0].item else {
+            panic!("expected output");
+        };
+        assert_eq!(output.body.to_text().expect("text output"), original);
+    }
+
+    #[test]
+    fn shake_elide_protects_recovered_output() {
+        let recovered = "[artifact source: artifact://00000000000000000000000000000000; more content; use start_byte=3071]\n";
+        let mut items = vec![output_item("call-1", &recovered.repeat(60))];
+        items.extend(tail_pad());
+
+        let mut save =
+            |_content: &str, _label: &str| panic!("recovered output should not be saved again");
+        let result = shake_elide_with_recovery(&mut items, &mut save);
+
+        assert_eq!(result.tool_outputs_elided, 0);
+    }
+
+    #[test]
+    fn shake_elide_does_not_protect_plain_artifact_uri_text() {
+        let plain =
+            "plain text mentioning artifact://00000000000000000000000000000000\n".repeat(1_200);
+        let mut items = vec![output_item("call-1", &plain)];
+        items.extend(tail_pad());
+        let mut save = |_content: &str, _label: &str| {
+            Some("artifact://00000000000000000000000000000001".to_string())
+        };
+
+        let result = shake_elide_with_recovery(&mut items, &mut save);
+
+        assert_eq!(result.tool_outputs_elided, 1);
     }
 
     #[test]
     fn shake_elide_replaces_large_fence_in_message() {
         let mut items = vec![text_item("assistant", &big_fenced_block())];
         items.extend(tail_pad());
-        let result = shake_elide(&mut items);
-        assert!(result.blocks_elided >= 1, "expected a block elision: {result:?}");
+        let mut save = |_content: &str, _label: &str| {
+            Some("artifact://00000000000000000000000000000000".to_string())
+        };
+        let result = shake_elide_with_recovery(&mut items, &mut save);
+        assert!(
+            result.blocks_elided >= 1,
+            "expected a block elision: {result:?}"
+        );
         let ResponseItem::Message { content, .. } = &items[0].item else {
             panic!("expected message");
         };
