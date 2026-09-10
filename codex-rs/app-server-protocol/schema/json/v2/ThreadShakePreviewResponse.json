@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ShakePreview": {
+      "properties": {
+        "fingerprint": {
+          "description": "Opaque identifier of the history and mode measured by this preview.",
+          "type": "string"
+        },
+        "images": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "textBlocks": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "thinkingBlocks": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "tokensAfter": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokensBefore": {
+          "description": "Approximate conversation tokens, excluding tool schemas and base instructions.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "toolOutputs": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "unavailableReason": {
+          "description": "Present when this mode cannot be applied to the current thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fingerprint",
+        "images",
+        "textBlocks",
+        "thinkingBlocks",
+        "tokensAfter",
+        "tokensBefore",
+        "toolOutputs"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "preview": {
+      "$ref": "#/definitions/ShakePreview"
+    }
+  },
+  "required": [
+    "preview"
+  ],
+  "title": "ThreadShakePreviewResponse",
+  "type": "object"
+}

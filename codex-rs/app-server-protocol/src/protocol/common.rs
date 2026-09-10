@@ -664,6 +664,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShakeStartResponse,
     },
+    ThreadShakePreview => "thread/shake/preview" {
+        params: v2::ThreadShakePreviewParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadShakePreviewResponse,
+    },
     ThreadShellCommand => "thread/shellCommand" {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),

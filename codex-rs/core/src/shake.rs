@@ -29,14 +29,12 @@ use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 
+pub(crate) mod preview;
 mod recovery;
 use self::recovery::is_artifact_recovery_output;
 use self::recovery::recovery_placeholder;
 
 pub(crate) use codex_protocol::protocol::ShakeMode;
-
-/// Rough token cost of a placeholder line; used only for the savings gate.
-const PLACEHOLDER_TOKEN_ESTIMATE: usize = 16;
 
 /// Manual `/shake` is aggressive: no savings threshold and drops eligible
 /// regions across history. Still keeps a small recent tail (~4k tokens) so it
@@ -318,7 +316,7 @@ fn elide_tool_output(output: &mut FunctionCallOutputPayload, placeholder: &str) 
             *items = kept;
         }
     }
-    original.saturating_sub(PLACEHOLDER_TOKEN_ESTIMATE)
+    original.saturating_sub(approx_token_count(placeholder))
 }
 
 /// Strip image blocks from a single item; returns the number of images removed.
@@ -583,7 +581,9 @@ pub(crate) fn shake_elide_with_recovery(
         };
         text.replace_range(region.start..region.end, &placeholder);
         result.blocks_elided += 1;
-        result.tokens_freed += region.tokens.saturating_sub(PLACEHOLDER_TOKEN_ESTIMATE) as i64;
+        result.tokens_freed += region
+            .tokens
+            .saturating_sub(approx_token_count(&placeholder)) as i64;
     }
 
     result

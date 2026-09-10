@@ -101,6 +101,8 @@ use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
+use codex_app_server_protocol::ThreadShakePreviewParams;
+use codex_app_server_protocol::ThreadShakePreviewResponse;
 use codex_app_server_protocol::ThreadShakeStartParams;
 use codex_app_server_protocol::ThreadShakeStartResponse;
 use codex_app_server_protocol::ThreadShellCommandParams;
@@ -1452,6 +1454,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         mode: codex_protocol::protocol::ShakeMode,
+        expected_fingerprint: String,
     ) -> Result<()> {
         let request_id = self.next_request_id();
         let _: ThreadShakeStartResponse = self
@@ -1461,11 +1464,30 @@ impl AppServerSession {
                 params: ThreadShakeStartParams {
                     thread_id: thread_id.to_string(),
                     mode: mode.as_str().to_string(),
+                    expected_fingerprint: Some(expected_fingerprint),
                 },
             })
             .await
             .wrap_err("thread/shake/start failed in TUI")?;
         Ok(())
+    }
+
+    pub(crate) async fn thread_shake_preview(
+        &mut self,
+        thread_id: ThreadId,
+        mode: codex_protocol::protocol::ShakeMode,
+    ) -> Result<ThreadShakePreviewResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadShakePreview {
+                request_id,
+                params: ThreadShakePreviewParams {
+                    thread_id: thread_id.to_string(),
+                    mode: mode.as_str().to_string(),
+                },
+            })
+            .await
+            .wrap_err("thread/shake/preview failed in TUI")
     }
 
     pub(crate) async fn thread_shell_command(

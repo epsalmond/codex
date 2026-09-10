@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 const ARTIFACT_DIR_NAME: &str = "artifacts";
-const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MAX_READ_BYTES: usize = 3 * 1024;
 
 #[derive(Clone, Debug)]

@@ -213,6 +213,7 @@ Example with notification opt-out:
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications. Parent-owned Multi-Agent V2 subagents reject direct compaction requests.
 - `thread/shake/start` — apply surgical context reduction to a thread; pass `threadId` and `mode` (`"elide"`, `"images"`, or `"thinking"`), receive `{}` immediately, and handle the completion summary from the asynchronous thread warning. Elide recovery artifacts require a persistent thread; with `elide`, ephemeral threads retain their history and do not expose artifact recovery.
+- `thread/shake/preview` — measure a reduction without changing history or saving artifacts. Returns estimated conversation tokens before/after, affected content counts, an optional unavailability reason, and a fingerprint for confirmation.
 - `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Parent-owned Multi-Agent V2 subagents reject direct shell commands. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
 - `thread/approveGuardianDeniedAction` — manually approve a previously denied Guardian action; parent-owned Multi-Agent V2 subagents reject direct approvals. Replies to pending server-issued approval requests are unaffected.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
@@ -955,6 +956,19 @@ While compaction is running, the thread is effectively in a turn so clients shou
 ```
 
 ### Example: Shake thread history
+
+Call `thread/shake/preview` with `threadId` and `mode` to inspect the proposed
+reduction first. Its `preview.tokensBefore` and `preview.tokensAfter` use local
+estimates, include recovery placeholders, and exclude base instructions and tool
+schemas. Previewing does not call the model, write artifacts, or update usage.
+Pass `preview.fingerprint` as `expectedFingerprint` to `thread/shake/start` after
+confirmation. If history or mode has changed, the operation emits a warning and
+leaves history unchanged; request a fresh preview before retrying. Both operations
+reject active turns. Artifact write failures can reduce the actual savings.
+
+These estimates describe context reduction, not exact subscription allowance or
+API cost savings. Editing earlier history may reduce cache reuse on the next
+request; future requests and recovery reads determine the eventual net cost.
 
 Use `thread/shake/start` to reduce the live context mechanically. `mode` must be
 `"elide"`, `"images"`, or `"thinking"`; the request returns `{}` and the

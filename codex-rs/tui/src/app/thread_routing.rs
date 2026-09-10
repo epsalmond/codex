@@ -791,8 +791,40 @@ impl App {
                 app_server.thread_compact_start(thread_id).await?;
                 Ok(true)
             }
-            AppCommand::Shake { mode } => {
-                app_server.thread_shake_start(thread_id, *mode).await?;
+            AppCommand::Shake {
+                mode,
+                expected_fingerprint,
+            } => {
+                if self.active_thread_id != Some(thread_id) {
+                    self.chat_widget.add_error_message(
+                        "The active conversation changed. Run /shake again to preview it."
+                            .to_string(),
+                    );
+                    return Ok(true);
+                }
+                self.chat_widget.prepare_local_op_submission(op);
+                if let Err(err) = app_server
+                    .thread_shake_start(thread_id, *mode, expected_fingerprint.clone())
+                    .await
+                {
+                    self.chat_widget.handle_shake_completed();
+                    self.chat_widget
+                        .add_error_message(format!("Shake failed: {err:#}"));
+                }
+                Ok(true)
+            }
+            AppCommand::PreviewShake { mode } => {
+                match app_server.thread_shake_preview(thread_id, *mode).await {
+                    Ok(response) => {
+                        self.chat_widget
+                            .show_shake_preview(thread_id, *mode, response.preview)
+                    }
+                    Err(err) => {
+                        self.chat_widget.handle_shake_completed();
+                        self.chat_widget
+                            .add_error_message(format!("Shake preview failed: {err:#}"));
+                    }
+                }
                 Ok(true)
             }
             AppCommand::SetThreadName { name } => {

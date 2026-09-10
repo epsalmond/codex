@@ -79,6 +79,7 @@ export type { ServerNotificationEnvelope } from "./ServerNotificationEnvelope";
 export type { ServerRequest } from "./ServerRequest";
 export type { SessionSource } from "./SessionSource";
 export type { Settings } from "./Settings";
+export type { ShakePreview } from "./ShakePreview";
 export type { SleepItem } from "./SleepItem";
 export type { SubAgentSource } from "./SubAgentSource";
 export type { ThreadId } from "./ThreadId";

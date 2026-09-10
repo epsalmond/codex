@@ -1252,10 +1252,7 @@ impl ChatWidget {
 
     /// Handler for `/shake [elide|images|thinking]` to surgically reduce context.
     ///
-    /// Defaults to `elide` when no mode is supplied. Forwards the request as an
-    /// `Op` so the core rewrites the history and emits the operator summary; the
-    /// TUI stays read-only, gating only local input until the completion marker
-    /// notice arrives from the core.
+    /// Defaults to `elide`. Request a read-only preview before offering confirmation.
     fn handle_shake_slash_command(&mut self, args: &str) {
         let trimmed = args.trim();
         let mode = if trimmed.is_empty() {
@@ -1271,15 +1268,14 @@ impl ChatWidget {
             self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
             return;
         }
-        // Gate local input until the core emits its completion marker (handled
-        // by `turn_runtime::on_warning`).
+        // Hold local input until the preview arrives.
         self.input_queue.user_turn_pending_start = true;
         self.app_event_tx.shake(mode);
     }
 
     /// A `/shake` completion notice arrived from the core: release the pending
     /// input gate. Paired with `handle_shake_slash_command`.
-    pub(super) fn handle_shake_completed(&mut self) {
+    pub(crate) fn handle_shake_completed(&mut self) {
         self.input_queue.user_turn_pending_start = false;
         self.refresh_pending_input_preview();
     }

@@ -766,6 +766,21 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_shake_preview(
+        &self,
+        params: ThreadShakePreviewParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let mode = codex_protocol::protocol::ShakeMode::parse(&params.mode)
+            .ok_or_else(|| invalid_request("mode must be one of: elide, images, thinking"))?;
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        ensure_direct_input_allowed(thread.as_ref()).await?;
+        let preview = thread
+            .preview_shake(mode)
+            .await
+            .map_err(|err| invalid_request(format!("cannot preview shake: {err}")))?;
+        Ok(Some(ThreadShakePreviewResponse { preview }.into()))
+    }
+
     pub(crate) async fn thread_background_terminals_clean(
         &self,
         request_id: &ConnectionRequestId,
@@ -2374,15 +2389,26 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadShakeStartParams,
     ) -> Result<ThreadShakeStartResponse, JSONRPCErrorError> {
-        let ThreadShakeStartParams { thread_id, mode } = params;
+        let ThreadShakeStartParams {
+            thread_id,
+            mode,
+            expected_fingerprint,
+        } = params;
 
         let mode = codex_protocol::protocol::ShakeMode::parse(&mode)
             .ok_or_else(|| invalid_request("mode must be one of: elide, images, thinking"))?;
         let (_, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
-        self.submit_core_op(request_id, thread.as_ref(), Op::Shake { mode })
-            .await
-            .map_err(|err| internal_error(format!("failed to start shake: {err}")))?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::Shake {
+                mode,
+                expected_fingerprint,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to start shake: {err}")))?;
         Ok(ThreadShakeStartResponse {})
     }
 

@@ -60,7 +60,12 @@ pub async fn interrupt(sess: &Arc<Session>) {
     sess.interrupt_task().await;
 }
 
-pub async fn shake(sess: &Arc<Session>, sub_id: String, mode: codex_protocol::protocol::ShakeMode) {
+pub async fn shake(
+    sess: &Arc<Session>,
+    sub_id: String,
+    mode: codex_protocol::protocol::ShakeMode,
+    expected_fingerprint: Option<String>,
+) {
     // Rewriting history mid-turn is unsafe (the running task holds a history
     // snapshot); refuse while a turn is active, mirroring thread_rollback.
     let has_active_turn = { sess.active_turn.lock().await.is_some() };
@@ -84,6 +89,23 @@ pub async fn shake(sess: &Arc<Session>, sub_id: String, mode: codex_protocol::pr
 
     // Load the live model history and apply the surgical reduction.
     let mut envelopes = sess.clone_history().await.into_annotated_items();
+    if let Some(expected) = expected_fingerprint
+        && crate::shake::preview::fingerprint(&envelopes, mode)
+            .ok()
+            .as_ref()
+            != Some(&expected)
+    {
+        sess.send_event(
+            turn_context.as_ref(),
+            EventMsg::Warning(WarningEvent {
+                message:
+                    "⛭ shake: History changed since the preview. Run /shake again to review it."
+                        .to_string(),
+            }),
+        )
+        .await;
+        return;
+    }
     let result = match mode {
         codex_protocol::protocol::ShakeMode::Images => crate::shake::shake_images(&mut envelopes),
         codex_protocol::protocol::ShakeMode::Thinking => {
@@ -754,8 +776,11 @@ pub(super) async fn submission_loop(
                     compact(&sess, sub.id.clone()).await;
                     false
                 }
-                Op::Shake { mode } => {
-                    shake(&sess, sub.id.clone(), mode).await;
+                Op::Shake {
+                    mode,
+                    expected_fingerprint,
+                } => {
+                    shake(&sess, sub.id.clone(), mode, expected_fingerprint).await;
                     false
                 }
                 Op::ThreadRollback { num_turns } => {

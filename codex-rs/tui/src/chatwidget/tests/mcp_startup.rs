@@ -894,7 +894,7 @@ async fn shake_submits_op_with_default_elide_mode() {
     chat.dispatch_command(crate::slash_command::SlashCommand::Shake);
 
     match rx.try_recv() {
-        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::Shake { mode })) => {
+        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::PreviewShake { mode })) => {
             assert_eq!(mode, codex_protocol::protocol::ShakeMode::Elide);
         }
         other => panic!("expected AppEvent::CodexOp(Shake elide), got {other:?}"),
@@ -913,7 +913,7 @@ async fn shake_with_args_submits_selected_mode() {
     );
 
     match rx.try_recv() {
-        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::Shake { mode })) => {
+        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::PreviewShake { mode })) => {
             assert_eq!(mode, codex_protocol::protocol::ShakeMode::Images);
         }
         other => panic!("expected AppEvent::CodexOp(Shake images), got {other:?}"),
