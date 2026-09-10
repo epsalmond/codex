@@ -1299,6 +1299,9 @@ impl MessageProcessor {
                     .thread_shake_start(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadShakePreview { params, .. } => {
+                self.thread_processor.thread_shake_preview(params).await
+            }
             ClientRequest::ThreadBackgroundTerminalsClean { params, .. } => {
                 self.thread_processor
                     .thread_background_terminals_clean(&request_id, params)

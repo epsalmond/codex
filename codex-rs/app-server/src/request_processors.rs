@@ -276,6 +276,8 @@ use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
+use codex_app_server_protocol::ThreadShakePreviewParams;
+use codex_app_server_protocol::ThreadShakePreviewResponse;
 use codex_app_server_protocol::ThreadShakeStartParams;
 use codex_app_server_protocol::ThreadShakeStartResponse;
 use codex_app_server_protocol::ThreadShellCommandParams;

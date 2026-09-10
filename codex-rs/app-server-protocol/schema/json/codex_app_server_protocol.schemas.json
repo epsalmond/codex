@@ -595,6 +595,30 @@
             },
             "method": {
               "enum": [
+                "thread/shake/preview"
+              ],
+              "title": "Thread/shake/previewRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadShakePreviewParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/shake/previewRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/shellCommand"
               ],
               "title": "Thread/shellCommandRequestMethod",
@@ -19664,6 +19688,60 @@
         ],
         "type": "object"
       },
+      "ShakePreview": {
+        "properties": {
+          "fingerprint": {
+            "description": "Opaque identifier of the history and mode measured by this preview.",
+            "type": "string"
+          },
+          "images": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "textBlocks": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "thinkingBlocks": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tokensAfter": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tokensBefore": {
+            "description": "Approximate conversation tokens, excluding tool schemas and base instructions.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "toolOutputs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "unavailableReason": {
+            "description": "Present when this mode cannot be applied to the current thread.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fingerprint",
+          "images",
+          "textBlocks",
+          "thinkingBlocks",
+          "tokensAfter",
+          "tokensBefore",
+          "toolOutputs"
+        ],
+        "type": "object"
+      },
       "SkillDependencies": {
         "properties": {
           "tools": {
@@ -23590,9 +23668,47 @@
         "title": "ThreadSettingsUpdatedNotification",
         "type": "object"
       },
+      "ThreadShakePreviewParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "mode": {
+            "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "threadId"
+        ],
+        "title": "ThreadShakePreviewParams",
+        "type": "object"
+      },
+      "ThreadShakePreviewResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "preview": {
+            "$ref": "#/definitions/v2/ShakePreview"
+          }
+        },
+        "required": [
+          "preview"
+        ],
+        "title": "ThreadShakePreviewResponse",
+        "type": "object"
+      },
       "ThreadShakeStartParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "expectedFingerprint": {
+            "description": "Fingerprint returned by a preview; omit to apply without a preview.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "mode": {
             "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
             "type": "string"

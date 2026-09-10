@@ -1,0 +1,18 @@
+---
+source: tui/src/chatwidget/tests/shake_preview_tests.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Shake preview (thinking)
+  Estimated conversation: 118,000 → 71,000 tokens. Frees ~47,000 (40%).
+  Thinking blocks to remove: 1. This mode does not save recovery artifacts.
+
+  The next request may cost more from lost cache reuse. Later requests carry less
+  context; recovery reads add tokens back.
+
+  Estimates exclude base instructions and tool schemas. Exact subscription or API
+  savings depend on future requests.
+
+› 1. Shake
+  2. Cancel
+
+  Press enter to confirm or esc to go back

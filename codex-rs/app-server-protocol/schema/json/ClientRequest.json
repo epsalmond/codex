@@ -5049,8 +5049,31 @@
       ],
       "type": "object"
     },
+    "ThreadShakePreviewParams": {
+      "properties": {
+        "mode": {
+          "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadShakeStartParams": {
       "properties": {
+        "expectedFingerprint": {
+          "description": "Fingerprint returned by a preview; omit to apply without a preview.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mode": {
           "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
           "type": "string"
@@ -6165,6 +6188,30 @@
         "params"
       ],
       "title": "Thread/shake/startRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/shake/preview"
+          ],
+          "title": "Thread/shake/previewRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadShakePreviewParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/shake/previewRequest",
       "type": "object"
     },
     {

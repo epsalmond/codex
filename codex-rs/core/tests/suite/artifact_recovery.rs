@@ -17,6 +17,7 @@ use core_test_support::responses::sse;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::fs;
 use std::future::Future;
@@ -64,8 +65,40 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
         .collect::<Result<_, _>>()?;
         Box::pin(fixture.codex.inject_response_items(history)).await?;
 
+        let artifact_dir = fixture
+            .codex_home_path()
+            .join("artifacts")
+            .join(fixture.session_configured.thread_id.to_string());
+        let usage_before = fixture.codex.token_usage_info().await;
+        let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+        assert_eq!((preview.tool_outputs, preview.text_blocks), (1, 0));
+        assert!(preview.tokens_before > preview.tokens_after);
+        assert!(!artifact_dir.exists());
+        assert_eq!(fixture.codex.token_usage_info().await, usage_before);
+        assert_eq!(
+            fixture.codex.preview_shake(ShakeMode::Elide).await?,
+            preview
+        );
+
+        // Even with unchanged history, confirming a different mode is stale.
+        let other_mode = fixture.codex.preview_shake(ShakeMode::Images).await?;
         Box::pin(fixture.codex.submit(Op::Shake {
             mode: ShakeMode::Elide,
+            expected_fingerprint: Some(other_mode.fingerprint),
+        }))
+        .await?;
+        Box::pin(wait_for_event(&fixture.codex, |event| {
+            matches!(event, EventMsg::Warning(warning) if warning.message.contains("History changed"))
+        })).await;
+        assert!(!artifact_dir.exists());
+        assert_eq!(
+            fixture.codex.preview_shake(ShakeMode::Elide).await?,
+            preview
+        );
+
+        Box::pin(fixture.codex.submit(Op::Shake {
+            mode: ShakeMode::Elide,
+            expected_fingerprint: Some(preview.fingerprint),
         }))
         .await?;
         let warning = Box::pin(wait_for_event(
@@ -75,10 +108,9 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     .await;
         assert!(matches!(warning, EventMsg::Warning(_)));
 
-        let artifact_dir = fixture
-            .codex_home_path()
-            .join("artifacts")
-            .join(fixture.session_configured.thread_id.to_string());
+        let after = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+        assert_eq!(after.tokens_before, preview.tokens_after);
+        assert_eq!((after.tool_outputs, after.text_blocks), (0, 0));
         let artifact_path = fs::read_dir(&artifact_dir)?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
@@ -318,8 +350,13 @@ fn run_ephemeral_artifact_boundary() -> Pin<Box<dyn Future<Output = Result<()>> 
         .collect::<Result<_, _>>()?;
         Box::pin(fixture.codex.inject_response_items(history)).await?;
 
+        let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+        assert!(preview.unavailable_reason.is_some());
+        assert_eq!(preview.tokens_before, preview.tokens_after);
+
         Box::pin(fixture.codex.submit(Op::Shake {
             mode: ShakeMode::Elide,
+            expected_fingerprint: None,
         }))
         .await?;
         let warning = Box::pin(wait_for_event(&fixture.codex, |event| {
@@ -357,4 +394,58 @@ fn run_ephemeral_artifact_boundary() -> Pin<Box<dyn Future<Output = Result<()>> 
         assert!(!tools.iter().any(|tool| tool["name"] == "read_artifact"));
         Ok(())
     })
+}
+
+#[test_case::test_case(ShakeMode::Images; "images")]
+#[test_case::test_case(ShakeMode::Thinking; "thinking")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shake_preview_measures_non_text_modes(mode: ShakeMode) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let fixture = Box::pin(test_codex().build_with_auto_env(&server)).await?;
+    let items = vec![
+        serde_json::from_value(json!({
+            "type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"inspect this"},
+                {"type":"input_image", "image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="}
+            ]
+        }))?,
+        serde_json::from_value(json!({
+            "type":"reasoning", "summary":[],
+            "content":[{"type":"reasoning_text", "text":"reasoning text ".repeat(/*n*/ 1_000)}]
+        }))?,
+    ];
+    Box::pin(fixture.codex.inject_response_items(items)).await?;
+    let before = fixture.codex.preview_shake(mode).await?;
+    assert_eq!(
+        (before.images, before.thinking_blocks),
+        match mode {
+            ShakeMode::Images => (1, 0),
+            ShakeMode::Thinking => (0, 1),
+            ShakeMode::Elide => unreachable!(),
+        }
+    );
+    assert!(before.tokens_before > before.tokens_after);
+    assert_eq!(fixture.codex.preview_shake(mode).await?, before);
+    Box::pin(fixture.codex.submit(Op::Shake {
+        mode,
+        expected_fingerprint: Some(before.fingerprint),
+    }))
+    .await?;
+    Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
+    })).await;
+    let after = fixture.codex.preview_shake(mode).await?;
+    assert_eq!(
+        (after.tokens_before, after.tokens_after),
+        (before.tokens_after, before.tokens_after)
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .context("failed to read mock server requests")?
+            .is_empty()
+    );
+    Ok(())
 }

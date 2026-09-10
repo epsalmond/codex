@@ -1,13 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
-    "expectedFingerprint": {
-      "description": "Fingerprint returned by a preview; omit to apply without a preview.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "mode": {
       "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
       "type": "string"
@@ -20,6 +13,6 @@
     "mode",
     "threadId"
   ],
-  "title": "ThreadShakeStartParams",
+  "title": "ThreadShakePreviewParams",
   "type": "object"
 }

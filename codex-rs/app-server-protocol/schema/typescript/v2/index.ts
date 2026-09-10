@@ -552,6 +552,8 @@ export type { ThreadSetNameParams } from "./ThreadSetNameParams";
 export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";
 export type { ThreadSettings } from "./ThreadSettings";
 export type { ThreadSettingsUpdatedNotification } from "./ThreadSettingsUpdatedNotification";
+export type { ThreadShakePreviewParams } from "./ThreadShakePreviewParams";
+export type { ThreadShakePreviewResponse } from "./ThreadShakePreviewResponse";
 export type { ThreadShakeStartParams } from "./ThreadShakeStartParams";
 export type { ThreadShakeStartResponse } from "./ThreadShakeStartResponse";
 export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";

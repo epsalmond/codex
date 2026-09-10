@@ -1132,12 +1132,31 @@ pub struct ThreadShakeStartParams {
     pub thread_id: String,
     /// Surgical context-reduction mode: "elide" | "images" | "thinking".
     pub mode: String,
+    /// Fingerprint returned by a preview; omit to apply without a preview.
+    #[ts(optional = nullable)]
+    pub expected_fingerprint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadShakeStartResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadShakePreviewParams {
+    pub thread_id: String,
+    /// Surgical context-reduction mode: "elide" | "images" | "thinking".
+    pub mode: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadShakePreviewResponse {
+    pub preview: codex_protocol::shake::ShakePreview,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

@@ -734,7 +734,11 @@ pub enum Op {
     /// images ("images"), or reasoning items ("thinking") — replacing text with
     /// short placeholders and persisting a compaction-style replacement
     /// history. Ported from oh-my-pi's `/shake` command.
-    Shake { mode: ShakeMode },
+    Shake {
+        mode: ShakeMode,
+        /// Reject a stale confirmation when provided by a preview client.
+        expected_fingerprint: Option<String>,
+    },
 
     /// Set whether the thread remains eligible for memory generation.
     ///

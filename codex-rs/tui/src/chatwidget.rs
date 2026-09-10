@@ -366,6 +366,7 @@ use self::session_header::SessionHeader;
 mod hook_lifecycle;
 mod hooks;
 mod interaction;
+mod shake_preview;
 mod skills;
 mod slash_dispatch;
 mod worktree_picker;
@@ -1832,6 +1833,7 @@ impl ChatWidget {
                 | AppCommand::Review { .. }
                 | AppCommand::RunUserShellCommand { .. }
                 | AppCommand::Shake { .. }
+                | AppCommand::PreviewShake { .. }
         ) {
             self.transcript.last_status_copy_targets = None;
             self.input_queue.user_turn_pending_start = true;
