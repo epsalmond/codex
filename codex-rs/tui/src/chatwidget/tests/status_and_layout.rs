@@ -754,6 +754,7 @@ async fn status_line_shows_weekly_reset_in_local_time() {
     chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 94,
             window_duration_mins: Some(7 * 24 * 60),

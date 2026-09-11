@@ -1,0 +1,23 @@
+---
+source: tui/src/chatwidget/tests/shake_preview_tests.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Shake preview (elide)
+  Estimated conversation: 118,000 → 71,000 tokens. Frees ~47,000 (40%).
+  24 tool outputs and 8 text blocks. Recent ~4k tokens stay protected; removed text
+  is recoverable.
+
+  Idle age unavailable; cache state unknown.
+  Request estimate: 130,000 → 83,000 (latest context minus reduction; overhead may
+  differ).
+  Cost scenarios unavailable for this model or billing route.
+  Auto-compact headroom unavailable for the active budget.
+  Favor shake when it delays compaction, not simply before /compact.
+
+  Conversation excludes instructions/tools. Costs exclude recovery and output; not plan-
+  allowance predictions.
+
+› 1. Shake
+  2. Cancel
+
+  Press enter to confirm or esc to go back

@@ -123,10 +123,7 @@ impl ChatWidget {
             )
         };
         let billing = if self.config.model_provider_id != "openai"
-            || !self
-                .runtime_model_provider_base_url
-                .as_deref()
-                .is_none_or(known_endpoint)
+            || self.remote_connection.is_some()
             || !self
                 .config
                 .model_provider
@@ -138,15 +135,11 @@ impl ChatWidget {
         } else if self.has_codex_backend_auth {
             Billing::Codex
         } else if self
-            .runtime_model_provider_base_url
+            .config
+            .model_provider
+            .base_url
             .as_deref()
             .is_none_or(|url| url.trim_end_matches('/') == "https://api.openai.com/v1")
-            && self
-                .config
-                .model_provider
-                .base_url
-                .as_deref()
-                .is_none_or(|url| url.trim_end_matches('/') == "https://api.openai.com/v1")
         {
             Billing::Api
         } else {

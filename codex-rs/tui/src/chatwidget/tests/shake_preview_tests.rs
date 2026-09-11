@@ -173,4 +173,17 @@ async fn shake_preview_withholds_unknown_billing_and_body_budget() {
         "shake_preview_unknown_billing",
         render_bottom_popup(&chat, /*width*/ 90)
     );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    chat.config.model_provider_id = "openai".to_string();
+    chat.config.model_provider.base_url = Some("https://api.openai.com/v1".to_string());
+    chat.has_codex_backend_auth = false;
+    chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
+        address: "wss://remote.example.com".to_string(),
+        version: "v1.0.0".to_string(),
+    });
+    chat.show_shake_preview(thread_id, ShakeMode::Elide, preview());
+    assert_chatwidget_snapshot!(
+        "shake_preview_remote_unknown_billing",
+        render_bottom_popup(&chat, /*width*/ 90)
+    );
 }
