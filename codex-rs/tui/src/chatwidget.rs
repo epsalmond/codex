@@ -366,6 +366,7 @@ use self::session_header::SessionHeader;
 mod hook_lifecycle;
 mod hooks;
 mod interaction;
+mod shake_cost;
 mod shake_preview;
 mod skills;
 mod slash_dispatch;

@@ -12,12 +12,15 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
 use super::ChatWidget;
+use super::shake_cost::Billing;
+use super::shake_cost::Pricing;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::render::renderable::Renderable;
+use codex_protocol::config_types::AutoCompactTokenLimitScope;
 
 struct PreviewHeader {
     title: String,
@@ -96,9 +99,92 @@ impl ChatWidget {
         };
         let before = format_with_separators(preview.tokens_before);
         let after = format_with_separators(preview.tokens_after);
+        let request_before = self
+            .token_info
+            .as_ref()
+            .map(|info| info.last_token_usage.tokens_in_context_window())
+            .filter(|tokens| *tokens >= preview.tokens_before && *tokens > 0);
+        let mut advice = Vec::new();
+        advice.push(match self.last_response_clock {
+            Some(at) => format!(
+                "Idle: {}m since last response. Cache expiry is not observed.",
+                chrono::Local::now()
+                    .signed_duration_since(at)
+                    .num_minutes()
+                    .max(/*other*/ 0)
+            ),
+            None => "Idle age unavailable; cache state unknown.".to_string(),
+        });
+        // A recognized model name on a custom endpoint does not establish its billing rules.
+        let known_endpoint = |url: &str| {
+            matches!(
+                url.trim_end_matches('/'),
+                "https://api.openai.com/v1" | "https://chatgpt.com/backend-api/codex"
+            )
+        };
+        let billing = if self.config.model_provider_id != "openai"
+            || !self
+                .runtime_model_provider_base_url
+                .as_deref()
+                .is_none_or(known_endpoint)
+            || !self
+                .config
+                .model_provider
+                .base_url
+                .as_deref()
+                .is_none_or(known_endpoint)
+        {
+            Billing::Unknown
+        } else if self.has_codex_backend_auth {
+            Billing::Codex
+        } else if self
+            .runtime_model_provider_base_url
+            .as_deref()
+            .is_none_or(|url| url.trim_end_matches('/') == "https://api.openai.com/v1")
+            && self
+                .config
+                .model_provider
+                .base_url
+                .as_deref()
+                .is_none_or(|url| url.trim_end_matches('/') == "https://api.openai.com/v1")
+        {
+            Billing::Api
+        } else {
+            Billing::Unknown
+        };
+        if let Some(request_before) = request_before {
+            let request_after = request_before.saturating_sub(freed);
+            advice.push(format!(
+                "Request estimate: {} → {} (latest context minus reduction; overhead may differ).",
+                format_with_separators(request_before),
+                format_with_separators(request_after)
+            ));
+            advice.push(match Pricing::for_model(self.current_model(), billing) {
+                Some(pricing) => pricing.description(request_before, request_after),
+                None => "Cost scenarios unavailable for this model or billing route.".to_string(),
+            });
+            if self.config.model_auto_compact_token_limit_scope == AutoCompactTokenLimitScope::Total
+                && let Some(limit) = self
+                    .config
+                    .model_auto_compact_token_limit
+                    .filter(|limit| *limit > 0)
+            {
+                advice.push(format!("Configured compact budget: {}. Estimated headroom {} → {} tokens (model may compact earlier).",
+                    format_with_separators(limit),
+                    format_with_separators(limit.saturating_sub(request_before).max(/*other*/ 0)),
+                    format_with_separators(limit.saturating_sub(request_after).max(/*other*/ 0))));
+            } else {
+                advice.push("Auto-compact headroom unavailable for the active budget.".to_string());
+            }
+        } else {
+            advice.push("Full-request estimate unavailable; conversation counts alone cannot establish pricing or compact headroom.".to_string());
+        }
+        advice
+            .push("Favor shake when it delays compaction, not simply before /compact.".to_string());
+        let advice = advice.join("\n");
         let freed = format_with_separators(freed);
         let subtitle = format!(
-            "Estimated conversation: {before} → {after} tokens. Frees ~{freed} ({percent:.0}%).\n{affected}\n\nThe next request may cost more from lost cache reuse. Later requests carry less context; recovery reads add tokens back.\n\nEstimates exclude base instructions and tool schemas. Exact subscription or API savings depend on future requests.",
+            "Estimated conversation: {before} → {after} tokens. Frees ~{freed} ({percent:.0}%).\n{affected}\n\n{advice}\n\nConversation excludes instructions/tools. Costs exclude recovery and output; not plan-allowance predictions.",
         );
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(PreviewHeader {
