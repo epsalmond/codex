@@ -1299,6 +1299,7 @@ impl Session {
                 window_number,
                 window_ids,
                 compaction_response_id: None,
+                compaction_model_hash: None,
             },
         )
         .await;
