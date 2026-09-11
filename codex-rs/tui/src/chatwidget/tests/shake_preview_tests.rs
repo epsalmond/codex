@@ -106,3 +106,71 @@ async fn shake_preview_images_and_thinking_describe_recovery_limits() {
         );
     }
 }
+
+#[tokio::test]
+async fn shake_preview_cost_scenarios_and_compact_budget() {
+    for (model, codex_auth, name) in [
+        ("gpt-6-astra", true, "shake_preview_astra_codex"),
+        ("gpt-5.6-sol", true, "shake_preview_sol_codex"),
+        ("gpt-6-astra", false, "shake_preview_astra_api"),
+    ] {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some(model)).await;
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
+        chat.has_codex_backend_auth = codex_auth;
+        chat.last_response_clock = Some(chrono::Local::now() - chrono::Duration::minutes(45));
+        chat.config.model_auto_compact_token_limit = Some(290_000);
+        chat.token_info = Some(TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage {
+                total_tokens: 300_000,
+                ..Default::default()
+            },
+            model_context_window: Some(950_000),
+        });
+        let mut preview = preview();
+        preview.tokens_before = 280_000;
+        preview.tokens_after = 180_000;
+        chat.show_shake_preview(thread_id, ShakeMode::Elide, preview);
+        assert_chatwidget_snapshot!(name, render_bottom_popup(&chat, /*width*/ 90));
+        if codex_auth && model == "gpt-5.6-sol" {
+            assert_chatwidget_snapshot!(
+                "shake_preview_cost_narrow",
+                render_bottom_popup(&chat, /*width*/ 45)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn shake_preview_withholds_unknown_billing_and_body_budget() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-6-astra")).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.config.model_provider_id = "custom".to_string();
+    chat.config.model_auto_compact_token_limit = Some(250_000);
+    chat.config.model_auto_compact_token_limit_scope =
+        codex_protocol::config_types::AutoCompactTokenLimitScope::BodyAfterPrefix;
+    chat.token_info = Some(TokenUsageInfo {
+        total_token_usage: TokenUsage::default(),
+        last_token_usage: TokenUsage {
+            total_tokens: 130_000,
+            ..Default::default()
+        },
+        model_context_window: None,
+    });
+    chat.show_shake_preview(thread_id, ShakeMode::Elide, preview());
+    assert_chatwidget_snapshot!(
+        "shake_preview_unknown_billing",
+        render_bottom_popup(&chat, /*width*/ 90)
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    chat.config.model_provider_id = "openai".to_string();
+    chat.config.model_provider.base_url = Some("https://custom.example/v1".to_string());
+    chat.has_codex_backend_auth = true;
+    chat.show_shake_preview(thread_id, ShakeMode::Elide, preview());
+    assert_chatwidget_snapshot!(
+        "shake_preview_unknown_billing",
+        render_bottom_popup(&chat, /*width*/ 90)
+    );
+}
