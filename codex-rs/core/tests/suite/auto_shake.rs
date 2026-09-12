@@ -106,8 +106,10 @@ async fn auto_shake_elides_before_the_next_sampling_request(enabled: bool) -> Re
         .with_config(move |config| {
             config.model_context_window = Some(TEST_CONTEXT_WINDOW);
             if !enabled {
-                // Global override must win over the built-in gpt-5.6 default.
-                config.auto_shake.enabled = Some(false);
+                // Global override must win over the built-in gpt-5.6 default
+                // (which defers to the global value via `inherit`).
+                config.auto_shake.threshold =
+                    Some(codex_config::config_toml::AutoShakeThresholdToml::Off);
             }
         });
     let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;

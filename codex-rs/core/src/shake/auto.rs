@@ -6,19 +6,16 @@
 //! every rule below is unit-testable. The orchestration lives in
 //! `session::turn::maybe_run_pre_sampling_auto_shake`.
 
+use codex_config::config_toml::AutoShakeThresholdToml;
 use codex_config::config_toml::AutoShakeToml;
 
 use crate::config::AutoShakeConfig;
 use crate::config::AutoShakeModelConfig;
 
-/// Built-in global fallback: auto-shake stays off for model families we have not
-/// explicitly opted in, so a new or custom model never silently rewrites
-/// history.
-const DEFAULT_ENABLED: bool = false;
-
-/// Built-in threshold: shake once active context reaches this percent of the
-/// model's resolved context window. Well below the auto-compaction limit (90%
-/// of the window) so a successful shake usually removes the need to compact.
+/// Built-in global threshold default: shake once active context reaches this
+/// percent of the model's resolved context window. Well below the
+/// auto-compaction limit (90% of the window) so a successful shake usually
+/// removes the need to compact.
 const DEFAULT_THRESHOLD_PERCENT: i64 = 60;
 
 /// Built-in minimum elidable share. A shake that frees less than this fraction
@@ -26,40 +23,22 @@ const DEFAULT_THRESHOLD_PERCENT: i64 = 60;
 /// it every turn would thrash.
 const DEFAULT_MIN_ELIDABLE_PERCENT: i64 = 30;
 
-/// Per-model-family defaults, applied when neither the global `[auto_shake]`
-/// keys nor an `[auto_shake.models.<family>]` entry set the field.
+/// Per-model-family threshold defaults, applied when neither the global
+/// `auto_shake.threshold` key nor an `[auto_shake.models.<family>]` entry
+/// resolves the field.
 ///
-/// `gpt-5.6` (sol/terra/luna) is on because its long sessions accumulate large
-/// tool outputs that elide cleanly. `gpt-6-astra` is off: it is explicitly
-/// listed rather than left to the global default so the intent is visible.
-const FAMILY_DEFAULTS: &[(&str, AutoShakeFamilyDefault)] = &[
-    (
-        "gpt-5.6",
-        AutoShakeFamilyDefault {
-            enabled: Some(true),
-            threshold_percent: Some(60),
-            min_elidable_percent: None,
-        },
-    ),
-    (
-        "gpt-6-astra",
-        AutoShakeFamilyDefault {
-            enabled: Some(false),
-            threshold_percent: None,
-            min_elidable_percent: None,
-        },
-    ),
+/// `gpt-5.6` (sol/terra/luna) defers to the global default (`inherit`):
+/// its long sessions accumulate large tool outputs that elide cleanly, and
+/// the global default already reflects that. `gpt-6-astra` is on at 40% —
+/// the benchmark shows a shake costs one uncached request and pays back
+/// within ~6 requests at typical 300k contexts.
+const FAMILY_DEFAULTS: &[(&str, AutoShakeThresholdToml)] = &[
+    ("gpt-5.6", AutoShakeThresholdToml::Inherit),
+    ("gpt-6-astra", AutoShakeThresholdToml::Percent(40)),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AutoShakeFamilyDefault {
-    enabled: Option<bool>,
-    threshold_percent: Option<i64>,
-    min_elidable_percent: Option<i64>,
-}
-
-/// Effective settings for one model slug, after layering all four precedence
-/// levels.
+/// Effective settings for one model slug, after layering all precedence
+/// levels and resolving `inherit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AutoShakeSettings {
     pub(crate) enabled: bool,
@@ -102,13 +81,20 @@ pub(crate) enum AutoShakeDecision {
 }
 
 impl AutoShakeConfig {
-    pub fn from_toml(toml: Option<&AutoShakeToml>) -> Self {
+    pub fn from_toml(toml: Option<&AutoShakeToml>) -> Result<Self, String> {
         let Some(toml) = toml else {
-            return Self::default();
+            return Ok(Self::default());
         };
-        Self {
-            enabled: toml.enabled,
-            threshold_percent: toml.threshold_percent,
+        if toml.threshold == Some(AutoShakeThresholdToml::Inherit) {
+            return Err(
+                "auto_shake.threshold cannot be \"inherit\": there is nothing for the global \
+                 scope to inherit from. Use \"off\" or a percent value, or omit the key to keep \
+                 the built-in default."
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            threshold: toml.threshold,
             min_elidable_percent: toml.min_elidable_percent,
             models: toml
                 .models
@@ -117,51 +103,76 @@ impl AutoShakeConfig {
                     (
                         family.clone(),
                         AutoShakeModelConfig {
-                            enabled: model.enabled,
-                            threshold_percent: model.threshold_percent,
+                            threshold: model.threshold,
                             min_elidable_percent: model.min_elidable_percent,
                         },
                     )
                 })
                 .collect(),
-        }
+        })
     }
 
-    /// Layer, highest precedence first: global override, user per-family entry,
-    /// built-in family default, built-in global default.
-    pub(crate) fn settings_for_model(&self, model_slug: &str) -> AutoShakeSettings {
+    /// Resolve the effective global threshold: the user's global override, or
+    /// the built-in global default. A global `inherit` is rejected in
+    /// `from_toml`, so this never has to resolve one.
+    fn resolved_global_threshold(&self) -> AutoShakeThresholdToml {
+        self.threshold
+            .unwrap_or(AutoShakeThresholdToml::Percent(DEFAULT_THRESHOLD_PERCENT))
+    }
+
+    /// Layer threshold precedence, highest first: a family's explicit `off`
+    /// or percent, the family's `inherit`/unset resolving to the global
+    /// value, or (absent any user or built-in family entry) the global value
+    /// directly.
+    fn resolved_threshold(&self, model_slug: &str) -> AutoShakeThresholdToml {
+        let global = self.resolved_global_threshold();
+
         let user_family = self
             .models
             .iter()
             .find(|(family, _)| model_family_matches(model_slug, family))
-            .map(|(_, model)| *model)
-            .unwrap_or_default();
+            .and_then(|(_, model)| model.threshold);
+        if let Some(threshold) = user_family {
+            return match threshold {
+                AutoShakeThresholdToml::Inherit => global,
+                explicit => explicit,
+            };
+        }
+
         let builtin_family = FAMILY_DEFAULTS
             .iter()
             .find(|(family, _)| model_family_matches(model_slug, family))
-            .map(|(_, default)| *default)
-            .unwrap_or(AutoShakeFamilyDefault {
-                enabled: None,
-                threshold_percent: None,
-                min_elidable_percent: None,
-            });
+            .map(|(_, default)| *default);
+        match builtin_family {
+            Some(AutoShakeThresholdToml::Inherit) | None => global,
+            Some(explicit) => explicit,
+        }
+    }
+
+    /// Layer, highest precedence first: a family's explicit threshold (`off`
+    /// or a percent, whether from the user or the built-in family default),
+    /// then `inherit` resolving to the global value.
+    pub(crate) fn settings_for_model(&self, model_slug: &str) -> AutoShakeSettings {
+        let (enabled, threshold_percent) = match self.resolved_threshold(model_slug) {
+            AutoShakeThresholdToml::Off => (false, DEFAULT_THRESHOLD_PERCENT),
+            AutoShakeThresholdToml::Percent(percent) => (true, percent.clamp(1, 100)),
+            // `resolved_threshold` never returns `Inherit`: it always resolves
+            // to the global value before returning.
+            AutoShakeThresholdToml::Inherit => (false, DEFAULT_THRESHOLD_PERCENT),
+        };
+
+        let user_family_min_elidable = self
+            .models
+            .iter()
+            .find(|(family, _)| model_family_matches(model_slug, family))
+            .and_then(|(_, model)| model.min_elidable_percent);
 
         AutoShakeSettings {
-            enabled: self
-                .enabled
-                .or(user_family.enabled)
-                .or(builtin_family.enabled)
-                .unwrap_or(DEFAULT_ENABLED),
-            threshold_percent: self
-                .threshold_percent
-                .or(user_family.threshold_percent)
-                .or(builtin_family.threshold_percent)
-                .unwrap_or(DEFAULT_THRESHOLD_PERCENT)
-                .clamp(1, 100),
+            enabled,
+            threshold_percent,
             min_elidable_percent: self
                 .min_elidable_percent
-                .or(user_family.min_elidable_percent)
-                .or(builtin_family.min_elidable_percent)
+                .or(user_family_min_elidable)
                 .unwrap_or(DEFAULT_MIN_ELIDABLE_PERCENT)
                 .clamp(0, 100),
         }
@@ -243,11 +254,11 @@ mod tests {
 
     fn toml(value: &str) -> AutoShakeConfig {
         let parsed: AutoShakeToml = toml::from_str(value).expect("parse auto_shake toml");
-        AutoShakeConfig::from_toml(Some(&parsed))
+        AutoShakeConfig::from_toml(Some(&parsed)).expect("valid auto_shake toml")
     }
 
     #[test]
-    fn gpt_5_6_family_is_on_at_sixty_percent_by_default() {
+    fn gpt_5_6_family_inherits_the_global_default_of_sixty_percent() {
         let config = AutoShakeConfig::default();
         for slug in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", LUNA] {
             let settings = config.settings_for_model(slug);
@@ -258,18 +269,18 @@ mod tests {
     }
 
     #[test]
-    fn gpt_6_astra_is_off_by_default() {
+    fn gpt_6_astra_is_on_at_forty_percent_by_default() {
         let settings = AutoShakeConfig::default().settings_for_model(ASTRA);
-        assert!(!settings.enabled);
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold_percent, 40);
+        assert_eq!(settings.min_elidable_percent, 30);
     }
 
     #[test]
-    fn unknown_families_are_off_by_default() {
-        assert!(
-            !AutoShakeConfig::default()
-                .settings_for_model("some-local-model")
-                .enabled
-        );
+    fn unknown_families_inherit_the_global_default() {
+        let settings = AutoShakeConfig::default().settings_for_model("some-local-model");
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold_percent, 60);
     }
 
     #[test]
@@ -282,55 +293,91 @@ mod tests {
         ] {
             assert!(config.settings_for_model(slug).enabled, "{slug}");
         }
-        // A longer version number must not be captured by the `gpt-5.6` family.
-        assert!(!config.settings_for_model("gpt-5.61-sol").enabled);
+        // A longer version number must not be captured by the `gpt-5.6` family,
+        // so it falls through to the (also-enabled) global default.
+        assert!(config.settings_for_model("gpt-5.61-sol").enabled);
+        assert_eq!(config.settings_for_model("gpt-5.61-sol").threshold_percent, 60);
     }
 
     #[test]
-    fn global_override_wins_over_per_model_entry() {
-        // Global `enabled = false` must disable a family the user turned on.
+    fn family_inherit_follows_a_changed_global_value() {
+        // gpt-5.6's built-in default is `inherit`, so raising the global
+        // threshold must raise gpt-5.6's effective threshold too.
+        let config = toml("threshold = \"75%\"\n");
+        let settings = config.settings_for_model(LUNA);
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold_percent, 75);
+
+        let config = toml("threshold = \"off\"\n");
+        assert!(!config.settings_for_model(LUNA).enabled);
+    }
+
+    #[test]
+    fn family_off_beats_global_percent() {
         let config = toml(
             r#"
-enabled = false
-[models."gpt-5.6"]
-enabled = true
+threshold = 75
+[models."gpt-6-astra"]
+threshold = "off"
 "#,
         );
-        assert!(!config.settings_for_model(LUNA).enabled);
+        assert!(!config.settings_for_model(ASTRA).enabled);
+        // The global value still applies to a family that defers.
+        assert!(config.settings_for_model(LUNA).enabled);
+        assert_eq!(config.settings_for_model(LUNA).threshold_percent, 75);
+    }
 
-        // And global `enabled = true` must enable a family turned off both by
-        // the built-in default and by an explicit per-model entry.
+    #[test]
+    fn family_percent_beats_global_off() {
         let config = toml(
             r#"
-enabled = true
-threshold_percent = 75
-min_elidable_percent = 10
+threshold = "off"
 [models."gpt-6-astra"]
-enabled = false
-threshold_percent = 20
-min_elidable_percent = 90
+threshold = 55
 "#,
         );
         let settings = config.settings_for_model(ASTRA);
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 75);
-        assert_eq!(settings.min_elidable_percent, 10);
+        assert_eq!(settings.threshold_percent, 55);
+        // gpt-5.6 still inherits the (now off) global value.
+        assert!(!config.settings_for_model(LUNA).enabled);
     }
 
     #[test]
-    fn per_model_entry_overrides_builtin_family_default() {
+    fn percent_string_with_percent_sign_parses() {
         let config = toml(
             r#"
 [models."gpt-6-astra"]
-enabled = true
-threshold_percent = 80
+threshold = "45%"
+"#,
+        );
+        let settings = config.settings_for_model(ASTRA);
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold_percent, 45);
+    }
+
+    #[test]
+    fn global_inherit_is_rejected() {
+        let parsed: AutoShakeToml =
+            toml::from_str("threshold = \"inherit\"\n").expect("parse auto_shake toml");
+        let error = AutoShakeConfig::from_toml(Some(&parsed))
+            .expect_err("global inherit must be a config error");
+        assert!(error.contains("inherit"), "{error}");
+    }
+
+    #[test]
+    fn per_family_min_elidable_percent_overrides_the_builtin_default() {
+        let config = toml(
+            r#"
+[models."gpt-6-astra"]
+threshold = 80
+min_elidable_percent = 10
 "#,
         );
         let settings = config.settings_for_model(ASTRA);
         assert!(settings.enabled);
         assert_eq!(settings.threshold_percent, 80);
-        // Unset field still falls through to the built-in global default.
-        assert_eq!(settings.min_elidable_percent, 30);
+        assert_eq!(settings.min_elidable_percent, 10);
 
         // The gpt-5.6 default is untouched by an astra-only entry.
         assert!(config.settings_for_model(LUNA).enabled);
@@ -338,8 +385,20 @@ threshold_percent = 80
     }
 
     #[test]
+    fn global_min_elidable_percent_wins_over_family_entry() {
+        let config = toml(
+            r#"
+min_elidable_percent = 5
+[models."gpt-6-astra"]
+min_elidable_percent = 90
+"#,
+        );
+        assert_eq!(config.settings_for_model(ASTRA).min_elidable_percent, 5);
+    }
+
+    #[test]
     fn out_of_range_percents_are_clamped() {
-        let config = toml("threshold_percent = 400\nmin_elidable_percent = -5\n");
+        let config = toml("threshold = 400\nmin_elidable_percent = -5\n");
         let settings = config.settings_for_model(LUNA);
         assert_eq!(settings.threshold_percent, 100);
         assert_eq!(settings.min_elidable_percent, 0);
@@ -363,7 +422,23 @@ threshold_percent = 80
 
     #[test]
     fn decide_skips_disabled_models_before_anything_else() {
-        let config = AutoShakeConfig::default();
+        // LUNA's built-in family default is `inherit`, so a global `"off"`
+        // disables it even with active context far past any threshold.
+        let config = toml("threshold = \"off\"\n");
+        assert_eq!(
+            config.decide(LUNA, 900_000, Some(100_000), true),
+            AutoShakeDecision::Skip(AutoShakeSkip::Disabled)
+        );
+
+        // An explicit per-family `"off"` disables a family regardless of the
+        // global value.
+        let config = toml(
+            r#"
+threshold = 75
+[models."gpt-6-astra"]
+threshold = "off"
+"#,
+        );
         assert_eq!(
             config.decide(ASTRA, 900_000, Some(100_000), true),
             AutoShakeDecision::Skip(AutoShakeSkip::Disabled)

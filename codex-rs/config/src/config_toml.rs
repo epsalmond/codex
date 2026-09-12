@@ -564,13 +564,11 @@ pub struct AutoReviewToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AutoShakeToml {
-    /// Global enable/disable override. When set, it wins over every
-    /// per-model-family default and every `[auto_shake.models]` entry.
-    pub enabled: Option<bool>,
-
-    /// Trigger auto-shake once active context usage reaches this percent of the
-    /// model's resolved context window. Global override; wins over per-model.
-    pub threshold_percent: Option<i64>,
+    /// Global auto-shake threshold: `"off"`, an integer percent (`40`), or a
+    /// percent string (`"40%"`), of the model's resolved context window.
+    /// `"inherit"` is invalid at the global level (there is nothing to
+    /// inherit from) and is rejected as a config error.
+    pub threshold: Option<AutoShakeThresholdToml>,
 
     /// Skip auto-shake when the read-only preview reports that it would free
     /// less than this percent of the current context. Guards against thrash on
@@ -590,9 +588,99 @@ pub struct AutoShakeToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AutoShakeModelToml {
-    pub enabled: Option<bool>,
-    pub threshold_percent: Option<i64>,
+    /// Family threshold: `"off"`, an integer/percent-string percent, or
+    /// `"inherit"` to defer to the resolved global `auto_shake.threshold`.
+    pub threshold: Option<AutoShakeThresholdToml>,
     pub min_elidable_percent: Option<i64>,
+}
+
+/// Auto-shake threshold value, accepted in three forms:
+///
+/// - `"off"` — auto-shake disabled for this scope;
+/// - an integer percent (`40`) or a percent string (`"40%"`) of the model's
+///   resolved context window;
+/// - `"inherit"` — defer to the resolved global value. Valid only on a
+///   per-family entry; a global `auto_shake.threshold = "inherit"` has
+///   nothing to inherit from and is rejected as a config error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoShakeThresholdToml {
+    Off,
+    Percent(i64),
+    Inherit,
+}
+
+impl AutoShakeThresholdToml {
+    fn parse_str(value: &str) -> Result<Self, String> {
+        match value {
+            "off" => Ok(Self::Off),
+            "inherit" => Ok(Self::Inherit),
+            _ => {
+                let trimmed = value.strip_suffix('%').unwrap_or(value);
+                trimmed.parse::<i64>().map(Self::Percent).map_err(|_| {
+                    format!(
+                        "invalid auto_shake threshold {value:?}: expected \"off\", \"inherit\", an integer percent, or a percent string like \"40%\""
+                    )
+                })
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoShakeThresholdToml {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(i64),
+            Str(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Int(value) => Ok(AutoShakeThresholdToml::Percent(value)),
+            Raw::Str(value) => {
+                AutoShakeThresholdToml::parse_str(&value).map_err(SerdeError::custom)
+            }
+        }
+    }
+}
+
+impl Serialize for AutoShakeThresholdToml {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Off => serializer.serialize_str("off"),
+            Self::Inherit => serializer.serialize_str("inherit"),
+            Self::Percent(value) => serializer.serialize_i64(*value),
+        }
+    }
+}
+
+impl JsonSchema for AutoShakeThresholdToml {
+    fn schema_name() -> String {
+        "AutoShakeThreshold".to_string()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::InstanceType;
+        use schemars::schema::Metadata;
+        use schemars::schema::Schema;
+        use schemars::schema::SchemaObject;
+        Schema::Object(SchemaObject {
+            instance_type: Some(vec![InstanceType::Integer, InstanceType::String].into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "\"off\", \"inherit\" (per-family entries only), an integer percent (e.g. 40), or a percent string (e.g. \"40%\")."
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

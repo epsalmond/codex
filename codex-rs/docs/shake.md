@@ -63,8 +63,8 @@ still fires when auto-shake is disabled, impossible, or would not free enough.
 2. If disabled for that model, stop.
 3. If the thread is ephemeral, stop — `elide` needs artifact recovery.
 4. If the model has no resolved context window, stop (no threshold to compare).
-5. If active context tokens `<` `threshold_percent`% of the model's **resolved**
-   context window, stop.
+5. If active context tokens `<` the resolved threshold percent of the model's
+   **resolved** context window, stop.
 6. Run the read-only preview. If it would free `<` `min_elidable_percent`% of the
    measured context, stop. This is the anti-thrash guard: a shake that frees
    little is not worth the guaranteed prompt-cache miss, and repeating it every
@@ -128,41 +128,51 @@ Auto-shake decisions themselves log on target `codex_core::auto_shake`: `INFO`
 
 ## Configuration
 
-All keys live under `[auto_shake]` in `~/.codex/config.toml`. Percent values are
-integers, matching `effective_context_window_percent`.
+All keys live under `[auto_shake]` in `~/.codex/config.toml`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `auto_shake.enabled` | bool | per-family (below) | Global enable override |
-| `auto_shake.threshold_percent` | int 1–100 | per-family (below) | Shake once active context reaches this percent of the resolved context window |
+| `auto_shake.threshold` | `"off"` \| percent \| `"inherit"` | `60%` | Global threshold: shake once active context reaches this percent of the resolved context window, or `"off"` to disable globally. `"inherit"` is invalid here — there is nothing for the global scope to inherit from. |
 | `auto_shake.min_elidable_percent` | int 0–100 | `30` | Skip when the preview would free less than this percent of the measured context |
-| `auto_shake.models.<family>.enabled` | bool | per-family (below) | Per-family enable |
-| `auto_shake.models.<family>.threshold_percent` | int 1–100 | per-family (below) | Per-family threshold |
+| `auto_shake.models.<family>.threshold` | `"off"` \| percent \| `"inherit"` | per-family (below) | Per-family threshold. `"inherit"` defers to the resolved global `auto_shake.threshold`; an explicit `"off"` or percent wins over the global value. |
 | `auto_shake.models.<family>.min_elidable_percent` | int 0–100 | `30` | Per-family minimum elidable share |
+
+A percent value accepts either an integer (`40`) or a percent string
+(`"40%"`).
 
 ### Precedence
 
 Highest wins:
 
-1. the global `[auto_shake]` key,
-2. the matching `[auto_shake.models.<family>]` key,
-3. the built-in family default,
-4. the built-in global default.
+1. a family's explicit `"off"` or percent (user-set, or the built-in family
+   default),
+2. a family's `"inherit"` (user-set, or the built-in family default),
+   resolving to the global value,
+3. the global `auto_shake.threshold` (user-set, or the built-in `60%`
+   default).
 
-A global key therefore overrides every per-model entry — setting
-`auto_shake.enabled = false` turns auto-shake off everywhere regardless of
-`[auto_shake.models]`.
+In other words: a family wins whenever it commits to a value, and only defers
+via `"inherit"`. This is the opposite of the old scheme, where a global key
+always overruled every per-model entry — that meant there was no way to opt a
+single family out (or in) without also touching every other family's
+behavior. Now `[auto_shake.models."gpt-6-astra"] threshold = "off"` disables
+just Astra while `gpt-5.6` keeps inheriting the global default, and raising
+the global default now also raises every family that still says `"inherit"`.
 
 ### Built-in family defaults
 
-| Family | `enabled` | `threshold_percent` | `min_elidable_percent` |
-| --- | --- | --- | --- |
-| `gpt-5.6` (sol / terra / luna) | `true` | `60` | `30` |
-| `gpt-6-astra` | `false` | — | — |
-| anything else | `false` | `60` | `30` |
+| Family | `threshold` | `min_elidable_percent` |
+| --- | --- | --- |
+| `gpt-5.6` (sol / terra / luna) | `inherit` (→ `60%` by default) | `30` |
+| `gpt-6-astra` | `40%` | `30` |
+| anything else | `inherit` (→ `60%` by default) | `30` |
 
-Unlisted families default to **off**, so a new or custom model never silently
-rewrites history.
+Astra is on because the benchmark shows a shake costs one uncached request and
+pays back within ~6 requests at typical 300k contexts.
+
+Unlisted families inherit the global default rather than defaulting to off:
+auto-shake is on by default for every model, deferring to whatever the global
+threshold resolves to.
 
 ### Family matching
 
@@ -174,29 +184,37 @@ but not `gpt-5.61-sol`. Provider and region qualifiers are stripped first, so
 
 ### Examples
 
-Accept the defaults (gpt-5.6 on at 60%, astra off) — no config needed.
+Accept the defaults (everything inherits 60%, astra at 40%) — no config
+needed.
 
-Shake gpt-5.6 earlier and require a bigger win:
+Shake earlier and require a bigger win, for every family still on `inherit`:
 
 ```toml
 [auto_shake]
-threshold_percent = 50
+threshold = "50%"
 min_elidable_percent = 40
 ```
 
-Turn auto-shake on for astra too, leaving gpt-5.6 alone:
+Give astra a different threshold than the global default:
 
 ```toml
 [auto_shake.models."gpt-6-astra"]
-enabled = true
-threshold_percent = 70
+threshold = 70
+```
+
+Turn auto-shake off for one family, leaving everything else inheriting the
+global value:
+
+```toml
+[auto_shake.models."gpt-6-astra"]
+threshold = "off"
 ```
 
 Disable auto-shake entirely:
 
 ```toml
 [auto_shake]
-enabled = false
+threshold = "off"
 ```
 
 ## Maintenance

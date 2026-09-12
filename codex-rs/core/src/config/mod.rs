@@ -1280,15 +1280,17 @@ impl Default for CurrentTimeReminderConfig {
 
 /// Resolved `[auto_shake]` configuration carried on [`crate::config::Config`].
 ///
-/// Fields stay `Option` on purpose: `None` means "not overridden", which is what
-/// lets a global key win over a per-model entry while still deferring to the
-/// built-in family default when the user set neither.
+/// Fields stay `Option` on purpose: `None` means "not overridden", which is
+/// what lets a family's `inherit` defer to the resolved global value while
+/// still falling back to the built-in family default when the user set
+/// neither.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AutoShakeConfig {
-    /// Global enable override. Wins over `models` and the family defaults.
-    pub enabled: Option<bool>,
-    /// Global threshold override, as a percent of the resolved context window.
-    pub threshold_percent: Option<i64>,
+    /// Global threshold override. `None` means "not overridden by the user";
+    /// resolution falls back to the built-in global default (`inherit` is
+    /// rejected at load time, since there is nothing for the global scope to
+    /// inherit from).
+    pub threshold: Option<codex_config::config_toml::AutoShakeThresholdToml>,
     /// Global minimum-elidable-share override, as a percent of current context.
     pub min_elidable_percent: Option<i64>,
     /// Per-model-family overrides keyed by family prefix (e.g. `gpt-5.6`).
@@ -1297,8 +1299,10 @@ pub struct AutoShakeConfig {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AutoShakeModelConfig {
-    pub enabled: Option<bool>,
-    pub threshold_percent: Option<i64>,
+    /// Family threshold: `Some(Inherit)` defers to the resolved global value;
+    /// `Some(Off)` or `Some(Percent(_))` wins over the global value; `None`
+    /// falls back to the built-in family default.
+    pub threshold: Option<codex_config::config_toml::AutoShakeThresholdToml>,
     pub min_elidable_percent: Option<i64>,
 }
 
@@ -4187,7 +4191,8 @@ impl Config {
             model_auto_compact_token_limit_scope: cfg
                 .model_auto_compact_token_limit_scope
                 .unwrap_or_default(),
-            auto_shake: AutoShakeConfig::from_toml(cfg.auto_shake.as_ref()),
+            auto_shake: AutoShakeConfig::from_toml(cfg.auto_shake.as_ref())
+                .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
