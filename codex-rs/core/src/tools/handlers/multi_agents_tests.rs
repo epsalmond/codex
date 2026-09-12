@@ -4484,6 +4484,38 @@ async fn build_agent_spawn_config_uses_turn_context_values(parent_enabled: bool)
     assert_eq!(config, expected);
 }
 
+/// Spawned subagents must inherit `[auto_shake]` so they take the same
+/// pre-sampling auto-shake path as their parent. `build_agent_shared_config`
+/// clones the parent config wholesale and only refreshes runtime-owned fields,
+/// so this asserts the setting is not among the fields it resets.
+#[tokio::test]
+async fn build_agent_spawn_config_inherits_auto_shake() {
+    let (_session, mut turn) = make_session_and_context().await;
+    let parent = Arc::make_mut(&mut turn.config);
+    parent.auto_shake = crate::config::AutoShakeConfig {
+        enabled: Some(true),
+        threshold_percent: Some(42),
+        min_elidable_percent: Some(7),
+        models: std::collections::BTreeMap::from([(
+            "gpt-6-astra".to_string(),
+            crate::config::AutoShakeModelConfig {
+                enabled: Some(true),
+                threshold_percent: Some(71),
+                min_elidable_percent: None,
+            },
+        )]),
+    };
+    let expected = parent.auto_shake.clone();
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+        provenance: None,
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(config.auto_shake, expected);
+}
+
 #[tokio::test]
 async fn build_agent_resume_config_clears_base_instructions() {
     let (_session, mut turn) = make_session_and_context().await;

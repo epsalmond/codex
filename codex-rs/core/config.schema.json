@@ -390,6 +390,53 @@
       },
       "type": "object"
     },
+    "AutoShakeModelToml": {
+      "additionalProperties": false,
+      "description": "Per-model-family auto-shake overrides. Unset fields inherit the built-in family default, then the built-in global default.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "min_elidable_percent": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "threshold_percent": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "AutoShakeToml": {
+      "additionalProperties": false,
+      "description": "Automatic surgical context reduction (\"auto-shake\") settings.\n\nAuto-shake runs at the same pre-sampling point where auto-compaction decides. Fields left unset fall back to the built-in per-model-family defaults, then to the built-in global defaults. See `codex-rs/docs/shake.md`.",
+      "properties": {
+        "enabled": {
+          "description": "Global enable/disable override. When set, it wins over every per-model-family default and every `[auto_shake.models]` entry.",
+          "type": "boolean"
+        },
+        "min_elidable_percent": {
+          "description": "Skip auto-shake when the read-only preview reports that it would free less than this percent of the current context. Guards against thrash on histories with little elidable content. Global override.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "models": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AutoShakeModelToml"
+          },
+          "default": {},
+          "description": "Per-model-family overrides keyed by family prefix, e.g. `gpt-5.6` or `gpt-6-astra`. A family matches a slug that equals it or extends it with a `-` suffix (`gpt-5.6` matches `gpt-5.6-sol`), after provider and region qualifiers such as `us.openai.` are stripped.",
+          "type": "object"
+        },
+        "threshold_percent": {
+          "description": "Trigger auto-shake once active context usage reaches this percent of the model's resolved context window. Global override; wins over per-model.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "AwsAuthRefreshConfig": {
       "additionalProperties": false,
       "description": "Command used to refresh AWS credentials for a model provider.",
@@ -5901,6 +5948,15 @@
       ],
       "default": null,
       "description": "Optional policy instructions for the guardian auto-reviewer."
+    },
+    "auto_shake": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AutoShakeToml"
+        }
+      ],
+      "default": null,
+      "description": "Automatic surgical context reduction (\"auto-shake\") run instead of auto-compaction when enough of the context is elidable."
     },
     "background_terminal_max_timeout": {
       "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",

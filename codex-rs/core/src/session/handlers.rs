@@ -12,6 +12,7 @@ use tracing::info_span;
 
 use crate::session::session::Session;
 use crate::session::thread_settings;
+use crate::session::turn_context::TurnContext;
 use crate::session::turn_input;
 
 use crate::config::Config;
@@ -60,6 +61,34 @@ pub async fn interrupt(sess: &Arc<Session>) {
     sess.interrupt_task().await;
 }
 
+/// Whether a shake was requested by the operator (`/shake`) or decided
+/// automatically at the pre-sampling point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShakeTrigger {
+    Manual,
+    Automatic,
+}
+
+impl ShakeTrigger {
+    /// Marker written into the persisted `CompactedItem` message. Keeping the
+    /// shared `[shake] context reduced surgically` prefix means existing readers
+    /// and log scrapers still match, while the suffix lets benchmarks separate
+    /// automatic runs from operator-driven ones.
+    pub(crate) fn compacted_item_message(self) -> String {
+        match self {
+            Self::Manual => "[shake] context reduced surgically".to_string(),
+            Self::Automatic => "[shake] context reduced surgically (automatic)".to_string(),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Automatic => "automatic",
+        }
+    }
+}
+
 pub async fn shake(
     sess: &Arc<Session>,
     sub_id: String,
@@ -68,6 +97,12 @@ pub async fn shake(
 ) {
     // Rewriting history mid-turn is unsafe (the running task holds a history
     // snapshot); refuse while a turn is active, mirroring thread_rollback.
+    //
+    // Auto-shake does not go through here: it runs *inside* run_turn at the
+    // pre-sampling point, where `active_turn` is already `Some` but no step
+    // context has captured history yet. See
+    // `session::turn::maybe_run_pre_sampling_auto_shake`, which calls
+    // `apply_shake` directly with the turn's own context.
     let has_active_turn = { sess.active_turn.lock().await.is_some() };
     if has_active_turn {
         sess.send_event_raw(Event {
@@ -84,6 +119,30 @@ pub async fn shake(
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
+    apply_shake(
+        sess,
+        turn_context.as_ref(),
+        mode,
+        expected_fingerprint,
+        ShakeTrigger::Manual,
+    )
+    .await;
+}
+
+/// Apply a shake to the live model history using an already-created turn
+/// context, then persist, re-account, and announce it.
+///
+/// SAFETY / ORDERING: the caller must guarantee that no in-flight step context
+/// holds a snapshot of the history being rewritten. `shake` guarantees this by
+/// refusing when a turn is active; auto-shake guarantees it by running at the
+/// pre-sampling point, before `capture_step_context`.
+pub(crate) async fn apply_shake(
+    sess: &Arc<Session>,
+    turn_context: &TurnContext,
+    mode: codex_protocol::protocol::ShakeMode,
+    expected_fingerprint: Option<String>,
+    trigger: ShakeTrigger,
+) -> crate::shake::ShakeResult {
     let ephemeral_elide =
         mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
 
@@ -96,7 +155,7 @@ pub async fn shake(
             != Some(&expected)
     {
         sess.send_event(
-            turn_context.as_ref(),
+            turn_context,
             EventMsg::Warning(WarningEvent {
                 message:
                     "⛭ shake: History changed since the preview. Run /shake again to review it."
@@ -104,7 +163,7 @@ pub async fn shake(
             }),
         )
         .await;
-        return;
+        return crate::shake::ShakeResult::default();
     }
     let result = match mode {
         codex_protocol::protocol::ShakeMode::Images => crate::shake::shake_images(&mut envelopes),
@@ -135,6 +194,9 @@ pub async fn shake(
     let summary = if ephemeral_elide {
         "⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery."
             .to_string()
+    } else if trigger == ShakeTrigger::Automatic {
+        // Distinguishable in the transcript as well as in the rollout record.
+        format!("⛭ shake (auto): {}", result.summary_line(mode))
     } else {
         format!("⛭ shake: {}", result.summary_line(mode))
     };
@@ -142,22 +204,37 @@ pub async fn shake(
         // Persist a full compaction checkpoint with the post-shake replacement
         // history so a cold resume reconstructs the rewritten (not pre-shake)
         // context, then update token accounting for the live session.
-        sess.replace_history_and_persist_after_shake(std::mem::take(&mut envelopes))
-            .await;
-        sess.recompute_token_usage(turn_context.as_ref()).await;
+        sess.replace_history_and_persist_after_shake(
+            std::mem::take(&mut envelopes),
+            trigger.compacted_item_message(),
+        )
+        .await;
+        sess.recompute_token_usage(turn_context).await;
+        info!(
+            target: "codex_core::shake",
+            trigger = trigger.as_str(),
+            mode = mode.as_str(),
+            tool_outputs_elided = result.tool_outputs_elided,
+            blocks_elided = result.blocks_elided,
+            images_dropped = result.images_dropped,
+            thinking_dropped = result.thinking_dropped,
+            tokens_freed = result.tokens_freed,
+            "[shake] context reduced surgically"
+        );
     }
 
     // Emit as a warning so the TUI renders a visible transcript notice. The
     // marker prefix lets the TUI release the input gate it armed when the
     // command was submitted.
     sess.send_event(
-        turn_context.as_ref(),
+        turn_context,
         EventMsg::Warning(WarningEvent { message: summary }),
     )
     .await;
     if let Err(err) = sess.flush_rollout().await {
         warn!("failed to flush thread persistence after shake: {err}");
     }
+    result
 }
 
 pub async fn clean_background_terminals(sess: &Arc<Session>) {

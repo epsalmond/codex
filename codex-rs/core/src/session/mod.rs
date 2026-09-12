@@ -1285,9 +1285,14 @@ impl Session {
     /// authoritative fixpoint the resume reader already knows how to replay.
     /// This deliberately starts a fresh auto-compact window, exactly like a
     /// manual `/compact`.
+    ///
+    /// `message` carries the trigger marker (see
+    /// [`handlers::ShakeTrigger::compacted_item_message`]) so a rollout reader
+    /// can tell an automatic shake from a manual one.
     pub(crate) async fn replace_history_and_persist_after_shake(
         &self,
         items: Vec<codex_history::ResponseItemEnvelope>,
+        message: String,
     ) {
         let (window_number, window_ids) = self.advance_auto_compact_window().await;
         self.replace_compacted_history(
@@ -1295,7 +1300,7 @@ impl Session {
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
             crate::compact::CompactedHistoryMetadata {
-                message: "[shake] context reduced surgically".to_string(),
+                message,
                 window_number,
                 window_ids,
                 compaction_response_id: None,

@@ -46,6 +46,7 @@ mod approvals;
 mod artifact_recovery;
 mod audio_truncation;
 mod auto_review;
+mod auto_shake;
 mod catalog_permission_messages;
 mod cli_stream;
 mod client;

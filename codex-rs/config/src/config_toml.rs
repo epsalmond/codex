@@ -171,6 +171,11 @@ pub struct ConfigToml {
     /// only to tokens after the carried prefix in the current compaction window.
     pub model_auto_compact_token_limit_scope: Option<AutoCompactTokenLimitScope>,
 
+    /// Automatic surgical context reduction ("auto-shake") run instead of
+    /// auto-compaction when enough of the context is elidable.
+    #[serde(default)]
+    pub auto_shake: Option<AutoShakeToml>,
+
     /// Default approval policy for executing commands.
     #[schemars(with = "Option<crate::schema::ConfigAskForApproval>")]
     pub approval_policy: Option<AskForApproval>,
@@ -548,6 +553,46 @@ pub enum ThreadStoreToml {
 pub struct AutoReviewToml {
     /// Additional policy instructions inserted into the guardian prompt.
     pub policy: Option<String>,
+}
+
+/// Automatic surgical context reduction ("auto-shake") settings.
+///
+/// Auto-shake runs at the same pre-sampling point where auto-compaction
+/// decides. Fields left unset fall back to the built-in per-model-family
+/// defaults, then to the built-in global defaults. See
+/// `codex-rs/docs/shake.md`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AutoShakeToml {
+    /// Global enable/disable override. When set, it wins over every
+    /// per-model-family default and every `[auto_shake.models]` entry.
+    pub enabled: Option<bool>,
+
+    /// Trigger auto-shake once active context usage reaches this percent of the
+    /// model's resolved context window. Global override; wins over per-model.
+    pub threshold_percent: Option<i64>,
+
+    /// Skip auto-shake when the read-only preview reports that it would free
+    /// less than this percent of the current context. Guards against thrash on
+    /// histories with little elidable content. Global override.
+    pub min_elidable_percent: Option<i64>,
+
+    /// Per-model-family overrides keyed by family prefix, e.g. `gpt-5.6` or
+    /// `gpt-6-astra`. A family matches a slug that equals it or extends it with
+    /// a `-` suffix (`gpt-5.6` matches `gpt-5.6-sol`), after provider and
+    /// region qualifiers such as `us.openai.` are stripped.
+    #[serde(default)]
+    pub models: BTreeMap<String, AutoShakeModelToml>,
+}
+
+/// Per-model-family auto-shake overrides. Unset fields inherit the built-in
+/// family default, then the built-in global default.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AutoShakeModelToml {
+    pub enabled: Option<bool>,
+    pub threshold_percent: Option<i64>,
+    pub min_elidable_percent: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

@@ -29,6 +29,7 @@ use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 
+pub(crate) mod auto;
 pub(crate) mod preview;
 mod recovery;
 use self::recovery::is_artifact_recovery_output;

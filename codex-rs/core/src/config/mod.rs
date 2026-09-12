@@ -634,6 +634,11 @@ pub struct Config {
     /// active context or only tokens after the carried compaction-window prefix.
     pub model_auto_compact_token_limit_scope: AutoCompactTokenLimitScope,
 
+    /// Resolved `[auto_shake]` settings: automatic surgical context reduction
+    /// run at the pre-sampling point instead of auto-compaction when enough of
+    /// the context is elidable. See `codex-rs/docs/shake.md`.
+    pub auto_shake: AutoShakeConfig,
+
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
 
@@ -1271,6 +1276,30 @@ impl Default for CurrentTimeReminderConfig {
             sleep_tool: false,
         }
     }
+}
+
+/// Resolved `[auto_shake]` configuration carried on [`crate::config::Config`].
+///
+/// Fields stay `Option` on purpose: `None` means "not overridden", which is what
+/// lets a global key win over a per-model entry while still deferring to the
+/// built-in family default when the user set neither.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct AutoShakeConfig {
+    /// Global enable override. Wins over `models` and the family defaults.
+    pub enabled: Option<bool>,
+    /// Global threshold override, as a percent of the resolved context window.
+    pub threshold_percent: Option<i64>,
+    /// Global minimum-elidable-share override, as a percent of current context.
+    pub min_elidable_percent: Option<i64>,
+    /// Per-model-family overrides keyed by family prefix (e.g. `gpt-5.6`).
+    pub models: BTreeMap<String, AutoShakeModelConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct AutoShakeModelConfig {
+    pub enabled: Option<bool>,
+    pub threshold_percent: Option<i64>,
+    pub min_elidable_percent: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4158,6 +4187,7 @@ impl Config {
             model_auto_compact_token_limit_scope: cfg
                 .model_auto_compact_token_limit_scope
                 .unwrap_or_default(),
+            auto_shake: AutoShakeConfig::from_toml(cfg.auto_shake.as_ref()),
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,

@@ -36,9 +36,12 @@ use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
+use crate::session::handlers;
+use crate::session::handlers::ShakeTrigger;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::shake::auto::AutoShakeDecision;
 use crate::skills::emit_explicit_skill_invocations;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::InFlightFuture;
@@ -105,6 +108,7 @@ use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::SafetyBufferingEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ShakeMode;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -138,6 +142,9 @@ use tracing::trace_span;
 use tracing::warn;
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
+
+/// Tracing target for auto-shake decisions, so a benchmark can filter on it.
+const AUTO_SHAKE_TARGET: &str = "codex_core::auto_shake";
 
 /// Explicit MCP startup requirements retained across restarts within one user turn.
 #[derive(Default)]
@@ -1083,6 +1090,103 @@ async fn track_turn_resolved_config_analytics(
         });
 }
 
+/// Automatic surgical context reduction, decided at the same pre-sampling point
+/// as auto-compaction.
+///
+/// TURN ORDERING — why this is legal even though `/shake` refuses mid-turn:
+///
+/// `handlers::shake` rejects a manual shake while `active_turn` is `Some`
+/// because a running task may already hold a `StepContext` snapshot of the
+/// history, and rewriting history underneath it would make the snapshot and the
+/// live history disagree. By the time `run_turn` executes, `active_turn` *is*
+/// `Some` (`Session::spawn_task` registers it before the task body runs), so the
+/// manual guard would always refuse here. The guard's real precondition,
+/// however, is "no step context has captured this history yet", and that holds
+/// at this exact point:
+///
+///   * `run_pre_sampling_compact` is the first thing `run_turn` does, before
+///     `capture_step_context`, so no step context exists for this turn;
+///   * this turn's user input has not been recorded yet
+///     (`run_hooks_and_record_inputs(.., TurnStart)` comes later), so the
+///     rewritten history is exactly the settled history of previous turns;
+///   * auto-compaction rewrites history wholesale at this very point via
+///     `run_auto_compact` -> `replace_compacted_history`, so the slot is already
+///     established as safe for a full history replacement.
+///
+/// We therefore call `handlers::apply_shake` with this turn's own context rather
+/// than `handlers::shake`, and pass no expected fingerprint: the preview and the
+/// shake run back-to-back under the same turn with no await on client input in
+/// between, so there is no stale-confirmation window to guard against.
+async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
+    let config = &turn_context.config.auto_shake;
+    let model_info = turn_context.model_info();
+    let token_status =
+        super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
+            .await;
+    let decision = config.decide(
+        model_info.slug.as_str(),
+        token_status.active_context_tokens,
+        model_info.resolved_context_window(),
+        /*persistent_thread*/ !turn_context.config.ephemeral,
+    );
+    let min_elidable_percent = match decision {
+        AutoShakeDecision::Skip(reason) => {
+            trace!(
+                target: AUTO_SHAKE_TARGET,
+                reason = reason.as_str(),
+                model = %model_info.slug,
+                active_context_tokens = token_status.active_context_tokens,
+                "auto-shake skipped"
+            );
+            return;
+        }
+        AutoShakeDecision::Preview {
+            min_elidable_percent,
+        } => min_elidable_percent,
+    };
+
+    // Read-only measurement of the real transformation, including the recovery
+    // placeholders it would insert. Writes nothing and makes no model request.
+    let history = sess.clone_history().await;
+    let estimate = crate::shake::preview::estimate_shake(
+        history.annotated_items(),
+        ShakeMode::Elide,
+        /*persistent_thread*/ true,
+    );
+    let elidable_percent =
+        crate::shake::auto::elidable_percent(estimate.tokens_before, estimate.tokens_after);
+    if elidable_percent < min_elidable_percent {
+        trace!(
+            target: AUTO_SHAKE_TARGET,
+            reason = "below_min_elidable_share",
+            model = %model_info.slug,
+            elidable_percent,
+            min_elidable_percent,
+            "auto-shake skipped"
+        );
+        return;
+    }
+
+    info!(
+        target: AUTO_SHAKE_TARGET,
+        model = %model_info.slug,
+        active_context_tokens = token_status.active_context_tokens,
+        tokens_before = estimate.tokens_before,
+        tokens_after = estimate.tokens_after,
+        elidable_percent,
+        min_elidable_percent,
+        "auto-shake triggered"
+    );
+    handlers::apply_shake(
+        sess,
+        turn_context.as_ref(),
+        ShakeMode::Elide,
+        /*expected_fingerprint*/ None,
+        ShakeTrigger::Automatic,
+    )
+    .await;
+}
+
 #[instrument(level = "trace", skip_all)]
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
@@ -1092,6 +1196,11 @@ async fn run_pre_sampling_compact(
 ) -> CodexResult<()> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
+    // Auto-shake is attempted first so a successful surgical reduction can
+    // remove the need to compact at all. Auto-compaction below re-reads token
+    // status afterwards and remains the fallback whenever shake is disabled,
+    // impossible, or did not free enough.
+    maybe_run_pre_sampling_auto_shake(sess, turn_context).await;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
