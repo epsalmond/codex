@@ -449,3 +449,106 @@ async fn shake_preview_measures_non_text_modes(mode: ShakeMode) -> Result<()> {
     );
     Ok(())
 }
+
+/// Numeric cross-check, in the pattern of oh-my-pi's `tokensFreed` vs.
+/// `getContextUsage()` delta assertion: after a real (non-preview) shake, the
+/// thread's own reported token usage must drop by approximately the number of
+/// tokens the shake's preview said it would free. The fork's tests otherwise
+/// only confirm a shake *ran* (marker gone, artifact written); this confirms
+/// the resulting usage numbers are actually correct.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shake_elide_drops_reported_token_usage_by_the_freed_estimate() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let fixture = Box::pin(test_codex().build_with_auto_env(&server)).await?;
+
+    // A large elidable tool output plus a plain-text tail (never elided, so it
+    // both survives and pushes the tool output past `MANUAL_PROTECT_TOKENS`),
+    // and one reasoning item used only to seed a same-scale "before" usage
+    // reading below.
+    let history: Vec<ResponseItem> = vec![
+        json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "produce recoverable output"}]
+        }),
+        json!({
+            "type": "function_call",
+            "id": "call-item",
+            "call_id": "usage-cross-check-exec",
+            "name": "exec_command",
+            "arguments": "{}"
+        }),
+        json!({
+            "type": "function_call_output",
+            "call_id": "usage-cross-check-exec",
+            "output": "USAGE_CROSS_CHECK_MARKER\n".repeat(/*n*/ 2_000)
+        }),
+        json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "tail context ".repeat(/*n*/ 2_000)}]
+        }),
+        json!({
+            "type": "reasoning", "summary": [],
+            "content": [{"type": "reasoning_text", "text": "throwaway reasoning"}]
+        }),
+    ]
+    .into_iter()
+    .map(serde_json::from_value)
+    .collect::<Result<_, _>>()?;
+    Box::pin(fixture.codex.inject_response_items(history)).await?;
+
+    // `token_usage_info` is only populated by a real (non-preview) shake or a
+    // completed turn. Dropping the throwaway reasoning item via a real
+    // Thinking-mode shake gives a "before" reading on the exact same
+    // estimation scale (`recompute_token_usage`) as the "after" reading below,
+    // without touching any of the Elide-eligible content measured next.
+    let seed = fixture.codex.preview_shake(ShakeMode::Thinking).await?;
+    Box::pin(fixture.codex.submit(Op::Shake {
+        mode: ShakeMode::Thinking,
+        expected_fingerprint: Some(seed.fingerprint),
+    }))
+    .await?;
+    Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
+    }))
+    .await;
+    let usage_before = fixture
+        .codex
+        .token_usage_info()
+        .await
+        .context("usage should be populated after the seeding shake")?;
+
+    let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+    let expected_freed = preview.tokens_before - preview.tokens_after;
+    assert!(expected_freed > 0, "the shake must free tokens for this cross-check to mean anything");
+
+    Box::pin(fixture.codex.submit(Op::Shake {
+        mode: ShakeMode::Elide,
+        expected_fingerprint: Some(preview.fingerprint),
+    }))
+    .await?;
+    Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
+    }))
+    .await;
+    let usage_after = fixture
+        .codex
+        .token_usage_info()
+        .await
+        .context("usage should be populated after the elide shake")?;
+
+    let actual_drop =
+        usage_before.last_token_usage.total_tokens - usage_after.last_token_usage.total_tokens;
+    // Both readings come from `recompute_token_usage`, which sums the same
+    // per-item estimator the preview uses (plus a constant base-instructions
+    // offset that cancels out in the delta), so this should land almost
+    // exactly on the preview's own freed estimate.
+    let tolerance = (expected_freed / 20).max(50);
+    assert!(
+        (actual_drop - expected_freed).abs() <= tolerance,
+        "expected usage to drop by ~{expected_freed} tokens (+/- {tolerance}), got {actual_drop}"
+    );
+    Ok(())
+}
