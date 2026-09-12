@@ -13,6 +13,8 @@ Implementation:
 | Recoverable placeholders / artifact markers | `codex-rs/core/src/shake/recovery.rs` |
 | Protected-tool allowlist (outputs shake never elides) | `codex-rs/core/src/shake/protection.rs` |
 | Auto-shake decision layer (pure, unit-tested) | `codex-rs/core/src/shake/auto.rs` |
+| Artifact store, and both size caps (savable-in / readable-out) | `codex-rs/core/src/artifacts.rs` |
+| Artifact recovery tool (`read_artifact`) | `codex-rs/core/src/tools/handlers/read_artifact.rs` |
 | Orchestration (persist, re-account, announce) | `codex-rs/core/src/session/handlers.rs` (`shake`, `apply_shake`) |
 | Auto-shake trigger | `codex-rs/core/src/session/turn.rs` (`maybe_run_pre_sampling_auto_shake`) |
 
@@ -76,6 +78,59 @@ shake cannot deliver.
 `$CODEX_HOME/artifacts/<thread-id>/`, and an ephemeral thread has nowhere durable
 to put them. On an ephemeral thread, `elide` leaves history unchanged and reports
 why.
+
+## Artifact size caps
+
+There are two independent caps, and they are easy to confuse. One bounds what
+goes *into* an artifact at shake time; the other bounds what comes back *out* on
+a recovery read.
+
+| Constant | Direction | Value | Meaning |
+| --- | --- | --- | --- |
+| `MAX_ARTIFACT_BYTES` | savable **in** | 8 MiB | A region larger than this is not savable, so shake leaves it in place rather than promising a recovery it cannot deliver. Checked by `ArtifactStore::save`, and mirrored by `preview.rs` so the preview's counts match what a confirmed shake would do. |
+| `MAX_READ_BYTES` | readable **out** | 3 KiB | Ceiling on one `read_artifact` page, regardless of context headroom. Also bounds the memory one read needs for a hostile artifact. |
+| `MIN_READ_BYTES` | readable **out** | 512 B | Floor on one page. Less headroom than this means the read is refused with an actionable error rather than returning a useless sliver. |
+
+### Bounded recovery reads
+
+A recovery read must not be able to push the next request over the context
+window. oh-my-pi #11365 documents the failure: a large spilled result recovered
+through an unbounded `artifact://` read makes input plus requested output exceed
+the window, and the provider rejects the request *before* generation, mid-turn.
+
+So `read_artifact` derives its page budget from the context headroom **at the
+time of the read**, not from a fixed number alone
+(`artifacts::recovery_read_budget`):
+
+1. Take `ContextWindowTokenStatus::base_window_tokens_remaining` — remaining
+   tokens against the model's resolved context window, the same number
+   `get_context_remaining` reports. `None` (no resolved window) means there is
+   no headroom to derive a bound from, and the ceiling applies.
+2. Allow one read at most `RECOVERY_HEADROOM_PERCENT` (50%) of that headroom.
+   Recovery is a step in a turn, not the whole turn: the model still needs room
+   for its own reasoning and output, and for the next tool call.
+3. Clamp into `[MIN_READ_BYTES, MAX_READ_BYTES]`. Below the floor the read is
+   refused with an error naming the shortfall and telling the model to free
+   context first (`/shake`, `/compact`, or a fresh thread).
+
+`ArtifactStore::read` re-clamps its `max_bytes` argument into the same range, so
+no caller can ask for an unbounded page.
+
+A page that the headroom (rather than the ceiling) bounded carries an extra
+notice after the usual `[artifact source: …]` marker, naming the byte budget,
+the remaining window that produced it, and pointing at the `start_byte` in the
+marker above for continuing. The marker itself is unchanged, so the
+marker-recognition in `shake/recovery.rs` keeps working.
+
+Recovery reads are also on the protected-tool allowlist above, so a recovered
+page is never immediately re-elided — that would only mint another artifact and
+could repeat indefinitely.
+
+Note that the fork does **not** implement omp #11365's other suggested fix,
+clamping the requested output-token budget to the remaining context before
+every provider request. Bounding the read is the half that lives entirely in
+`core`; the budget clamp belongs to request construction and is tracked
+separately.
 
 ## Manual `/shake`
 

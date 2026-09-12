@@ -11,11 +11,105 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_utils_output_truncation::approx_bytes_for_tokens;
+use codex_utils_output_truncation::approx_tokens_from_byte_count;
 use uuid::Uuid;
 
 const ARTIFACT_DIR_NAME: &str = "artifacts";
+
+/// Cap on what a shake may put *into* one artifact. A region larger than this
+/// is not savable, so shake leaves it in place rather than promising a recovery
+/// it cannot deliver. Not to be confused with [`MAX_READ_BYTES`], which caps
+/// what comes back *out* on one recovery read.
 pub(crate) const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Ceiling on the bytes one recovery read returns, regardless of how much
+/// context headroom there is. Bounds both the model-facing page and the memory
+/// needed for a hostile artifact.
 pub(crate) const MAX_READ_BYTES: usize = 3 * 1024;
+
+/// Floor on a recovery page. A page smaller than this is not worth a round
+/// trip, so a read with less headroom than this is refused with an actionable
+/// error instead of returning a useless sliver.
+pub(crate) const MIN_READ_BYTES: usize = 512;
+
+/// Share of the remaining context window that one recovery read may consume.
+/// Recovery is a step in a turn, not the whole turn: the model still needs room
+/// for its own reasoning and output after reading, and for the next tool call.
+const RECOVERY_HEADROOM_PERCENT: i64 = 50;
+
+/// How many bytes one recovery read may return, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RecoveryReadBudget {
+    pub(crate) max_bytes: usize,
+    /// The remaining-context token count, when headroom (rather than
+    /// [`MAX_READ_BYTES`]) is what set `max_bytes`.
+    pub(crate) clamped_by_remaining_tokens: Option<i64>,
+}
+
+/// Resolve the byte budget for one recovery read from the context headroom at
+/// the time of the read.
+///
+/// This is the "readable-out" cap, the counterpart to the "savable-in"
+/// [`MAX_ARTIFACT_BYTES`]. Without it a full-size recovery read can push
+/// input + requested output past the model's context window at
+/// request-construction time and be rejected before generation (oh-my-pi
+/// #11365). `remaining_tokens` is `ContextWindowTokenStatus::
+/// base_window_tokens_remaining`, i.e. measured against the resolved context
+/// window; `None` means the model has no resolved window, in which case there
+/// is no headroom to derive a bound from and the ceiling applies.
+pub(crate) fn recovery_read_budget(
+    remaining_tokens: Option<i64>,
+) -> Result<RecoveryReadBudget, String> {
+    let Some(remaining_tokens) = remaining_tokens else {
+        return Ok(RecoveryReadBudget {
+            max_bytes: MAX_READ_BYTES,
+            clamped_by_remaining_tokens: None,
+        });
+    };
+    let allowance_tokens = remaining_tokens
+        .max(0)
+        .saturating_mul(RECOVERY_HEADROOM_PERCENT)
+        / 100;
+    let allowance_bytes = approx_bytes_for_tokens(usize::try_from(allowance_tokens).unwrap_or(0));
+    if allowance_bytes >= MAX_READ_BYTES {
+        return Ok(RecoveryReadBudget {
+            max_bytes: MAX_READ_BYTES,
+            clamped_by_remaining_tokens: None,
+        });
+    }
+    if allowance_bytes < MIN_READ_BYTES {
+        return Err(format!(
+            "not enough context left to recover an artifact: ~{remaining_tokens} tokens remain, \
+             and one recovery page needs at least {MIN_READ_BYTES} bytes (~{min_tokens} tokens) \
+             of headroom. Free context first (/shake, /compact, or a fresh thread), then read the \
+             artifact again.",
+            min_tokens = approx_tokens_from_byte_count(MIN_READ_BYTES),
+        ));
+    }
+    Ok(RecoveryReadBudget {
+        max_bytes: allowance_bytes,
+        clamped_by_remaining_tokens: Some(remaining_tokens),
+    })
+}
+
+impl RecoveryReadBudget {
+    /// A notice explaining a headroom-clamped page, appended after the store's
+    /// `[artifact source: ...]` marker (which already carries the `start_byte`
+    /// to continue from). `None` when the ceiling, not headroom, set the bound —
+    /// there is nothing context-specific to explain.
+    pub(crate) fn truncation_notice(&self) -> Option<String> {
+        let remaining_tokens = self.clamped_by_remaining_tokens?;
+        Some(format!(
+            "[artifact page bounded to {max_bytes} bytes (~{page_tokens} tokens) by the remaining \
+             context window (~{remaining_tokens} tokens), below the usual {MAX_READ_BYTES}-byte \
+             page. Continue from the start_byte above; free context first if you need the rest in \
+             fewer reads.]",
+            max_bytes = self.max_bytes,
+            page_tokens = approx_tokens_from_byte_count(self.max_bytes),
+        ))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ArtifactStore {
@@ -61,7 +155,19 @@ impl ArtifactStore {
         result
     }
 
-    pub(crate) fn read(&self, uri: &str, start_byte: Option<u64>) -> Result<String, String> {
+    /// Read one bounded page of an artifact.
+    ///
+    /// `max_bytes` is the caller's budget for this page — see
+    /// [`recovery_read_budget`]. It is clamped into
+    /// `[MIN_READ_BYTES, MAX_READ_BYTES]` here so no caller can ask for an
+    /// unbounded page.
+    pub(crate) fn read(
+        &self,
+        uri: &str,
+        start_byte: Option<u64>,
+        max_bytes: usize,
+    ) -> Result<String, String> {
+        let max_bytes = max_bytes.clamp(MIN_READ_BYTES, MAX_READ_BYTES);
         let id = parse_uri(uri)?;
         let path = self.resolve(id)?;
         let offset = start_byte.unwrap_or(/*default*/ 0);
@@ -71,8 +177,8 @@ impl ArtifactStore {
 
         // Read only one small page plus a marker byte. This bounds both the
         // model-facing result and the memory needed for a hostile artifact.
-        let mut bytes = Vec::with_capacity(MAX_READ_BYTES + 1);
-        file.take((MAX_READ_BYTES + 1) as u64)
+        let mut bytes = Vec::with_capacity(max_bytes + 1);
+        file.take((max_bytes + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|err| format!("failed to read {uri}: {err}"))?;
         if bytes.is_empty() {
@@ -84,7 +190,7 @@ impl ArtifactStore {
             ));
         }
 
-        let mut output_bytes = bytes.len().min(MAX_READ_BYTES);
+        let mut output_bytes = bytes.len().min(max_bytes);
         while output_bytes > 0
             && output_bytes < bytes.len()
             && (bytes[output_bytes] & 0b1100_0000) == 0b1000_0000
