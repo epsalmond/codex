@@ -34,6 +34,10 @@ why.
 
 ## Manual `/shake`
 
+Usage: `/shake [elide|images|thinking|help]`. Bare `/shake` defaults to
+`elide`; `/shake help` (also `-h`, `--help`, `?`) prints the mode list without
+touching history.
+
 `/shake` previews first: it runs the real transformation on a copy, reports
 estimated tokens before/after and what would be affected, writes nothing, and
 makes no model request. Confirmation is checked against a fingerprint of the

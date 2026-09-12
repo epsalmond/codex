@@ -1289,18 +1289,35 @@ impl ChatWidget {
         false
     }
 
-    /// Handler for `/shake [elide|images|thinking]` to surgically reduce context.
+    /// Handler for `/shake [elide|images|thinking|help]` to surgically reduce context.
     ///
     /// Defaults to `elide`. Request a read-only preview before offering confirmation.
     fn handle_shake_slash_command(&mut self, args: &str) {
         let trimmed = args.trim();
+        if matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "help" | "-h" | "--help" | "?"
+        ) {
+            self.add_info_message(
+                concat!(
+                    "/shake [elide|images|thinking|help]\n",
+                    "  elide     (default) replace tool-call outputs and large fenced/XML blocks with placeholders; elided regions are saved as recoverable artifacts\n",
+                    "  images    strip every image block from messages and tool outputs; no recovery artifacts\n",
+                    "  thinking  drop every reasoning block from history; no recovery artifacts\n",
+                    "Modes run one at a time; run /shake more than once to combine them. Every mode shows a preview before anything is changed.",
+                )
+                .to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
         let mode = if trimmed.is_empty() {
             codex_protocol::protocol::ShakeMode::parse("elide")
         } else {
             codex_protocol::protocol::ShakeMode::parse(trimmed.to_ascii_lowercase().as_str())
         };
         let Some(mode) = mode else {
-            self.add_error_message("Usage: /shake [elide|images|thinking]".to_string());
+            self.add_error_message("Usage: /shake [elide|images|thinking|help]".to_string());
             return;
         };
         if self.blocks_direct_input {

@@ -1004,6 +1004,35 @@ async fn shake_rejects_unknown_mode_without_submit() {
 }
 
 #[tokio::test]
+async fn shake_help_prints_usage_without_submit() {
+    for help_arg in ["help", "-h", "--help", "?", "HELP"] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+
+        chat.dispatch_command_with_args(
+            crate::slash_command::SlashCommand::Shake,
+            help_arg.to_string(),
+            Vec::new(),
+        );
+
+        let rendered = drain_insert_history(&mut rx)
+            .iter()
+            .map(|lines| lines_to_single_string(lines))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("/shake [elide|images|thinking|help]"),
+            "expected usage line for arg {help_arg:?}, got: {rendered}"
+        );
+        assert!(rendered.contains("elide"));
+        assert!(rendered.contains("images"));
+        assert!(rendered.contains("thinking"));
+        assert!(rx.try_recv().is_err(), "help should not submit a shake op");
+        assert!(!chat.input_queue.user_turn_pending_start);
+    }
+}
+
+#[tokio::test]
 async fn shake_notice_releases_input_gate() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
