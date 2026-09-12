@@ -519,7 +519,7 @@ pub(crate) fn shake_thinking(items: &mut Vec<ResponseItemEnvelope>) -> ShakeResu
 pub(crate) fn shake_elide_with_recovery(
     items: &mut [ResponseItemEnvelope],
     protect_tokens: usize,
-    save: &mut dyn FnMut(&str, &str) -> Option<String>,
+    save: &mut dyn FnMut(&str, &str) -> Option<(String, String)>,
 ) -> ShakeResult {
     let mut result = ShakeResult::default();
     if items.is_empty() {
@@ -762,7 +762,10 @@ mod tests {
         ];
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some("artifact://00000000000000000000000000000000".to_string())
+            Some((
+                "artifact://00000000000000000000000000000000".to_string(),
+                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
+            ))
         };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert_eq!(result.tool_outputs_elided, 1);
@@ -783,7 +786,10 @@ mod tests {
             output_item("call-1", &big),
         ];
         let mut save = |_content: &str, _label: &str| {
-            Some("artifact://00000000000000000000000000000000".to_string())
+            Some((
+                "artifact://00000000000000000000000000000000".to_string(),
+                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
+            ))
         };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert_eq!(result.tool_outputs_elided, 0);
@@ -825,7 +831,10 @@ mod tests {
         let mut items = vec![output_item("call-1", &plain)];
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some("artifact://00000000000000000000000000000001".to_string())
+            Some((
+                "artifact://00000000000000000000000000000001".to_string(),
+                "/codex-home/artifacts/thread/00000000000000000000000000000001.log".to_string(),
+            ))
         };
 
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
@@ -838,7 +847,10 @@ mod tests {
         let mut items = vec![text_item("assistant", &big_fenced_block())];
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some("artifact://00000000000000000000000000000000".to_string())
+            Some((
+                "artifact://00000000000000000000000000000000".to_string(),
+                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
+            ))
         };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert!(
@@ -892,7 +904,10 @@ mod tests {
         ));
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some("artifact://00000000000000000000000000000000".to_string())
+            Some((
+                "artifact://00000000000000000000000000000000".to_string(),
+                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
+            ))
         };
 
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);

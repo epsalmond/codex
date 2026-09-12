@@ -125,6 +125,15 @@ impl ArtifactStore {
         }
     }
 
+    /// The on-disk path an artifact with `id` and `label` is (or would be)
+    /// saved at. Pure path arithmetic — does not touch the filesystem, so it
+    /// can also be used to compute a representative path for a shake preview
+    /// that never writes anything.
+    pub(crate) fn destination_path(&self, id: &str, label: &str) -> PathBuf {
+        self.root
+            .join(format!("{id}.{}.log", sanitize_label(label)))
+    }
+
     pub(crate) fn save(&self, content: &str, label: &str) -> io::Result<String> {
         if content.len() as u64 > MAX_ARTIFACT_BYTES {
             return Err(io::Error::new(
@@ -135,9 +144,7 @@ impl ArtifactStore {
 
         fs::create_dir_all(&self.root)?;
         let id = Uuid::new_v4().simple().to_string();
-        let destination = self
-            .root
-            .join(format!("{id}.{}.log", sanitize_label(label)));
+        let destination = self.destination_path(&id, label);
         let temporary = self.root.join(format!(".tmp-{id}.log"));
         let result = (|| {
             let mut file = File::create(&temporary)?;

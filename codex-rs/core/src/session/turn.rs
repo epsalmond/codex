@@ -1149,11 +1149,13 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
     // Read-only measurement of the real transformation, including the recovery
     // placeholders it would insert. Writes nothing and makes no model request.
     let history = sess.clone_history().await;
+    let artifact_store = sess.artifact_store().await;
     let estimate = crate::shake::preview::estimate_shake(
         history.annotated_items(),
         ShakeMode::Elide,
         crate::shake::AUTO_PROTECT_TOKENS,
         /*persistent_thread*/ true,
+        &artifact_store,
     );
     let elidable_percent =
         crate::shake::auto::elidable_percent(estimate.tokens_before, estimate.tokens_after);

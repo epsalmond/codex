@@ -22,9 +22,24 @@ Implementation:
 
 | Mode | What it removes | Recoverable? |
 | --- | --- | --- |
-| `elide` | Whole tool-call outputs and large fenced/XML blocks in message text, replaced by short placeholders | **Yes** — each region is saved to a per-thread artifact first, and the placeholder carries `recover: artifact://<id>` for the `read_artifact` tool |
+| `elide` | Whole tool-call outputs and large fenced/XML blocks in message text, replaced by short placeholders | **Yes** — each region is saved to a per-thread artifact first, and the placeholder carries `recover: artifact://<id>` for the `read_artifact` tool, plus `file: <abs_path>` naming the artifact's absolute on-disk path so the model can search it directly with a shell tool |
 | `images` | Image blocks | No — content is discarded |
 | `thinking` | Reasoning items | No — content is discarded |
+
+The exact placeholder text (`shake/recovery.rs`, `recovery_placeholder`) is:
+
+```
+[shaken ~{tokens} tokens from {label} (recover: artifact://<id>; file: {abs_path})]
+```
+
+`{abs_path}` is the absolute on-disk path from `ArtifactStore::save`
+(`$CODEX_HOME/artifacts/<thread-id>/<uuid>.<label>.log`). Recovering through
+`read_artifact` is one bounded page at a time; a model that only needs part of
+a large elided output (a specific error line, a matching field) can instead
+reach for a shell tool and `grep`/`awk` the path directly. A census of 346 omp
+sessions and 9 benchmark runs found zero `read_artifact` call-backs after a
+shake, so `read_artifact` is kept as a safety valve and partial extraction via
+the path is the expected default.
 
 A recent tail is always protected so shake cannot strip the tool outputs the
 agent is currently working from. The protected size depends on how the shake

@@ -20,6 +20,7 @@ impl CodexThread {
         let history = self.session.clone_history().await;
         let ephemeral = self.session.get_config().await.ephemeral;
         let items = history.annotated_items();
+        let artifact_store = self.session.artifact_store().await;
         // `/shake`'s preview measures what a manual shake would do, so it uses
         // the manual protect-tail size.
         let estimate = estimate_shake(
@@ -27,6 +28,7 @@ impl CodexThread {
             mode,
             super::MANUAL_PROTECT_TOKENS,
             /*persistent_thread*/ !ephemeral,
+            &artifact_store,
         );
         let fingerprint = fingerprint(items, mode)?;
         Ok(ShakePreview {
@@ -51,16 +53,24 @@ pub(crate) struct ShakeEstimate {
     pub(crate) unavailable_reason: Option<String>,
 }
 
+/// A fixed dummy id of the same encoded length as a real `Uuid::simple()`
+/// artifact id, used so a preview's placeholder size matches what a confirmed
+/// shake would actually insert without writing anything.
+const DUMMY_ARTIFACT_ID: &str = "00000000000000000000000000000000";
+
 /// Run the real transformation on a copy of `items`, writing no artifacts.
 ///
 /// The save closure returns a fixed URI of the same encoded length as a real
-/// artifact id so the measured placeholder size matches what a confirmed shake
-/// would actually insert.
+/// artifact id, and a path built from `artifact_store` (whose root reflects
+/// the real `$CODEX_HOME`/thread-id) with the same dummy id and the region's
+/// real label, so the measured placeholder size matches what a confirmed
+/// shake would actually insert — including the recovery file path.
 pub(crate) fn estimate_shake(
     items: &[ResponseItemEnvelope],
     mode: ShakeMode,
     protect_tokens: usize,
     persistent_thread: bool,
+    artifact_store: &crate::artifacts::ArtifactStore,
 ) -> ShakeEstimate {
     let tokens_before = sum_item_tokens(items);
     let mut reduced = items.to_vec();
@@ -71,13 +81,21 @@ pub(crate) fn estimate_shake(
         super::ShakeResult::default()
     } else {
         match mode {
-            ShakeMode::Elide => {
-                super::shake_elide_with_recovery(&mut reduced, protect_tokens, &mut |content, _label| {
+            ShakeMode::Elide => super::shake_elide_with_recovery(
+                &mut reduced,
+                protect_tokens,
+                &mut |content, label| {
                     // Match the store's size limit and the real UUID's encoded length.
-                    (content.len() as u64 <= MAX_ARTIFACT_BYTES)
-                        .then(|| "artifact://00000000000000000000000000000000".to_string())
-                })
-            }
+                    (content.len() as u64 <= MAX_ARTIFACT_BYTES).then(|| {
+                        let uri = format!("artifact://{DUMMY_ARTIFACT_ID}");
+                        let path = artifact_store
+                            .destination_path(DUMMY_ARTIFACT_ID, label)
+                            .display()
+                            .to_string();
+                        (uri, path)
+                    })
+                },
+            ),
             ShakeMode::Images => super::shake_images(&mut reduced),
             ShakeMode::Thinking => super::shake_thinking(&mut reduced),
         }
@@ -166,11 +184,16 @@ mod tests {
     /// confirmation prompt never promises savings a shake cannot deliver.
     #[test]
     fn preview_does_not_count_protected_tool_outputs() {
+        let store = crate::artifacts::ArtifactStore::for_thread(
+            std::path::Path::new("/codex-home"),
+            "preview-thread",
+        );
         let estimate = estimate_shake(
             &history(Some("skills"), "read"),
             ShakeMode::Elide,
             super::super::MANUAL_PROTECT_TOKENS,
             /*persistent_thread*/ true,
+            &store,
         );
         assert_eq!(estimate.result.tool_outputs_elided, 0);
         assert_eq!(estimate.tokens_after, estimate.tokens_before);
@@ -181,6 +204,7 @@ mod tests {
             ShakeMode::Elide,
             super::super::MANUAL_PROTECT_TOKENS,
             /*persistent_thread*/ true,
+            &store,
         );
         assert_eq!(estimate.result.tool_outputs_elided, 1);
         assert!(estimate.tokens_after < estimate.tokens_before);
