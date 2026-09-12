@@ -199,6 +199,33 @@ already reflects a `model_context_window` config override — not the 95%
 "effective" slice and not the 90% auto-compaction limit. With the default 60%,
 auto-shake fires well before either compaction trigger.
 
+### Escalation
+
+A single elide pass is not always enough: `AUTO_PROTECT_TOKENS`'s large
+protected tail (16,000 tokens) can leave the thread above the auto-shake
+threshold even after removing everything eligible. When that happens —
+whether the first pass applied, or was skipped at step 6 or 7 above
+(`below_min_elidable_share` or `below_min_savings`) — `maybe_run_pre_sampling_auto_shake`
+runs one more pass with oh-my-pi's aggressive settings before falling through
+to compaction:
+
+- protect window: `MANUAL_PROTECT_TOKENS` (4,000 tokens) instead of
+  `AUTO_PROTECT_TOKENS`, so more of the recent tail becomes eligible;
+- `min_savings_tokens`: halved from the resolved setting (still gated by the
+  same `min_elidable_percent`).
+
+"Still above the auto-shake threshold" is re-checked with the exact same
+`AutoShakeConfig::decide` call as the first pass, against the token count after
+the first pass (the real recomputed total if it shook; the original reading if
+it didn't) — so escalation uses the identical enabled / persistent-thread /
+context-window / threshold logic, just evaluated a second time. At most one
+escalated pass runs per pre-sampling point; only after it (or its skip) does
+`run_pre_sampling_compact` re-check `token_limit_reached` and fall through to
+`run_auto_compact`. There is no separate config for this: escalation is on
+whenever `auto_shake` is on for the model. See management-plane#988; the
+one-tier-then-fallback shape mirrors oh-my-pi PR #9705's proposed escalation
+(open/unmerged upstream at the time this landed).
+
 ### Turn ordering
 
 `/shake` refuses when `active_turn` is `Some`, and by the time `run_turn` runs,
@@ -234,20 +261,22 @@ when its parent does — which is the intended per-model behavior.
 A shake that changed anything emits:
 
 - the persisted `CompactedItem` message, `[shake] context reduced surgically`
-  for a manual shake and `[shake] context reduced surgically (automatic)` for an
-  automatic one — the shared prefix keeps existing readers matching, the suffix
-  lets benchmarks separate auto from manual;
-- a transcript `Warning` event, prefixed `⛭ shake:` (manual) or `⛭ shake (auto):`
-  (automatic);
+  for a manual shake, `[shake] context reduced surgically (automatic)` for the
+  plain automatic pass, and `[shake] context reduced surgically (automatic,
+  escalated)` for the escalated pass — the shared prefix keeps existing
+  readers matching, the suffix lets benchmarks separate the three;
+- a transcript `Warning` event, prefixed `⛭ shake:` (manual), `⛭ shake (auto):`
+  (automatic), or `⛭ shake (auto, escalated):` (escalated);
 - a structured `INFO` log on target `codex_core::shake` with
-  `trigger=manual|automatic`, `mode`, the per-category counts, and
-  `tokens_freed`.
+  `trigger=manual|automatic|automatic_escalated`, `mode`, the per-category
+  counts, and `tokens_freed`.
 
 Auto-shake decisions themselves log on target `codex_core::auto_shake`: `INFO`
-`"auto-shake triggered"` with the measured before/after tokens and shares, and
-`TRACE` `"auto-shake skipped"` with a `reason` of `disabled`,
-`ephemeral_thread`, `no_context_window`, `below_threshold`,
-`below_min_elidable_share`, or `below_min_savings`.
+`"auto-shake triggered"` with the measured before/after tokens, shares, and an
+`escalated` boolean, and `TRACE` `"auto-shake skipped"` with a `reason` of
+`disabled`, `ephemeral_thread`, `no_context_window`, `below_threshold`,
+`below_min_elidable_share`, or `below_min_savings` (also carrying `escalated`
+when the skip belongs to the second pass).
 
 ## Configuration
 

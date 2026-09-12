@@ -1117,17 +1117,28 @@ async fn track_turn_resolved_config_analytics(
 /// than `handlers::shake`, and pass no expected fingerprint: the preview and the
 /// shake run back-to-back under the same turn with no await on client input in
 /// between, so there is no stale-confirmation window to guard against.
+///
+/// ESCALATION: when the first (plain automatic) pass leaves the thread still
+/// above the auto-shake threshold — whether that pass applied or was skipped
+/// for freeing too little (`below_min_elidable_share` / `below_min_savings`) —
+/// one more pass runs with oh-my-pi's aggressive settings: the smaller manual
+/// protect window (`MANUAL_PROTECT_TOKENS`) instead of the automatic one, and
+/// `min_savings_tokens` halved. At most one escalated pass runs per
+/// pre-sampling point; only then does `run_pre_sampling_compact` fall through
+/// to full auto-compaction. See management-plane#988.
 async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
     let config = &turn_context.config.auto_shake;
     let model_info = turn_context.model_info();
+    let persistent_thread = !turn_context.config.ephemeral;
+    let context_window = model_info.resolved_context_window();
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
     let decision = config.decide(
         model_info.slug.as_str(),
         token_status.active_context_tokens,
-        model_info.resolved_context_window(),
-        /*persistent_thread*/ !turn_context.config.ephemeral,
+        context_window,
+        persistent_thread,
     );
     let (min_elidable_percent, min_savings_tokens) = match decision {
         AutoShakeDecision::Skip(reason) => {
@@ -1146,6 +1157,76 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         } => (min_elidable_percent, min_savings_tokens),
     };
 
+    let shook = run_auto_shake_pass(
+        sess,
+        turn_context,
+        model_info.slug.as_str(),
+        token_status.active_context_tokens,
+        crate::shake::AUTO_PROTECT_TOKENS,
+        min_elidable_percent,
+        min_savings_tokens,
+        ShakeTrigger::Automatic,
+    )
+    .await;
+
+    // Re-measure only when the first pass actually rewrote history; otherwise
+    // nothing changed and the original reading still applies. Re-running
+    // `config.decide` against this reading reuses the exact same
+    // enabled/persistent-thread/context-window/threshold checks the first
+    // pass used, so "still above the auto-shake threshold" means the same
+    // thing both times.
+    let active_context_tokens = if shook {
+        super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
+            .await
+            .active_context_tokens
+    } else {
+        token_status.active_context_tokens
+    };
+    let escalation_decision = config.decide(
+        model_info.slug.as_str(),
+        active_context_tokens,
+        context_window,
+        persistent_thread,
+    );
+    let AutoShakeDecision::Preview {
+        min_elidable_percent,
+        min_savings_tokens,
+    } = escalation_decision
+    else {
+        // Below threshold now (or no longer eligible for some other reason
+        // `decide` already logged appropriately on the first call) -- no
+        // escalation needed.
+        return;
+    };
+    run_auto_shake_pass(
+        sess,
+        turn_context,
+        model_info.slug.as_str(),
+        active_context_tokens,
+        crate::shake::MANUAL_PROTECT_TOKENS,
+        min_elidable_percent,
+        min_savings_tokens / 2,
+        ShakeTrigger::AutomaticEscalated,
+    )
+    .await;
+}
+
+/// Run one automatic shake pass against the thread's current live history:
+/// measure via the read-only preview, skip if it would not clear
+/// `min_elidable_percent` / `min_savings_tokens`, otherwise apply it. Returns
+/// whether a shake was actually applied.
+async fn run_auto_shake_pass(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    model_slug: &str,
+    active_context_tokens: i64,
+    protect_tokens: usize,
+    min_elidable_percent: i64,
+    min_savings_tokens: i64,
+    trigger: ShakeTrigger,
+) -> bool {
+    let escalated = trigger == ShakeTrigger::AutomaticEscalated;
+
     // Read-only measurement of the real transformation, including the recovery
     // placeholders it would insert. Writes nothing and makes no model request.
     let history = sess.clone_history().await;
@@ -1153,7 +1234,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
     let estimate = crate::shake::preview::estimate_shake(
         history.annotated_items(),
         ShakeMode::Elide,
-        crate::shake::AUTO_PROTECT_TOKENS,
+        protect_tokens,
         /*persistent_thread*/ true,
         &artifact_store,
     );
@@ -1163,37 +1244,43 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         trace!(
             target: AUTO_SHAKE_TARGET,
             reason = "below_min_elidable_share",
-            model = %model_info.slug,
+            model = %model_slug,
             elidable_percent,
             min_elidable_percent,
+            escalated,
             "auto-shake skipped"
         );
-        return;
+        return false;
     }
     // Absolute floor alongside the percent gate: a shake that clears the
     // percent threshold but frees near-zero tokens (small context windows)
     // still isn't worth the guaranteed prompt-cache miss.
-    let freed_tokens = estimate.tokens_before.saturating_sub(estimate.tokens_after).max(0);
+    let freed_tokens = estimate
+        .tokens_before
+        .saturating_sub(estimate.tokens_after)
+        .max(0);
     if freed_tokens < min_savings_tokens {
         trace!(
             target: AUTO_SHAKE_TARGET,
             reason = "below_min_savings",
-            model = %model_info.slug,
+            model = %model_slug,
             freed_tokens,
             min_savings_tokens,
+            escalated,
             "auto-shake skipped"
         );
-        return;
+        return false;
     }
 
     info!(
         target: AUTO_SHAKE_TARGET,
-        model = %model_info.slug,
-        active_context_tokens = token_status.active_context_tokens,
+        model = %model_slug,
+        active_context_tokens,
         tokens_before = estimate.tokens_before,
         tokens_after = estimate.tokens_after,
         elidable_percent,
         min_elidable_percent,
+        escalated,
         "auto-shake triggered"
     );
     handlers::apply_shake(
@@ -1201,9 +1288,10 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         turn_context.as_ref(),
         ShakeMode::Elide,
         /*expected_fingerprint*/ None,
-        ShakeTrigger::Automatic,
+        trigger,
     )
     .await;
+    true
 }
 
 #[instrument(level = "trace", skip_all)]

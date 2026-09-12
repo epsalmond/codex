@@ -63,21 +63,32 @@ pub async fn interrupt(sess: &Arc<Session>) {
 
 /// Whether a shake was requested by the operator (`/shake`) or decided
 /// automatically at the pre-sampling point.
+///
+/// `AutomaticEscalated` is the second, more aggressive pre-sampling pass that
+/// `maybe_run_pre_sampling_auto_shake` runs when the first automatic pass
+/// (whether it applied or was skipped for freeing too little) left the thread
+/// still above the auto-shake threshold. At most one escalated pass runs per
+/// pre-sampling point, and only compaction follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShakeTrigger {
     Manual,
     Automatic,
+    AutomaticEscalated,
 }
 
 impl ShakeTrigger {
     /// Marker written into the persisted `CompactedItem` message. Keeping the
     /// shared `[shake] context reduced surgically` prefix means existing readers
     /// and log scrapers still match, while the suffix lets benchmarks separate
-    /// automatic runs from operator-driven ones.
+    /// automatic runs (and the escalated pass within them) from operator-driven
+    /// ones.
     pub(crate) fn compacted_item_message(self) -> String {
         match self {
             Self::Manual => "[shake] context reduced surgically".to_string(),
             Self::Automatic => "[shake] context reduced surgically (automatic)".to_string(),
+            Self::AutomaticEscalated => {
+                "[shake] context reduced surgically (automatic, escalated)".to_string()
+            }
         }
     }
 
@@ -85,6 +96,7 @@ impl ShakeTrigger {
         match self {
             Self::Manual => "manual",
             Self::Automatic => "automatic",
+            Self::AutomaticEscalated => "automatic_escalated",
         }
     }
 }
@@ -194,9 +206,15 @@ pub(crate) async fn apply_shake(
                 };
                 // Automatic shake protects a much larger recent tail than a
                 // manual `/shake`: it runs unattended and must not risk
-                // stripping content the agent is actively relying on.
+                // stripping content the agent is actively relying on. The
+                // escalated second automatic pass drops back to the manual
+                // (smaller) protect window, matching oh-my-pi's aggressive
+                // preset, since by this point the plain automatic pass already
+                // proved insufficient.
                 let protect_tokens = match trigger {
-                    ShakeTrigger::Manual => crate::shake::MANUAL_PROTECT_TOKENS,
+                    ShakeTrigger::Manual | ShakeTrigger::AutomaticEscalated => {
+                        crate::shake::MANUAL_PROTECT_TOKENS
+                    }
                     ShakeTrigger::Automatic => crate::shake::AUTO_PROTECT_TOKENS,
                 };
                 crate::shake::shake_elide_with_recovery(&mut envelopes, protect_tokens, &mut save)
@@ -211,6 +229,8 @@ pub(crate) async fn apply_shake(
     let summary = if ephemeral_elide {
         "⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery."
             .to_string()
+    } else if trigger == ShakeTrigger::AutomaticEscalated {
+        format!("⛭ shake (auto, escalated): {}", result.summary_line(mode))
     } else if trigger == ShakeTrigger::Automatic {
         // Distinguishable in the transcript as well as in the rollout record.
         format!("⛭ shake (auto): {}", result.summary_line(mode))
