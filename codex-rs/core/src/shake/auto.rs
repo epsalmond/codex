@@ -23,6 +23,13 @@ const DEFAULT_THRESHOLD_PERCENT: i64 = 60;
 /// it every turn would thrash.
 const DEFAULT_MIN_ELIDABLE_PERCENT: i64 = 30;
 
+/// Built-in absolute minimum-savings floor, in tokens. A secondary gate
+/// alongside `min_elidable_percent`: on a small context window a shake can
+/// clear the percent threshold while still freeing a trivial number of
+/// tokens, which isn't worth the guaranteed prompt-cache miss. Matches
+/// oh-my-pi's default automatic preset `minSavings`.
+const DEFAULT_MIN_SAVINGS_TOKENS: i64 = 4_000;
+
 /// Per-model-family threshold defaults, applied when neither the global
 /// `auto_shake.threshold` key nor an `[auto_shake.models.<family>]` entry
 /// resolves the field.
@@ -44,6 +51,7 @@ pub(crate) struct AutoShakeSettings {
     pub(crate) enabled: bool,
     pub(crate) threshold_percent: i64,
     pub(crate) min_elidable_percent: i64,
+    pub(crate) min_savings_tokens: i64,
 }
 
 /// Why auto-shake did not run. Recorded in the trace log so benchmark runs can
@@ -77,7 +85,10 @@ impl AutoShakeSkip {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoShakeDecision {
     Skip(AutoShakeSkip),
-    Preview { min_elidable_percent: i64 },
+    Preview {
+        min_elidable_percent: i64,
+        min_savings_tokens: i64,
+    },
 }
 
 impl AutoShakeConfig {
@@ -96,6 +107,7 @@ impl AutoShakeConfig {
         Ok(Self {
             threshold: toml.threshold,
             min_elidable_percent: toml.min_elidable_percent,
+            min_savings_tokens: toml.min_savings_tokens,
             models: toml
                 .models
                 .iter()
@@ -175,6 +187,12 @@ impl AutoShakeConfig {
                 .or(user_family_min_elidable)
                 .unwrap_or(DEFAULT_MIN_ELIDABLE_PERCENT)
                 .clamp(0, 100),
+            // Global-only knob for now (mirrors omp, which does not vary
+            // `minSavings` per model family either).
+            min_savings_tokens: self
+                .min_savings_tokens
+                .unwrap_or(DEFAULT_MIN_SAVINGS_TOKENS)
+                .max(0),
         }
     }
 
@@ -207,6 +225,7 @@ impl AutoShakeConfig {
         }
         AutoShakeDecision::Preview {
             min_elidable_percent: settings.min_elidable_percent,
+            min_savings_tokens: settings.min_savings_tokens,
         }
     }
 }
@@ -415,7 +434,8 @@ min_elidable_percent = 90
         assert_eq!(
             config.decide(LUNA, 60_000, Some(100_000), true),
             AutoShakeDecision::Preview {
-                min_elidable_percent: 30
+                min_elidable_percent: 30,
+                min_savings_tokens: 4_000,
             }
         );
     }

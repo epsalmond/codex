@@ -1293,6 +1293,9 @@ pub struct AutoShakeConfig {
     pub threshold: Option<codex_config::config_toml::AutoShakeThresholdToml>,
     /// Global minimum-elidable-share override, as a percent of current context.
     pub min_elidable_percent: Option<i64>,
+    /// Absolute minimum-savings floor override, in tokens. `None` falls back
+    /// to the built-in default (4000).
+    pub min_savings_tokens: Option<i64>,
     /// Per-model-family overrides keyed by family prefix (e.g. `gpt-5.6`).
     pub models: BTreeMap<String, AutoShakeModelConfig>,
 }

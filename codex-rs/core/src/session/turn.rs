@@ -1129,7 +1129,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         model_info.resolved_context_window(),
         /*persistent_thread*/ !turn_context.config.ephemeral,
     );
-    let min_elidable_percent = match decision {
+    let (min_elidable_percent, min_savings_tokens) = match decision {
         AutoShakeDecision::Skip(reason) => {
             trace!(
                 target: AUTO_SHAKE_TARGET,
@@ -1142,7 +1142,8 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         }
         AutoShakeDecision::Preview {
             min_elidable_percent,
-        } => min_elidable_percent,
+            min_savings_tokens,
+        } => (min_elidable_percent, min_savings_tokens),
     };
 
     // Read-only measurement of the real transformation, including the recovery
@@ -1151,6 +1152,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
     let estimate = crate::shake::preview::estimate_shake(
         history.annotated_items(),
         ShakeMode::Elide,
+        crate::shake::AUTO_PROTECT_TOKENS,
         /*persistent_thread*/ true,
     );
     let elidable_percent =
@@ -1162,6 +1164,21 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
             model = %model_info.slug,
             elidable_percent,
             min_elidable_percent,
+            "auto-shake skipped"
+        );
+        return;
+    }
+    // Absolute floor alongside the percent gate: a shake that clears the
+    // percent threshold but frees near-zero tokens (small context windows)
+    // still isn't worth the guaranteed prompt-cache miss.
+    let freed_tokens = estimate.tokens_before.saturating_sub(estimate.tokens_after).max(0);
+    if freed_tokens < min_savings_tokens {
+        trace!(
+            target: AUTO_SHAKE_TARGET,
+            reason = "below_min_savings",
+            model = %model_info.slug,
+            freed_tokens,
+            min_savings_tokens,
             "auto-shake skipped"
         );
         return;

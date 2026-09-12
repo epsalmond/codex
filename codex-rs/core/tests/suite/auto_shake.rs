@@ -47,7 +47,8 @@ fn ev_completed_with_input_tokens(id: &str, input_tokens: i64) -> Value {
 fn oversized_history() -> Result<Vec<ResponseItem>> {
     // A large tool output, then a large plain-text assistant tail. Plain text is
     // never elided, so the tail both survives and pushes the tool output past
-    // the protected recent window (`MANUAL_PROTECT_TOKENS`).
+    // the protected recent window (`AUTO_PROTECT_TOKENS`, 16_000 tokens for the
+    // automatic trigger under test here).
     Ok(vec![
         serde_json::from_value(json!({
             "type": "message",
@@ -69,7 +70,11 @@ fn oversized_history() -> Result<Vec<ResponseItem>> {
         serde_json::from_value(json!({
             "type": "message",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": "tail context ".repeat(/*n*/ 2_000)}]
+            // "tail context " is 13 bytes; 6_000 reps ~= 19_500 tokens at 4
+            // bytes/token, comfortably past `AUTO_PROTECT_TOKENS` (16_000) so
+            // the oversized tool output above still falls outside the
+            // protected tail.
+            "content": [{"type": "output_text", "text": "tail context ".repeat(/*n*/ 6_000)}]
         }))?,
     ])
 }

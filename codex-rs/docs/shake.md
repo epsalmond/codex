@@ -23,9 +23,14 @@ Implementation:
 | `images` | Image blocks | No — content is discarded |
 | `thinking` | Reasoning items | No — content is discarded |
 
-A small recent tail (~4k tokens, `MANUAL_PROTECT_TOKENS`) is always protected so
-shake cannot strip the tool outputs the agent is currently working from. Only
-blocks above `FENCE_MIN_TOKENS` (400) are eligible.
+A recent tail is always protected so shake cannot strip the tool outputs the
+agent is currently working from. The protected size depends on how the shake
+was triggered: manual `/shake` protects `MANUAL_PROTECT_TOKENS` (4,000 tokens,
+matching oh-my-pi's aggressive/manual preset), while automatic shake protects
+the much larger `AUTO_PROTECT_TOKENS` (16,000 tokens, matching oh-my-pi's
+default automatic preset) since it runs unattended and must not risk
+stripping content the agent is actively relying on. Only blocks above
+`FENCE_MIN_TOKENS` (400) are eligible.
 
 `elide` requires a **persistent thread**: artifacts are files under
 `$CODEX_HOME/artifacts/<thread-id>/`, and an ephemeral thread has nowhere durable
@@ -73,7 +78,11 @@ still fires when auto-shake is disabled, impossible, or would not free enough.
    measured context, stop. This is the anti-thrash guard: a shake that frees
    little is not worth the guaranteed prompt-cache miss, and repeating it every
    turn would be pure loss.
-7. Otherwise shake.
+7. If the preview's freed-token estimate is below the absolute
+   `min_savings_tokens` floor, stop — a secondary gate alongside step 6 that
+   catches the case where a shake clears the percent threshold but still frees
+   a trivial number of tokens (small context windows).
+8. Otherwise shake.
 
 The threshold is measured against `ModelInfo::resolved_context_window()` — which
 already reflects a `model_context_window` config override — not the 95%
@@ -127,8 +136,8 @@ A shake that changed anything emits:
 Auto-shake decisions themselves log on target `codex_core::auto_shake`: `INFO`
 `"auto-shake triggered"` with the measured before/after tokens and shares, and
 `TRACE` `"auto-shake skipped"` with a `reason` of `disabled`,
-`ephemeral_thread`, `no_context_window`, `below_threshold`, or
-`below_min_elidable_share`.
+`ephemeral_thread`, `no_context_window`, `below_threshold`,
+`below_min_elidable_share`, or `below_min_savings`.
 
 ## Configuration
 
@@ -138,6 +147,7 @@ All keys live under `[auto_shake]` in `~/.codex/config.toml`.
 | --- | --- | --- | --- |
 | `auto_shake.threshold` | `"off"` \| percent \| `"inherit"` | `60%` | Global threshold: shake once active context reaches this percent of the resolved context window, or `"off"` to disable globally. `"inherit"` is invalid here — there is nothing for the global scope to inherit from. |
 | `auto_shake.min_elidable_percent` | int 0–100 | `30` | Skip when the preview would free less than this percent of the measured context |
+| `auto_shake.min_savings_tokens` | int ≥ 0 | `4000` | Skip when the preview would free fewer than this many tokens, even if `min_elidable_percent` is cleared. Global only (no per-family override), matching oh-my-pi's `minSavings`. |
 | `auto_shake.models.<family>.threshold` | `"off"` \| percent \| `"inherit"` | per-family (below) | Per-family threshold. `"inherit"` defers to the resolved global `auto_shake.threshold`; an explicit `"off"` or percent wins over the global value. |
 | `auto_shake.models.<family>.min_elidable_percent` | int 0–100 | `30` | Per-family minimum elidable share |
 

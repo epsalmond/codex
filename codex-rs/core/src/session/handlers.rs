@@ -182,7 +182,14 @@ pub(crate) async fn apply_shake(
                         None
                     }
                 };
-                crate::shake::shake_elide_with_recovery(&mut envelopes, &mut save)
+                // Automatic shake protects a much larger recent tail than a
+                // manual `/shake`: it runs unattended and must not risk
+                // stripping content the agent is actively relying on.
+                let protect_tokens = match trigger {
+                    ShakeTrigger::Manual => crate::shake::MANUAL_PROTECT_TOKENS,
+                    ShakeTrigger::Automatic => crate::shake::AUTO_PROTECT_TOKENS,
+                };
+                crate::shake::shake_elide_with_recovery(&mut envelopes, protect_tokens, &mut save)
             }
         }
     };

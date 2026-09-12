@@ -20,7 +20,14 @@ impl CodexThread {
         let history = self.session.clone_history().await;
         let ephemeral = self.session.get_config().await.ephemeral;
         let items = history.annotated_items();
-        let estimate = estimate_shake(items, mode, /*persistent_thread*/ !ephemeral);
+        // `/shake`'s preview measures what a manual shake would do, so it uses
+        // the manual protect-tail size.
+        let estimate = estimate_shake(
+            items,
+            mode,
+            super::MANUAL_PROTECT_TOKENS,
+            /*persistent_thread*/ !ephemeral,
+        );
         let fingerprint = fingerprint(items, mode)?;
         Ok(ShakePreview {
             fingerprint,
@@ -52,6 +59,7 @@ pub(crate) struct ShakeEstimate {
 pub(crate) fn estimate_shake(
     items: &[ResponseItemEnvelope],
     mode: ShakeMode,
+    protect_tokens: usize,
     persistent_thread: bool,
 ) -> ShakeEstimate {
     let tokens_before = sum_item_tokens(items);
@@ -64,7 +72,7 @@ pub(crate) fn estimate_shake(
     } else {
         match mode {
             ShakeMode::Elide => {
-                super::shake_elide_with_recovery(&mut reduced, &mut |content, _label| {
+                super::shake_elide_with_recovery(&mut reduced, protect_tokens, &mut |content, _label| {
                     // Match the store's size limit and the real UUID's encoded length.
                     (content.len() as u64 <= MAX_ARTIFACT_BYTES)
                         .then(|| "artifact://00000000000000000000000000000000".to_string())

@@ -425,6 +425,11 @@
           "format": "int64",
           "type": "integer"
         },
+        "min_savings_tokens": {
+          "description": "Absolute minimum-savings floor, in tokens. Skip auto-shake when the read-only preview reports it would free fewer tokens than this, even if `min_elidable_percent` is cleared — matters most on small context windows. Global override; defaults to 4000.",
+          "format": "int64",
+          "type": "integer"
+        },
         "models": {
           "additionalProperties": {
             "$ref": "#/definitions/AutoShakeModelToml"

@@ -10,7 +10,8 @@
 //!
 //! Manual `/shake` mirrors oh-my-pi's aggressive preset: no savings threshold,
 //! and a small protected recent tail so the active working context is not
-//! stripped.
+//! stripped. Automatic shake protects a much larger tail
+//! (`AUTO_PROTECT_TOKENS`) since it runs unattended.
 //!
 //! NOTE ON OFFSETS: block detection works in *byte* offsets by iterating lines
 //! through `str::split_inclusive`; region application converts the recorded
@@ -39,8 +40,15 @@ pub(crate) use codex_protocol::protocol::ShakeMode;
 
 /// Manual `/shake` is aggressive: no savings threshold and drops eligible
 /// regions across history. Still keeps a small recent tail (~4k tokens) so it
-/// cannot strip the tool outputs the agent is currently working from.
-const MANUAL_PROTECT_TOKENS: usize = 4_000;
+/// cannot strip the tool outputs the agent is currently working from. Matches
+/// oh-my-pi's aggressive/manual preset `protectTokens`.
+pub(crate) const MANUAL_PROTECT_TOKENS: usize = 4_000;
+
+/// Automatic shake protects a much larger recent tail than manual: it runs
+/// unattended, so it must not risk stripping content the agent is actively
+/// relying on this turn. Matches oh-my-pi's default automatic preset
+/// `protectTokens` (`DEFAULT_SHAKE_CONFIG.protectTokens`).
+pub(crate) const AUTO_PROTECT_TOKENS: usize = 16_000;
 
 /// Minimum token size for a fenced/XML block or tool output to be eligible for
 /// elision.
@@ -496,8 +504,14 @@ pub(crate) fn shake_thinking(items: &mut Vec<ResponseItemEnvelope>) -> ShakeResu
 /// Elide history while saving each original region before replacing it. A
 /// failed save leaves that region untouched, so its placeholder never promises
 /// recovery that is not durable.
+///
+/// `protect_tokens` is the size of the trailing window (measured from the most
+/// recent envelope backwards) that is never eligible for elision. Callers pass
+/// [`MANUAL_PROTECT_TOKENS`] for operator-driven `/shake` and
+/// [`AUTO_PROTECT_TOKENS`] for the automatic pre-sampling trigger.
 pub(crate) fn shake_elide_with_recovery(
     items: &mut [ResponseItemEnvelope],
+    protect_tokens: usize,
     save: &mut dyn FnMut(&str, &str) -> Option<String>,
 ) -> ShakeResult {
     let mut result = ShakeResult::default();
@@ -516,7 +530,7 @@ pub(crate) fn shake_elide_with_recovery(
     let mut block_regions: Vec<BlockRegion> = Vec::new();
 
     for (i, envelope) in items.iter_mut().enumerate() {
-        if accumulated_after[i] < MANUAL_PROTECT_TOKENS {
+        if accumulated_after[i] < protect_tokens {
             continue;
         }
         match &mut envelope.item {
@@ -706,7 +720,7 @@ mod tests {
         let mut save = |_content: &str, _label: &str| {
             Some("artifact://00000000000000000000000000000000".to_string())
         };
-        let result = shake_elide_with_recovery(&mut items, &mut save);
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert_eq!(result.tool_outputs_elided, 1);
         assert!(result.tokens_freed > 0);
         let ResponseItem::FunctionCallOutput { output, .. } = &items[1].item else {
@@ -727,7 +741,7 @@ mod tests {
         let mut save = |_content: &str, _label: &str| {
             Some("artifact://00000000000000000000000000000000".to_string())
         };
-        let result = shake_elide_with_recovery(&mut items, &mut save);
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert_eq!(result.tool_outputs_elided, 0);
     }
 
@@ -738,7 +752,7 @@ mod tests {
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| None;
 
-        let result = shake_elide_with_recovery(&mut items, &mut save);
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
 
         assert_eq!(result.tool_outputs_elided, 0);
         let ResponseItem::FunctionCallOutput { output, .. } = &items[0].item else {
@@ -755,7 +769,7 @@ mod tests {
 
         let mut save =
             |_content: &str, _label: &str| panic!("recovered output should not be saved again");
-        let result = shake_elide_with_recovery(&mut items, &mut save);
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
 
         assert_eq!(result.tool_outputs_elided, 0);
     }
@@ -770,7 +784,7 @@ mod tests {
             Some("artifact://00000000000000000000000000000001".to_string())
         };
 
-        let result = shake_elide_with_recovery(&mut items, &mut save);
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
 
         assert_eq!(result.tool_outputs_elided, 1);
     }
@@ -782,7 +796,7 @@ mod tests {
         let mut save = |_content: &str, _label: &str| {
             Some("artifact://00000000000000000000000000000000".to_string())
         };
-        let result = shake_elide_with_recovery(&mut items, &mut save);
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert!(
             result.blocks_elided >= 1,
             "expected a block elision: {result:?}"

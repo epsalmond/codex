@@ -575,6 +575,12 @@ pub struct AutoShakeToml {
     /// histories with little elidable content. Global override.
     pub min_elidable_percent: Option<i64>,
 
+    /// Absolute minimum-savings floor, in tokens. Skip auto-shake when the
+    /// read-only preview reports it would free fewer tokens than this, even if
+    /// `min_elidable_percent` is cleared — matters most on small context
+    /// windows. Global override; defaults to 4000.
+    pub min_savings_tokens: Option<i64>,
+
     /// Per-model-family overrides keyed by family prefix, e.g. `gpt-5.6` or
     /// `gpt-6-astra`. A family matches a slug that equals it or extends it with
     /// a `-` suffix (`gpt-5.6` matches `gpt-5.6-sol`), after provider and

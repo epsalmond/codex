@@ -4495,6 +4495,7 @@ async fn build_agent_spawn_config_inherits_auto_shake() {
     parent.auto_shake = crate::config::AutoShakeConfig {
         threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(42)),
         min_elidable_percent: Some(7),
+        min_savings_tokens: None,
         models: std::collections::BTreeMap::from([(
             "gpt-6-astra".to_string(),
             crate::config::AutoShakeModelConfig {
