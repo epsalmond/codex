@@ -11,7 +11,9 @@
 //! Manual `/shake` mirrors oh-my-pi's aggressive preset: no savings threshold,
 //! and a small protected recent tail so the active working context is not
 //! stripped. Automatic shake protects a much larger tail
-//! (`AUTO_PROTECT_TOKENS`) since it runs unattended.
+//! (`AUTO_PROTECT_TOKENS`) since it runs unattended. Both paths also refuse to
+//! touch the outputs of the tools in [`protection::PROTECTED_TOOLS`],
+//! regardless of size or age.
 //!
 //! NOTE ON OFFSETS: block detection works in *byte* offsets by iterating lines
 //! through `str::split_inclusive`; region application converts the recorded
@@ -32,7 +34,9 @@ use codex_utils_output_truncation::approx_tokens_from_byte_count;
 
 pub(crate) mod auto;
 pub(crate) mod preview;
+pub(crate) mod protection;
 mod recovery;
+use self::protection::protected_output_flags;
 use self::recovery::is_artifact_recovery_output;
 use self::recovery::recovery_placeholder;
 
@@ -509,6 +513,9 @@ pub(crate) fn shake_thinking(items: &mut Vec<ResponseItemEnvelope>) -> ShakeResu
 /// recent envelope backwards) that is never eligible for elision. Callers pass
 /// [`MANUAL_PROTECT_TOKENS`] for operator-driven `/shake` and
 /// [`AUTO_PROTECT_TOKENS`] for the automatic pre-sampling trigger.
+///
+/// Outputs of the tools in [`protection::PROTECTED_TOOLS`] are skipped on both
+/// paths, however large or old they are.
 pub(crate) fn shake_elide_with_recovery(
     items: &mut [ResponseItemEnvelope],
     protect_tokens: usize,
@@ -527,10 +534,17 @@ pub(crate) fn shake_elide_with_recovery(
         acc += envelope_tokens(&items[i]);
     }
 
+    // Tool-identity protection, resolved in a read-only pass because it has to
+    // pair each output with its `call_id`'s tool call.
+    let protected_output = protected_output_flags(items);
+
     let mut block_regions: Vec<BlockRegion> = Vec::new();
 
     for (i, envelope) in items.iter_mut().enumerate() {
         if accumulated_after[i] < protect_tokens {
+            continue;
+        }
+        if protected_output[i] {
             continue;
         }
         match &mut envelope.item {
@@ -630,6 +644,36 @@ mod tests {
             output: FunctionCallOutputPayload::from_text(text.to_string()),
             internal_chat_message_metadata_passthrough: None,
         })
+    }
+
+    /// A `FunctionCall` / `FunctionCallOutput` pair for `name` (optionally
+    /// namespaced), the shape real history has: the output itself carries no
+    /// tool name, so protection has to resolve it through `call_id`.
+    fn call_and_output(
+        call_id: &str,
+        namespace: Option<&str>,
+        name: &str,
+        text: &str,
+    ) -> Vec<ResponseItemEnvelope> {
+        vec![
+            ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                id: None,
+                name: name.to_string(),
+                namespace: namespace.map(str::to_string),
+                arguments: "{}".to_string(),
+                encrypted_function_args: None,
+                call_id: call_id.to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: Some(call_id.to_string()),
+                name: None,
+                namespace: None,
+                output: FunctionCallOutputPayload::from_text(text.to_string()),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+        ]
     }
 
     fn big_lines(count: usize, prefix: &str) -> String {
@@ -808,6 +852,71 @@ mod tests {
             panic!("expected text");
         };
         assert!(text.contains("[shaken ~"), "got: {text}");
+    }
+
+    /// A protected tool's output survives even the aggressive manual preset,
+    /// and even with no `artifact://` / `[shaken …]` marker in its text — this
+    /// is tool-identity protection, not the marker guard.
+    #[test_case::test_case(None, "read_artifact"; "artifact recovery read")]
+    #[test_case::test_case(Some("skills"), "read"; "skill read")]
+    #[test_case::test_case(Some("skills"), "list"; "skill list")]
+    fn shake_elide_protects_protected_tool_output(namespace: Option<&str>, name: &str) {
+        let big = big_lines(1_200, "protected tool output line");
+        let mut items = vec![text_item("user", "load the thing")];
+        items.extend(call_and_output("protected-call", namespace, name, &big));
+        items.extend(tail_pad());
+        let mut save =
+            |_content: &str, _label: &str| panic!("a protected tool output must not be saved");
+
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
+
+        assert_eq!(result.tool_outputs_elided, 0);
+        assert_eq!(result.tokens_freed, 0);
+        let ResponseItem::FunctionCallOutput { output, .. } = &items[2].item else {
+            panic!("expected output");
+        };
+        assert_eq!(output.body.to_text().expect("text output"), big);
+    }
+
+    /// The same shape with an unprotected tool name *is* elided, so the test
+    /// above is measuring protection and not some unrelated skip.
+    #[test]
+    fn shake_elide_still_elides_an_unprotected_tool_output() {
+        let big = big_lines(1_200, "protected tool output line");
+        let mut items = vec![text_item("user", "load the thing")];
+        items.extend(call_and_output(
+            "plain-call",
+            /*namespace*/ None,
+            "exec_command",
+            &big,
+        ));
+        items.extend(tail_pad());
+        let mut save = |_content: &str, _label: &str| {
+            Some("artifact://00000000000000000000000000000000".to_string())
+        };
+
+        let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
+
+        assert_eq!(result.tool_outputs_elided, 1);
+    }
+
+    /// Automatic shake uses the same protection (omp protects skill reads in
+    /// its default preset as well as its aggressive one).
+    #[test]
+    fn shake_elide_protects_protected_tool_output_on_the_auto_path() {
+        let big = big_lines(1_200, "protected tool output line");
+        let mut items = call_and_output("protected-call", Some("skills"), "read", &big);
+        // `AUTO_PROTECT_TOKENS` is 16k, so pad well past it to prove the skip
+        // is protection and not the recent-tail window.
+        for _ in 0..6 {
+            items.extend(tail_pad());
+        }
+        let mut save =
+            |_content: &str, _label: &str| panic!("a protected tool output must not be saved");
+
+        let result = shake_elide_with_recovery(&mut items, AUTO_PROTECT_TOKENS, &mut save);
+
+        assert_eq!(result.tool_outputs_elided, 0);
     }
 
     #[test]

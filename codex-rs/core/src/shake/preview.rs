@@ -109,3 +109,80 @@ pub(crate) fn fingerprint(
     }
     Ok(format!("{:x}", digest.finalize()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::ContentItem;
+    use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::models::ResponseItem;
+    use pretty_assertions::assert_eq;
+
+    fn text_item(role: &str, text: &str) -> ResponseItemEnvelope {
+        ResponseItemEnvelope::new(ResponseItem::Message {
+            id: None,
+            role: role.to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        })
+    }
+
+    /// History whose only elidable-sized tool output belongs to `name` in
+    /// `namespace`, plus enough plain-text tail to clear the protect window.
+    fn history(namespace: Option<&str>, name: &str) -> Vec<ResponseItemEnvelope> {
+        let big = "protected tool output line with padding words\n".repeat(/*n*/ 1_200);
+        let mut items = vec![
+            ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                id: None,
+                name: name.to_string(),
+                namespace: namespace.map(str::to_string),
+                arguments: "{}".to_string(),
+                encrypted_function_args: None,
+                call_id: "preview-call".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: Some("preview-call".to_string()),
+                name: None,
+                namespace: None,
+                output: FunctionCallOutputPayload::from_text(big),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+        ];
+        for index in 0..32 {
+            items.push(text_item(
+                "assistant",
+                &format!("tail {index}: {}", "some padding words ".repeat(/*n*/ 30)),
+            ));
+        }
+        items
+    }
+
+    /// The preview must not count a protected tool's output, so `/shake`'s
+    /// confirmation prompt never promises savings a shake cannot deliver.
+    #[test]
+    fn preview_does_not_count_protected_tool_outputs() {
+        let estimate = estimate_shake(
+            &history(Some("skills"), "read"),
+            ShakeMode::Elide,
+            super::super::MANUAL_PROTECT_TOKENS,
+            /*persistent_thread*/ true,
+        );
+        assert_eq!(estimate.result.tool_outputs_elided, 0);
+        assert_eq!(estimate.tokens_after, estimate.tokens_before);
+
+        // Same history with an unprotected tool name is counted.
+        let estimate = estimate_shake(
+            &history(/*namespace*/ None, "exec_command"),
+            ShakeMode::Elide,
+            super::super::MANUAL_PROTECT_TOKENS,
+            /*persistent_thread*/ true,
+        );
+        assert_eq!(estimate.result.tool_outputs_elided, 1);
+        assert!(estimate.tokens_after < estimate.tokens_before);
+    }
+}

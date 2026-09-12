@@ -8,6 +8,7 @@ use anyhow::Result;
 use codex_core::TurnInputRequest;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ShakeMode;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::mount_sse_sequence;
@@ -185,4 +186,130 @@ async fn auto_shake_elides_before_the_next_sampling_request(enabled: bool) -> Re
         );
     }
     Ok(())
+}
+
+/// Same history shape as above, but the oversized output belongs to a
+/// protected tool (`skills.read`). Auto-shake must leave it alone, and the
+/// manual preview must not count it — otherwise `/shake` would promise savings
+/// a shake cannot deliver. Mirrors oh-my-pi's `protectedTools`, which is
+/// checked before elision in both the default and aggressive presets.
+#[test_case::test_case(Some("skills"), "read"; "skill read")]
+#[test_case::test_case(None, "read_artifact"; "artifact recovery read")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_shake_never_elides_a_protected_tool_output(
+    namespace: Option<&'static str>,
+    tool_name: &'static str,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", "first"),
+                ev_completed_with_input_tokens("r1", /*input_tokens*/ 70_000),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", "second"),
+                ev_completed_with_input_tokens("r2", /*input_tokens*/ 70_000),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("gpt-5.6-luna")
+        .with_config(move |config| config.model_context_window = Some(TEST_CONTEXT_WINDOW));
+    let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
+    Box::pin(
+        fixture
+            .codex
+            .inject_response_items(protected_history(namespace, tool_name)?),
+    )
+    .await?;
+
+    // The manual preview must report nothing to elide either.
+    let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+    assert_eq!(
+        (preview.tool_outputs, preview.text_blocks),
+        (0, 0),
+        "a protected tool output must not be counted by the preview"
+    );
+    assert_eq!(
+        preview.tokens_after, preview.tokens_before,
+        "a preview that counts nothing must report no savings"
+    );
+
+    for message in ["first prompt", "second prompt"] {
+        Box::pin(
+            fixture
+                .codex
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: message.to_string(),
+                    text_elements: Vec::new(),
+                }])),
+        )
+        .await?;
+        Box::pin(wait_for_event(&fixture.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        }))
+        .await;
+    }
+
+    let bodies: Vec<String> = request_log
+        .requests()
+        .iter()
+        .map(|request| request.body_json().to_string())
+        .collect();
+    assert_eq!(bodies.len(), 2, "auto-shake must not add a model request");
+    for (index, body) in bodies.iter().enumerate() {
+        assert!(
+            body.contains(AUTO_SHAKE_MARKER),
+            "request {index} must still carry the protected tool output"
+        );
+    }
+    let artifacts = fixture
+        .codex_home_path()
+        .join("artifacts")
+        .join(fixture.session_configured.thread_id.to_string());
+    assert!(
+        !artifacts.exists(),
+        "nothing was elided, so no artifact should be written"
+    );
+    Ok(())
+}
+
+/// `oversized_history` with the tool call renamed to a protected tool. The
+/// output carries no tool name of its own (that is how real history looks), so
+/// protection has to resolve it through the call's `call_id`.
+fn protected_history(namespace: Option<&str>, tool_name: &str) -> Result<Vec<ResponseItem>> {
+    let mut call = json!({
+        "type": "function_call",
+        "id": "call-item",
+        "call_id": "auto-shake-protected",
+        "name": tool_name,
+        "arguments": "{}"
+    });
+    if let Some(namespace) = namespace {
+        call["namespace"] = json!(namespace);
+    }
+    Ok(vec![
+        serde_json::from_value(json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "load the protected thing"}]
+        }))?,
+        serde_json::from_value(call)?,
+        serde_json::from_value(json!({
+            "type": "function_call_output",
+            "call_id": "auto-shake-protected",
+            "output": format!("{AUTO_SHAKE_MARKER}\n").repeat(/*n*/ 8_000)
+        }))?,
+        serde_json::from_value(json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "tail context ".repeat(/*n*/ 6_000)}]
+        }))?,
+    ])
 }

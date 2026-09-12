@@ -11,6 +11,7 @@ Implementation:
 | Pure transform (region detection, in-place mutation) | `codex-rs/core/src/shake.rs` |
 | Read-only measurement (`/shake` preview, auto-shake decision input) | `codex-rs/core/src/shake/preview.rs` |
 | Recoverable placeholders / artifact markers | `codex-rs/core/src/shake/recovery.rs` |
+| Protected-tool allowlist (outputs shake never elides) | `codex-rs/core/src/shake/protection.rs` |
 | Auto-shake decision layer (pure, unit-tested) | `codex-rs/core/src/shake/auto.rs` |
 | Orchestration (persist, re-account, announce) | `codex-rs/core/src/session/handlers.rs` (`shake`, `apply_shake`) |
 | Auto-shake trigger | `codex-rs/core/src/session/turn.rs` (`maybe_run_pre_sampling_auto_shake`) |
@@ -31,6 +32,45 @@ the much larger `AUTO_PROTECT_TOKENS` (16,000 tokens, matching oh-my-pi's
 default automatic preset) since it runs unattended and must not risk
 stripping content the agent is actively relying on. Only blocks above
 `FENCE_MIN_TOKENS` (400) are eligible.
+
+## Protected tools
+
+Some tool outputs are never elided, however large or old they are, and whether
+the shake was manual or automatic. `shake/protection.rs` holds the allowlist
+(`PROTECTED_TOOLS`), matched on the tool *identity* of the call that produced
+the output:
+
+| Tool | Why it is protected |
+| --- | --- |
+| `read_artifact` | It is the artifact-recovery read itself. Eliding a recovery read only mints another artifact, and can repeat indefinitely. |
+| `skills.read` | Skill content is loaded deliberately and is what the agent is working from. |
+| `skills.list` | Same: the skill catalog the agent is choosing from. |
+
+This mirrors oh-my-pi's `protectedTools` matcher list
+(`packages/agent/src/compaction/tool-protection.ts`), which is checked *before*
+elision in both its default (automatic) and aggressive (manual) presets —
+`"skill"`, `isSkillReadToolResult` (a `read` of a `skill://` path), and
+`isArtifactRecoveryToolResult` (a `read` of an `artifact://` path). The fork's
+`skills` namespace is the equivalent of omp's `skill` tool plus its `skill://`
+read matcher, and `read_artifact` the equivalent of its `artifact://` read
+matcher.
+
+A tool output carries no tool name on the wire —
+`ResponseInputItem::FunctionCallOutput` has no `name` field, and the conversion
+into `ResponseItem::FunctionCallOutput` sets `name: None` — so protection pairs
+each output with its `call_id`'s `FunctionCall` / `CustomToolCall` to recover
+the name. An output that *does* carry its own name (a replayed rollout, say) is
+honored directly.
+
+Protection is separate from, and additional to, the marker-based guard in
+`shake/recovery.rs`, which stops *re*-eliding text that already carries an
+`artifact://<id>` or `[shaken …]` marker. The allowlist stops the *first*
+elision of a protected tool's output, which the marker guard cannot see.
+
+Because `/shake`'s preview runs the real transformation on a copy
+(`estimate_shake`), protected outputs are excluded from the preview's counts and
+token estimate automatically — the confirmation prompt never promises savings a
+shake cannot deliver.
 
 `elide` requires a **persistent thread**: artifacts are files under
 `$CODEX_HOME/artifacts/<thread-id>/`, and an ephemeral thread has nowhere durable
