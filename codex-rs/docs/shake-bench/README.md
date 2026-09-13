@@ -1,5 +1,7 @@
 # shake-bench
 
+**Headline numbers: [RESULTS.md](RESULTS.md).** The rest of this page is how to run it.
+
 A retention benchmark for **shake**, the Codex fork's surgical context-reduction
 feature. Shake deletes item classes from a thread's live history (tool outputs,
 images, thinking blocks) and leaves recovery placeholders pointing at per-thread
