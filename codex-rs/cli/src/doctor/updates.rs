@@ -395,6 +395,7 @@ fn update_action_label(context: &InstallContext) -> &'static str {
         InstallMethod::Pnpm => "pnpm add -g @openai/codex",
         InstallMethod::Brew => "brew upgrade --cask codex",
         InstallMethod::Standalone { .. } => "standalone installer",
+        InstallMethod::CodexShake { .. } => "install.sh (codex-shake)",
         InstallMethod::Other => "manual or unknown",
     }
 }
@@ -410,6 +411,7 @@ async fn fetch_latest_version(
         | InstallMethod::VitePlus
         | InstallMethod::Pnpm
         | InstallMethod::Standalone { .. }
+        | InstallMethod::CodexShake { .. }
         | InstallMethod::Other => fetch_latest_github_release_version(client).await,
     }
 }

@@ -22,6 +22,8 @@ pub enum UpdateAction {
     StandaloneUnix,
     /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
     StandaloneWindows,
+    /// Update via `install.sh` for Eric's `codex-shake` fork build.
+    CodexShakeInstallScript,
 }
 
 impl UpdateAction {
@@ -37,6 +39,7 @@ impl UpdateAction {
                 StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
                 StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
             }),
+            InstallMethod::CodexShake { .. } => Some(UpdateAction::CodexShakeInstallScript),
             InstallMethod::Other => None,
         }
     }
@@ -65,6 +68,9 @@ impl UpdateAction {
                     "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
                 ],
             ),
+            UpdateAction::CodexShakeInstallScript => {
+                ("sh", &["-c", crate::fork_update::FORK_INSTALL_COMMAND])
+            }
         }
     }
 
@@ -149,6 +155,32 @@ mod tests {
                 package_layout: None,
             }),
             Some(UpdateAction::StandaloneWindows)
+        );
+        let codex_shake_release_dir =
+            AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("codex-shake-release"))
+                .expect("temp dir path should be absolute");
+        assert_eq!(
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::CodexShake {
+                    release_dir: codex_shake_release_dir,
+                },
+                package_layout: None,
+            }),
+            Some(UpdateAction::CodexShakeInstallScript)
+        );
+    }
+
+    #[test]
+    fn codex_shake_update_command_matches_install_sh() {
+        assert_eq!(
+            UpdateAction::CodexShakeInstallScript.command_args(),
+            (
+                "sh",
+                &[
+                    "-c",
+                    "curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | bash"
+                ][..],
+            )
         );
     }
 

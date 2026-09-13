@@ -112,6 +112,7 @@ fn install_method_name(context: &InstallContext) -> &'static str {
         InstallMethod::VitePlus => "vite+",
         InstallMethod::Pnpm => "pnpm",
         InstallMethod::Brew => "brew",
+        InstallMethod::CodexShake { .. } => "codex-shake",
         InstallMethod::Other => "local build",
     }
 }

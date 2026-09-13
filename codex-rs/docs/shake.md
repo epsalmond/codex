@@ -4,6 +4,22 @@
 without asking a model to summarize. It is a fork-local feature (not upstream),
 so this file is its reference documentation.
 
+(Naming note: this doc is about the context-reduction feature above, not the
+`codex-shake` binary name the fork installs itself as — see "Updating" below
+for that.)
+
+## Updating
+
+The fork binary (`codex-shake`, installed by `install.sh` at the repo root)
+embeds the release tag it was built from. When a newer `local-features-v*`
+release is published to
+[epsalmond/codex releases](https://github.com/epsalmond/codex/releases), the
+TUI's normal update-check machinery (`tui/src/updates.rs`) notices it the same
+way it notices upstream Codex releases, and offers the fork's own reinstall
+command instead of npm/brew/etc. Run `codex-shake update` to check on demand
+(bypassing the cache) and print the current/latest tags; add `--yes`/`-y` to
+run the install command immediately.
+
 Implementation:
 
 | Area | Path |

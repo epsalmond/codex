@@ -28,6 +28,14 @@ use tokio_stream::StreamExt;
 
 const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
 
+fn release_notes_url() -> &'static str {
+    if crate::fork_update::is_fork_build() {
+        crate::fork_update::FORK_RELEASE_NOTES_URL
+    } else {
+        RELEASE_NOTES_URL
+    }
+}
+
 pub(crate) enum UpdatePromptOutcome {
     Continue,
     RunUpdate(UpdateAction),
@@ -207,7 +215,7 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push(
             Line::from(vec![
                 "Release notes: ".dim(),
-                RELEASE_NOTES_URL.dim().underlined(),
+                release_notes_url().dim().underlined(),
             ])
             .inset(Insets::tlbr(0, 2, 0, 0)),
         );
@@ -237,7 +245,7 @@ impl WidgetRef for &UpdatePromptScreen {
             .inset(Insets::tlbr(0, 2, 0, 0)),
         );
         column.render(area, buf);
-        crate::terminal_hyperlinks::mark_underlined_hyperlink(buf, area, RELEASE_NOTES_URL);
+        crate::terminal_hyperlinks::mark_underlined_hyperlink(buf, area, release_notes_url());
     }
 }
 

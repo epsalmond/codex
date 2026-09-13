@@ -1007,6 +1007,9 @@ fn describe_install_context(context: &InstallContext) -> String {
         InstallMethod::Brew => {
             describe_method_with_package_layout("brew", context.package_layout.as_ref())
         }
+        InstallMethod::CodexShake { release_dir } => {
+            format!("codex-shake (release {})", release_dir.display())
+        }
         InstallMethod::Other => {
             describe_method_with_package_layout("other", context.package_layout.as_ref())
         }

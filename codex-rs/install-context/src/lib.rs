@@ -75,6 +75,13 @@ pub enum InstallMethod {
     VitePlus,
     /// A Codex binary that appears to come from a Homebrew install prefix.
     Brew,
+    /// A Codex binary installed by Eric's `codex-shake` fork installer
+    /// (`install.sh`), running from under `~/.local/share/codex-shake/`
+    /// (or the `CODEX_SHAKE_HOME` override).
+    CodexShake {
+        /// The `<tag>` release directory the running executable lives in.
+        release_dir: AbsolutePathBuf,
+    },
     /// Any other execution environment.
     ///
     /// This commonly covers `cargo run`, app-bundled Codex binaries, custom
@@ -292,6 +299,10 @@ fn install_method_from_exe(
     package_layout: Option<&CodexPackageLayout>,
     is_macos: bool,
 ) -> InstallMethod {
+    if let Some(shake_method) = codex_shake_install_method(exe_path) {
+        return shake_method;
+    }
+
     if let Some(standalone_method) = standalone_install_method(exe_path, codex_home, package_layout)
     {
         return standalone_method;
@@ -301,6 +312,36 @@ fn install_method_from_exe(
         InstallMethod::Brew
     } else {
         InstallMethod::Other
+    }
+}
+
+/// Environment variable `install.sh` honors to relocate the `codex-shake`
+/// install root; detection here honors the same override so a running
+/// executable's canonical path is checked against the same directory the
+/// installer would have placed it under.
+const CODEX_SHAKE_HOME_ENV: &str = "CODEX_SHAKE_HOME";
+const CODEX_SHAKE_DEFAULT_SUBDIR: &str = ".local/share/codex-shake";
+
+fn codex_shake_home() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(CODEX_SHAKE_HOME_ENV)
+        && !value.is_empty()
+    {
+        return Some(PathBuf::from(value));
+    }
+    let mut home = dirs::home_dir()?;
+    home.push(CODEX_SHAKE_DEFAULT_SUBDIR);
+    Some(home)
+}
+
+fn codex_shake_install_method(exe_path: &Path) -> Option<InstallMethod> {
+    let canonical_exe = canonical_absolute_path(exe_path)?;
+    let release_dir = canonical_exe.parent()?;
+    let shake_home = codex_shake_home()?;
+    let canonical_shake_home = canonical_absolute_path(&shake_home)?;
+    if release_dir.starts_with(canonical_shake_home.as_path()) {
+        Some(InstallMethod::CodexShake { release_dir })
+    } else {
+        None
     }
 }
 
@@ -879,6 +920,72 @@ mod tests {
                 package_layout: None,
             }
         );
+    }
+
+    #[test]
+    fn codex_shake_home_env_override_is_detected() -> std::io::Result<()> {
+        let shake_home = tempfile::tempdir()?;
+        let release_dir = shake_home
+            .path()
+            .join("local-features-v0.155.0-r202609131200.abc1234");
+        fs::create_dir_all(&release_dir)?;
+        let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+        let canonical_release_dir =
+            AbsolutePathBuf::from_absolute_path(release_dir.canonicalize()?)?;
+
+        // SAFETY: this test runs in its own nextest process, so mutating our
+        // own environment cannot race with other tests.
+        unsafe {
+            std::env::set_var(CODEX_SHAKE_HOME_ENV, shake_home.path());
+        }
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+            /*codex_home*/ None,
+        );
+        unsafe {
+            std::env::remove_var(CODEX_SHAKE_HOME_ENV);
+        }
+
+        assert_eq!(
+            context,
+            InstallContext {
+                method: InstallMethod::CodexShake {
+                    release_dir: canonical_release_dir,
+                },
+                package_layout: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn codex_shake_home_env_override_ignores_paths_outside_it() -> std::io::Result<()> {
+        let shake_home = tempfile::tempdir()?;
+        let elsewhere = tempfile::tempdir()?;
+        let exe_path = elsewhere
+            .path()
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+
+        // SAFETY: see above.
+        unsafe {
+            std::env::set_var(CODEX_SHAKE_HOME_ENV, shake_home.path());
+        }
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+            /*codex_home*/ None,
+        );
+        unsafe {
+            std::env::remove_var(CODEX_SHAKE_HOME_ENV);
+        }
+
+        assert_eq!(context.method, InstallMethod::Other);
+        Ok(())
     }
 
     #[test]
