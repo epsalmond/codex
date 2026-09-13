@@ -181,7 +181,7 @@ enum Subcommand {
     Completion(CompletionCommand),
 
     /// Update Codex to the latest version.
-    Update,
+    Update(UpdateCommand),
 
     /// Diagnose local Codex installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
@@ -245,6 +245,13 @@ struct CompletionCommand {
     /// Shell to generate completions for
     #[clap(value_enum, default_value_t = Shell::Bash)]
     shell: Shell,
+}
+
+#[derive(Debug, Parser)]
+struct UpdateCommand {
+    /// Run the update command instead of only printing it.
+    #[arg(long = "yes", short = 'y', default_value_t = false)]
+    yes: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -958,9 +965,10 @@ fn resolve_windows_update_command_from_path(
         .ok_or_else(|| anyhow::anyhow!("could not find update command `{command}` on PATH"))
 }
 
-fn run_update_command() -> anyhow::Result<()> {
+async fn run_update_command(yes: bool) -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     {
+        let _ = yes;
         anyhow::bail!(
             "`codex update` is not available in debug builds. Install a release build of Codex to use this command."
         );
@@ -968,13 +976,68 @@ fn run_update_command() -> anyhow::Result<()> {
 
     #[cfg(not(debug_assertions))]
     {
+        if let Some(current_tag) = codex_tui::fork_release_tag() {
+            let cli_overrides = CliConfigOverrides::default()
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let config = ConfigBuilder::default()
+                .cli_overrides(cli_overrides)
+                .build()
+                .await
+                .map_err(anyhow::Error::from);
+            let http_client_factory = updater_http_client_factory(config);
+
+            println!("Current release: {current_tag}");
+            match codex_tui::check_fork_update_now(http_client_factory).await? {
+                Some(latest_tag) if codex_tui::fork_tag_is_newer(&latest_tag, current_tag) => {
+                    let install_command = codex_tui::fork_install_command();
+                    println!("Latest release:  {latest_tag}");
+                    println!("Update available. Run:\n  {install_command}");
+                    if yes {
+                        return run_shell_command(install_command);
+                    }
+                }
+                Some(latest_tag) => {
+                    println!("Latest release:  {latest_tag}");
+                    println!("Up to date.");
+                }
+                None => {
+                    println!("Could not determine the latest fork release.");
+                }
+            }
+            return Ok(());
+        }
+
         let Some(action) = codex_tui::get_update_action() else {
-            anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+            println!(
+                "Self-update is not supported for this install. Please update manually: https://developers.openai.com/codex/cli/"
             );
+            return Ok(());
         };
-        run_update_action(action)
+        let cmd_str = action.command_str();
+        println!("Update command: {cmd_str}");
+        if yes {
+            run_update_action(action)
+        } else {
+            Ok(())
+        }
     }
+}
+
+/// Run `sh -c <cmd_str>` for the `codex update --yes` fork-install path and
+/// report the exit status, mirroring `run_update_action`'s error handling.
+#[cfg(not(debug_assertions))]
+fn run_shell_command(cmd_str: &str) -> anyhow::Result<()> {
+    println!("\nRunning `{cmd_str}`...");
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd_str)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("`{cmd_str}` failed with status {status}");
+    }
+    println!("\n🎉 Update ran successfully! Please restart Codex.");
+    Ok(())
 }
 
 fn run_execpolicycheck(cmd: ExecPolicyCheckCommand) -> anyhow::Result<()> {
@@ -1642,13 +1705,13 @@ async fn cli_main(
             )?;
             print_completion(completion_cli);
         }
-        Some(Subcommand::Update) => {
+        Some(Subcommand::Update(update_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
                 "update",
             )?;
-            run_update_command()?;
+            run_update_command(update_cli.yes).await?;
         }
         Some(Subcommand::Doctor(doctor_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -2565,7 +2628,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
         Some(Subcommand::Completion(_)) => Some("completion"),
-        Some(Subcommand::Update) => Some("update"),
+        Some(Subcommand::Update(_)) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
         Some(Subcommand::Sandbox(_)) => Some("sandbox"),
         Some(Subcommand::Debug(_)) => Some("debug"),
@@ -3758,7 +3821,24 @@ mod tests {
     #[test]
     fn update_parses_as_update_subcommand() {
         let cli = MultitoolCli::try_parse_from(["codex", "update"]).expect("parse");
-        assert!(matches!(cli.subcommand, Some(Subcommand::Update)));
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Update(UpdateCommand { yes: false }))
+        ));
+    }
+
+    #[test]
+    fn update_parses_yes_flag() {
+        let cli = MultitoolCli::try_parse_from(["codex", "update", "--yes"]).expect("parse");
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Update(UpdateCommand { yes: true }))
+        ));
+        let cli = MultitoolCli::try_parse_from(["codex", "update", "-y"]).expect("parse");
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Update(UpdateCommand { yes: true }))
+        ));
     }
 
     #[test]
