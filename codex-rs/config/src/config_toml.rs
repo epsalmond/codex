@@ -564,10 +564,11 @@ pub struct AutoReviewToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AutoShakeToml {
-    /// Global auto-shake threshold: `"off"`, an integer percent (`40`), or a
-    /// percent string (`"40%"`), of the model's resolved context window.
-    /// `"inherit"` is invalid at the global level (there is nothing to
-    /// inherit from) and is rejected as a config error.
+    /// Global auto-shake threshold: `"off"`, an integer percent (`40`) or a
+    /// percent string (`"40%"`) of the model's resolved context window, or an
+    /// absolute token count (`"160k"`, `160000`) above 100. `"inherit"` is
+    /// invalid at the global level (there is nothing to inherit from) and is
+    /// rejected as a config error.
     pub threshold: Option<AutoShakeThresholdToml>,
 
     /// Skip auto-shake when the read-only preview reports that it would free
@@ -594,41 +595,94 @@ pub struct AutoShakeToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AutoShakeModelToml {
-    /// Family threshold: `"off"`, an integer/percent-string percent, or
-    /// `"inherit"` to defer to the resolved global `auto_shake.threshold`.
+    /// Family threshold: `"off"`, an integer/percent-string percent, an
+    /// absolute token count (`"160k"`, `160000`) above 100, or `"inherit"` to
+    /// defer to the resolved global `auto_shake.threshold`.
     pub threshold: Option<AutoShakeThresholdToml>,
     pub min_elidable_percent: Option<i64>,
 }
 
-/// Auto-shake threshold value, accepted in three forms:
+/// Auto-shake threshold value, accepted in four forms:
 ///
 /// - `"off"` — auto-shake disabled for this scope;
 /// - an integer percent (`40`) or a percent string (`"40%"`) of the model's
 ///   resolved context window;
+/// - an absolute token count, written as a string with a `k` suffix
+///   (`"160k"`) or as a bare integer/string above 100 (`160000`,
+///   `"200000"`);
 /// - `"inherit"` — defer to the resolved global value. Valid only on a
 ///   per-family entry; a global `auto_shake.threshold = "inherit"` has
 ///   nothing to inherit from and is rejected as a config error.
+///
+/// Disambiguation for a bare integer (no `%` or `k` suffix): 1..=100 is a
+/// percent, anything above 100 is an absolute token count. 0 and negative
+/// values are rejected for every numeric form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoShakeThresholdToml {
     Off,
     Percent(i64),
+    Tokens(i64),
     Inherit,
 }
 
 impl AutoShakeThresholdToml {
     fn parse_str(value: &str) -> Result<Self, String> {
         match value {
-            "off" => Ok(Self::Off),
-            "inherit" => Ok(Self::Inherit),
-            _ => {
-                let trimmed = value.strip_suffix('%').unwrap_or(value);
-                trimmed.parse::<i64>().map(Self::Percent).map_err(|_| {
-                    format!(
-                        "invalid auto_shake threshold {value:?}: expected \"off\", \"inherit\", an integer percent, or a percent string like \"40%\""
-                    )
-                })
-            }
+            "off" => return Ok(Self::Off),
+            "inherit" => return Ok(Self::Inherit),
+            _ => {}
         }
+        if let Some(percent) = value.strip_suffix('%') {
+            let percent: i64 = percent.parse().map_err(|_| {
+                format!(
+                    "invalid auto_shake threshold {value:?}: expected \"off\", \"inherit\", an integer percent, a percent string like \"40%\", or an absolute token count like \"160k\""
+                )
+            })?;
+            return Self::checked_percent(percent, value);
+        }
+        if let Some(tokens) = value.strip_suffix('k').or_else(|| value.strip_suffix('K')) {
+            let tokens: i64 = tokens.parse().map_err(|_| {
+                format!(
+                    "invalid auto_shake threshold {value:?}: expected \"off\", \"inherit\", an integer percent, a percent string like \"40%\", or an absolute token count like \"160k\""
+                )
+            })?;
+            return Self::checked_tokens(tokens.saturating_mul(1_000), value);
+        }
+        let bare: i64 = value.parse().map_err(|_| {
+            format!(
+                "invalid auto_shake threshold {value:?}: expected \"off\", \"inherit\", an integer percent, a percent string like \"40%\", or an absolute token count like \"160k\""
+            )
+        })?;
+        Self::from_bare_int(bare, value)
+    }
+
+    /// Disambiguates a bare integer (from a plain TOML integer, or a bare
+    /// numeric string with no `%`/`k` suffix): 1..=100 is a percent, above
+    /// 100 is an absolute token count. 0 and negative values are rejected.
+    fn from_bare_int(value: i64, original: impl std::fmt::Display) -> Result<Self, String> {
+        if value <= 100 {
+            Self::checked_percent(value, original)
+        } else {
+            Self::checked_tokens(value, original)
+        }
+    }
+
+    fn checked_percent(value: i64, original: impl std::fmt::Display) -> Result<Self, String> {
+        if value <= 0 {
+            return Err(format!(
+                "invalid auto_shake threshold \"{original}\": percent must be positive"
+            ));
+        }
+        Ok(Self::Percent(value))
+    }
+
+    fn checked_tokens(value: i64, original: impl std::fmt::Display) -> Result<Self, String> {
+        if value <= 0 {
+            return Err(format!(
+                "invalid auto_shake threshold \"{original}\": absolute token count must be positive"
+            ));
+        }
+        Ok(Self::Tokens(value))
     }
 }
 
@@ -644,7 +698,9 @@ impl<'de> Deserialize<'de> for AutoShakeThresholdToml {
             Str(String),
         }
         match Raw::deserialize(deserializer)? {
-            Raw::Int(value) => Ok(AutoShakeThresholdToml::Percent(value)),
+            Raw::Int(value) => {
+                AutoShakeThresholdToml::from_bare_int(value, value).map_err(SerdeError::custom)
+            }
             Raw::Str(value) => {
                 AutoShakeThresholdToml::parse_str(&value).map_err(SerdeError::custom)
             }
@@ -661,6 +717,7 @@ impl Serialize for AutoShakeThresholdToml {
             Self::Off => serializer.serialize_str("off"),
             Self::Inherit => serializer.serialize_str("inherit"),
             Self::Percent(value) => serializer.serialize_i64(*value),
+            Self::Tokens(value) => serializer.serialize_i64(*value),
         }
     }
 }
@@ -679,7 +736,7 @@ impl JsonSchema for AutoShakeThresholdToml {
             instance_type: Some(vec![InstanceType::Integer, InstanceType::String].into()),
             metadata: Some(Box::new(Metadata {
                 description: Some(
-                    "\"off\", \"inherit\" (per-family entries only), an integer percent (e.g. 40), or a percent string (e.g. \"40%\")."
+                    "\"off\", \"inherit\" (per-family entries only), an integer percent 1-100 (e.g. 40), a percent string (e.g. \"40%\"), or an absolute token count above 100 (e.g. 160000 or \"160k\"). A bare integer 1-100 is a percent; above 100 it is a token count."
                         .to_string(),
                 ),
                 ..Default::default()
@@ -1197,5 +1254,65 @@ command = "   "
                 "model_providers.amazon-bedrock: provider auth.command must not be empty"
             )
         );
+    }
+
+    #[test]
+    fn auto_shake_threshold_accepts_every_documented_spelling() {
+        let cases: &[(&str, AutoShakeThresholdToml)] = &[
+            ("\"off\"", AutoShakeThresholdToml::Off),
+            ("\"inherit\"", AutoShakeThresholdToml::Inherit),
+            ("40", AutoShakeThresholdToml::Percent(40)),
+            ("\"40\"", AutoShakeThresholdToml::Percent(40)),
+            ("\"40%\"", AutoShakeThresholdToml::Percent(40)),
+            ("100", AutoShakeThresholdToml::Percent(100)),
+            ("\"100%\"", AutoShakeThresholdToml::Percent(100)),
+            ("160000", AutoShakeThresholdToml::Tokens(160_000)),
+            ("\"160000\"", AutoShakeThresholdToml::Tokens(160_000)),
+            ("\"160k\"", AutoShakeThresholdToml::Tokens(160_000)),
+            ("\"160K\"", AutoShakeThresholdToml::Tokens(160_000)),
+            ("101", AutoShakeThresholdToml::Tokens(101)),
+            ("\"200000\"", AutoShakeThresholdToml::Tokens(200_000)),
+        ];
+        for (raw, expected) in cases {
+            let parsed: AutoShakeThresholdToml = toml::from_str(&format!("threshold = {raw}\n"))
+                .map(|wrapper: ThresholdWrapper| wrapper.threshold)
+                .unwrap_or_else(|error| panic!("failed to parse {raw}: {error}"));
+            assert_eq!(parsed, *expected, "input {raw}");
+        }
+    }
+
+    #[test]
+    fn auto_shake_threshold_rejects_zero_and_negative_values() {
+        for raw in [
+            "0", "-1", "\"0\"", "\"-5\"", "\"0%\"", "\"-10%\"", "\"0k\"", "\"-1k\"",
+        ] {
+            let error = toml::from_str::<ThresholdWrapper>(&format!("threshold = {raw}\n"))
+                .expect_err(&format!("{raw} should be rejected"));
+            let message = error.to_string();
+            assert!(
+                message.contains("positive") || message.contains("invalid auto_shake threshold"),
+                "unexpected error for {raw}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_shake_threshold_rejects_garbage_strings() {
+        for raw in ["\"banana\"", "\"40x\"", "\"\""] {
+            let error = toml::from_str::<ThresholdWrapper>(&format!("threshold = {raw}\n"))
+                .expect_err(&format!("{raw} should be rejected"));
+            assert!(
+                error.to_string().contains("invalid auto_shake threshold"),
+                "{error}"
+            );
+        }
+    }
+
+    /// Minimal wrapper so `AutoShakeThresholdToml`'s custom `Deserialize` can
+    /// be exercised directly against raw TOML values (ints and strings)
+    /// without going through the full `AutoShakeToml` struct.
+    #[derive(Debug, Deserialize)]
+    struct ThresholdWrapper {
+        threshold: AutoShakeThresholdToml,
     }
 }

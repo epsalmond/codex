@@ -404,13 +404,13 @@
               "$ref": "#/definitions/AutoShakeThreshold"
             }
           ],
-          "description": "Family threshold: `\"off\"`, an integer/percent-string percent, or `\"inherit\"` to defer to the resolved global `auto_shake.threshold`."
+          "description": "Family threshold: `\"off\"`, an integer/percent-string percent, an absolute token count (`\"160k\"`, `160000`) above 100, or `\"inherit\"` to defer to the resolved global `auto_shake.threshold`."
         }
       },
       "type": "object"
     },
     "AutoShakeThreshold": {
-      "description": "\"off\", \"inherit\" (per-family entries only), an integer percent (e.g. 40), or a percent string (e.g. \"40%\").",
+      "description": "\"off\", \"inherit\" (per-family entries only), an integer percent 1-100 (e.g. 40), a percent string (e.g. \"40%\"), or an absolute token count above 100 (e.g. 160000 or \"160k\"). A bare integer 1-100 is a percent; above 100 it is a token count.",
       "type": [
         "integer",
         "string"
@@ -444,7 +444,7 @@
               "$ref": "#/definitions/AutoShakeThreshold"
             }
           ],
-          "description": "Global auto-shake threshold: `\"off\"`, an integer percent (`40`), or a percent string (`\"40%\"`), of the model's resolved context window. `\"inherit\"` is invalid at the global level (there is nothing to inherit from) and is rejected as a config error."
+          "description": "Global auto-shake threshold: `\"off\"`, an integer percent (`40`) or a percent string (`\"40%\"`) of the model's resolved context window, or an absolute token count (`\"160k\"`, `160000`) above 100. `\"inherit\"` is invalid at the global level (there is nothing to inherit from) and is rejected as a config error."
         }
       },
       "type": "object"

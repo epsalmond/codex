@@ -142,23 +142,55 @@ still fires when auto-shake is disabled, impossible, or would not free enough.
 1. Resolve the effective settings for the turn's model slug (precedence below).
 2. If disabled for that model, stop.
 3. If the thread is ephemeral, stop — `elide` needs artifact recovery.
-4. If the model has no resolved context window, stop (no threshold to compare).
-5. If active context tokens `<` the resolved threshold percent of the model's
-   **resolved** context window, stop.
+4. If the resolved threshold is a **percent** and the model has no resolved
+   context window, stop (no window to compare a percent against). An
+   **absolute** (token-count) threshold has no such requirement and skips this
+   step.
+5. Compute the effective threshold:
+   - percent threshold: that percent of the model's **resolved** context
+     window;
+   - absolute threshold: the configured token count, or `min(configured,
+     resolved context window)` when a window is known — so a misconfigured
+     absolute value above the window still fires rather than silently never
+     triggering.
+   If active context tokens `<` the effective threshold, stop.
 6. Run the read-only preview. If it would free `<` `min_elidable_percent`% of the
    measured context, stop. This is the anti-thrash guard: a shake that frees
    little is not worth the guaranteed prompt-cache miss, and repeating it every
    turn would be pure loss.
 7. If the preview's freed-token estimate is below the absolute
    `min_savings_tokens` floor, stop — a secondary check alongside step 6 that
-   catches the case where a shake clears the percent threshold but still frees
-   a trivial number of tokens (small context windows).
+   catches the case where a shake clears the threshold but still frees a
+   trivial number of tokens (small context windows).
 8. Otherwise shake.
 
-The threshold is measured against `ModelInfo::resolved_context_window()` — which
-already reflects a `model_context_window` config override — not the 95%
-"effective" slice and not the 90% auto-compaction limit. With the default 60%,
-auto-shake fires well before either compaction trigger.
+A percent threshold is measured against `ModelInfo::resolved_context_window()`
+— which already reflects a `model_context_window` config override — not the
+95% "effective" slice and not the 90% auto-compaction limit. With the default
+60%, auto-shake fires well before either compaction trigger.
+
+### Why gpt-5.6 defaults to an absolute token count
+
+gpt-5.6 models pay a long-context penalty above **272,000 input tokens**. A
+percent-of-window threshold is fine when the window is close to that number,
+but it breaks down on a large configured window: at an 872k window (as some
+users run), 60% of the window is over 500k tokens — well past the 272k penalty
+line, and likely past the point where auto-compaction (90% of the window) has
+already fired. In other words, a percent threshold scales *up* with the
+window, but the penalty line does not move.
+
+gpt-5.6's built-in default is therefore an **absolute** threshold of
+**160,000 tokens**, regardless of the configured window:
+
+- it is about 60% of the *old* 272k default window, so behavior is unchanged
+  for anyone still on that default window size;
+- it is comfortably below the 272k penalty line, so the first shake lands
+  before the penalty band rather than inside or after it;
+- it is well below the 80% compaction point of a 272k window, so auto-shake
+  still gets a chance to run before auto-compaction would.
+
+Because it is absolute, this threshold fires at the same point in a session
+regardless of how large the configured context window is.
 
 ### Escalation
 
@@ -245,21 +277,26 @@ All keys live under `[auto_shake]` in `~/.codex/config.toml`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `auto_shake.threshold` | `"off"` \| percent \| `"inherit"` | `60%` | Global threshold: shake once active context reaches this percent of the resolved context window, or `"off"` to disable globally. `"inherit"` is invalid here — there is nothing for the global scope to inherit from. |
+| `auto_shake.threshold` | `"off"` \| percent \| tokens \| `"inherit"` | `60%` | Global threshold: shake once active context reaches this percent of the resolved context window (or this many absolute tokens), or `"off"` to disable globally. `"inherit"` is invalid here — there is nothing for the global scope to inherit from. |
 | `auto_shake.min_elidable_percent` | int 0–100 | `30` | Skip when the preview would free less than this percent of the measured context |
 | `auto_shake.min_savings_tokens` | int ≥ 0 | `4000` | Skip when the preview would free fewer than this many tokens, even if `min_elidable_percent` is cleared. Global only (no per-family override), matching oh-my-pi's `minSavings`. |
-| `auto_shake.models.<family>.threshold` | `"off"` \| percent \| `"inherit"` | per-family (below) | Per-family threshold. `"inherit"` defers to the resolved global `auto_shake.threshold`; an explicit `"off"` or percent wins over the global value. |
+| `auto_shake.models.<family>.threshold` | `"off"` \| percent \| tokens \| `"inherit"` | per-family (below) | Per-family threshold. `"inherit"` defers to the resolved global `auto_shake.threshold`; an explicit `"off"`, percent, or absolute token count wins over the global value. |
 | `auto_shake.models.<family>.min_elidable_percent` | int 0–100 | `30` | Per-family minimum elidable share |
 
-A percent value accepts either an integer (`40`) or a percent string
-(`"40%"`).
+A percent value accepts either an integer 1–100 (`40`) or a percent string
+(`"40%"`). An absolute token count accepts a string with a `k` suffix
+(`"160k"`) or a bare integer/string above 100 (`160000`, `"200000"`).
+
+**Disambiguating a bare integer** (no `%` or `k` suffix): `1..=100` is a
+percent, anything above `100` is an absolute token count. `0` and negative
+values are rejected for every numeric form with a config error.
 
 ### Precedence
 
 Highest wins:
 
-1. a family's explicit `"off"` or percent (user-set, or the built-in family
-   default),
+1. a family's explicit `"off"`, percent, or absolute token count (user-set,
+   or the built-in family default),
 2. a family's `"inherit"` (user-set, or the built-in family default),
    resolving to the global value,
 3. the global `auto_shake.threshold` (user-set, or the built-in `60%`
@@ -270,19 +307,25 @@ via `"inherit"`. This is the opposite of the old scheme, where a global key
 always overruled every per-model entry — that meant there was no way to opt a
 single family out (or in) without also touching every other family's
 behavior. Now `[auto_shake.models."gpt-6-astra"] threshold = "off"` disables
-just Astra while `gpt-5.6` keeps inheriting the global default, and raising
-the global default now also raises every family that still says `"inherit"`.
+just Astra while `gpt-5.6` keeps its own absolute default, and raising the
+global default only raises the families that still say `"inherit"` (that is,
+any family with no built-in default of its own, unless the user overrides it).
 
 ### Built-in family defaults
 
 | Family | `threshold` | `min_elidable_percent` |
 | --- | --- | --- |
-| `gpt-5.6` (sol / terra / luna) | `inherit` (→ `60%` by default) | `30` |
+| `gpt-5.6` (sol / terra / luna) | `160000` (absolute tokens) | `30` |
 | `gpt-6-astra` | `40%` | `30` |
 | anything else | `inherit` (→ `60%` by default) | `30` |
 
-Astra is on because the benchmark shows a shake costs one uncached request and
-pays back within ~6 requests at typical 300k contexts.
+Astra is on at a percent because the benchmark shows a shake costs one
+uncached request and pays back within ~6 requests at typical 300k contexts.
+gpt-5.6 is on at an absolute token count instead of a percent — see "Why
+gpt-5.6 defaults to an absolute token count" above. Since the built-in default
+is now an explicit value rather than `"inherit"`, a global `auto_shake.threshold
+= "off"` no longer disables gpt-5.6; set `[auto_shake.models."gpt-5.6"]
+threshold = "off"` (or `"inherit"`, to defer to the global value again).
 
 Unlisted families inherit the global default rather than defaulting to off:
 auto-shake is on by default for every model, deferring to whatever the global
@@ -298,8 +341,8 @@ but not `gpt-5.61-sol`. Provider and region qualifiers are stripped first, so
 
 ### Examples
 
-Accept the defaults (everything inherits 60%, astra at 40%) — no config
-needed.
+Accept the defaults (unlisted families inherit 60%, astra at 40%, gpt-5.6 at
+an absolute 160k tokens) — no config needed.
 
 Shake earlier and require a bigger win, for every family still on `inherit`:
 
@@ -314,6 +357,14 @@ Give astra a different threshold than the global default:
 ```toml
 [auto_shake.models."gpt-6-astra"]
 threshold = 70
+```
+
+Run a very large context window and want gpt-5.6 to shake even earlier than
+the 160k default:
+
+```toml
+[auto_shake.models."gpt-5.6"]
+threshold = "120k"
 ```
 
 Turn auto-shake off for one family, leaving everything else inheriting the

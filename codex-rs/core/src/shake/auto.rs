@@ -23,33 +23,55 @@ const DEFAULT_THRESHOLD_PERCENT: i64 = 60;
 /// it every turn would thrash.
 const DEFAULT_MIN_ELIDABLE_PERCENT: i64 = 30;
 
-/// Built-in absolute minimum-savings floor, in tokens. A secondary gate
+/// Built-in absolute minimum-savings floor, in tokens. A secondary check
 /// alongside `min_elidable_percent`: on a small context window a shake can
 /// clear the percent threshold while still freeing a trivial number of
 /// tokens, which isn't worth the guaranteed prompt-cache miss. Matches
 /// oh-my-pi's default automatic preset `minSavings`.
 const DEFAULT_MIN_SAVINGS_TOKENS: i64 = 4_000;
 
+/// `gpt-5.6`'s default absolute threshold, in tokens. gpt-5.6 models pay a
+/// long-context penalty above 272k input tokens. A percent of a large
+/// configured context window (some users run windows above 800k) can put the
+/// first shake inside the penalty band, or after auto-compaction has already
+/// fired. 160,000 is about 60% of the old 272k default window, and
+/// comfortably below both the 272k penalty line and the 80% compaction point
+/// of a 272k window — so an absolute count keeps the first shake at roughly
+/// the same point in a session regardless of the configured window size.
+const GPT_5_6_DEFAULT_THRESHOLD_TOKENS: i64 = 160_000;
+
 /// Per-model-family threshold defaults, applied when neither the global
 /// `auto_shake.threshold` key nor an `[auto_shake.models.<family>]` entry
 /// resolves the field.
 ///
-/// `gpt-5.6` (sol/terra/luna) defers to the global default (`inherit`):
-/// its long sessions accumulate large tool outputs that elide cleanly, and
-/// the global default already reflects that. `gpt-6-astra` is on at 40% —
-/// the benchmark shows a shake costs one uncached request and pays back
-/// within ~6 requests at typical 300k contexts.
+/// `gpt-5.6` (sol/terra/luna) defaults to an absolute token count rather than
+/// a percent of the window (see `GPT_5_6_DEFAULT_THRESHOLD_TOKENS`).
+/// `gpt-6-astra` is on at 40% — the benchmark shows a shake costs one
+/// uncached request and pays back within ~6 requests at typical 300k
+/// contexts.
 const FAMILY_DEFAULTS: &[(&str, AutoShakeThresholdToml)] = &[
-    ("gpt-5.6", AutoShakeThresholdToml::Inherit),
+    (
+        "gpt-5.6",
+        AutoShakeThresholdToml::Tokens(GPT_5_6_DEFAULT_THRESHOLD_TOKENS),
+    ),
     ("gpt-6-astra", AutoShakeThresholdToml::Percent(40)),
 ];
+
+/// A resolved threshold, after layering precedence and resolving `inherit`:
+/// either a percent of the model's resolved context window, or an absolute
+/// token count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoShakeThresholdKind {
+    Percent(i64),
+    Tokens(i64),
+}
 
 /// Effective settings for one model slug, after layering all precedence
 /// levels and resolving `inherit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AutoShakeSettings {
     pub(crate) enabled: bool,
-    pub(crate) threshold_percent: i64,
+    pub(crate) threshold: AutoShakeThresholdKind,
     pub(crate) min_elidable_percent: i64,
     pub(crate) min_savings_tokens: i64,
 }
@@ -60,7 +82,9 @@ pub(crate) struct AutoShakeSettings {
 pub(crate) enum AutoShakeSkip {
     /// Disabled for this model family (or globally).
     Disabled,
-    /// The model has no resolved context window, so there is no threshold.
+    /// The model has no resolved context window, so a percent threshold has
+    /// nothing to compare against. An absolute (token-count) threshold does
+    /// not need a context window and never produces this skip reason.
     NoContextWindow,
     /// Active context has not reached the threshold yet.
     BelowThreshold,
@@ -161,16 +185,28 @@ impl AutoShakeConfig {
         }
     }
 
-    /// Layer, highest precedence first: a family's explicit threshold (`off`
-    /// or a percent, whether from the user or the built-in family default),
-    /// then `inherit` resolving to the global value.
+    /// Layer, highest precedence first: a family's explicit threshold (`off`,
+    /// a percent, or an absolute token count, whether from the user or the
+    /// built-in family default), then `inherit` resolving to the global
+    /// value.
     pub(crate) fn settings_for_model(&self, model_slug: &str) -> AutoShakeSettings {
-        let (enabled, threshold_percent) = match self.resolved_threshold(model_slug) {
-            AutoShakeThresholdToml::Off => (false, DEFAULT_THRESHOLD_PERCENT),
-            AutoShakeThresholdToml::Percent(percent) => (true, percent.clamp(1, 100)),
+        let (enabled, threshold) = match self.resolved_threshold(model_slug) {
+            AutoShakeThresholdToml::Off => (
+                false,
+                AutoShakeThresholdKind::Percent(DEFAULT_THRESHOLD_PERCENT),
+            ),
+            AutoShakeThresholdToml::Percent(percent) => {
+                (true, AutoShakeThresholdKind::Percent(percent.clamp(1, 100)))
+            }
+            AutoShakeThresholdToml::Tokens(tokens) => {
+                (true, AutoShakeThresholdKind::Tokens(tokens.max(1)))
+            }
             // `resolved_threshold` never returns `Inherit`: it always resolves
             // to the global value before returning.
-            AutoShakeThresholdToml::Inherit => (false, DEFAULT_THRESHOLD_PERCENT),
+            AutoShakeThresholdToml::Inherit => (
+                false,
+                AutoShakeThresholdKind::Percent(DEFAULT_THRESHOLD_PERCENT),
+            ),
         };
 
         let user_family_min_elidable = self
@@ -181,7 +217,7 @@ impl AutoShakeConfig {
 
         AutoShakeSettings {
             enabled,
-            threshold_percent,
+            threshold,
             min_elidable_percent: self
                 .min_elidable_percent
                 .or(user_family_min_elidable)
@@ -216,10 +252,27 @@ impl AutoShakeConfig {
         if !persistent_thread {
             return AutoShakeDecision::Skip(AutoShakeSkip::EphemeralThread);
         }
-        let Some(context_window) = context_window.filter(|window| *window > 0) else {
-            return AutoShakeDecision::Skip(AutoShakeSkip::NoContextWindow);
+        let context_window = context_window.filter(|window| *window > 0);
+        let threshold = match settings.threshold {
+            AutoShakeThresholdKind::Percent(percent) => {
+                // A percent threshold has nothing to compare against without a
+                // resolved window.
+                let Some(context_window) = context_window else {
+                    return AutoShakeDecision::Skip(AutoShakeSkip::NoContextWindow);
+                };
+                context_window.saturating_mul(percent) / 100
+            }
+            AutoShakeThresholdKind::Tokens(tokens) => {
+                // An absolute threshold works without a window. When the
+                // window is known, cap the threshold at it so a misconfigured
+                // absolute value above the window still fires rather than
+                // silently never triggering.
+                match context_window {
+                    Some(context_window) => tokens.min(context_window),
+                    None => tokens,
+                }
+            }
         };
-        let threshold = context_window.saturating_mul(settings.threshold_percent) / 100;
         if active_context_tokens < threshold {
             return AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold);
         }
@@ -277,21 +330,41 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_6_family_inherits_the_global_default_of_sixty_percent() {
+    fn gpt_5_6_family_defaults_to_an_absolute_160k_token_threshold() {
         let config = AutoShakeConfig::default();
         for slug in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", LUNA] {
             let settings = config.settings_for_model(slug);
             assert!(settings.enabled, "{slug} should default to enabled");
-            assert_eq!(settings.threshold_percent, 60, "{slug}");
+            assert_eq!(
+                settings.threshold,
+                AutoShakeThresholdKind::Tokens(160_000),
+                "{slug}"
+            );
             assert_eq!(settings.min_elidable_percent, 30, "{slug}");
         }
+    }
+
+    #[test]
+    fn gpt_5_6_family_can_be_overridden_to_inherit_the_global_value() {
+        // Explicitly opting gpt-5.6 back into `inherit` must follow a changed
+        // global percent, exactly like any other family's `inherit`.
+        let config = toml(
+            r#"
+threshold = "75%"
+[models."gpt-5.6"]
+threshold = "inherit"
+"#,
+        );
+        let settings = config.settings_for_model(LUNA);
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(75));
     }
 
     #[test]
     fn gpt_6_astra_is_on_at_forty_percent_by_default() {
         let settings = AutoShakeConfig::default().settings_for_model(ASTRA);
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 40);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(40));
         assert_eq!(settings.min_elidable_percent, 30);
     }
 
@@ -299,7 +372,7 @@ mod tests {
     fn unknown_families_inherit_the_global_default() {
         let settings = AutoShakeConfig::default().settings_for_model("some-local-model");
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 60);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(60));
     }
 
     #[test]
@@ -314,21 +387,9 @@ mod tests {
         }
         // A longer version number must not be captured by the `gpt-5.6` family,
         // so it falls through to the (also-enabled) global default.
-        assert!(config.settings_for_model("gpt-5.61-sol").enabled);
-        assert_eq!(config.settings_for_model("gpt-5.61-sol").threshold_percent, 60);
-    }
-
-    #[test]
-    fn family_inherit_follows_a_changed_global_value() {
-        // gpt-5.6's built-in default is `inherit`, so raising the global
-        // threshold must raise gpt-5.6's effective threshold too.
-        let config = toml("threshold = \"75%\"\n");
-        let settings = config.settings_for_model(LUNA);
+        let settings = config.settings_for_model("gpt-5.61-sol");
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 75);
-
-        let config = toml("threshold = \"off\"\n");
-        assert!(!config.settings_for_model(LUNA).enabled);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(60));
     }
 
     #[test]
@@ -341,9 +402,11 @@ threshold = "off"
 "#,
         );
         assert!(!config.settings_for_model(ASTRA).enabled);
-        // The global value still applies to a family that defers.
-        assert!(config.settings_for_model(LUNA).enabled);
-        assert_eq!(config.settings_for_model(LUNA).threshold_percent, 75);
+        // A family with no built-in default of its own still defers to the
+        // global value.
+        let settings = config.settings_for_model("some-local-model");
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(75));
     }
 
     #[test]
@@ -357,9 +420,17 @@ threshold = 55
         );
         let settings = config.settings_for_model(ASTRA);
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 55);
-        // gpt-5.6 still inherits the (now off) global value.
-        assert!(!config.settings_for_model(LUNA).enabled);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(55));
+        // gpt-5.6's built-in default is now an explicit absolute threshold
+        // (not `inherit`), so a global `"off"` does not disable it.
+        assert!(config.settings_for_model(LUNA).enabled);
+        assert_eq!(
+            config.settings_for_model(LUNA).threshold,
+            AutoShakeThresholdKind::Tokens(160_000)
+        );
+        // A family with no built-in default still inherits the (now off)
+        // global value.
+        assert!(!config.settings_for_model("some-local-model").enabled);
     }
 
     #[test]
@@ -372,7 +443,20 @@ threshold = "45%"
         );
         let settings = config.settings_for_model(ASTRA);
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 45);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(45));
+    }
+
+    #[test]
+    fn absolute_token_threshold_string_parses() {
+        let config = toml(
+            r#"
+[models."gpt-6-astra"]
+threshold = "160k"
+"#,
+        );
+        let settings = config.settings_for_model(ASTRA);
+        assert!(settings.enabled);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Tokens(160_000));
     }
 
     #[test]
@@ -395,12 +479,15 @@ min_elidable_percent = 10
         );
         let settings = config.settings_for_model(ASTRA);
         assert!(settings.enabled);
-        assert_eq!(settings.threshold_percent, 80);
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(80));
         assert_eq!(settings.min_elidable_percent, 10);
 
         // The gpt-5.6 default is untouched by an astra-only entry.
         assert!(config.settings_for_model(LUNA).enabled);
-        assert_eq!(config.settings_for_model(LUNA).threshold_percent, 60);
+        assert_eq!(
+            config.settings_for_model(LUNA).threshold,
+            AutoShakeThresholdKind::Tokens(160_000)
+        );
     }
 
     #[test]
@@ -417,22 +504,87 @@ min_elidable_percent = 90
 
     #[test]
     fn out_of_range_percents_are_clamped() {
-        let config = toml("threshold = 400\nmin_elidable_percent = -5\n");
-        let settings = config.settings_for_model(LUNA);
-        assert_eq!(settings.threshold_percent, 100);
+        // A bare integer above 100 means an absolute token count (disambiguation
+        // rule), so an out-of-range *percent* must use the "%" spelling.
+        // "some-local-model" has no built-in family default, so it inherits
+        // the (out-of-range) global percent directly.
+        let config = toml("threshold = \"400%\"\nmin_elidable_percent = -5\n");
+        let settings = config.settings_for_model("some-local-model");
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Percent(100));
         assert_eq!(settings.min_elidable_percent, 0);
+    }
+
+    #[test]
+    fn a_bare_integer_above_one_hundred_is_an_absolute_token_count() {
+        let config = toml("threshold = 400\n");
+        let settings = config.settings_for_model("some-local-model");
+        assert_eq!(settings.threshold, AutoShakeThresholdKind::Tokens(400));
     }
 
     #[test]
     fn threshold_compares_against_the_resolved_context_window() {
         let config = AutoShakeConfig::default();
-        // 60% of 100_000 is 60_000.
+        // Astra defaults to 40%; 40% of 100_000 is 40_000.
         assert_eq!(
-            config.decide(LUNA, 59_999, Some(100_000), true),
+            config.decide(ASTRA, 39_999, Some(100_000), true),
             AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold)
         );
         assert_eq!(
-            config.decide(LUNA, 60_000, Some(100_000), true),
+            config.decide(ASTRA, 40_000, Some(100_000), true),
+            AutoShakeDecision::Preview {
+                min_elidable_percent: 30,
+                min_savings_tokens: 4_000,
+            }
+        );
+    }
+
+    #[test]
+    fn absolute_threshold_fires_without_a_context_window() {
+        let config = AutoShakeConfig::default();
+        // LUNA (gpt-5.6) defaults to an absolute 160_000-token threshold,
+        // which needs no resolved context window.
+        assert_eq!(
+            config.decide(LUNA, 159_999, None, true),
+            AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold)
+        );
+        assert_eq!(
+            config.decide(LUNA, 160_000, None, true),
+            AutoShakeDecision::Preview {
+                min_elidable_percent: 30,
+                min_savings_tokens: 4_000,
+            }
+        );
+    }
+
+    #[test]
+    fn absolute_threshold_is_capped_at_a_smaller_context_window() {
+        // A misconfigured absolute threshold above the model's resolved
+        // window must still fire at the window, not silently never trigger.
+        let config = AutoShakeConfig::default();
+        assert_eq!(
+            config.decide(LUNA, 99_999, Some(100_000), true),
+            AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold)
+        );
+        assert_eq!(
+            config.decide(LUNA, 100_000, Some(100_000), true),
+            AutoShakeDecision::Preview {
+                min_elidable_percent: 30,
+                min_savings_tokens: 4_000,
+            }
+        );
+    }
+
+    #[test]
+    fn absolute_threshold_uses_its_own_value_under_a_larger_context_window() {
+        // Eric's 872k window: the 160k absolute default must fire at 160k,
+        // not at some percent of the much larger window.
+        let config = AutoShakeConfig::default();
+        assert_eq!(
+            config.decide(LUNA, 159_999, Some(872_000), true),
+            AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold)
+        );
+        assert_eq!(
+            config.decide(LUNA, 160_000, Some(872_000), true),
             AutoShakeDecision::Preview {
                 min_elidable_percent: 30,
                 min_savings_tokens: 4_000,
@@ -442,9 +594,15 @@ min_elidable_percent = 90
 
     #[test]
     fn decide_skips_disabled_models_before_anything_else() {
-        // LUNA's built-in family default is `inherit`, so a global `"off"`
-        // disables it even with active context far past any threshold.
-        let config = toml("threshold = \"off\"\n");
+        // gpt-5.6's built-in default is now an explicit absolute threshold,
+        // so disabling it requires an explicit per-family `"off"` rather than
+        // a global one.
+        let config = toml(
+            r#"
+[models."gpt-5.6"]
+threshold = "off"
+"#,
+        );
         assert_eq!(
             config.decide(LUNA, 900_000, Some(100_000), true),
             AutoShakeDecision::Skip(AutoShakeSkip::Disabled)
@@ -463,25 +621,35 @@ threshold = "off"
             config.decide(ASTRA, 900_000, Some(100_000), true),
             AutoShakeDecision::Skip(AutoShakeSkip::Disabled)
         );
+
+        // A family with no built-in default of its own is still disabled by
+        // a global `"off"`.
+        let config = toml("threshold = \"off\"\n");
+        assert_eq!(
+            config.decide("some-local-model", 900_000, Some(100_000), true),
+            AutoShakeDecision::Skip(AutoShakeSkip::Disabled)
+        );
     }
 
     #[test]
     fn decide_skips_ephemeral_threads() {
         assert_eq!(
-            AutoShakeConfig::default().decide(LUNA, 90_000, Some(100_000), false),
+            AutoShakeConfig::default().decide(LUNA, 900_000, Some(100_000), false),
             AutoShakeDecision::Skip(AutoShakeSkip::EphemeralThread)
         );
     }
 
     #[test]
-    fn decide_skips_models_without_a_context_window() {
+    fn decide_skips_percent_thresholds_without_a_context_window() {
+        // ASTRA's default is a percent threshold, which needs a resolved
+        // context window to compare against.
         let config = AutoShakeConfig::default();
         assert_eq!(
-            config.decide(LUNA, 90_000, None, true),
+            config.decide(ASTRA, 90_000, None, true),
             AutoShakeDecision::Skip(AutoShakeSkip::NoContextWindow)
         );
         assert_eq!(
-            config.decide(LUNA, 90_000, Some(0), true),
+            config.decide(ASTRA, 90_000, Some(0), true),
             AutoShakeDecision::Skip(AutoShakeSkip::NoContextWindow)
         );
     }

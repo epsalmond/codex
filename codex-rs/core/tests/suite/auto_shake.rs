@@ -80,9 +80,15 @@ fn oversized_history() -> Result<Vec<ResponseItem>> {
     ])
 }
 
-/// With auto-shake enabled (the gpt-5.6 default) the second turn's request must
-/// no longer carry the oversized tool output, and a recovery artifact must exist.
-/// With auto-shake disabled the same thread keeps the full output.
+/// With auto-shake enabled the second turn's request must no longer carry the
+/// oversized tool output, and a recovery artifact must exist. With auto-shake
+/// disabled the same thread keeps the full output.
+///
+/// gpt-5.6's built-in default threshold is now an absolute 160,000 tokens
+/// (see `absolute_threshold_fires_at_the_configured_token_count` for that),
+/// so this test explicitly overrides gpt-5.6 to a percent threshold to keep
+/// exercising the elision behavior at the same, smaller token counts as
+/// before.
 #[test_case::test_case(true; "enabled")]
 #[test_case::test_case(false; "disabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -111,12 +117,21 @@ async fn auto_shake_elides_before_the_next_sampling_request(enabled: bool) -> Re
         .with_model("gpt-5.6-luna")
         .with_config(move |config| {
             config.model_context_window = Some(TEST_CONTEXT_WINDOW);
-            if !enabled {
-                // Global override must win over the built-in gpt-5.6 default
-                // (which defers to the global value via `inherit`).
-                config.auto_shake.threshold =
-                    Some(codex_config::config_toml::AutoShakeThresholdToml::Off);
-            }
+            // gpt-5.6's built-in default is now an explicit absolute
+            // threshold, which wins over any global override, so disabling
+            // (or re-enabling at 60%) requires an explicit per-family entry.
+            let threshold = if enabled {
+                codex_config::config_toml::AutoShakeThresholdToml::Percent(60)
+            } else {
+                codex_config::config_toml::AutoShakeThresholdToml::Off
+            };
+            config.auto_shake.models.insert(
+                "gpt-5.6".to_string(),
+                codex_core::config::AutoShakeModelConfig {
+                    threshold: Some(threshold),
+                    min_elidable_percent: None,
+                },
+            );
         });
     let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
     Box::pin(fixture.codex.inject_response_items(oversized_history()?)).await?;
@@ -434,6 +449,20 @@ async fn auto_shake_escalates_when_the_first_pass_is_not_enough() -> Result<()> 
         .with_model("gpt-5.6-luna")
         .with_config(move |config| {
             config.model_context_window = Some(ESCALATION_CONTEXT_WINDOW);
+            // gpt-5.6's built-in default is now an absolute 160,000-token
+            // threshold, which would never fire against this test's small
+            // (24,000-token) window. Explicitly opt back into a percent
+            // threshold so the math in `escalation_history`'s doc comment
+            // (tuned against a 60% threshold) still holds.
+            config.auto_shake.models.insert(
+                "gpt-5.6".to_string(),
+                codex_core::config::AutoShakeModelConfig {
+                    threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(
+                        60,
+                    )),
+                    min_elidable_percent: None,
+                },
+            );
         });
     let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
     Box::pin(fixture.codex.inject_response_items(escalation_history()?)).await?;
@@ -505,5 +534,109 @@ async fn auto_shake_escalates_when_the_first_pass_is_not_enough() -> Result<()> 
         saved, 2,
         "one artifact per shake pass (old tool output, then mid tool output)"
     );
+    Ok(())
+}
+
+/// A large configured context window, well above gpt-5.6's old 272k default
+/// window (e.g. Eric's 872k). 60% of this window (~523,200 tokens) is far
+/// past the point where gpt-5.6's absolute 160,000-token default fires, which
+/// is the whole point of the absolute default: it keeps the first shake at
+/// the same point in a session regardless of window size.
+const LARGE_CONTEXT_WINDOW: i64 = 872_000;
+
+/// Just above gpt-5.6's absolute 160,000-token default, and far short of 60%
+/// of `LARGE_CONTEXT_WINDOW` (~523,200 tokens).
+const NEAR_ABSOLUTE_THRESHOLD_TOKENS: i64 = 170_000;
+
+/// With a large configured context window, gpt-5.6's built-in absolute
+/// 160,000-token default must fire at ~170k estimated input tokens, while a
+/// 60% percent threshold (the old default shape) applied to the same window
+/// would not — demonstrating why gpt-5.6 defaults to an absolute count
+/// instead of a percent of a large window.
+#[test_case::test_case(true; "absolute default fires")]
+#[test_case::test_case(false; "sixty percent of the large window does not")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absolute_threshold_fires_at_170k_where_sixty_percent_of_a_large_window_would_not(
+    use_absolute_default: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", "first"),
+                ev_completed_with_input_tokens("r1", NEAR_ABSOLUTE_THRESHOLD_TOKENS),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", "second"),
+                ev_completed_with_input_tokens("r2", NEAR_ABSOLUTE_THRESHOLD_TOKENS),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("gpt-5.6-luna")
+        .with_config(move |config| {
+            config.model_context_window = Some(LARGE_CONTEXT_WINDOW);
+            if !use_absolute_default {
+                // Override to the old percent-of-window shape, to show it
+                // would not have fired at the same token count.
+                config.auto_shake.models.insert(
+                    "gpt-5.6".to_string(),
+                    codex_core::config::AutoShakeModelConfig {
+                        threshold: Some(
+                            codex_config::config_toml::AutoShakeThresholdToml::Percent(60),
+                        ),
+                        min_elidable_percent: None,
+                    },
+                );
+            }
+        });
+    let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
+    Box::pin(fixture.codex.inject_response_items(oversized_history()?)).await?;
+
+    for message in ["first prompt", "second prompt"] {
+        Box::pin(
+            fixture
+                .codex
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: message.to_string(),
+                    text_elements: Vec::new(),
+                }])),
+        )
+        .await?;
+        if use_absolute_default && message == "second prompt" {
+            Box::pin(wait_for_event(&fixture.codex, |event| {
+                matches!(event, EventMsg::Warning(warning)
+                    if warning.message.starts_with("⛭ shake (auto):"))
+            }))
+            .await;
+        }
+        Box::pin(wait_for_event(&fixture.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        }))
+        .await;
+    }
+
+    let bodies: Vec<String> = request_log
+        .requests()
+        .iter()
+        .map(|request| request.body_json().to_string())
+        .collect();
+    assert_eq!(bodies.len(), 2, "auto-shake must not add a model request");
+    if use_absolute_default {
+        assert!(
+            !bodies[1].contains(AUTO_SHAKE_MARKER),
+            "the absolute 160k default should have fired at 170k estimated tokens"
+        );
+    } else {
+        assert!(
+            bodies[1].contains(AUTO_SHAKE_MARKER),
+            "60% of an 872k window (~523k) should not fire at 170k estimated tokens"
+        );
+    }
     Ok(())
 }
