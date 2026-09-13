@@ -519,7 +519,7 @@ pub(crate) fn shake_thinking(items: &mut Vec<ResponseItemEnvelope>) -> ShakeResu
 pub(crate) fn shake_elide_with_recovery(
     items: &mut [ResponseItemEnvelope],
     protect_tokens: usize,
-    save: &mut dyn FnMut(&str, &str) -> Option<(String, String)>,
+    save: &mut dyn FnMut(&str, &str) -> Option<String>,
 ) -> ShakeResult {
     let mut result = ShakeResult::default();
     if items.is_empty() {
@@ -762,10 +762,7 @@ mod tests {
         ];
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some((
-                "artifact://00000000000000000000000000000000".to_string(),
-                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
-            ))
+            Some("/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string())
         };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert_eq!(result.tool_outputs_elided, 1);
@@ -786,10 +783,7 @@ mod tests {
             output_item("call-1", &big),
         ];
         let mut save = |_content: &str, _label: &str| {
-            Some((
-                "artifact://00000000000000000000000000000000".to_string(),
-                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
-            ))
+            Some("/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string())
         };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert_eq!(result.tool_outputs_elided, 0);
@@ -812,29 +806,27 @@ mod tests {
     }
 
     #[test]
-    fn shake_elide_protects_recovered_output() {
-        let recovered = "[artifact source: artifact://00000000000000000000000000000000; more content; use start_byte=3071]\n";
+    fn shake_elide_protects_already_shaken_output() {
+        let recovered = "[shaken ~123 tokens from tool output. original: /codex-home/artifacts/thread/00000000000000000000000000000000.log]\n";
         let mut items = vec![output_item("call-1", &recovered.repeat(60))];
         items.extend(tail_pad());
 
-        let mut save =
-            |_content: &str, _label: &str| panic!("recovered output should not be saved again");
+        let mut save = |_content: &str, _label: &str| {
+            panic!("already-shaken output should not be saved again")
+        };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
 
         assert_eq!(result.tool_outputs_elided, 0);
     }
 
     #[test]
-    fn shake_elide_does_not_protect_plain_artifact_uri_text() {
-        let plain =
-            "plain text mentioning artifact://00000000000000000000000000000000\n".repeat(1_200);
+    fn shake_elide_does_not_protect_plain_path_text() {
+        let plain = "plain text mentioning /codex-home/artifacts/thread/00000000000000000000000000000000.log\n"
+            .repeat(1_200);
         let mut items = vec![output_item("call-1", &plain)];
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some((
-                "artifact://00000000000000000000000000000001".to_string(),
-                "/codex-home/artifacts/thread/00000000000000000000000000000001.log".to_string(),
-            ))
+            Some("/codex-home/artifacts/thread/00000000000000000000000000000001.log".to_string())
         };
 
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
@@ -847,10 +839,7 @@ mod tests {
         let mut items = vec![text_item("assistant", &big_fenced_block())];
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some((
-                "artifact://00000000000000000000000000000000".to_string(),
-                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
-            ))
+            Some("/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string())
         };
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);
         assert!(
@@ -867,9 +856,8 @@ mod tests {
     }
 
     /// A protected tool's output survives even the aggressive manual preset,
-    /// and even with no `artifact://` / `[shaken …]` marker in its text — this
-    /// is tool-identity protection, not the marker guard.
-    #[test_case::test_case(None, "read_artifact"; "artifact recovery read")]
+    /// and even with no `[shaken …]` marker in its text — this is
+    /// tool-identity protection, not the marker guard.
     #[test_case::test_case(Some("skills"), "read"; "skill read")]
     #[test_case::test_case(Some("skills"), "list"; "skill list")]
     fn shake_elide_protects_protected_tool_output(namespace: Option<&str>, name: &str) {
@@ -904,10 +892,7 @@ mod tests {
         ));
         items.extend(tail_pad());
         let mut save = |_content: &str, _label: &str| {
-            Some((
-                "artifact://00000000000000000000000000000000".to_string(),
-                "/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string(),
-            ))
+            Some("/codex-home/artifacts/thread/00000000000000000000000000000000.log".to_string())
         };
 
         let result = shake_elide_with_recovery(&mut items, MANUAL_PROTECT_TOKENS, &mut save);

@@ -1,70 +1,37 @@
-use uuid::Uuid;
-
-/// `save` returns the artifact's `artifact://<id>` URI and the absolute
-/// on-disk path of the file it was written to, so the placeholder can carry
-/// both: the URI for `read_artifact`, and the path so the model can reach the
-/// same content with a shell tool (`grep`, `awk`, …) when it only needs part
-/// of it.
+/// `save` returns the absolute on-disk path of the file it wrote the elided
+/// region to, so the placeholder can name it for a shell tool (`grep`,
+/// `awk`, …). There is no tool to recover an artifact through: see
+/// `docs/shake.md` for why.
 pub(super) fn recovery_placeholder(
-    save: &mut dyn FnMut(&str, &str) -> Option<(String, String)>,
+    save: &mut dyn FnMut(&str, &str) -> Option<String>,
     original: &str,
     tokens: usize,
     label: &str,
 ) -> Option<String> {
-    let (uri, abs_path) = save(original, label)?;
+    let abs_path = save(original, label)?;
     Some(format!(
-        "[shaken ~{tokens} tokens from {label} (recover: {uri}; file: {abs_path})]"
+        "[shaken ~{tokens} tokens from {label}. original: {abs_path}]"
     ))
 }
 
 pub(super) fn is_artifact_recovery_output(text: &str) -> bool {
-    text.lines()
-        .any(|line| is_artifact_source_marker(line) || is_shaken_artifact_marker(line))
-}
-
-fn is_artifact_source_marker(line: &str) -> bool {
-    let Some(rest) = line
-        .strip_prefix("[artifact source: artifact://")
-        .and_then(|rest| rest.strip_suffix(']'))
-    else {
-        return false;
-    };
-    let Some((id, suffix)) = rest.split_once("; ") else {
-        return false;
-    };
-    valid_artifact_id(id)
-        && (suffix == "final page"
-            || suffix
-                .strip_prefix("more content; use start_byte=")
-                .is_some_and(|offset| {
-                    !offset.is_empty() && offset.bytes().all(|byte| byte.is_ascii_digit())
-                }))
+    text.lines().any(is_shaken_artifact_marker)
 }
 
 fn is_shaken_artifact_marker(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("[shaken ~") else {
         return false;
     };
-    let Some((_, rest)) = rest.split_once(" tokens ") else {
+    let Some((_, rest)) = rest.split_once(" tokens from ") else {
         return false;
     };
-    let Some(rest) = rest.strip_suffix(")]") else {
+    let Some(rest) = rest.strip_suffix(']') else {
         return false;
     };
-    // The URI is followed by "; file: <abs_path>"; split off the path from the
-    // right so a path that happens to contain "; file: " itself (unlikely for
-    // a real filesystem path) doesn't defeat the match.
-    let Some((rest, _abs_path)) = rest.rsplit_once("; file: ") else {
+    let Some((_label, abs_path)) = rest.split_once(". original: ") else {
         return false;
     };
-    let Some((_, id)) = rest.rsplit_once(" (recover: artifact://") else {
-        return false;
-    };
-    valid_artifact_id(id)
-}
-
-fn valid_artifact_id(id: &str) -> bool {
-    Uuid::parse_str(id).is_ok()
+    !abs_path.is_empty()
 }
 
 #[cfg(test)]
@@ -72,21 +39,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placeholder_carries_both_the_uri_and_the_abs_path() {
+    fn placeholder_carries_the_original_file_path() {
         let mut save = |_content: &str, _label: &str| {
-            Some((
-                "artifact://00000000000000000000000000000000".to_string(),
+            Some(
                 "/home/user/.codex/artifacts/thread-1/00000000000000000000000000000000.tool_output.log"
                     .to_string(),
-            ))
+            )
         };
         let placeholder = recovery_placeholder(&mut save, "original content", 123, "tool output")
             .expect("save succeeded, so a placeholder must be produced");
 
         assert_eq!(
             placeholder,
-            "[shaken ~123 tokens from tool output (recover: artifact://00000000000000000000000000000000; \
-             file: /home/user/.codex/artifacts/thread-1/00000000000000000000000000000000.tool_output.log)]"
+            "[shaken ~123 tokens from tool output. original: \
+             /home/user/.codex/artifacts/thread-1/00000000000000000000000000000000.tool_output.log]"
         );
         assert!(
             is_shaken_artifact_marker(&placeholder),

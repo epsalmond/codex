@@ -239,7 +239,7 @@ async fn prompt_tools_are_consistent_across_requests(
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let mut expected_tools_names = vec!["exec_command", "write_stdin", "read_artifact"];
+    let mut expected_tools_names = vec!["exec_command", "write_stdin"];
     if expected_update_plan_enabled {
         expected_tools_names.push("update_plan");
     }

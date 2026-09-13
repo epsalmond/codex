@@ -1,18 +1,14 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::ForkSnapshot;
-use codex_core::TurnInputRequest;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ShakeMode;
-use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
-use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
-use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
@@ -21,16 +17,39 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::fs;
 use std::future::Future;
+use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shake_saves_and_reads_artifact_after_resume() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    run_artifact_recovery().await
+/// Regular (non-hidden) `.log` files directly under `dir`, or an empty `Vec`
+/// if `dir` does not exist. Used instead of `Path::exists` because
+/// `ArtifactStore::for_thread` may create the (empty) per-thread directory as
+/// a side effect of canonicalizing its root — even for a preview, or for an
+/// ephemeral thread — so directory *existence* no longer implies a shake
+/// wrote anything.
+fn artifact_log_files(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+        .collect()
 }
 
-fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+/// A shake writes each elided region to a durable file and replaces it with a
+/// placeholder naming that file's absolute path — there is no tool to recover
+/// it through (see `docs/shake.md`). This proves the file lands where the
+/// placeholder says, holds the original bytes, and survives a resume and a
+/// fork.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shake_writes_a_durable_artifact_at_the_placeholder_path() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    run_shake_artifact_durability().await
+}
+
+fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(async move {
         let server = Box::pin(core_test_support::responses::start_mock_server()).await;
         let mut builder = test_codex().with_model("gpt-5.2");
@@ -73,7 +92,7 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
         let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
         assert_eq!((preview.tool_outputs, preview.text_blocks), (1, 0));
         assert!(preview.tokens_before > preview.tokens_after);
-        assert!(!artifact_dir.exists());
+        assert!(artifact_log_files(&artifact_dir).is_empty());
         assert_eq!(fixture.codex.token_usage_info().await, usage_before);
         assert_eq!(
             fixture.codex.preview_shake(ShakeMode::Elide).await?,
@@ -90,7 +109,7 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
         Box::pin(wait_for_event(&fixture.codex, |event| {
             matches!(event, EventMsg::Warning(warning) if warning.message.contains("History changed"))
         })).await;
-        assert!(!artifact_dir.exists());
+        assert!(artifact_log_files(&artifact_dir).is_empty());
         assert_eq!(
             fixture.codex.preview_shake(ShakeMode::Elide).await?,
             preview
@@ -117,82 +136,50 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
             .find(|path| path.extension().is_some_and(|extension| extension == "log"))
             .context("shake should save an artifact")?;
         assert!(fs::read_to_string(&artifact_path)?.contains("ARTIFACT_RECOVERY_MARKER"));
-        let artifact_id = artifact_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.split_once('.'))
-            .map(|(id, _)| format!("artifact://{id}"))
-            .context("artifact filename should contain its id")?;
+        let artifact_path_str = artifact_path
+            .canonicalize()
+            .context("artifact path should be resolvable")?
+            .display()
+            .to_string();
 
-        let read_call_id = "artifact-read";
-        let read_requests = Box::pin(mount_sse_sequence(
+        // The placeholder that replaced the elided output must name this
+        // exact file, so a model that only needs part of it can reach for a
+        // shell tool directly.
+        let response = mount_sse_once(
             &server,
-            vec![
-                sse(vec![
-                    ev_response_created("artifact-r4"),
-                    ev_function_call(
-                        read_call_id,
-                        "read_artifact",
-                        &json!({"artifact": artifact_id}).to_string(),
-                    ),
-                    ev_completed("artifact-r4"),
-                ]),
-                sse(vec![
-                    ev_assistant_message("artifact-m2", "recovered"),
-                    ev_completed("artifact-r5"),
-                ]),
-            ],
-        ))
+            sse(vec![
+                ev_response_created("artifact-r4"),
+                ev_assistant_message("artifact-m2", "acknowledged"),
+                ev_completed("artifact-r4"),
+            ]),
+        )
         .await;
-        Box::pin(fixture.submit_text_turn("recover that output")).await?;
-        let post_shake_request = read_requests
-            .requests()
-            .into_iter()
-            .next()
-            .context("post-shake request")?;
-        assert!(post_shake_request.body_contains_text(&artifact_id));
-        assert!(!post_shake_request.body_contains_text("ARTIFACT_RECOVERY_MARKER"));
-        assert!(
-            read_requests
-                .function_call_output_text(read_call_id)
-                .context("read_artifact output should be sent to the model")?
-                .contains("ARTIFACT_RECOVERY_MARKER")
-        );
+        Box::pin(fixture.submit_text_turn("what happened to that output")).await?;
+        let request = response.single_request();
+        assert!(request.body_contains_text(&artifact_path_str));
+        assert!(!request.body_contains_text("ARTIFACT_RECOVERY_MARKER"));
 
         let resumed = Box::pin(builder.restart(&server, &fixture))
             .await
             .context("restart after shake")?;
-        let resumed_requests = Box::pin(mount_sse_sequence(
-            &server,
-            vec![
-                sse(vec![
-                    ev_response_created("artifact-r6"),
-                    ev_function_call(
-                        "artifact-read-resumed",
-                        "read_artifact",
-                        &json!({"artifact": artifact_id}).to_string(),
-                    ),
-                    ev_completed("artifact-r6"),
-                ]),
-                sse(vec![
-                    ev_assistant_message("artifact-m3", "resumed recovery"),
-                    ev_completed("artifact-r7"),
-                ]),
-            ],
-        ))
-        .await;
-        Box::pin(resumed.submit_text_turn("recover it after resume")).await?;
-        let resumed_request = resumed_requests
-            .requests()
-            .into_iter()
-            .next()
-            .context("post-resume request")?;
-        assert!(resumed_request.body_contains_text(&artifact_id));
         assert!(
-            resumed_requests
-                .function_call_output_text("artifact-read-resumed")
-                .context("resumed read_artifact output should be sent to the model")?
-                .contains("ARTIFACT_RECOVERY_MARKER")
+            fs::read_to_string(&artifact_path)?.contains("ARTIFACT_RECOVERY_MARKER"),
+            "the artifact file must survive a resume"
+        );
+        let resumed_response = mount_sse_once(
+            &server,
+            sse(vec![
+                ev_response_created("artifact-r6"),
+                ev_assistant_message("artifact-m3", "resumed"),
+                ev_completed("artifact-r6"),
+            ]),
+        )
+        .await;
+        Box::pin(resumed.submit_text_turn("still there after resume")).await?;
+        assert!(
+            resumed_response
+                .single_request()
+                .body_contains_text(&artifact_path_str)
         );
 
         let source_rollout = resumed
@@ -215,6 +202,7 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
             .join(ephemeral_fork.thread_id.to_string());
         assert!(!ephemeral_fork_artifacts.exists());
         Box::pin(ephemeral_fork.thread.shutdown_and_wait()).await?;
+
         let forked = Box::pin(resumed.thread_manager.fork_thread(
             ForkSnapshot::Interrupted,
             resumed.config.clone(),
@@ -233,78 +221,7 @@ fn run_artifact_recovery() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
             .find(|path| path.extension().is_some_and(|extension| extension == "log"))
             .context("fork should copy parent artifacts")?;
         assert!(fs::read_to_string(fork_artifact)?.contains("ARTIFACT_RECOVERY_MARKER"));
-        let fork_requests = Box::pin(mount_sse_sequence(
-            &server,
-            vec![
-                sse(vec![
-                    ev_response_created("artifact-r8"),
-                    ev_function_call(
-                        "artifact-read-fork",
-                        "read_artifact",
-                        &json!({"artifact": artifact_id}).to_string(),
-                    ),
-                    ev_completed("artifact-r8"),
-                ]),
-                sse(vec![
-                    ev_assistant_message("artifact-m4", "fork recovery"),
-                    ev_completed("artifact-r9"),
-                ]),
-            ],
-        ))
-        .await;
-        Box::pin(
-            forked
-                .thread
-                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                    text: "recover it in the fork".to_string(),
-                    text_elements: Vec::new(),
-                }])),
-        )
-        .await?;
-        Box::pin(wait_for_event(&forked.thread, |event| {
-            matches!(event, EventMsg::TurnComplete(_))
-        }))
-        .await;
-        assert!(
-            fork_requests
-                .function_call_output_text("artifact-read-fork")
-                .context("fork read_artifact output should be sent to the model")?
-                .contains("ARTIFACT_RECOVERY_MARKER")
-        );
-        let fork_rollout = forked
-            .thread
-            .rollout_path()
-            .context("fork rollout for restart")?;
         Box::pin(forked.thread.shutdown_and_wait()).await?;
-        let fork_resumed = Box::pin(builder.resume(&server, resumed.home.clone(), fork_rollout))
-            .await
-            .context("restart fork after shutdown")?;
-        let fork_resumed_requests = Box::pin(mount_sse_sequence(
-            &server,
-            vec![
-                sse(vec![
-                    ev_response_created("artifact-r10"),
-                    ev_function_call(
-                        "artifact-read-fork-resumed",
-                        "read_artifact",
-                        &json!({"artifact": artifact_id}).to_string(),
-                    ),
-                    ev_completed("artifact-r10"),
-                ]),
-                sse(vec![
-                    ev_assistant_message("artifact-m5", "fork resumed recovery"),
-                    ev_completed("artifact-r11"),
-                ]),
-            ],
-        ))
-        .await;
-        Box::pin(fork_resumed.submit_text_turn("recover it after fork resume")).await?;
-        assert!(
-            fork_resumed_requests
-                .function_call_output_text("artifact-read-fork-resumed")
-                .context("fork resumed read_artifact output should be sent to the model")?
-                .contains("ARTIFACT_RECOVERY_MARKER")
-        );
         Ok(())
     })
 }
@@ -372,7 +289,7 @@ fn run_ephemeral_artifact_boundary() -> Pin<Box<dyn Future<Output = Result<()>> 
             .codex_home_path()
             .join("artifacts")
             .join(fixture.session_configured.thread_id.to_string());
-        assert!(!artifact_dir.exists());
+        assert!(artifact_log_files(&artifact_dir).is_empty());
 
         let response = mount_sse_once(
             &server,
@@ -386,12 +303,6 @@ fn run_ephemeral_artifact_boundary() -> Pin<Box<dyn Future<Output = Result<()>> 
         Box::pin(fixture.submit_text_turn("inspect retained history")).await?;
         let request = response.single_request();
         assert!(request.body_contains_text("EPHEMERAL_RECOVERY_MARKER"));
-        let body = request.body_json();
-        let tools = body
-            .get("tools")
-            .and_then(serde_json::Value::as_array)
-            .context("model request should include a tools array")?;
-        assert!(!tools.iter().any(|tool| tool["name"] == "read_artifact"));
         Ok(())
     })
 }
@@ -522,7 +433,10 @@ async fn shake_elide_drops_reported_token_usage_by_the_freed_estimate() -> Resul
 
     let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
     let expected_freed = preview.tokens_before - preview.tokens_after;
-    assert!(expected_freed > 0, "the shake must free tokens for this cross-check to mean anything");
+    assert!(
+        expected_freed > 0,
+        "the shake must free tokens for this cross-check to mean anything"
+    );
 
     Box::pin(fixture.codex.submit(Op::Shake {
         mode: ShakeMode::Elide,
@@ -549,134 +463,6 @@ async fn shake_elide_drops_reported_token_usage_by_the_freed_estimate() -> Resul
     assert!(
         (actual_drop - expected_freed).abs() <= tolerance,
         "expected usage to drop by ~{expected_freed} tokens (+/- {tolerance}), got {actual_drop}"
-    );
-    Ok(())
-}
-
-/// Artifact id for the pre-planted oversized artifact below. Valid as a UUID
-/// (32 hex digits) so `artifact://` parsing accepts it.
-const BOUNDED_ARTIFACT_ID: &str = "11111111111111111111111111111111";
-
-fn ev_completed_with_input_tokens(id: &str, input_tokens: i64) -> serde_json::Value {
-    json!({
-        "type": "response.completed",
-        "response": {
-            "id": id,
-            "usage": {
-                "input_tokens": input_tokens,
-                "input_tokens_details": null,
-                "output_tokens": 10,
-                "output_tokens_details": null,
-                "total_tokens": input_tokens + 10
-            }
-        }
-    })
-}
-
-/// A recovery read must not be able to push the next request over the context
-/// window (oh-my-pi #11365). With a tight remaining window the `read_artifact`
-/// page is clamped below the usual ceiling, the model is told why and where to
-/// continue, and the recovered text is not re-elided into a loop.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_artifact_bounds_its_page_to_the_remaining_context() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
-    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
-        // Resolved window 4_000 => auto-compact limit 3_600 and an effective
-        // window of 3_800. The 2_800 input tokens reported below therefore
-        // leave ~800 tokens of headroom, well under a full 3 KiB page.
-        config.model_context_window = Some(4_000);
-        // Isolate the recovery path: auto-shake would otherwise measure at 70%
-        // of this tiny window.
-        config.auto_shake.threshold = Some(codex_config::config_toml::AutoShakeThresholdToml::Off);
-    });
-    let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
-
-    // Plant an artifact far larger than one page, without going through a
-    // shake: this test is about the read path only.
-    let artifact_dir = fixture
-        .codex_home_path()
-        .join("artifacts")
-        .join(fixture.session_configured.thread_id.to_string());
-    fs::create_dir_all(&artifact_dir)?;
-    fs::write(
-        artifact_dir.join(format!("{BOUNDED_ARTIFACT_ID}.tool.log")),
-        "z".repeat(/*n*/ 64 * 1024),
-    )?;
-    let artifact_uri = format!("artifact://{BOUNDED_ARTIFACT_ID}");
-
-    let read_call_id = "bounded-artifact-read";
-    let requests = Box::pin(mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_assistant_message("bounded-m1", "ready"),
-                ev_completed_with_input_tokens("bounded-r1", /*input_tokens*/ 2_800),
-            ]),
-            sse(vec![
-                ev_response_created("bounded-r2"),
-                ev_function_call(
-                    read_call_id,
-                    "read_artifact",
-                    &json!({"artifact": artifact_uri}).to_string(),
-                ),
-                ev_completed_with_input_tokens("bounded-r2", /*input_tokens*/ 2_800),
-            ]),
-            sse(vec![
-                ev_assistant_message("bounded-m2", "recovered"),
-                ev_completed_with_input_tokens("bounded-r3", /*input_tokens*/ 2_800),
-            ]),
-        ],
-    ))
-    .await;
-
-    Box::pin(fixture.submit_text_turn("warm the usage counters")).await?;
-    Box::pin(fixture.submit_text_turn("recover that artifact")).await?;
-
-    let output = requests
-        .function_call_output_text(read_call_id)
-        .context("read_artifact output should be sent to the model")?;
-
-    let body = output
-        .split_once("\n[artifact source:")
-        .map(|(body, _)| body)
-        .context("an oversized recovery must carry a continuation marker")?;
-    assert!(
-        body.len() < 3 * 1024,
-        "page should be clamped below the 3 KiB ceiling, got {} bytes",
-        body.len()
-    );
-    assert!(
-        output.contains(&format!(
-            "[artifact source: {artifact_uri}; more content; use start_byte={}]",
-            body.len()
-        )),
-        "the notice must say where to continue: {output}"
-    );
-    assert!(
-        output.contains("bounded to") && output.contains("remaining"),
-        "the notice must explain the context-derived bound: {output}"
-    );
-
-    // The recovered region must not be re-elidable: a manual shake that could
-    // elide it would only mint another artifact, and could repeat forever.
-    // `TurnComplete` can land a moment before `active_turn` is cleared, so give
-    // the preview a few tries before treating a refusal as a failure.
-    let mut preview = None;
-    for _ in 0..50 {
-        match fixture.codex.preview_shake(ShakeMode::Elide).await {
-            Ok(value) => {
-                preview = Some(value);
-                break;
-            }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
-        }
-    }
-    let preview = preview.context("preview should become available once the turn settles")?;
-    assert_eq!(
-        preview.tool_outputs, 0,
-        "a recovery read's output must not be a shake candidate"
     );
     Ok(())
 }

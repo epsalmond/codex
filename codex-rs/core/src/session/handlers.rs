@@ -191,13 +191,10 @@ pub(crate) async fn apply_shake(
                     Ok(uri) => {
                         // `save` mints its own id inside `uri`; reuse it (and
                         // the same `label`) to compute the exact path it just
-                        // wrote to, so the placeholder can carry it for
+                        // wrote to, so the placeholder can name it for
                         // shell-tool search without a second filesystem call.
-                        let abs_path = uri
-                            .strip_prefix("artifact://")
+                        uri.strip_prefix("artifact://")
                             .map(|id| store.destination_path(id, label).display().to_string())
-                            .unwrap_or_default();
-                        Some((uri, abs_path))
                     }
                     Err(err) => {
                         warn!(%err, "failed to save shake artifact; preserving original region");

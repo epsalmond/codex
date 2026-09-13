@@ -1,6 +1,6 @@
 //! Integration coverage for automatic shake at the pre-sampling point.
 //!
-//! Follows the `artifact_recovery` pattern: a wiremock Responses server, an
+//! Follows the `shake_artifacts` pattern: a wiremock Responses server, an
 //! injected history with one oversized tool output, and assertions on the exact
 //! request bodies the model saw.
 
@@ -170,8 +170,8 @@ async fn auto_shake_elides_before_the_next_sampling_request(enabled: bool) -> Re
             "auto-shake should have elided the tool output before the second request"
         );
         assert!(
-            bodies[1].contains("recover: artifact://"),
-            "the elided region should be replaced by a recovery placeholder"
+            bodies[1].contains("[shaken ~"),
+            "the elided region should be replaced by a shaken placeholder"
         );
         let saved = fs::read_dir(&artifacts)?.count();
         assert!(saved > 0, "auto-shake must save a recoverable artifact");
@@ -194,7 +194,6 @@ async fn auto_shake_elides_before_the_next_sampling_request(enabled: bool) -> Re
 /// a shake cannot deliver. Mirrors oh-my-pi's `protectedTools`, which is
 /// checked before elision in both the default and aggressive presets.
 #[test_case::test_case(Some("skills"), "read"; "skill read")]
-#[test_case::test_case(None, "read_artifact"; "artifact recovery read")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_shake_never_elides_a_protected_tool_output(
     namespace: Option<&'static str>,
@@ -273,11 +272,29 @@ async fn auto_shake_never_elides_a_protected_tool_output(
         .codex_home_path()
         .join("artifacts")
         .join(fixture.session_configured.thread_id.to_string());
+    // A preview or a considered-but-skipped shake pass may still create the
+    // (empty) per-thread artifact directory as a side effect of resolving its
+    // canonical path; what must not happen is an actual artifact file.
     assert!(
-        !artifacts.exists(),
+        artifact_log_files(&artifacts).is_empty(),
         "nothing was elided, so no artifact should be written"
     );
     Ok(())
+}
+
+/// Regular (non-hidden) `.log` files directly under `dir`, or an empty `Vec`
+/// if `dir` does not exist. Used instead of `Path::exists` because
+/// `ArtifactStore::for_thread` may create the (empty) directory as a side
+/// effect of canonicalizing its root, even when no shake ever saves anything
+/// into it.
+fn artifact_log_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+        .collect()
 }
 
 /// `oversized_history` with the tool call renamed to a protected tool. The
@@ -473,10 +490,10 @@ async fn auto_shake_escalates_when_the_first_pass_is_not_enough() -> Result<()> 
         !bodies[1].contains(ESCALATION_MID_MARKER),
         "the escalated pass should have elided the mid tool output the plain pass left alone"
     );
-    let recovery_markers = bodies[1].matches("recover: artifact://").count();
+    let shaken_placeholders = bodies[1].matches("[shaken ~").count();
     assert_eq!(
-        recovery_markers, 2,
-        "both elided regions (one per shake pass) should carry a recovery placeholder"
+        shaken_placeholders, 2,
+        "both elided regions (one per shake pass) should carry a shaken placeholder"
     );
 
     let artifacts = fixture

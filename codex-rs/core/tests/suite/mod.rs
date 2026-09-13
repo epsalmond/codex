@@ -43,7 +43,6 @@ mod apply_patch_cli;
 mod apply_patch_serialization;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
-mod artifact_recovery;
 mod audio_truncation;
 mod auto_review;
 mod auto_shake;
@@ -159,6 +158,7 @@ mod safety_check_downgrade;
 mod search_tool;
 mod settings_commits;
 mod settings_constraints;
+mod shake_artifacts;
 mod shell_snapshot;
 mod skill_approval;
 mod skills;

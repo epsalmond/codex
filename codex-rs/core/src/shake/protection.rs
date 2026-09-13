@@ -1,11 +1,11 @@
 //! Tool-identity protection: outputs shake must never elide.
 //!
 //! Ported from oh-my-pi's `compaction/tool-protection.ts`. omp matches a
-//! `protectedTools` list *before* elision, so a skill read or an artifact
-//! recovery read is never a candidate in the first place. The fork previously
-//! had only the content-marker guard in [`super::recovery`], which stops
-//! *re*-eliding text that already carries an `artifact://` / `[shaken …]`
-//! marker but does nothing about the first elision of a skill read.
+//! `protectedTools` list *before* elision, so a skill read is never a
+//! candidate in the first place. The fork previously had only the
+//! content-marker guard in [`super::recovery`], which stops *re*-eliding text
+//! that already carries a `[shaken …]` marker but does nothing about the
+//! first elision of a skill read.
 //!
 //! Protection here is keyed on the *tool identity* of the call that produced an
 //! output, not on the output's text, and applies to both the manual `/shake`
@@ -29,21 +29,15 @@ use codex_protocol::models::ResponseItem;
 ///
 /// | Entry | Registered by |
 /// | --- | --- |
-/// | `read_artifact` | `tools::handlers::read_artifact_spec::READ_ARTIFACT_TOOL_NAME` |
 /// | `skills.read` | `ext/skills/src/tools/read.rs` (`skills` namespace) |
 /// | `skills.list` | `ext/skills/src/tools/list.rs` (`skills` namespace) |
 ///
-/// `read_artifact` is the fork's artifact-recovery read — omp's
-/// `isArtifactRecoveryToolResult`. Eliding a recovery read only mints another
-/// artifact and can repeat indefinitely. The `skills` namespace is the fork's
-/// equivalent of omp's literal `"skill"` tool name plus its
-/// `isSkillReadToolResult` (`skill://` path) matcher: skill content is loaded
-/// deliberately and is what the agent is working from.
-pub(crate) const PROTECTED_TOOLS: &[(Option<&str>, &str)] = &[
-    (None, "read_artifact"),
-    (Some("skills"), "read"),
-    (Some("skills"), "list"),
-];
+/// The `skills` namespace is the fork's equivalent of omp's literal `"skill"`
+/// tool name plus its `isSkillReadToolResult` (`skill://` path) matcher: skill
+/// content is loaded deliberately and is what the agent is working from.
+/// There is no artifact-recovery tool to protect here — see `docs/shake.md`.
+pub(crate) const PROTECTED_TOOLS: &[(Option<&str>, &str)] =
+    &[(Some("skills"), "read"), (Some("skills"), "list")];
 
 /// True when `namespace`/`name` identify a [`PROTECTED_TOOLS`] entry.
 ///
@@ -127,20 +121,19 @@ mod tests {
 
     #[test]
     fn default_namespace_spellings_are_equivalent() {
+        // Every `PROTECTED_TOOLS` entry lives in the `skills` namespace, so
+        // all three spellings of "no namespace" must agree that nothing there
+        // is protected.
         for namespace in [None, Some(""), Some(DEFAULT_FUNCTION_NAMESPACE)] {
+            assert!(!is_protected_tool(namespace, "read"), "{namespace:?}");
             assert!(
-                is_protected_tool(namespace, "read_artifact"),
+                !is_protected_tool(namespace, "exec_command"),
                 "{namespace:?}"
             );
         }
-        // A namespaced entry must not match in the default namespace, and vice
-        // versa.
-        assert!(!is_protected_tool(None, "read"));
-        assert!(!is_protected_tool(Some("skills"), "read_artifact"));
         assert!(is_protected_tool(Some("skills"), "read"));
         assert!(is_protected_tool(Some("skills"), "list"));
         assert!(!is_protected_tool(Some("skills"), "write"));
-        assert!(!is_protected_tool(None, "exec_command"));
     }
 
     #[test]

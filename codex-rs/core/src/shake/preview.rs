@@ -60,11 +60,11 @@ const DUMMY_ARTIFACT_ID: &str = "00000000000000000000000000000000";
 
 /// Run the real transformation on a copy of `items`, writing no artifacts.
 ///
-/// The save closure returns a fixed URI of the same encoded length as a real
-/// artifact id, and a path built from `artifact_store` (whose root reflects
-/// the real `$CODEX_HOME`/thread-id) with the same dummy id and the region's
-/// real label, so the measured placeholder size matches what a confirmed
-/// shake would actually insert — including the recovery file path.
+/// The save closure returns a path built from `artifact_store` (whose root
+/// reflects the real `$CODEX_HOME`/thread-id) with a dummy id of the same
+/// encoded length as a real UUID and the region's real label, so the
+/// measured placeholder size matches what a confirmed shake would actually
+/// insert — including the file path.
 pub(crate) fn estimate_shake(
     items: &[ResponseItemEnvelope],
     mode: ShakeMode,
@@ -87,12 +87,10 @@ pub(crate) fn estimate_shake(
                 &mut |content, label| {
                     // Match the store's size limit and the real UUID's encoded length.
                     (content.len() as u64 <= MAX_ARTIFACT_BYTES).then(|| {
-                        let uri = format!("artifact://{DUMMY_ARTIFACT_ID}");
-                        let path = artifact_store
+                        artifact_store
                             .destination_path(DUMMY_ARTIFACT_ID, label)
                             .display()
-                            .to_string();
-                        (uri, path)
+                            .to_string()
                     })
                 },
             ),

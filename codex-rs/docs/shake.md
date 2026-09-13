@@ -10,11 +10,10 @@ Implementation:
 | --- | --- |
 | Pure transform (region detection, in-place mutation) | `codex-rs/core/src/shake.rs` |
 | Read-only measurement (`/shake` preview, auto-shake decision input) | `codex-rs/core/src/shake/preview.rs` |
-| Recoverable placeholders / artifact markers | `codex-rs/core/src/shake/recovery.rs` |
+| Placeholder text / already-shaken marker | `codex-rs/core/src/shake/recovery.rs` |
 | Protected-tool allowlist (outputs shake never elides) | `codex-rs/core/src/shake/protection.rs` |
 | Auto-shake decision layer (pure, unit-tested) | `codex-rs/core/src/shake/auto.rs` |
-| Artifact store, and both size caps (savable-in / readable-out) | `codex-rs/core/src/artifacts.rs` |
-| Artifact recovery tool (`read_artifact`) | `codex-rs/core/src/tools/handlers/read_artifact.rs` |
+| Artifact store (`save`, the savable-in size cap) | `codex-rs/core/src/artifacts.rs` |
 | Orchestration (persist, re-account, announce) | `codex-rs/core/src/session/handlers.rs` (`shake`, `apply_shake`) |
 | Auto-shake trigger | `codex-rs/core/src/session/turn.rs` (`maybe_run_pre_sampling_auto_shake`) |
 
@@ -22,24 +21,33 @@ Implementation:
 
 | Mode | What it removes | Recoverable? |
 | --- | --- | --- |
-| `elide` | Whole tool-call outputs and large fenced/XML blocks in message text, replaced by short placeholders | **Yes** — each region is saved to a per-thread artifact first, and the placeholder carries `recover: artifact://<id>` for the `read_artifact` tool, plus `file: <abs_path>` naming the artifact's absolute on-disk path so the model can search it directly with a shell tool |
+| `elide` | Whole tool-call outputs and large fenced/XML blocks in message text, replaced by short placeholders | **Yes, via the filesystem** — each region is saved to a per-thread file first, and the placeholder names that file's absolute on-disk path, so the model can search it directly with a shell tool |
 | `images` | Image blocks | No — content is discarded |
 | `thinking` | Reasoning items | No — content is discarded |
 
 The exact placeholder text (`shake/recovery.rs`, `recovery_placeholder`) is:
 
 ```
-[shaken ~{tokens} tokens from {label} (recover: artifact://<id>; file: {abs_path})]
+[shaken ~{tokens} tokens from {label}. original: {abs_path}]
 ```
 
 `{abs_path}` is the absolute on-disk path from `ArtifactStore::save`
-(`$CODEX_HOME/artifacts/<thread-id>/<uuid>.<label>.log`). Recovering through
-`read_artifact` is one bounded page at a time; a model that only needs part of
-a large elided output (a specific error line, a matching field) can instead
-reach for a shell tool and `grep`/`awk` the path directly. A census of 346 omp
-sessions and 9 benchmark runs found zero `read_artifact` call-backs after a
-shake, so `read_artifact` is kept as a safety valve and partial extraction via
-the path is the expected default.
+(`$CODEX_HOME/artifacts/<thread-id>/<uuid>.<label>.log`), resolved once when
+the store is constructed (`ArtifactStore::for_thread` canonicalizes its root
+after creating it), so the path is absolute and symlink-free even if
+`CODEX_HOME` was set relative.
+
+There is no tool that reads an artifact back, on purpose. A census of 346
+local oh-my-pi sessions and 9 shake-bench runs found zero read-backs after a
+shake; no shipped model, config key, flag, or app-server parameter can disable
+the shell tool anyway (Guardian's `Disabled` model-capability variant exists
+only for the `/models` wire schema, upstream 903b7774bc, and is otherwise
+unreachable); and every sandbox mode already gives the model read access to
+the artifact directory — the Linux landlock sandbox grants read-only access
+from `/` (`linux-sandbox/src/landlock.rs:148`), and the seatbelt read-only
+profile allows broad file reads. A dedicated recovery tool would only
+duplicate what `grep`/`awk`/`sed` already do for free, with none of a shell
+tool's ability to extract just the part the model actually needs.
 
 A recent tail is always protected so shake cannot strip the tool outputs the
 agent is currently working from. The protected size depends on how the shake
@@ -59,18 +67,16 @@ the output:
 
 | Tool | Why it is protected |
 | --- | --- |
-| `read_artifact` | It is the artifact-recovery read itself. Eliding a recovery read only mints another artifact, and can repeat indefinitely. |
 | `skills.read` | Skill content is loaded deliberately and is what the agent is working from. |
 | `skills.list` | Same: the skill catalog the agent is choosing from. |
 
 This mirrors oh-my-pi's `protectedTools` matcher list
 (`packages/agent/src/compaction/tool-protection.ts`), which is checked *before*
 elision in both its default (automatic) and aggressive (manual) presets —
-`"skill"`, `isSkillReadToolResult` (a `read` of a `skill://` path), and
-`isArtifactRecoveryToolResult` (a `read` of an `artifact://` path). The fork's
-`skills` namespace is the equivalent of omp's `skill` tool plus its `skill://`
-read matcher, and `read_artifact` the equivalent of its `artifact://` read
-matcher.
+`"skill"` and `isSkillReadToolResult` (a `read` of a `skill://` path). The
+fork's `skills` namespace is the equivalent of omp's `skill` tool plus its
+`skill://` read matcher. (management-plane#990 previously also protected the
+fork's `read_artifact` tool here; that tool is gone — see "Modes" above.)
 
 A tool output carries no tool name on the wire —
 `ResponseInputItem::FunctionCallOutput` has no `name` field, and the conversion
@@ -80,9 +86,9 @@ the name. An output that *does* carry its own name (a replayed rollout, say) is
 honored directly.
 
 Protection is separate from, and additional to, the marker-based guard in
-`shake/recovery.rs`, which stops *re*-eliding text that already carries an
-`artifact://<id>` or `[shaken …]` marker. The allowlist stops the *first*
-elision of a protected tool's output, which the marker guard cannot see.
+`shake/recovery.rs`, which stops *re*-eliding text that already carries a
+`[shaken …]` marker. The allowlist stops the *first* elision of a protected
+tool's output, which the marker guard cannot see.
 
 Because `/shake`'s preview runs the real transformation on a copy
 (`estimate_shake`), protected outputs are excluded from the preview's counts and
@@ -94,58 +100,13 @@ shake cannot deliver.
 to put them. On an ephemeral thread, `elide` leaves history unchanged and reports
 why.
 
-## Artifact size caps
+## Artifact size cap
 
-There are two independent caps, and they are easy to confuse. One bounds what
-goes *into* an artifact at shake time; the other bounds what comes back *out* on
-a recovery read.
-
-| Constant | Direction | Value | Meaning |
-| --- | --- | --- | --- |
-| `MAX_ARTIFACT_BYTES` | savable **in** | 8 MiB | A region larger than this is not savable, so shake leaves it in place rather than promising a recovery it cannot deliver. Checked by `ArtifactStore::save`, and mirrored by `preview.rs` so the preview's counts match what a confirmed shake would do. |
-| `MAX_READ_BYTES` | readable **out** | 3 KiB | Ceiling on one `read_artifact` page, regardless of context headroom. Also bounds the memory one read needs for a hostile artifact. |
-| `MIN_READ_BYTES` | readable **out** | 512 B | Floor on one page. Less headroom than this means the read is refused with an actionable error rather than returning a useless sliver. |
-
-### Bounded recovery reads
-
-A recovery read must not be able to push the next request over the context
-window. oh-my-pi #11365 documents the failure: a large spilled result recovered
-through an unbounded `artifact://` read makes input plus requested output exceed
-the window, and the provider rejects the request *before* generation, mid-turn.
-
-So `read_artifact` derives its page budget from the context headroom **at the
-time of the read**, not from a fixed number alone
-(`artifacts::recovery_read_budget`):
-
-1. Take `ContextWindowTokenStatus::base_window_tokens_remaining` — remaining
-   tokens against the model's resolved context window, the same number
-   `get_context_remaining` reports. `None` (no resolved window) means there is
-   no headroom to derive a bound from, and the ceiling applies.
-2. Allow one read at most `RECOVERY_HEADROOM_PERCENT` (50%) of that headroom.
-   Recovery is a step in a turn, not the whole turn: the model still needs room
-   for its own reasoning and output, and for the next tool call.
-3. Clamp into `[MIN_READ_BYTES, MAX_READ_BYTES]`. Below the floor the read is
-   refused with an error naming the shortfall and telling the model to free
-   context first (`/shake`, `/compact`, or a fresh thread).
-
-`ArtifactStore::read` re-clamps its `max_bytes` argument into the same range, so
-no caller can ask for an unbounded page.
-
-A page that the headroom (rather than the ceiling) bounded carries an extra
-notice after the usual `[artifact source: …]` marker, naming the byte budget,
-the remaining window that produced it, and pointing at the `start_byte` in the
-marker above for continuing. The marker itself is unchanged, so the
-marker-recognition in `shake/recovery.rs` keeps working.
-
-Recovery reads are also on the protected-tool allowlist above, so a recovered
-page is never immediately re-elided — that would only mint another artifact and
-could repeat indefinitely.
-
-Note that the fork does **not** implement omp #11365's other suggested fix,
-clamping the requested output-token budget to the remaining context before
-every provider request. Bounding the read is the half that lives entirely in
-`core`; the budget clamp belongs to request construction and is tracked
-separately.
+`MAX_ARTIFACT_BYTES` (8 MiB) bounds what a shake may put *into* an artifact. A
+region larger than this is not savable, so shake leaves it in place rather than
+promising a recovery it cannot deliver. Checked by `ArtifactStore::save`, and
+mirrored by `preview.rs` so the preview's counts match what a confirmed shake
+would do.
 
 ## Manual `/shake`
 
@@ -189,7 +150,7 @@ still fires when auto-shake is disabled, impossible, or would not free enough.
    little is not worth the guaranteed prompt-cache miss, and repeating it every
    turn would be pure loss.
 7. If the preview's freed-token estimate is below the absolute
-   `min_savings_tokens` floor, stop — a secondary gate alongside step 6 that
+   `min_savings_tokens` floor, stop — a secondary check alongside step 6 that
    catches the case where a shake clears the percent threshold but still frees
    a trivial number of tokens (small context windows).
 8. Otherwise shake.
@@ -211,7 +172,7 @@ to compaction:
 
 - protect window: `MANUAL_PROTECT_TOKENS` (4,000 tokens) instead of
   `AUTO_PROTECT_TOKENS`, so more of the recent tail becomes eligible;
-- `min_savings_tokens`: halved from the resolved setting (still gated by the
+- `min_savings_tokens`: halved from the resolved setting (still subject to the
   same `min_elidable_percent`).
 
 "Still above the auto-shake threshold" is re-checked with the exact same
