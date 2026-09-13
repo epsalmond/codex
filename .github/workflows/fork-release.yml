@@ -1,0 +1,169 @@
+name: fork-release
+# Builds and publishes the eric/local-features test builds on
+# free GitHub-hosted runners, replacing the manual ~/.bin/codex-fork-release
+# flow (nas + mbp over ssh). Reuses upstream's setup-rusty-v8 composite
+# action for the prebuilt sandboxed V8 archive; does not touch
+# rust-release.yml, which needs self-hosted runners and codesigning secrets
+# this fork does not have.
+#
+# Tag scheme: local-features-v<upstream version>-r<UTC minute>.<short sha>
+# (see codex-fork-release). This workflow only reacts to tags already
+# pushed by that scheme; it does not create tags itself.
+on:
+  push:
+    tags:
+      - "local-features-v*"
+
+env:
+  FORK_BRANCH: eric/local-features
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest Ubuntu GitHub still offers, to keep the glibc floor low.
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          # GitHub-hosted Apple Silicon.
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs -> target
+          key: fork-release-${{ matrix.target }}
+
+      # Downloads and verifies the Codex-built rusty_v8 archive/binding for
+      # this target, matching codex-update's --local build exactly (same
+      # profile, same RUSTY_V8_ARCHIVE / RUSTY_V8_SRC_BINDING_PATH env vars).
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      # Same cargo invocation as ~/.bin/codex-fork-release (via codex-update
+      # --local): plain `cargo build --release`, no extra features, building
+      # only the two binaries the fork ships.
+      - name: Cargo build
+        shell: bash
+        run: cargo build --release --bin codex --bin codex-code-mode-host
+
+      - name: Record glibc version (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd --version | awk 'NR == 1 { print $NF }' > glibc-version.txt
+          cat glibc-version.txt
+
+      # Tarball layout matches codex-fork-release exactly: both binaries at
+      # the archive root, no leading directory.
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          stage=$(mktemp -d)
+          install -m 755 target/release/codex target/release/codex-code-mode-host "$stage/"
+          tar -C "$stage" -czf "codex-$target.tar.gz" codex codex-code-mode-host
+          rm -rf "$stage"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            codex-rs/codex-${{ matrix.target }}.tar.gz
+            codex-rs/glibc-version.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Compose release body and checksums
+        shell: bash
+        env:
+          FORK_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          base_tag=$(git describe --tags --match 'rust-v[0-9]*' --abbrev=0 "$commit")
+          glibc_version=$(cat dist/glibc-version.txt)
+
+          {
+            echo "base_tag=$base_tag"
+            echo "release_commit=$commit"
+          } >> "$GITHUB_ENV"
+
+          # SHA256SUMS: same format as codex-fork-release (sha256sum-compatible
+          # two-space separated "<digest>  <filename>" lines).
+          (
+            cd dist
+            for asset in codex-*.tar.gz; do
+              printf '%s  %s\n' "$(sha256sum "$asset" | awk '{ print $1 }')" "$asset"
+            done
+          ) > dist/SHA256SUMS
+
+          .github/scripts/fork-release-notes.sh \
+            "$PWD" "$FORK_REPO" "$FORK_BRANCH" "$commit" "$glibc_version" \
+            > release-body.md
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORK_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets=(dist/codex-*.tar.gz dist/SHA256SUMS)
+          version=${base_tag#rust-v}
+          short=$(git rev-parse --short=12 "$release_commit")
+
+          if gh release view "$TAG" -R "$FORK_REPO" >/dev/null 2>&1; then
+            echo "release $TAG exists; clobbering assets and notes"
+            gh release upload "$TAG" -R "$FORK_REPO" "${assets[@]}" --clobber
+            gh release edit "$TAG" -R "$FORK_REPO" --notes-file release-body.md
+          else
+            gh release create "$TAG" -R "$FORK_REPO" --prerelease \
+              --title "local-features test build $version ($short)" \
+              --notes-file release-body.md "${assets[@]}"
+          fi
