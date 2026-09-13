@@ -1,0 +1,22 @@
+{
+  "name": "shake-bench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Retention benchmark for Codex `shake` (surgical context elision) driven through codex app-server.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "self-test": "tsx src/self-test.ts",
+    "test": "npm run self-test && node --import tsx --test src/*.test.ts",
+    "runner-test": "tsx src/runner.test.ts",
+    "run": "tsx src/run.ts",
+    "analyze": "tsx src/analyze.ts",
+    "estimate": "tsx src/cost.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}

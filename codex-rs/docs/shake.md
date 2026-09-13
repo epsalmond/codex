@@ -529,3 +529,8 @@ just write-config-schema
 ```
 
 `core::config::schema_tests::config_schema_matches_fixture` fails otherwise.
+
+## Benchmark
+
+A retention benchmark for shake — methodology, harness code, and measured
+results — is in [docs/shake-bench/README.md](shake-bench/README.md).

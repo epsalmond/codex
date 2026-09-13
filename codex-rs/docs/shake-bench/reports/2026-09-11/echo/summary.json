@@ -1,0 +1,723 @@
+{
+  "manifest": {
+    "binary": "codex-next",
+    "binaryVersion": "codex-cli 0.153.4",
+    "model": "gpt-6-astra",
+    "configFingerprint": "70f3f669c38865c5c075a5d4d76590942e89c8b810b086d9b9ed2e8f0d4cc9ea",
+    "fixtureFingerprint": "887c2f394e8fedfb455666777617dd3af139b471d8db5a5b0835b3f65de60ce2",
+    "fixtureCount": 6,
+    "variant": "echo",
+    "trials": 2,
+    "arms": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "expectedCells": [
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "echo",
+        "seed": 6
+      }
+    ],
+    "codeFingerprint": "4a3aca6279a35f958581cd1596ddd7838963cd94d1c4c30373a10e2fb30cf409",
+    "nestedTelemetryPolicy": "unavailable",
+    "concurrency": 1,
+    "fingerprint": "cee5edb704442f0e726274bf255ec2adeb1abe55c4c9afe688c0057a0ab3ee22",
+    "startedAt": "2026-09-11T07:47:01.261Z",
+    "actualArmOrderByFixtureTrial": {
+      "fixture-01:0": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-01:1": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-02:0": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-02:1": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-03:0": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-03:1": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-04:0": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-04:1": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-05:0": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-05:1": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-06:0": [
+        "full",
+        "shake-elide-noread"
+      ],
+      "fixture-06:1": [
+        "full",
+        "shake-elide-noread"
+      ]
+    },
+    "fixtureAdaptation": {
+      "toolOutputPaddingTargetBytes": 2048,
+      "eligibleToolOutputs": 390,
+      "rationale": "The upstream fixture outputs are shorter than shake's approximately 400-token elision threshold; deterministic answer-free padding makes the shipped elision path measurable."
+    },
+    "upstreamFixtureSource": "https://github.com/algal/pi-openai-server-compaction/tree/main/benchmarks/native-vs-text (MIT)"
+  },
+  "runDir": "$BENCH_RESULTS/full-echo-2026-09-11",
+  "validation": {
+    "expectedCells": 24,
+    "completedCells": 24,
+    "compliantCells": 24,
+    "protocolViolationCells": [],
+    "nestedTelemetryUnverifiedCells": []
+  },
+  "completedCells": 24,
+  "variants": [
+    "echo"
+  ],
+  "arms": [
+    "full",
+    "shake-elide-noread"
+  ],
+  "byArm": {
+    "full": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-elide-noread": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    }
+  },
+  "byCategory": {
+    "distractor_resolution": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "exact_recall": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "relational_state": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "task_continuation": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "tool_history": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    }
+  },
+  "byArmExcludingProtocolViolations": {
+    "full": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-elide-noread": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    }
+  },
+  "byCategoryExcludingProtocolViolations": {
+    "distractor_resolution": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "exact_recall": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "relational_state": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "task_continuation": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "tool_history": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    }
+  },
+  "perFixture": {
+    "fixture-01": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-02": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-03": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-04": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-05": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-06": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    }
+  },
+  "pairedVsControl": {
+    "shake-elide-noread": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    }
+  },
+  "pairedVsControlExcludingProtocolViolations": {
+    "shake-elide-noread": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    }
+  },
+  "footprint": {
+    "full": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 67486.33333333333,
+      "meanTurnInputTokens": 67486.33333333333,
+      "meanOutputTokens": 1551.1666666666667,
+      "meanEvaluationLatencyMs": 51231.166666666664,
+      "meanPreparationLatencyMs": 0,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    },
+    "shake-elide-noread": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 48469.083333333336,
+      "meanTurnInputTokens": 48469.083333333336,
+      "meanOutputTokens": 1551.1666666666667,
+      "meanEvaluationLatencyMs": 50759.25,
+      "meanPreparationLatencyMs": 638.5,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    }
+  },
+  "recovery": {
+    "shake-elide-noread": {
+      "cells": 12,
+      "cellsWithAttempts": 0,
+      "meanOuterCodeModeContinuations": 0,
+      "meanNestedReadAttempts": 0,
+      "totalNestedReadAttempts": 0,
+      "meanDerivedReadArtifactBytes": 0,
+      "meanExtraInputTokens": 0,
+      "meanArtifactFiles": 65,
+      "meanArtifactBytes": 134979,
+      "noreadViolations": 0
+    }
+  },
+  "previewVsRealized": {
+    "shake-elide-noread": {
+      "cells": 12,
+      "applied": 12,
+      "meanTokensBefore": 102274.33333333333,
+      "meanTokensAfter": 69461.33333333333,
+      "meanToolOutputsElided": 65,
+      "meanRealizedDownstreamInputTokens": 48469.083333333336,
+      "meanRealizedMinusPreviewTokens": -20992.25,
+      "meanRealizedToPreviewRatio": 0.6977851227321225,
+      "meanShakeLatencyMs": 638.4166666666666
+    }
+  },
+  "controlMeanDownstreamInputTokens": 67486.33333333333
+}

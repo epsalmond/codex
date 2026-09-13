@@ -1,0 +1,4810 @@
+{
+  "manifest": {
+    "binary": "codex-next",
+    "binaryVersion": "codex-cli 0.153.4",
+    "model": "gpt-6-astra",
+    "configFingerprint": "70f3f669c38865c5c075a5d4d76590942e89c8b810b086d9b9ed2e8f0d4cc9ea",
+    "fixtureFingerprint": "4c5199484d7a2a1daa7eed66450d4c368cd93023af2b93361bf207a1b58a68b1",
+    "fixtureCount": 6,
+    "variant": "plain",
+    "trials": 2,
+    "arms": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ],
+    "expectedCells": [
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 1
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 2
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 3
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 4
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 5
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "full",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "shake-elide",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "shake-elide-noread",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "shake-then-compact",
+        "model": "gpt-6-astra",
+        "variant": "plain",
+        "seed": 6
+      }
+    ],
+    "codeFingerprint": "4a3aca6279a35f958581cd1596ddd7838963cd94d1c4c30373a10e2fb30cf409",
+    "nestedTelemetryPolicy": "unavailable",
+    "concurrency": 3,
+    "fingerprint": "be77784e75180d2f9588e8241cc00865951e05270d7addfbad5a2102a7e3c9ae",
+    "startedAt": "2026-09-11T07:46:43.927Z",
+    "actualArmOrderByFixtureTrial": {
+      "fixture-01:0": [
+        "full",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact"
+      ],
+      "fixture-01:1": [
+        "full",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact"
+      ],
+      "fixture-02:0": [
+        "full",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact",
+        "shake-elide"
+      ],
+      "fixture-02:1": [
+        "full",
+        "compact",
+        "shake-then-compact",
+        "shake-elide",
+        "shake-elide-noread"
+      ],
+      "fixture-03:0": [
+        "full",
+        "shake-then-compact",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact"
+      ],
+      "fixture-03:1": [
+        "full",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact"
+      ],
+      "fixture-04:0": [
+        "full",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact"
+      ],
+      "fixture-04:1": [
+        "full",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact",
+        "shake-elide"
+      ],
+      "fixture-05:0": [
+        "full",
+        "compact",
+        "shake-then-compact",
+        "shake-elide",
+        "shake-elide-noread"
+      ],
+      "fixture-05:1": [
+        "full",
+        "shake-then-compact",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact"
+      ],
+      "fixture-06:0": [
+        "full",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact"
+      ],
+      "fixture-06:1": [
+        "full",
+        "shake-elide",
+        "shake-elide-noread",
+        "compact",
+        "shake-then-compact"
+      ]
+    },
+    "fixtureAdaptation": {
+      "toolOutputPaddingTargetBytes": 2048,
+      "eligibleToolOutputs": 390,
+      "rationale": "The upstream fixture outputs are shorter than shake's approximately 400-token elision threshold; deterministic answer-free padding makes the shipped elision path measurable."
+    },
+    "upstreamFixtureSource": "https://github.com/algal/pi-openai-server-compaction/tree/main/benchmarks/native-vs-text (MIT)"
+  },
+  "runDir": "$BENCH_RESULTS/full-plain-2026-09-11",
+  "validation": {
+    "expectedCells": 60,
+    "completedCells": 60,
+    "compliantCells": 60,
+    "protocolViolationCells": [],
+    "nestedTelemetryUnverifiedCells": [
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 0,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-01",
+        "trial": 1,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 0,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-02",
+        "trial": 1,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 0,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-03",
+        "trial": 1,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 0,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-04",
+        "trial": 1,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 0,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-05",
+        "trial": 1,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 0,
+        "arm": "shake-then-compact"
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "shake-elide"
+      },
+      {
+        "fixtureId": "fixture-06",
+        "trial": 1,
+        "arm": "shake-then-compact"
+      }
+    ]
+  },
+  "completedCells": 60,
+  "variants": [
+    "plain"
+  ],
+  "arms": [
+    "full",
+    "shake-elide",
+    "shake-elide-noread",
+    "compact",
+    "shake-then-compact"
+  ],
+  "byArm": {
+    "full": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-elide": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-elide-noread": {
+      "correct": 732,
+      "total": 900,
+      "accuracy": 0.8133333333333334,
+      "wilson95": [
+        0.786564120759736,
+        0.8374390231539763
+      ]
+    },
+    "compact": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-then-compact": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    }
+  },
+  "byCategory": {
+    "distractor_resolution": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "exact_recall": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "relational_state": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "task_continuation": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "tool_history": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 12,
+        "total": 180,
+        "accuracy": 0.06666666666666667,
+        "wilson95": [
+          0.03854369219884437,
+          0.11289972430753939
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    }
+  },
+  "byArmExcludingProtocolViolations": {
+    "full": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-elide": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-elide-noread": {
+      "correct": 732,
+      "total": 900,
+      "accuracy": 0.8133333333333334,
+      "wilson95": [
+        0.786564120759736,
+        0.8374390231539763
+      ]
+    },
+    "compact": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    },
+    "shake-then-compact": {
+      "correct": 900,
+      "total": 900,
+      "accuracy": 1,
+      "wilson95": [
+        0.9957496977346473,
+        0.9999999999999999
+      ]
+    }
+  },
+  "byCategoryExcludingProtocolViolations": {
+    "distractor_resolution": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "exact_recall": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "relational_state": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "task_continuation": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    },
+    "tool_history": {
+      "full": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 12,
+        "total": 180,
+        "accuracy": 0.06666666666666667,
+        "wilson95": [
+          0.03854369219884437,
+          0.11289972430753939
+        ]
+      },
+      "compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 180,
+        "total": 180,
+        "accuracy": 1,
+        "wilson95": [
+          0.9791037501849418,
+          1
+        ]
+      }
+    }
+  },
+  "perFixture": {
+    "fixture-01": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 122,
+        "total": 150,
+        "accuracy": 0.8133333333333334,
+        "wilson95": [
+          0.7434413916324496,
+          0.8675766945029
+        ]
+      },
+      "compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-02": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 122,
+        "total": 150,
+        "accuracy": 0.8133333333333334,
+        "wilson95": [
+          0.7434413916324496,
+          0.8675766945029
+        ]
+      },
+      "compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-03": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 122,
+        "total": 150,
+        "accuracy": 0.8133333333333334,
+        "wilson95": [
+          0.7434413916324496,
+          0.8675766945029
+        ]
+      },
+      "compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-04": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 122,
+        "total": 150,
+        "accuracy": 0.8133333333333334,
+        "wilson95": [
+          0.7434413916324496,
+          0.8675766945029
+        ]
+      },
+      "compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-05": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 122,
+        "total": 150,
+        "accuracy": 0.8133333333333334,
+        "wilson95": [
+          0.7434413916324496,
+          0.8675766945029
+        ]
+      },
+      "compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    },
+    "fixture-06": {
+      "full": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-elide-noread": {
+        "correct": 122,
+        "total": 150,
+        "accuracy": 0.8133333333333334,
+        "wilson95": [
+          0.7434413916324496,
+          0.8675766945029
+        ]
+      },
+      "compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      },
+      "shake-then-compact": {
+        "correct": 150,
+        "total": 150,
+        "accuracy": 1,
+        "wilson95": [
+          0.9750288608542812,
+          1
+        ]
+      }
+    }
+  },
+  "pairedVsControl": {
+    "shake-elide": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    },
+    "shake-elide-noread": {
+      "bothCorrect": 732,
+      "controlOnly": 168,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 5.345529420184391e-51,
+      "regressions": [
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-1",
+          "category": "tool_history",
+          "expected": "7137",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_1_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-4",
+          "category": "tool_history",
+          "expected": "1243",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202601-hidden-nebula-beb905b451cf",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-harbor-67b862f06e44",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-juniper-ed5a81d42187",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-meteor-c2604cb39f96",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-nebula-505a2d8de68d",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-keystone-6432793ff006",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-4b774226e1ee",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-meteor-b36ae68f624f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-harbor-8e7d2a370023",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-41cea1e61196",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-meteor-d2843c9d022a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-1",
+          "category": "tool_history",
+          "expected": "7137",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_1_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-4",
+          "category": "tool_history",
+          "expected": "1243",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202601-hidden-nebula-beb905b451cf",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-harbor-67b862f06e44",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-juniper-ed5a81d42187",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-meteor-c2604cb39f96",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-nebula-505a2d8de68d",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-keystone-6432793ff006",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-4b774226e1ee",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-meteor-b36ae68f624f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-harbor-8e7d2a370023",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-41cea1e61196",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-meteor-d2843c9d022a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-1",
+          "category": "tool_history",
+          "expected": "7274",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_2_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-4",
+          "category": "tool_history",
+          "expected": "1286",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202602-daring-isotope-50ca4ac2edd9",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-lantern-cefc4fdab719",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-falcon-faeb86cfefc6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-357de71660ae",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-d4c0b66cd894",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-a97111c3b988",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-15265c6b313f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-isotope-cdfe0724d254",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-isotope-04b116aa890b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-e0c6b0c4d255",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-bfd089d0b915",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-1",
+          "category": "tool_history",
+          "expected": "7274",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_2_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-4",
+          "category": "tool_history",
+          "expected": "1286",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202602-daring-isotope-50ca4ac2edd9",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-lantern-cefc4fdab719",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-falcon-faeb86cfefc6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-357de71660ae",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-d4c0b66cd894",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-a97111c3b988",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-15265c6b313f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-isotope-cdfe0724d254",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-isotope-04b116aa890b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-e0c6b0c4d255",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-bfd089d0b915",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-1",
+          "category": "tool_history",
+          "expected": "7411",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_3_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-4",
+          "category": "tool_history",
+          "expected": "1329",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202603-cobalt-keystone-fa4389fac5a5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-5a4c3646c20a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-keystone-7f41ccf588b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-9958343f9a89",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-054bf08ff2d5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-992062afc3e5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-4b2fe4fd52bc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-32bed28165fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-a171f280f8b4",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-827ca0b8790b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-isotope-76f488b6f5a2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-1",
+          "category": "tool_history",
+          "expected": "7411",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_3_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-4",
+          "category": "tool_history",
+          "expected": "1329",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202603-cobalt-keystone-fa4389fac5a5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-5a4c3646c20a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-keystone-7f41ccf588b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-9958343f9a89",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-054bf08ff2d5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-992062afc3e5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-4b2fe4fd52bc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-32bed28165fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-a171f280f8b4",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-827ca0b8790b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-isotope-76f488b6f5a2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-1",
+          "category": "tool_history",
+          "expected": "7548",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_4_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-4",
+          "category": "tool_history",
+          "expected": "1372",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202604-frozen-isotope-13cc0060c7e7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-fe2b5d81e8cd",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-1bfbf0c48190",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-a308b10fe3c5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-harbor-1ee9c10854c6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-ember-lantern-c7f852838066",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-harbor-b2f18e74ed20",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-5dcbcbed5a8e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-317b85999eb7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-127641c8b8c8",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-84ff6d7ce409",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-1",
+          "category": "tool_history",
+          "expected": "7548",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_4_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-4",
+          "category": "tool_history",
+          "expected": "1372",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202604-frozen-isotope-13cc0060c7e7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-fe2b5d81e8cd",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-1bfbf0c48190",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-a308b10fe3c5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-harbor-1ee9c10854c6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-ember-lantern-c7f852838066",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-harbor-b2f18e74ed20",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-5dcbcbed5a8e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-317b85999eb7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-127641c8b8c8",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-84ff6d7ce409",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-1",
+          "category": "tool_history",
+          "expected": "7685",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_5_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-4",
+          "category": "tool_history",
+          "expected": "1415",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202605-ember-falcon-2c00d5ca770e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-89622a80ac8c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-meteor-725c65f784fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-b5c1213964dc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-harbor-c679ded2f14e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-lantern-8ba1857447b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-keystone-5fa11a807ef0",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-golden-falcon-d844687ce387",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-daring-meteor-bcb6e8374518",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-lantern-a91e6040b047",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-56e7c1c5c66c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-1",
+          "category": "tool_history",
+          "expected": "7685",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_5_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-4",
+          "category": "tool_history",
+          "expected": "1415",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202605-ember-falcon-2c00d5ca770e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-89622a80ac8c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-meteor-725c65f784fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-b5c1213964dc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-harbor-c679ded2f14e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-lantern-8ba1857447b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-keystone-5fa11a807ef0",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-golden-falcon-d844687ce387",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-daring-meteor-bcb6e8374518",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-lantern-a91e6040b047",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-56e7c1c5c66c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-1",
+          "category": "tool_history",
+          "expected": "7822",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_6_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-4",
+          "category": "tool_history",
+          "expected": "1458",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202606-brisk-meteor-c4ec6150d718",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-d7b4f7e81d08",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-lantern-c6f5d2c560f7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-f53460c2211a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-bdc0cb7d3def",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-76ded9ecbaea",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-golden-lantern-bd596ef22ed7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-amber-nebula-5a367fcfbf32",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-keystone-62352b878b1b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-7926b325a54f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-40f5b2e3c866",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-1",
+          "category": "tool_history",
+          "expected": "7822",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_6_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-4",
+          "category": "tool_history",
+          "expected": "1458",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202606-brisk-meteor-c4ec6150d718",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-d7b4f7e81d08",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-lantern-c6f5d2c560f7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-f53460c2211a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-bdc0cb7d3def",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-76ded9ecbaea",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-golden-lantern-bd596ef22ed7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-amber-nebula-5a367fcfbf32",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-keystone-62352b878b1b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-7926b325a54f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-40f5b2e3c866",
+          "actual": ""
+        }
+      ]
+    },
+    "compact": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    },
+    "shake-then-compact": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    }
+  },
+  "pairedVsControlExcludingProtocolViolations": {
+    "shake-elide": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    },
+    "shake-elide-noread": {
+      "bothCorrect": 732,
+      "controlOnly": 168,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 5.345529420184391e-51,
+      "regressions": [
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-1",
+          "category": "tool_history",
+          "expected": "7137",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_1_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-4",
+          "category": "tool_history",
+          "expected": "1243",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202601-hidden-nebula-beb905b451cf",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-harbor-67b862f06e44",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-juniper-ed5a81d42187",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-meteor-c2604cb39f96",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-nebula-505a2d8de68d",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-keystone-6432793ff006",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-4b774226e1ee",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-meteor-b36ae68f624f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-harbor-8e7d2a370023",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-41cea1e61196",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-meteor-d2843c9d022a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-1",
+          "category": "tool_history",
+          "expected": "7137",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_1_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-4",
+          "category": "tool_history",
+          "expected": "1243",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202601-hidden-nebula-beb905b451cf",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-harbor-67b862f06e44",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-juniper-ed5a81d42187",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-meteor-c2604cb39f96",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-nebula-505a2d8de68d",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-keystone-6432793ff006",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-4b774226e1ee",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-meteor-b36ae68f624f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-harbor-8e7d2a370023",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-41cea1e61196",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-01",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-01-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-meteor-d2843c9d022a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-1",
+          "category": "tool_history",
+          "expected": "7274",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_2_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-4",
+          "category": "tool_history",
+          "expected": "1286",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202602-daring-isotope-50ca4ac2edd9",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-lantern-cefc4fdab719",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-falcon-faeb86cfefc6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-357de71660ae",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-d4c0b66cd894",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-a97111c3b988",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-15265c6b313f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-isotope-cdfe0724d254",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-isotope-04b116aa890b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-e0c6b0c4d255",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-bfd089d0b915",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-1",
+          "category": "tool_history",
+          "expected": "7274",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_2_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-4",
+          "category": "tool_history",
+          "expected": "1286",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202602-daring-isotope-50ca4ac2edd9",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-hidden-lantern-cefc4fdab719",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-daring-falcon-faeb86cfefc6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-357de71660ae",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-d4c0b66cd894",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-a97111c3b988",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-15265c6b313f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-isotope-cdfe0724d254",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-isotope-04b116aa890b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-e0c6b0c4d255",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-02",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-02-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-bfd089d0b915",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-1",
+          "category": "tool_history",
+          "expected": "7411",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_3_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-4",
+          "category": "tool_history",
+          "expected": "1329",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202603-cobalt-keystone-fa4389fac5a5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-5a4c3646c20a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-keystone-7f41ccf588b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-9958343f9a89",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-054bf08ff2d5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-992062afc3e5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-4b2fe4fd52bc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-32bed28165fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-a171f280f8b4",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-827ca0b8790b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-isotope-76f488b6f5a2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-1",
+          "category": "tool_history",
+          "expected": "7411",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_3_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-4",
+          "category": "tool_history",
+          "expected": "1329",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202603-cobalt-keystone-fa4389fac5a5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-5a4c3646c20a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-keystone-7f41ccf588b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-9958343f9a89",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-054bf08ff2d5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-falcon-992062afc3e5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-ember-juniper-4b2fe4fd52bc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-daring-nebula-32bed28165fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-falcon-a171f280f8b4",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-amber-juniper-827ca0b8790b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-03",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-03-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-isotope-76f488b6f5a2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-1",
+          "category": "tool_history",
+          "expected": "7548",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_4_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-4",
+          "category": "tool_history",
+          "expected": "1372",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202604-frozen-isotope-13cc0060c7e7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-fe2b5d81e8cd",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-1bfbf0c48190",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-a308b10fe3c5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-harbor-1ee9c10854c6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-ember-lantern-c7f852838066",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-harbor-b2f18e74ed20",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-5dcbcbed5a8e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-317b85999eb7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-127641c8b8c8",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-84ff6d7ce409",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-1",
+          "category": "tool_history",
+          "expected": "7548",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_4_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-4",
+          "category": "tool_history",
+          "expected": "1372",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202604-frozen-isotope-13cc0060c7e7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-fe2b5d81e8cd",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-nebula-1bfbf0c48190",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-a308b10fe3c5",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-harbor-1ee9c10854c6",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-ember-lantern-c7f852838066",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-harbor-b2f18e74ed20",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-5dcbcbed5a8e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-317b85999eb7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-harbor-127641c8b8c8",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-04",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-04-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-84ff6d7ce409",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-1",
+          "category": "tool_history",
+          "expected": "7685",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_5_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-4",
+          "category": "tool_history",
+          "expected": "1415",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202605-ember-falcon-2c00d5ca770e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-89622a80ac8c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-meteor-725c65f784fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-b5c1213964dc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-harbor-c679ded2f14e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-lantern-8ba1857447b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-keystone-5fa11a807ef0",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-golden-falcon-d844687ce387",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-daring-meteor-bcb6e8374518",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-lantern-a91e6040b047",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-56e7c1c5c66c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-1",
+          "category": "tool_history",
+          "expected": "7685",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_5_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-4",
+          "category": "tool_history",
+          "expected": "1415",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202605-ember-falcon-2c00d5ca770e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-ember-nebula-89622a80ac8c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-meteor-725c65f784fc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-golden-meteor-b5c1213964dc",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-harbor-c679ded2f14e",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-lantern-8ba1857447b2",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-keystone-5fa11a807ef0",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-golden-falcon-d844687ce387",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-daring-meteor-bcb6e8374518",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-daring-lantern-a91e6040b047",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-05",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-05-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-frozen-juniper-56e7c1c5c66c",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-1",
+          "category": "tool_history",
+          "expected": "7822",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_6_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-4",
+          "category": "tool_history",
+          "expected": "1458",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202606-brisk-meteor-c4ec6150d718",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-d7b4f7e81d08",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-lantern-c6f5d2c560f7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-f53460c2211a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-bdc0cb7d3def",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-76ded9ecbaea",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-golden-lantern-bd596ef22ed7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-amber-nebula-5a367fcfbf32",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-keystone-62352b878b1b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-7926b325a54f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 0,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-40f5b2e3c866",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-1",
+          "category": "tool_history",
+          "expected": "7822",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-2",
+          "category": "tool_history",
+          "expected": "reconcile_epoch_6_preserves_order",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-4",
+          "category": "tool_history",
+          "expected": "1458",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-5",
+          "category": "tool_history",
+          "expected": "rel-202606-brisk-meteor-c4ec6150d718",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-6",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-d7b4f7e81d08",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-7",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-lantern-c6f5d2c560f7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-8",
+          "category": "tool_history",
+          "expected": "tool-result-cobalt-nebula-f53460c2211a",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-9",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-bdc0cb7d3def",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-10",
+          "category": "tool_history",
+          "expected": "tool-result-amber-keystone-76ded9ecbaea",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-11",
+          "category": "tool_history",
+          "expected": "tool-result-golden-lantern-bd596ef22ed7",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-12",
+          "category": "tool_history",
+          "expected": "tool-result-amber-nebula-5a367fcfbf32",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-13",
+          "category": "tool_history",
+          "expected": "tool-result-golden-keystone-62352b878b1b",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-14",
+          "category": "tool_history",
+          "expected": "tool-result-ember-falcon-7926b325a54f",
+          "actual": ""
+        },
+        {
+          "fixtureId": "fixture-06",
+          "trial": 1,
+          "arm": "shake-elide-noread",
+          "questionId": "fixture-06-tool_history-15",
+          "category": "tool_history",
+          "expected": "tool-result-brisk-juniper-40f5b2e3c866",
+          "actual": ""
+        }
+      ]
+    },
+    "compact": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    },
+    "shake-then-compact": {
+      "bothCorrect": 900,
+      "controlOnly": 0,
+      "armOnly": 0,
+      "bothWrong": 0,
+      "exactMcNemarP": 1,
+      "regressions": []
+    }
+  },
+  "footprint": {
+    "full": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 64706.333333333336,
+      "meanTurnInputTokens": 64706.333333333336,
+      "meanOutputTokens": 1551.1666666666667,
+      "meanEvaluationLatencyMs": 51368.333333333336,
+      "meanPreparationLatencyMs": 0,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    },
+    "shake-elide": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 45700,
+      "meanTurnInputTokens": 97490,
+      "meanOutputTokens": 1879.25,
+      "meanEvaluationLatencyMs": 63124.416666666664,
+      "meanPreparationLatencyMs": 640.4166666666666,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    },
+    "shake-elide-noread": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 45692.166666666664,
+      "meanTurnInputTokens": 45692.166666666664,
+      "meanOutputTokens": 1387.6666666666667,
+      "meanEvaluationLatencyMs": 45982.083333333336,
+      "meanPreparationLatencyMs": 633,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    },
+    "compact": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 41072.583333333336,
+      "meanTurnInputTokens": 41072.583333333336,
+      "meanOutputTokens": 1551.1666666666667,
+      "meanEvaluationLatencyMs": 49080.5,
+      "meanPreparationLatencyMs": 134180.75,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    },
+    "shake-then-compact": {
+      "cells": 12,
+      "meanDownstreamInputTokens": 41640.416666666664,
+      "meanTurnInputTokens": 93007.25,
+      "meanOutputTokens": 1914.3333333333333,
+      "meanEvaluationLatencyMs": 66062.58333333333,
+      "meanPreparationLatencyMs": 157569.66666666666,
+      "parseFailures": 0,
+      "nonCompletedTurns": 0
+    }
+  },
+  "recovery": {
+    "shake-elide": {
+      "cells": 12,
+      "cellsWithAttempts": null,
+      "meanOuterCodeModeContinuations": 1,
+      "meanNestedReadAttempts": null,
+      "totalNestedReadAttempts": null,
+      "meanDerivedReadArtifactBytes": null,
+      "meanExtraInputTokens": 51790,
+      "meanArtifactFiles": 65,
+      "meanArtifactBytes": 134979,
+      "noreadViolations": 0
+    },
+    "shake-elide-noread": {
+      "cells": 12,
+      "cellsWithAttempts": 0,
+      "meanOuterCodeModeContinuations": 0,
+      "meanNestedReadAttempts": 0,
+      "totalNestedReadAttempts": 0,
+      "meanDerivedReadArtifactBytes": 0,
+      "meanExtraInputTokens": 0,
+      "meanArtifactFiles": 65,
+      "meanArtifactBytes": 134979,
+      "noreadViolations": 0
+    },
+    "shake-then-compact": {
+      "cells": 12,
+      "cellsWithAttempts": null,
+      "meanOuterCodeModeContinuations": 1,
+      "meanNestedReadAttempts": null,
+      "totalNestedReadAttempts": null,
+      "meanDerivedReadArtifactBytes": null,
+      "meanExtraInputTokens": 51366.833333333336,
+      "meanArtifactFiles": 65,
+      "meanArtifactBytes": 134979,
+      "noreadViolations": 0
+    }
+  },
+  "previewVsRealized": {
+    "shake-elide": {
+      "cells": 12,
+      "applied": 12,
+      "meanTokensBefore": 96368,
+      "meanTokensAfter": 63555.75,
+      "meanToolOutputsElided": 65,
+      "meanRealizedDownstreamInputTokens": 45700,
+      "meanRealizedMinusPreviewTokens": -17855.75,
+      "meanRealizedToPreviewRatio": 0.7190537779232334,
+      "meanShakeLatencyMs": 640.25
+    },
+    "shake-elide-noread": {
+      "cells": 12,
+      "applied": 12,
+      "meanTokensBefore": 96366.83333333333,
+      "meanTokensAfter": 63555.333333333336,
+      "meanToolOutputsElided": 65,
+      "meanRealizedDownstreamInputTokens": 45692.166666666664,
+      "meanRealizedMinusPreviewTokens": -17863.166666666668,
+      "meanRealizedToPreviewRatio": 0.71893523309103,
+      "meanShakeLatencyMs": 633
+    },
+    "shake-then-compact": {
+      "cells": 12,
+      "applied": 12,
+      "meanTokensBefore": 96371.08333333333,
+      "meanTokensAfter": 63557.083333333336,
+      "meanToolOutputsElided": 65,
+      "meanRealizedDownstreamInputTokens": 41640.416666666664,
+      "meanRealizedMinusPreviewTokens": -21916.666666666668,
+      "meanRealizedToPreviewRatio": 0.6551656983806485,
+      "meanShakeLatencyMs": 603.1666666666666
+    }
+  },
+  "controlMeanDownstreamInputTokens": 64706.333333333336
+}

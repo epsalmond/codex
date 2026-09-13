@@ -1,0 +1,596 @@
+{
+  "binary": "codex-next",
+  "binaryVersion": "codex-cli 0.153.4",
+  "model": "gpt-6-astra",
+  "configFingerprint": "70f3f669c38865c5c075a5d4d76590942e89c8b810b086d9b9ed2e8f0d4cc9ea",
+  "fixtureFingerprint": "4c5199484d7a2a1daa7eed66450d4c368cd93023af2b93361bf207a1b58a68b1",
+  "fixtureCount": 6,
+  "variant": "plain",
+  "trials": 2,
+  "arms": [
+    "full",
+    "shake-elide",
+    "shake-elide-noread",
+    "compact",
+    "shake-then-compact"
+  ],
+  "expectedCells": [
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "shake-elide",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "shake-then-compact",
+      "model": "gpt-6-astra",
+      "variant": "plain"
+    }
+  ],
+  "codeFingerprint": "4a3aca6279a35f958581cd1596ddd7838963cd94d1c4c30373a10e2fb30cf409",
+  "nestedTelemetryPolicy": "unavailable",
+  "concurrency": 3,
+  "fingerprint": "be77784e75180d2f9588e8241cc00865951e05270d7addfbad5a2102a7e3c9ae",
+  "startedAt": "2026-09-11T07:46:43.927Z",
+  "actualArmOrderByFixtureTrial": {
+    "fixture-01:0": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ],
+    "fixture-01:1": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ],
+    "fixture-02:0": [
+      "full",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact",
+      "shake-elide"
+    ],
+    "fixture-02:1": [
+      "full",
+      "compact",
+      "shake-then-compact",
+      "shake-elide",
+      "shake-elide-noread"
+    ],
+    "fixture-03:0": [
+      "full",
+      "shake-then-compact",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact"
+    ],
+    "fixture-03:1": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ],
+    "fixture-04:0": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ],
+    "fixture-04:1": [
+      "full",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact",
+      "shake-elide"
+    ],
+    "fixture-05:0": [
+      "full",
+      "compact",
+      "shake-then-compact",
+      "shake-elide",
+      "shake-elide-noread"
+    ],
+    "fixture-05:1": [
+      "full",
+      "shake-then-compact",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact"
+    ],
+    "fixture-06:0": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ],
+    "fixture-06:1": [
+      "full",
+      "shake-elide",
+      "shake-elide-noread",
+      "compact",
+      "shake-then-compact"
+    ]
+  },
+  "fixtureAdaptation": {
+    "toolOutputPaddingTargetBytes": 2048,
+    "eligibleToolOutputs": 390,
+    "rationale": "The upstream fixture outputs are shorter than shake's approximately 400-token elision threshold; deterministic answer-free padding makes the shipped elision path measurable."
+  },
+  "upstreamFixtureSource": "https://github.com/algal/pi-openai-server-compaction/tree/main/benchmarks/native-vs-text (MIT)"
+}

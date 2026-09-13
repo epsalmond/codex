@@ -1,0 +1,269 @@
+{
+  "binary": "codex-next",
+  "binaryVersion": "codex-cli 0.153.4",
+  "model": "gpt-6-astra",
+  "configFingerprint": "70f3f669c38865c5c075a5d4d76590942e89c8b810b086d9b9ed2e8f0d4cc9ea",
+  "fixtureFingerprint": "887c2f394e8fedfb455666777617dd3af139b471d8db5a5b0835b3f65de60ce2",
+  "fixtureCount": 6,
+  "variant": "echo",
+  "trials": 2,
+  "arms": [
+    "full",
+    "shake-elide-noread"
+  ],
+  "expectedCells": [
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-01",
+      "seed": 1,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-02",
+      "seed": 2,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-03",
+      "seed": 3,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-04",
+      "seed": 4,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-05",
+      "seed": 5,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 0,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "full",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    },
+    {
+      "fixtureId": "fixture-06",
+      "seed": 6,
+      "trial": 1,
+      "arm": "shake-elide-noread",
+      "model": "gpt-6-astra",
+      "variant": "echo"
+    }
+  ],
+  "codeFingerprint": "4a3aca6279a35f958581cd1596ddd7838963cd94d1c4c30373a10e2fb30cf409",
+  "nestedTelemetryPolicy": "unavailable",
+  "concurrency": 1,
+  "fingerprint": "cee5edb704442f0e726274bf255ec2adeb1abe55c4c9afe688c0057a0ab3ee22",
+  "startedAt": "2026-09-11T07:47:01.261Z",
+  "actualArmOrderByFixtureTrial": {
+    "fixture-01:0": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-01:1": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-02:0": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-02:1": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-03:0": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-03:1": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-04:0": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-04:1": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-05:0": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-05:1": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-06:0": [
+      "full",
+      "shake-elide-noread"
+    ],
+    "fixture-06:1": [
+      "full",
+      "shake-elide-noread"
+    ]
+  },
+  "fixtureAdaptation": {
+    "toolOutputPaddingTargetBytes": 2048,
+    "eligibleToolOutputs": 390,
+    "rationale": "The upstream fixture outputs are shorter than shake's approximately 400-token elision threshold; deterministic answer-free padding makes the shipped elision path measurable."
+  },
+  "upstreamFixtureSource": "https://github.com/algal/pi-openai-server-compaction/tree/main/benchmarks/native-vs-text (MIT)"
+}
