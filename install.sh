@@ -1,23 +1,23 @@
 #!/bin/sh
-# Install the latest eric/local-features test build of Codex as `codex-next`.
+# Install the latest eric/local-features test build of Codex as `codex-shake`.
 #
 #   curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
 #
 # Rerun to update. Installs beside the official `codex`, never over it:
-#   ~/.local/share/codex-next/<tag>/   codex + codex-code-mode-host (real binaries)
-#   ~/.local/share/codex-next/current  -> <tag>
-#   ~/.local/bin/codex-next            wrapper that execs current/codex
+#   ~/.local/share/codex-shake/<tag>/   codex + codex-code-mode-host (real binaries)
+#   ~/.local/share/codex-shake/current  -> <tag>
+#   ~/.local/bin/codex-shake            wrapper that execs current/codex
 #
-# Env overrides: CODEX_NEXT_REPO (owner/repo), CODEX_NEXT_TAG (pin a release),
-#                CODEX_NEXT_BIN_DIR (wrapper dir), CODEX_NEXT_HOME (install root).
+# Env overrides: CODEX_SHAKE_REPO (owner/repo), CODEX_SHAKE_TAG (pin a release),
+#                CODEX_SHAKE_BIN_DIR (wrapper dir), CODEX_SHAKE_HOME (install root).
 set -eu
 
-repo="${CODEX_NEXT_REPO:-epsalmond/codex}"
-home_dir="${CODEX_NEXT_HOME:-$HOME/.local/share/codex-next}"
-bin_dir="${CODEX_NEXT_BIN_DIR:-$HOME/.local/bin}"
+repo="${CODEX_SHAKE_REPO:-epsalmond/codex}"
+home_dir="${CODEX_SHAKE_HOME:-$HOME/.local/share/codex-shake}"
+bin_dir="${CODEX_SHAKE_BIN_DIR:-$HOME/.local/bin}"
 tag_prefix="local-features-"
 
-say() { printf 'codex-next: %s\n' "$*" >&2; }
+say() { printf 'codex-shake: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
@@ -45,8 +45,8 @@ fi
 
 # ---- pick the release -------------------------------------------------------
 api="https://api.github.com/repos/$repo/releases?per_page=30"
-if [ -n "${CODEX_NEXT_TAG:-}" ]; then
-  tag="$CODEX_NEXT_TAG"
+if [ -n "${CODEX_SHAKE_TAG:-}" ]; then
+  tag="$CODEX_SHAKE_TAG"
 else
   # Releases come back newest first; take the first tag with our prefix.
   tag=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api" \
@@ -61,7 +61,7 @@ install_dir="$home_dir/$tag"
 if [ -x "$install_dir/codex" ] && [ -x "$install_dir/codex-code-mode-host" ]; then
   say "$tag already installed"
 else
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/codex-next.XXXXXX")
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/codex-shake.XXXXXX")
   trap 'rm -rf "$tmp"' EXIT INT TERM
   say "downloading $asset from $tag"
   curl -fL --progress-bar -o "$tmp/$asset" "$base/$asset" || \
@@ -91,10 +91,10 @@ fi
 ln -sfn "$tag" "$home_dir/current"
 
 mkdir -p "$bin_dir"
-wrapper="$bin_dir/codex-next"
+wrapper="$bin_dir/codex-shake"
 cat > "$wrapper.tmp.$$" <<EOF
 #!/bin/sh
-# codex-next: eric/local-features test build. Reinstall/update with install.sh.
+# codex-shake: eric/local-features test build. Reinstall/update with install.sh.
 dir="$home_dir/current"
 PATH="\$dir:\$PATH" exec "\$dir/codex" "\$@"
 EOF
@@ -107,4 +107,4 @@ case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) say "note: $bin_dir is not on your PATH; add it or run $wrapper directly" ;;
 esac
-say 'run: codex-next'
+say 'run: codex-shake'
