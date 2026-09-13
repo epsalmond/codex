@@ -149,21 +149,17 @@ jobs:
               payload: $payload
             }')
           response=$(mktemp)
-          status=$(echo "$body" | gh api "repos/${FORK_REPO}/deployments" \
-            --input - \
-            -o "$response" -w '%{http_code}' 2>&1) || {
-            echo "deployment creation request failed: $status" >&2
-            cat "$response" >&2 || true
+          if ! echo "$body" | gh api "repos/${FORK_REPO}/deployments" --input - > "$response" 2>&1; then
+            echo "deployment creation request failed:" >&2
+            cat "$response" >&2
             exit 1
-          }
-          # The Deployments API returns 202 (instead of 201) with no
-          # deployment `id` when it couldn't determine the ref is safe to
-          # deploy (e.g. required_contexts pending) or auto-merge produced a
-          # conflict. We pass required_contexts: [] and auto_merge: false
-          # above specifically to avoid that path, so treat a 202/non-201
-          # response as a hard failure rather than silently accepting it.
-          if [[ "$status" != "201" ]] || ! jq -e '.id' "$response" >/dev/null 2>&1; then
-            echo "deployment creation did not succeed cleanly (HTTP $status):" >&2
+          fi
+          # The Deployments API answers 202 with no deployment `id` when it
+          # could not decide the ref is safe to deploy or auto-merge produced a
+          # conflict. required_contexts: [] and auto_merge: false above avoid
+          # that path, so a response without an id is a hard failure.
+          if ! jq -e '.id' "$response" >/dev/null 2>&1; then
+            echo "deployment creation did not return an id:" >&2
             cat "$response" >&2
             exit 1
           fi
