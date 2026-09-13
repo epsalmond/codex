@@ -390,6 +390,13 @@
       },
       "type": "object"
     },
+    "AutoShakeDuration": {
+      "description": "A duration: a bare integer number of seconds (e.g. 300), or a string with an s/m/h/d suffix (e.g. \"90s\", \"30m\", \"1h\", \"2d\"). Must not be negative.",
+      "type": [
+        "integer",
+        "string"
+      ]
+    },
     "AutoShakeModelToml": {
       "additionalProperties": false,
       "description": "Per-model-family auto-shake overrides. Unset fields inherit the built-in family default, then the built-in global default.",
@@ -409,6 +416,21 @@
       },
       "type": "object"
     },
+    "AutoShakeProviderToml": {
+      "additionalProperties": false,
+      "description": "Per-provider auto-shake overrides. An unset field falls back to the global `auto_shake.cache_ttl`, then to the built-in per-provider table.",
+      "properties": {
+        "cache_ttl": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AutoShakeDuration"
+            }
+          ],
+          "description": "Prompt-cache TTL for this provider: `\"1h\"`, `\"30m\"`, `\"90s\"`, or a bare integer number of seconds."
+        }
+      },
+      "type": "object"
+    },
     "AutoShakeThreshold": {
       "description": "\"off\", \"inherit\" (per-family entries only), an integer percent 1-100 (e.g. 40), a percent string (e.g. \"40%\"), or an absolute token count above 100 (e.g. 160000 or \"160k\"). A bare integer 1-100 is a percent; above 100 it is a token count.",
       "type": [
@@ -420,6 +442,18 @@
       "additionalProperties": false,
       "description": "Automatic surgical context reduction (\"auto-shake\") settings.\n\nAuto-shake runs at the same pre-sampling point where auto-compaction decides. Fields left unset fall back to the built-in per-model-family defaults, then to the built-in global defaults. See `codex-rs/docs/shake.md`.",
       "properties": {
+        "cache_ttl": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AutoShakeDuration"
+            }
+          ],
+          "description": "Prompt-cache TTL override applied to every provider: `\"1h\"`, `\"30m\"`, `\"90s\"`, or a bare integer number of seconds. Overrides the built-in per-provider table for every provider at once."
+        },
+        "cold_resume": {
+          "description": "Cold-resume trigger: shake when the thread has been idle longer than the provider's prompt-cache TTL, regardless of how full the context is. Defaults to `true`. Setting it to `false` disables only this trigger; `threshold = \"off\"` disables auto-shake entirely, this trigger included.",
+          "type": "boolean"
+        },
         "min_elidable_percent": {
           "description": "Skip auto-shake when the read-only preview reports that it would free less than this percent of the current context. Guards against thrash on histories with little elidable content. Global override.",
           "format": "int64",
@@ -436,6 +470,14 @@
           },
           "default": {},
           "description": "Per-model-family overrides keyed by family prefix, e.g. `gpt-5.6` or `gpt-6-astra`. A family matches a slug that equals it or extends it with a `-` suffix (`gpt-5.6` matches `gpt-5.6-sol`), after provider and region qualifiers such as `us.openai.` are stripped.",
+          "type": "object"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AutoShakeProviderToml"
+          },
+          "default": {},
+          "description": "Per-provider prompt-cache TTL overrides, keyed by the `model_providers` id (`openai`, `amazon-bedrock`, `ollama`, ...). Highest precedence.",
           "type": "object"
         },
         "threshold": {

@@ -588,6 +588,129 @@ pub struct AutoShakeToml {
     /// region qualifiers such as `us.openai.` are stripped.
     #[serde(default)]
     pub models: BTreeMap<String, AutoShakeModelToml>,
+
+    /// Cold-resume trigger: shake when the thread has been idle longer than
+    /// the provider's prompt-cache TTL, regardless of how full the context is.
+    /// Defaults to `true`. Setting it to `false` disables only this trigger;
+    /// `threshold = "off"` disables auto-shake entirely, this trigger
+    /// included.
+    pub cold_resume: Option<bool>,
+
+    /// Prompt-cache TTL override applied to every provider: `"1h"`, `"30m"`,
+    /// `"90s"`, or a bare integer number of seconds. Overrides the built-in
+    /// per-provider table for every provider at once.
+    pub cache_ttl: Option<AutoShakeDurationToml>,
+
+    /// Per-provider prompt-cache TTL overrides, keyed by the `model_providers`
+    /// id (`openai`, `amazon-bedrock`, `ollama`, ...). Highest precedence.
+    #[serde(default)]
+    pub providers: BTreeMap<String, AutoShakeProviderToml>,
+}
+
+/// Per-provider auto-shake overrides. An unset field falls back to the global
+/// `auto_shake.cache_ttl`, then to the built-in per-provider table.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AutoShakeProviderToml {
+    /// Prompt-cache TTL for this provider: `"1h"`, `"30m"`, `"90s"`, or a bare
+    /// integer number of seconds.
+    pub cache_ttl: Option<AutoShakeDurationToml>,
+}
+
+/// A duration in whole seconds, accepted either as a bare positive integer
+/// (seconds) or as a string with a single `s`/`m`/`h`/`d` suffix (`"90s"`,
+/// `"30m"`, `"1h"`, `"2d"`). Zero is allowed and means "always expired", which
+/// is useful in tests; negative values are rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AutoShakeDurationToml(pub i64);
+
+impl AutoShakeDurationToml {
+    pub fn as_secs(self) -> i64 {
+        self.0
+    }
+
+    fn parse_str(value: &str) -> Result<Self, String> {
+        let trimmed = value.trim();
+        let (digits, multiplier) = match trimmed.chars().last() {
+            Some('s' | 'S') => (&trimmed[..trimmed.len() - 1], 1),
+            Some('m' | 'M') => (&trimmed[..trimmed.len() - 1], 60),
+            Some('h' | 'H') => (&trimmed[..trimmed.len() - 1], 3_600),
+            Some('d' | 'D') => (&trimmed[..trimmed.len() - 1], 86_400),
+            _ => (trimmed, 1),
+        };
+        let parsed: i64 = digits.trim().parse().map_err(|_| Self::error(value))?;
+        Self::checked(parsed.saturating_mul(multiplier), value)
+    }
+
+    fn checked(value: i64, original: impl std::fmt::Display) -> Result<Self, String> {
+        if value < 0 {
+            return Err(format!(
+                "invalid auto_shake duration \"{original}\": must not be negative"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    fn error(value: &str) -> String {
+        format!(
+            "invalid auto_shake duration {value:?}: expected a number of seconds (e.g. 300) or a \
+             duration string like \"5m\", \"1h\" or \"2d\""
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoShakeDurationToml {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(i64),
+            Str(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Int(value) => {
+                AutoShakeDurationToml::checked(value, value).map_err(SerdeError::custom)
+            }
+            Raw::Str(value) => AutoShakeDurationToml::parse_str(&value).map_err(SerdeError::custom),
+        }
+    }
+}
+
+impl Serialize for AutoShakeDurationToml {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i64(self.0)
+    }
+}
+
+impl JsonSchema for AutoShakeDurationToml {
+    fn schema_name() -> String {
+        "AutoShakeDuration".to_string()
+    }
+
+    fn json_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::InstanceType;
+        use schemars::schema::Metadata;
+        use schemars::schema::Schema;
+        use schemars::schema::SchemaObject;
+        Schema::Object(SchemaObject {
+            instance_type: Some(vec![InstanceType::Integer, InstanceType::String].into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "A duration: a bare integer number of seconds (e.g. 300), or a string with an \
+                     s/m/h/d suffix (e.g. \"90s\", \"30m\", \"1h\", \"2d\"). Must not be negative."
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
 }
 
 /// Per-model-family auto-shake overrides. Unset fields inherit the built-in

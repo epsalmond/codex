@@ -640,3 +640,145 @@ async fn absolute_threshold_fires_at_170k_where_sixty_percent_of_a_large_window_
     }
     Ok(())
 }
+
+/// Which cold-resume configuration a `cold_resume_shakes_when_the_prompt_cache_has_expired`
+/// case runs under.
+#[derive(Clone, Copy)]
+enum ColdResumeCase {
+    /// `cache_ttl = 0`: any gap between turns counts as an expired prompt
+    /// cache, so the trigger fires on the second turn. Simulates the idle gap
+    /// without sleeping.
+    Expired,
+    /// Built-in TTL (an hour for `openai`, five minutes otherwise). The two
+    /// turns run back-to-back, so the cache is still warm and nothing fires.
+    Warm,
+    /// `cold_resume = false` with an expired TTL: the operator turned off just
+    /// this trigger, so nothing fires even though the cache is cold.
+    Disabled,
+}
+
+/// management-plane#989: a thread that has sat idle longer than its provider's
+/// prompt-cache TTL shakes on the next turn regardless of how full its context
+/// is. The shake is free there — the next request rebuilds the whole prompt
+/// uncached either way — so the only remaining condition is that there is
+/// enough to elide.
+///
+/// The idle gap is simulated with `cache_ttl = 0` rather than by sleeping: the
+/// clock behind the trigger is `Session`'s monotonic
+/// `prompt_cache_clock`, which a test cannot advance, but a zero TTL makes
+/// every real gap count as expired and exercises the identical code path.
+///
+/// Reported usage is 20,000 tokens against a 100,000-token window, far below
+/// both gpt-5.6's absolute 160,000-token default and any percent threshold, so
+/// only the cold-resume trigger can explain a shake here.
+#[test_case::test_case(ColdResumeCase::Expired; "cache expired")]
+#[test_case::test_case(ColdResumeCase::Warm; "cache still warm")]
+#[test_case::test_case(ColdResumeCase::Disabled; "cold resume disabled")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCase) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", "first"),
+                ev_completed_with_input_tokens("r1", /*input_tokens*/ 20_000),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", "second"),
+                ev_completed_with_input_tokens("r2", /*input_tokens*/ 20_000),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("gpt-5.6-luna")
+        .with_config(move |config| {
+            config.model_context_window = Some(TEST_CONTEXT_WINDOW);
+            match case {
+                ColdResumeCase::Expired => {
+                    config.auto_shake.cache_ttl =
+                        Some(codex_config::config_toml::AutoShakeDurationToml(0));
+                }
+                ColdResumeCase::Warm => {}
+                ColdResumeCase::Disabled => {
+                    config.auto_shake.cache_ttl =
+                        Some(codex_config::config_toml::AutoShakeDurationToml(0));
+                    config.auto_shake.cold_resume = Some(false);
+                }
+            }
+        });
+    let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
+    Box::pin(fixture.codex.inject_response_items(oversized_history()?)).await?;
+
+    for message in ["first prompt", "second prompt"] {
+        Box::pin(
+            fixture
+                .codex
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: message.to_string(),
+                    text_elements: Vec::new(),
+                }])),
+        )
+        .await?;
+        if matches!(case, ColdResumeCase::Expired) && message == "second prompt" {
+            // Its own marker, distinct from the plain automatic and escalated
+            // passes, so a benchmark can attribute the shake to this trigger.
+            Box::pin(wait_for_event(&fixture.codex, |event| {
+                matches!(event, EventMsg::Warning(warning)
+                    if warning.message.starts_with("⛭ shake (auto, cold resume):"))
+            }))
+            .await;
+        }
+        Box::pin(wait_for_event(&fixture.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        }))
+        .await;
+    }
+
+    let bodies: Vec<String> = request_log
+        .requests()
+        .iter()
+        .map(|request| request.body_json().to_string())
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "a cold-resume shake must not add a model request, and must not trigger compaction"
+    );
+    assert!(
+        bodies[0].contains(AUTO_SHAKE_MARKER),
+        "nothing has been idle yet on the first turn, so it carries the full tool output"
+    );
+    match case {
+        ColdResumeCase::Expired => {
+            assert!(
+                !bodies[1].contains(AUTO_SHAKE_MARKER),
+                "an expired prompt cache should have shaken before the second request"
+            );
+            assert!(
+                bodies[1].contains("[shaken ~"),
+                "the elided region should be replaced by a shaken placeholder"
+            );
+            let artifacts = fixture
+                .codex_home_path()
+                .join("artifacts")
+                .join(fixture.session_configured.thread_id.to_string());
+            assert_eq!(
+                artifact_log_files(&artifacts).len(),
+                1,
+                "exactly one cold-resume pass should have run, saving one artifact"
+            );
+        }
+        ColdResumeCase::Warm | ColdResumeCase::Disabled => {
+            assert!(
+                bodies[1].contains(AUTO_SHAKE_MARKER),
+                "no cold-resume shake was due, so the tool output must survive"
+            );
+        }
+    }
+    Ok(())
+}

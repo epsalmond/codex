@@ -16,6 +16,7 @@ Implementation:
 | Artifact store (`save`, the savable-in size cap) | `codex-rs/core/src/artifacts.rs` |
 | Orchestration (persist, re-account, announce) | `codex-rs/core/src/session/handlers.rs` (`shake`, `apply_shake`) |
 | Auto-shake trigger | `codex-rs/core/src/session/turn.rs` (`maybe_run_pre_sampling_auto_shake`) |
+| Idle clock behind the cold-resume trigger | `codex-rs/core/src/session/prompt_cache_clock.rs` |
 
 ## Modes
 
@@ -164,6 +165,10 @@ still fires when auto-shake is disabled, impossible, or would not free enough.
    trivial number of tokens (small context windows).
 8. Otherwise shake.
 
+Steps 4–5 are the *threshold* triggers. When they decline, one further trigger
+is consulted before giving up — the cold-resume (prompt-cache-expiry) check
+described below, which ignores the threshold entirely but keeps steps 6 and 7.
+
 A percent threshold is measured against `ModelInfo::resolved_context_window()`
 — which already reflects a `model_context_window` config override — not the
 95% "effective" slice and not the 90% auto-compaction limit. With the default
@@ -219,6 +224,77 @@ whenever `auto_shake` is on for the model. See management-plane#988; the
 one-tier-then-fallback shape mirrors oh-my-pi PR #9705's proposed escalation
 (open/unmerged upstream at the time this landed).
 
+### Cold resume (prompt-cache expiry)
+
+A shake's only real cost is the prompt-cache miss it forces: shake-bench
+(2026-09-12) measured that a shake on a *warm* thread costs one uncached
+request of survivor size. But once a thread has sat idle longer than the
+provider's prompt-cache TTL, that rebuild is already owed — the next request
+re-sends the whole prompt uncached whether or not anything was shaken. A shake
+there is free relative to not shaking, and makes every later request cheaper.
+
+So when neither threshold fires, `maybe_run_pre_sampling_auto_shake` consults
+one more trigger: has this thread been idle longer than its provider's
+prompt-cache TTL? If so it runs a single pass with
+`ShakeTrigger::AutomaticColdResume` — the same large `AUTO_PROTECT_TOKENS`
+protect window as the plain automatic pass, and the same
+`min_elidable_percent` / `min_savings_tokens` conditions, so a thread with
+little to remove still skips. Escalation is a no-op after a cold-resume pass:
+the escalation re-check is the same `decide` call that just declined on
+threshold grounds, so it declines again, and only compaction follows.
+
+The trigger fires **at most once per idle window**, deduped on the
+last-request timestamp itself (see below): a second pre-sampling check that
+happens without an intervening sampling request sees the same timestamp and
+skips with `cold_resume_already_decided`.
+
+#### The TTL table
+
+TTLs are keyed on the **model-provider id** — the `model_providers` key, i.e.
+the ids from `codex_model_provider_info::built_in_model_providers` — not on
+the wire API. Every provider the fork ships (`openai`, `amazon-bedrock`,
+`amazon-bedrock-runtime`, `ollama`, `lmstudio`) speaks `WireApi::Responses`;
+the fork has no `anthropic-messages` or chat-completions transport, so
+oh-my-pi's wire-API-keyed table does not transfer.
+
+| Provider id | TTL | Why |
+| --- | --- | --- |
+| `openai` | **1 hour** | The provider the fork actually talks to, covering both the ChatGPT/Codex backend (`chatgpt.com/backend-api/codex`) and the plain OpenAI Responses endpoint. Its prompt cache holds for about an hour. |
+| anything else | **5 minutes** | Generic fallback (`DEFAULT_CACHE_TTL_SECS`), including the Bedrock and local-server providers. Raise it per provider if you know better. |
+
+Both are overridable — globally with `auto_shake.cache_ttl`, or per provider
+with `[auto_shake.providers."<id>"] cache_ttl`.
+
+#### Which timestamp "last request" means
+
+`Session::prompt_cache_clock` (`core/src/session/prompt_cache_clock.rs`)
+records a monotonic `Instant` immediately before each sampling request goes
+out, in `try_run_sampling_request`. That instant is exactly when the
+provider's cache entry for this thread was (re)written, which is the question
+the TTL is asking. It is also the dedupe key: the cold-resume decision stores
+the `Instant` it fired against, and the next sampling request supersedes it.
+
+The two alternatives were rejected:
+
+- **the last assistant message** (what oh-my-pi's
+  `runCacheExpiredPrePromptShakeIfNeeded` keys on) differs from the request
+  timestamp only by one response's duration, which is noise against TTLs
+  measured in minutes to hours, and reconstructing it means walking history on
+  every pre-sampling check;
+- **the persisted rollout line timestamps** would additionally survive a
+  process restart, but the resume boundary drops them: `ResumedHistory`
+  (`codex-rs/history/src/lib.rs`) carries `Vec<RolloutItem>`, not
+  `Vec<RolloutLine>`, so the per-line `timestamp` is gone before a `Session`
+  exists.
+
+**Known limitation.** The clock is therefore per-process. A session that
+resumes a thread from disk starts with no recorded request, so its first turn
+is treated as cache-warm and does not cold-resume shake, even though its
+prompt cache is certainly cold. The trigger covers the common interactive case
+— a live session left idle past the TTL — and not a process restart. Closing
+that case means threading `StoredThread::updated_at` through `ResumedHistory`
+into `Session::new`; deliberately out of scope for management-plane#989.
+
 ### Turn ordering
 
 `/shake` refuses when `active_turn` is `Some`, and by the time `run_turn` runs,
@@ -255,14 +331,16 @@ A shake that changed anything emits:
 
 - the persisted `CompactedItem` message, `[shake] context reduced surgically`
   for a manual shake, `[shake] context reduced surgically (automatic)` for the
-  plain automatic pass, and `[shake] context reduced surgically (automatic,
-  escalated)` for the escalated pass — the shared prefix keeps existing
-  readers matching, the suffix lets benchmarks separate the three;
+  plain automatic pass, `[shake] context reduced surgically (automatic, cold
+  resume)` for the prompt-cache-expiry pass, and `[shake] context reduced
+  surgically (automatic, escalated)` for the escalated pass — the shared prefix
+  keeps existing readers matching, the suffix lets benchmarks separate the four;
 - a transcript `Warning` event, prefixed `⛭ shake:` (manual), `⛭ shake (auto):`
-  (automatic), or `⛭ shake (auto, escalated):` (escalated);
+  (automatic), `⛭ shake (auto, cold resume):` (cold resume), or
+  `⛭ shake (auto, escalated):` (escalated);
 - a structured `INFO` log on target `codex_core::shake` with
-  `trigger=manual|automatic|automatic_escalated`, `mode`, the per-category
-  counts, and `tokens_freed`.
+  `trigger=manual|automatic|automatic_cold_resume|automatic_escalated`, `mode`,
+  the per-category counts, and `tokens_freed`.
 
 Auto-shake decisions themselves log on target `codex_core::auto_shake`: `INFO`
 `"auto-shake triggered"` with the measured before/after tokens, shares, and an
@@ -270,6 +348,14 @@ Auto-shake decisions themselves log on target `codex_core::auto_shake`: `INFO`
 `disabled`, `ephemeral_thread`, `no_context_window`, `below_threshold`,
 `below_min_elidable_share`, or `below_min_savings` (also carrying `escalated`
 when the skip belongs to the second pass).
+
+A cold-resume shake additionally emits exactly one `INFO` line on the same
+target — `"auto-shake cold resume: prompt cache expired"`, carrying `model`,
+`provider`, `idle_secs`, `cache_ttl_secs` and `active_context_tokens` — at the
+moment the trigger decides. When neither trigger fires, the `TRACE`
+`"auto-shake skipped"` line carries both reasons: `reason` (the threshold
+path) and `cold_resume_reason`, one of `disabled`, `cold_resume_disabled`,
+`ephemeral_thread`, `cache_still_warm`, or `cold_resume_already_decided`.
 
 ## Configuration
 
@@ -282,6 +368,18 @@ All keys live under `[auto_shake]` in `~/.codex/config.toml`.
 | `auto_shake.min_savings_tokens` | int ≥ 0 | `4000` | Skip when the preview would free fewer than this many tokens, even if `min_elidable_percent` is cleared. Global only (no per-family override), matching oh-my-pi's `minSavings`. |
 | `auto_shake.models.<family>.threshold` | `"off"` \| percent \| tokens \| `"inherit"` | per-family (below) | Per-family threshold. `"inherit"` defers to the resolved global `auto_shake.threshold`; an explicit `"off"`, percent, or absolute token count wins over the global value. |
 | `auto_shake.models.<family>.min_elidable_percent` | int 0–100 | `30` | Per-family minimum elidable share |
+| `auto_shake.cold_resume` | bool | `true` | Enable the cold-resume (prompt-cache-expiry) trigger. `false` disables just this trigger, leaving the threshold triggers alone. Global only — prompt-cache lifetime is a property of the provider, not the model family. |
+| `auto_shake.cache_ttl` | duration | per-provider (below) | Prompt-cache TTL override applied to **every** provider at once. |
+| `auto_shake.providers.<id>.cache_ttl` | duration | per-provider (below) | Prompt-cache TTL for one `model_providers` id. Highest precedence. |
+
+A duration is either a bare integer number of seconds (`300`) or a string with
+a single `s`/`m`/`h`/`d` suffix (`"90s"`, `"30m"`, `"1h"`, `"2d"`). `0` is
+legal and means "always expired"; negative values are a config error.
+
+`threshold = "off"` disables **all** auto-shake for that scope, cold resume
+included — otherwise there would be no way to opt a model out of shaking
+entirely. `cold_resume = false` is the narrower switch that disables only the
+prompt-cache-expiry trigger.
 
 A percent value accepts either an integer 1–100 (`40`) or a percent string
 (`"40%"`). An absolute token count accepts a string with a `k` suffix
@@ -373,6 +471,24 @@ global value:
 ```toml
 [auto_shake.models."gpt-6-astra"]
 threshold = "off"
+```
+
+Trust a provider's prompt cache for longer than the built-in five-minute
+fallback, and shorten the global default for everything else:
+
+```toml
+[auto_shake]
+cache_ttl = "10m"
+
+[auto_shake.providers."amazon-bedrock"]
+cache_ttl = "1h"
+```
+
+Keep the threshold triggers but never shake just because the thread went idle:
+
+```toml
+[auto_shake]
+cold_resume = false
 ```
 
 Disable auto-shake entirely:

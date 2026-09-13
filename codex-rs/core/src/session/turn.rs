@@ -1126,6 +1126,17 @@ async fn track_turn_resolved_config_analytics(
 /// `min_savings_tokens` halved. At most one escalated pass runs per
 /// pre-sampling point; only then does `run_pre_sampling_compact` fall through
 /// to full auto-compaction. See management-plane#988.
+///
+/// COLD RESUME: when neither context-proximity threshold fires, one more
+/// trigger is consulted — has the thread been idle longer than the provider's
+/// prompt-cache TTL? If so the next request rebuilds the whole prompt
+/// uncached whatever we do, so a shake costs nothing relative to not shaking
+/// and every later request is cheaper. It runs the same single pass with the
+/// same `min_elidable_percent` / `min_savings_tokens` conditions, under
+/// `ShakeTrigger::AutomaticColdResume`, and fires at most once per idle
+/// window. Escalation is a no-op after it: the escalation re-check is the same
+/// `decide` call that just declined, so it declines again. See
+/// management-plane#989.
 async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
     let config = &turn_context.config.auto_shake;
     let model_info = turn_context.model_info();
@@ -1140,21 +1151,63 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         context_window,
         persistent_thread,
     );
-    let (min_elidable_percent, min_savings_tokens) = match decision {
+    let (min_elidable_percent, min_savings_tokens, trigger) = match decision {
         AutoShakeDecision::Skip(reason) => {
-            trace!(
-                target: AUTO_SHAKE_TARGET,
-                reason = reason.as_str(),
-                model = %model_info.slug,
-                active_context_tokens = token_status.active_context_tokens,
-                "auto-shake skipped"
+            // The context-proximity triggers did not fire. The thread may still
+            // be worth shaking because its prompt cache has expired, in which
+            // case the next request pays for a full uncached prompt anyway and
+            // the shake is free relative to not shaking.
+            let provider_id = turn_context.config.model_provider_id.as_str();
+            let idle = sess.prompt_cache_clock.idle_since_last_request();
+            let cold_resume_decision = config.decide_cold_resume(
+                model_info.slug.as_str(),
+                provider_id,
+                persistent_thread,
+                idle,
+                sess.prompt_cache_clock.cold_resume_already_decided(),
             );
-            return;
+            match cold_resume_decision {
+                AutoShakeDecision::Preview {
+                    min_elidable_percent,
+                    min_savings_tokens,
+                } => {
+                    sess.prompt_cache_clock.mark_cold_resume_decided();
+                    info!(
+                        target: AUTO_SHAKE_TARGET,
+                        model = %model_info.slug,
+                        provider = provider_id,
+                        idle_secs = idle.map(|idle| idle.as_secs()).unwrap_or_default(),
+                        cache_ttl_secs = config.cache_ttl_for_provider(provider_id).as_secs(),
+                        active_context_tokens = token_status.active_context_tokens,
+                        "auto-shake cold resume: prompt cache expired"
+                    );
+                    (
+                        min_elidable_percent,
+                        min_savings_tokens,
+                        ShakeTrigger::AutomaticColdResume,
+                    )
+                }
+                AutoShakeDecision::Skip(cold_resume_reason) => {
+                    trace!(
+                        target: AUTO_SHAKE_TARGET,
+                        reason = reason.as_str(),
+                        cold_resume_reason = cold_resume_reason.as_str(),
+                        model = %model_info.slug,
+                        active_context_tokens = token_status.active_context_tokens,
+                        "auto-shake skipped"
+                    );
+                    return;
+                }
+            }
         }
         AutoShakeDecision::Preview {
             min_elidable_percent,
             min_savings_tokens,
-        } => (min_elidable_percent, min_savings_tokens),
+        } => (
+            min_elidable_percent,
+            min_savings_tokens,
+            ShakeTrigger::Automatic,
+        ),
     };
 
     let shook = run_auto_shake_pass(
@@ -1165,7 +1218,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         crate::shake::AUTO_PROTECT_TOKENS,
         min_elidable_percent,
         min_savings_tokens,
-        ShakeTrigger::Automatic,
+        trigger,
     )
     .await;
 
@@ -2518,6 +2571,9 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
+    // Opens a fresh idle window for auto-shake's cold-resume trigger: this is
+    // the instant the provider's prompt cache for this thread is (re)written.
+    sess.prompt_cache_clock.record_sampling_request();
     let mut stream = client_session
         .stream(
             prompt,

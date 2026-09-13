@@ -77,6 +77,10 @@ pub(crate) struct Session {
     pub(super) fork_persistence: ForkPersistence,
     pub(super) forked_from_ordinal_exclusive: Option<u64>,
     pub(super) next_internal_sub_id: AtomicU64,
+    /// Idle clock behind auto-shake's cold-resume trigger: when this thread
+    /// last issued a sampling request, and whether a cold-resume shake was
+    /// already decided for the current idle window.
+    pub(crate) prompt_cache_clock: crate::session::prompt_cache_clock::PromptCacheClock,
 }
 
 #[derive(Clone)]
@@ -1531,6 +1535,7 @@ impl Session {
                 fork_persistence,
                 forked_from_ordinal_exclusive,
                 next_internal_sub_id: AtomicU64::new(0),
+                prompt_cache_clock: Default::default(),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;

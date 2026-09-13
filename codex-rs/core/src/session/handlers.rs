@@ -64,6 +64,12 @@ pub async fn interrupt(sess: &Arc<Session>) {
 /// Whether a shake was requested by the operator (`/shake`) or decided
 /// automatically at the pre-sampling point.
 ///
+/// `AutomaticColdResume` is the prompt-cache-expiry trigger: the thread sat
+/// idle longer than the provider's prompt-cache TTL, so the next request pays
+/// for a full uncached prompt either way and a shake is free relative to not
+/// shaking. It runs with the same (large) automatic protect window as
+/// `Automatic`.
+///
 /// `AutomaticEscalated` is the second, more aggressive pre-sampling pass that
 /// `maybe_run_pre_sampling_auto_shake` runs when the first automatic pass
 /// (whether it applied or was skipped for freeing too little) left the thread
@@ -73,6 +79,7 @@ pub async fn interrupt(sess: &Arc<Session>) {
 pub(crate) enum ShakeTrigger {
     Manual,
     Automatic,
+    AutomaticColdResume,
     AutomaticEscalated,
 }
 
@@ -86,6 +93,9 @@ impl ShakeTrigger {
         match self {
             Self::Manual => "[shake] context reduced surgically".to_string(),
             Self::Automatic => "[shake] context reduced surgically (automatic)".to_string(),
+            Self::AutomaticColdResume => {
+                "[shake] context reduced surgically (automatic, cold resume)".to_string()
+            }
             Self::AutomaticEscalated => {
                 "[shake] context reduced surgically (automatic, escalated)".to_string()
             }
@@ -96,6 +106,7 @@ impl ShakeTrigger {
         match self {
             Self::Manual => "manual",
             Self::Automatic => "automatic",
+            Self::AutomaticColdResume => "automatic_cold_resume",
             Self::AutomaticEscalated => "automatic_escalated",
         }
     }
@@ -212,7 +223,9 @@ pub(crate) async fn apply_shake(
                     ShakeTrigger::Manual | ShakeTrigger::AutomaticEscalated => {
                         crate::shake::MANUAL_PROTECT_TOKENS
                     }
-                    ShakeTrigger::Automatic => crate::shake::AUTO_PROTECT_TOKENS,
+                    ShakeTrigger::Automatic | ShakeTrigger::AutomaticColdResume => {
+                        crate::shake::AUTO_PROTECT_TOKENS
+                    }
                 };
                 crate::shake::shake_elide_with_recovery(&mut envelopes, protect_tokens, &mut save)
             }
@@ -228,6 +241,8 @@ pub(crate) async fn apply_shake(
             .to_string()
     } else if trigger == ShakeTrigger::AutomaticEscalated {
         format!("⛭ shake (auto, escalated): {}", result.summary_line(mode))
+    } else if trigger == ShakeTrigger::AutomaticColdResume {
+        format!("⛭ shake (auto, cold resume): {}", result.summary_line(mode))
     } else if trigger == ShakeTrigger::Automatic {
         // Distinguishable in the transcript as well as in the rollout record.
         format!("⛭ shake (auto): {}", result.summary_line(mode))

@@ -1298,6 +1298,21 @@ pub struct AutoShakeConfig {
     pub min_savings_tokens: Option<i64>,
     /// Per-model-family overrides keyed by family prefix (e.g. `gpt-5.6`).
     pub models: BTreeMap<String, AutoShakeModelConfig>,
+    /// Cold-resume trigger override. `None` falls back to the built-in default
+    /// (enabled).
+    pub cold_resume: Option<bool>,
+    /// Global prompt-cache TTL override. `None` falls back to the built-in
+    /// per-provider table.
+    pub cache_ttl: Option<codex_config::config_toml::AutoShakeDurationToml>,
+    /// Per-provider overrides keyed by `model_providers` id (e.g. `openai`).
+    pub providers: BTreeMap<String, AutoShakeProviderConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct AutoShakeProviderConfig {
+    /// Prompt-cache TTL for this provider. Highest precedence; `None` defers
+    /// to the global `auto_shake.cache_ttl`, then to the built-in table.
+    pub cache_ttl: Option<codex_config::config_toml::AutoShakeDurationToml>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]

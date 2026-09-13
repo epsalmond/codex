@@ -231,6 +231,7 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+pub(crate) mod prompt_cache_clock;
 mod realtime_history;
 mod reasoning_effort;
 mod retained_context;

@@ -4503,6 +4503,14 @@ async fn build_agent_spawn_config_inherits_auto_shake() {
                 min_elidable_percent: None,
             },
         )]),
+        cold_resume: Some(false),
+        cache_ttl: Some(codex_config::config_toml::AutoShakeDurationToml(1_800)),
+        providers: std::collections::BTreeMap::from([(
+            "openai".to_string(),
+            crate::config::AutoShakeProviderConfig {
+                cache_ttl: Some(codex_config::config_toml::AutoShakeDurationToml(120)),
+            },
+        )]),
     };
     let expected = parent.auto_shake.clone();
     let base_instructions = BaseInstructions {
