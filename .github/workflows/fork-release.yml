@@ -58,6 +58,10 @@ jobs:
       # Downloads and verifies the Codex-built rusty_v8 archive/binding for
       # this target, matching codex-update's --local build exactly (same
       # profile, same RUSTY_V8_ARCHIVE / RUSTY_V8_SRC_BINDING_PATH env vars).
+      # rusty_v8_bazel.py imports tomllib (Python 3.11+); ubuntu-22.04 ships 3.10.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
