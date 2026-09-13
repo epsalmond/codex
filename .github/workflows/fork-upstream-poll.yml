@@ -1,0 +1,129 @@
+name: fork-upstream-poll
+# Detects a new stable upstream openai/codex rust-v* tag and fires a
+# repository_dispatch event on this repo so the management plane's webhook
+# forwarder (configured separately) can start an unattended rebase/publish.
+# See epsalmond/management-plane#999.
+#
+# IMPORTANT (GitHub default-branch constraint): `schedule` and
+# `repository_dispatch` only run from the repository's default branch. This
+# file must exist on whatever branch is set as default for this to fire on
+# its own; see the fork-automation branch / repo-settings note in the
+# management-plane#999 write-up for the two ways to satisfy that.
+#
+# IMPORTANT (scheduled workflows in forks): GitHub disables `schedule`
+# triggers on a fork until a human opens the Actions tab and enables
+# workflows at least once, and again disables them after 60 days with no
+# repository activity. If this workflow appears to have stopped firing,
+# check the Actions tab first.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Fire the dispatch even if upstream is not newer (for testing).
+        type: boolean
+        default: false
+
+env:
+  UPSTREAM_REPO: openai/codex
+  FORK_REPO: epsalmond/codex
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    name: Poll upstream and dispatch
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Find the newest stable upstream rust-v tag
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Stable means no -alpha / -beta / -rc suffix, matching the tag
+          # format rust-release.yml's tag-check job validates on the way in.
+          tag=$(gh api --paginate "repos/${UPSTREAM_REPO}/git/matching-refs/tags/rust-v" \
+              --jq '.[].ref | sub("^refs/tags/"; "")' \
+            | grep -E '^rust-v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n1)
+          [[ -n "$tag" ]] || { echo "no stable rust-v* tag found upstream" >&2; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "upstream stable tag: $tag"
+
+      - name: Find the fork's current published base tag
+        id: current
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The base tag a fork-release.yml release was cut from is recorded
+          # in its body as "Based on upstream `rust-vX.Y.Z`" (see
+          # .github/scripts/fork-release-notes.sh). Reading it from the
+          # newest local-features-v* release avoids cloning the repo just to
+          # poll every five minutes.
+          release=$(gh api --paginate "repos/${FORK_REPO}/releases" \
+            --jq '[.[] | select(.tag_name | startswith("local-features-v"))]
+                  | sort_by(.created_at) | last')
+          if [[ -z "$release" || "$release" == "null" ]]; then
+            echo "no local-features-v* release found on ${FORK_REPO} yet" >&2
+            echo "base=" >> "$GITHUB_OUTPUT"
+          else
+            base=$(jq -r '.body' <<<"$release" \
+              | grep -oE 'Based on upstream `rust-v[0-9]+\.[0-9]+\.[0-9]+' \
+              | head -n1 \
+              | sed -E 's/.*`//')
+            [[ -n "$base" ]] || { echo "could not parse base tag from release body" >&2; exit 1; }
+            echo "base=$base" >> "$GITHUB_OUTPUT"
+            echo "fork's current base tag: $base"
+          fi
+
+      - name: Decide whether to dispatch
+        id: decide
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          CURRENT_BASE: ${{ steps.current.outputs.base }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+          dispatch=false
+          if [[ "$FORCE" == "true" ]]; then
+            echo "force=true: dispatching regardless of comparison"
+            dispatch=true
+          elif [[ -z "$CURRENT_BASE" ]]; then
+            echo "no current base tag on the fork yet: dispatching"
+            dispatch=true
+          elif [[ "$UPSTREAM_TAG" != "$CURRENT_BASE" ]]; then
+            newest=$(printf '%s\n%s\n' "$UPSTREAM_TAG" "$CURRENT_BASE" | sort -V | tail -n1)
+            if [[ "$newest" == "$UPSTREAM_TAG" ]]; then
+              echo "upstream $UPSTREAM_TAG is newer than $CURRENT_BASE: dispatching"
+              dispatch=true
+            else
+              echo "upstream $UPSTREAM_TAG is not newer than $CURRENT_BASE: nothing to do"
+            fi
+          else
+            echo "fork is already based on $CURRENT_BASE: nothing to do"
+          fi
+          echo "dispatch=$dispatch" >> "$GITHUB_OUTPUT"
+
+      - name: Fire repository_dispatch
+        if: steps.decide.outputs.dispatch == 'true'
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          CURRENT_BASE: ${{ steps.current.outputs.base }}
+        run: |
+          set -euo pipefail
+          # repository_dispatch to the SAME repo the workflow runs in works
+          # with the default GITHUB_TOKEN (permissions: contents: write
+          # above) per GitHub's 2022-09-08 changelog; it does not need a PAT.
+          # If this step ever fails with a permissions error, the fix is a
+          # classic PAT (repo scope) or fine-grained token (Contents: write)
+          # stored as the FORK_DISPATCH_TOKEN secret and used here instead.
+          jq -n --arg ut "$UPSTREAM_TAG" --arg cb "$CURRENT_BASE" \
+            '{event_type: "upstream-release", client_payload: {upstream_tag: $ut, current_base: $cb}}' \
+            | gh api "repos/${FORK_REPO}/dispatches" --input -
