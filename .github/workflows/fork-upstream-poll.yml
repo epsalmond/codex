@@ -1,14 +1,20 @@
 name: fork-upstream-poll
-# Detects a new stable upstream openai/codex rust-v* tag and fires a
-# repository_dispatch event on this repo so the management plane's webhook
-# forwarder (configured separately) can start an unattended rebase/publish.
-# See epsalmond/management-plane#999.
+# Detects a new stable upstream openai/codex rust-v* tag and creates a
+# GitHub Deployment on this repo so the management plane's webhook forwarder
+# (configured separately) can start an unattended rebase/publish. See
+# epsalmond/management-plane#999.
 #
-# IMPORTANT (GitHub default-branch constraint): `schedule` and
-# `repository_dispatch` only run from the repository's default branch. This
-# file must exist on whatever branch is set as default for this to fire on
-# its own; see the fork-automation branch / repo-settings note in the
-# management-plane#999 write-up for the two ways to satisfy that.
+# IMPORTANT (delivery path): a GitHub repository webhook cannot subscribe to
+# `repository_dispatch` — the API refuses that event ("These events are not
+# allowed for this hook"). `deployment` is a real webhook event and carries
+# a free-form JSON payload, so that's what carries this signal instead. The
+# webhook on this repo is already configured for `deployment` events.
+#
+# IMPORTANT (GitHub default-branch constraint): `schedule` only runs from
+# the repository's default branch. This file must exist on whatever branch
+# is set as default for this to fire on its own; see the fork-automation
+# branch / repo-settings note in the management-plane#999 write-up for the
+# two ways to satisfy that.
 #
 # IMPORTANT (scheduled workflows in forks): GitHub disables `schedule`
 # triggers on a fork until a human opens the Actions tab and enables
@@ -31,6 +37,7 @@ env:
 
 permissions:
   contents: write
+  deployments: write
 
 jobs:
   poll:
@@ -110,7 +117,7 @@ jobs:
           fi
           echo "dispatch=$dispatch" >> "$GITHUB_OUTPUT"
 
-      - name: Fire repository_dispatch
+      - name: Create deployment signal
         if: steps.decide.outputs.dispatch == 'true'
         shell: bash
         env:
@@ -118,12 +125,46 @@ jobs:
           CURRENT_BASE: ${{ steps.current.outputs.base }}
         run: |
           set -euo pipefail
-          # repository_dispatch to the SAME repo the workflow runs in works
-          # with the default GITHUB_TOKEN (permissions: contents: write
-          # above) per GitHub's 2022-09-08 changelog; it does not need a PAT.
-          # If this step ever fails with a permissions error, the fix is a
-          # classic PAT (repo scope) or fine-grained token (Contents: write)
-          # stored as the FORK_DISPATCH_TOKEN secret and used here instead.
-          jq -n --arg ut "$UPSTREAM_TAG" --arg cb "$CURRENT_BASE" \
-            '{event_type: "upstream-release", client_payload: {upstream_tag: $ut, current_base: $cb}}' \
-            | gh api "repos/${FORK_REPO}/dispatches" --input -
+          # A repository webhook cannot subscribe to `repository_dispatch`
+          # (GitHub's API rejects that event for hooks), so this signal
+          # rides a GitHub Deployment instead: `deployment` is a real
+          # webhook event and its `payload` field is free-form JSON. This
+          # works with the default GITHUB_TOKEN (permissions:
+          # deployments: write above); no PAT needed.
+          desc="upstream ${UPSTREAM_TAG} is newer than fork base ${CURRENT_BASE:-<none>}"
+          payload=$(jq -n --arg ut "$UPSTREAM_TAG" --arg cb "$CURRENT_BASE" \
+            '{upstream_tag: $ut, current_base: $cb}')
+          body=$(jq -n \
+            --arg ref "$GITHUB_SHA" \
+            --arg desc "$desc" \
+            --argjson payload "$payload" \
+            '{
+              ref: $ref,
+              environment: "upstream-release",
+              task: "upstream-release",
+              auto_merge: false,
+              required_contexts: [],
+              transient_environment: true,
+              description: $desc,
+              payload: $payload
+            }')
+          response=$(mktemp)
+          status=$(echo "$body" | gh api "repos/${FORK_REPO}/deployments" \
+            --input - \
+            -o "$response" -w '%{http_code}' 2>&1) || {
+            echo "deployment creation request failed: $status" >&2
+            cat "$response" >&2 || true
+            exit 1
+          }
+          # The Deployments API returns 202 (instead of 201) with no
+          # deployment `id` when it couldn't determine the ref is safe to
+          # deploy (e.g. required_contexts pending) or auto-merge produced a
+          # conflict. We pass required_contexts: [] and auto_merge: false
+          # above specifically to avoid that path, so treat a 202/non-201
+          # response as a hard failure rather than silently accepting it.
+          if [[ "$status" != "201" ]] || ! jq -e '.id' "$response" >/dev/null 2>&1; then
+            echo "deployment creation did not succeed cleanly (HTTP $status):" >&2
+            cat "$response" >&2
+            exit 1
+          fi
+          echo "created deployment $(jq -r '.id' "$response") for $desc"
