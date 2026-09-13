@@ -144,6 +144,7 @@ mod exec_command;
 mod external_agent_config_migration;
 mod external_editor;
 mod file_search;
+pub(crate) mod fork_update;
 mod frames;
 mod get_git_diff;
 mod git_action_directives;
@@ -228,6 +229,14 @@ mod update_prompt;
 #[cfg(any(not(debug_assertions), test))]
 mod update_versions;
 mod updates;
+#[cfg(not(debug_assertions))]
+pub use updates::check_fork_update_now;
+#[cfg(not(debug_assertions))]
+pub use updates::fork_install_command;
+#[cfg(not(debug_assertions))]
+pub use updates::fork_release_tag;
+#[cfg(not(debug_assertions))]
+pub use updates::fork_tag_is_newer;
 #[cfg(any(not(debug_assertions), test))]
 mod updates_cache;
 mod version;

@@ -64,9 +64,13 @@ jobs:
 
       # Same cargo invocation as ~/.bin/codex-fork-release (via codex-update
       # --local): plain `cargo build --release`, no extra features, building
-      # only the two binaries the fork ships.
+      # only the two binaries the fork ships. CODEX_FORK_RELEASE_TAG embeds
+      # this release's own tag in the binary (see tui/src/fork_update.rs) so
+      # it can check the fork's release feed and self-update.
       - name: Cargo build
         shell: bash
+        env:
+          CODEX_FORK_RELEASE_TAG: ${{ github.ref_name }}
         run: cargo build --release --bin codex --bin codex-code-mode-host
 
       - name: Record glibc version (Linux)

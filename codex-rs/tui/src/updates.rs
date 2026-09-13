@@ -49,11 +49,11 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     }
 
     info.and_then(|info| {
-        if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
-            Some(info.latest_version)
-        } else {
-            None
-        }
+        let is_update = match crate::fork_update::FORK_RELEASE_TAG {
+            Some(current_tag) => crate::fork_update::fork_tag_is_newer(&info.latest_version, current_tag),
+            None => is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false),
+        };
+        if is_update { Some(info.latest_version) } else { None }
     })
 }
 
@@ -81,7 +81,10 @@ async fn check_for_update(
         ClientRouteClass::Other,
     )
     .with_legacy_custom_ca_fallback();
-    let latest_version = match action {
+    let latest_version = if crate::fork_update::FORK_RELEASE_TAG.is_some() {
+        fetch_latest_fork_release_tag(&client_pool).await?
+    } else {
+        match action {
         Some(UpdateAction::BrewUpgrade) => {
             let HomebrewCaskInfo { version } = client_pool
                 .get(HOMEBREW_CASK_API_URL)
@@ -109,8 +112,10 @@ async fn check_for_update(
             npm_registry::ensure_version_ready(&package_info, &latest_version)?;
             latest_version
         }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
+        Some(UpdateAction::StandaloneUnix)
+        | Some(UpdateAction::StandaloneWindows)
+        | Some(UpdateAction::CodexShakeInstallScript)
+        | None => fetch_latest_github_release_version(&client_pool).await?,
         }
     };
 
@@ -144,6 +149,55 @@ async fn fetch_latest_github_release_version(
         .json::<ReleaseInfo>()
         .await?;
     extract_version_from_latest_tag(&latest_tag_name)
+}
+
+async fn fetch_latest_fork_release_tag(
+    client_pool: &RouteAwareClientPool,
+) -> anyhow::Result<String> {
+    let body = client_pool
+        .get(crate::fork_update::FORK_RELEASES_API_URL)
+        .headers(default_headers())
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    crate::fork_update::newest_fork_release_tag(&body)
+        .ok_or_else(|| anyhow::anyhow!("no local-features-v* release found in epsalmond/codex"))
+}
+
+/// Check the fork's release feed for a newer tag right now, bypassing the
+/// version-cache throttle. Used by the `codex update` subcommand. Returns
+/// `None` when this is not a fork build.
+pub async fn check_fork_update_now(
+    http_client_factory: HttpClientFactory,
+) -> anyhow::Result<Option<String>> {
+    if crate::fork_update::FORK_RELEASE_TAG.is_none() {
+        return Ok(None);
+    }
+    let client_pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
+        http_client_factory,
+        ClientRouteClass::Other,
+    )
+    .with_legacy_custom_ca_fallback();
+    Ok(Some(fetch_latest_fork_release_tag(&client_pool).await?))
+}
+
+/// The release tag this binary was built from, or `None` for a non-fork
+/// (upstream) build.
+pub fn fork_release_tag() -> Option<&'static str> {
+    crate::fork_update::FORK_RELEASE_TAG
+}
+
+/// Whether `candidate` should be treated as a newer fork release than
+/// `current`. See `fork_update::fork_tag_is_newer` for the ordering rules.
+pub fn fork_tag_is_newer(candidate: &str, current: &str) -> bool {
+    crate::fork_update::fork_tag_is_newer(candidate, current)
+}
+
+/// The command that reinstalls the latest fork release.
+pub fn fork_install_command() -> &'static str {
+    crate::fork_update::FORK_INSTALL_COMMAND
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
