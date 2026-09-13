@@ -1373,6 +1373,7 @@ impl ThreadManager {
             conversation_id: prepared.source_thread_id,
             history: Arc::clone(&prepared.model_context),
             rollout_path: None,
+            last_activity_at: None,
         });
         let fork_persistence = ForkPersistence::Referenced {
             history_base: prepared.history_base,
@@ -2182,10 +2183,12 @@ fn stored_thread_to_initial_history(
             "thread {thread_id} did not include persisted history"
         ))
     })?;
+    let last_activity_at = Some(stored_thread.updated_at);
     Ok(InitialHistory::Resumed(ResumedHistory {
         conversation_id: thread_id,
         history: Arc::new(history.items),
         rollout_path: rollout_path.or(stored_thread.rollout_path),
+        last_activity_at,
     }))
 }
 

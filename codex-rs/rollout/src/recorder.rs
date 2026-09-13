@@ -1026,10 +1026,30 @@ impl RolloutRecorder {
     pub async fn load_rollout_items(
         path: &Path,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        let (items, thread_id, parse_errors, _last_line_timestamp) =
+            Self::load_rollout_items_with_last_timestamp(path).await?;
+        Ok((items, thread_id, parse_errors))
+    }
+
+    /// Same as [`Self::load_rollout_items`], plus the timestamp of the last
+    /// successfully parsed `RolloutLine`. Used by [`Self::get_rollout_history`]
+    /// to seed the prompt-cache idle clock on resume: this loop already walks
+    /// every line, so remembering the last one's timestamp is free, and it is
+    /// the only "last activity" signal available when resuming directly from
+    /// a rollout file (no `StoredThread` in hand to read `updated_at` from).
+    async fn load_rollout_items_with_last_timestamp(
+        path: &Path,
+    ) -> std::io::Result<(
+        Vec<RolloutItem>,
+        Option<ThreadId>,
+        usize,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> {
         trace!("Resuming rollout from {path:?}");
         let mut items: Vec<RolloutItem> = Vec::new();
         let mut thread_id: Option<ThreadId> = None;
         let mut parse_errors = 0usize;
+        let mut last_line_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut reader = compression::open_rollout_line_reader(path).await?;
         let mut saw_non_empty_line = false;
         while let Some(line) = reader.next_line().await? {
@@ -1065,6 +1085,10 @@ impl RolloutRecorder {
                 }
             };
 
+            if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&rollout_line.timestamp) {
+                last_line_timestamp = Some(parsed.with_timezone(&chrono::Utc));
+            }
+
             let item = rollout_line.item;
             // Use the FIRST SessionMeta encountered in the file as the canonical
             // thread id and main session information. Keep all items intact.
@@ -1085,11 +1109,12 @@ impl RolloutRecorder {
             thread_id,
             parse_errors,
         );
-        Ok((items, thread_id, parse_errors))
+        Ok((items, thread_id, parse_errors, last_line_timestamp))
     }
 
     pub async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
-        let (items, thread_id, _parse_errors) = Self::load_rollout_items(path).await?;
+        let (items, thread_id, _parse_errors, last_activity_at) =
+            Self::load_rollout_items_with_last_timestamp(path).await?;
         let conversation_id = thread_id
             .ok_or_else(|| IoError::other("failed to parse thread ID from rollout file"))?;
 
@@ -1102,6 +1127,7 @@ impl RolloutRecorder {
             conversation_id,
             history: Arc::new(items),
             rollout_path: Some(compression::plain_rollout_path(path)),
+            last_activity_at,
         }))
     }
 

@@ -16,25 +16,54 @@
 //!     irrelevant against TTLs measured in minutes-to-hours, and reconstructing
 //!     it means walking history on every pre-sampling check;
 //!   * the persisted rollout line timestamps. Those would additionally survive
-//!     a process restart, but the resume boundary drops them:
-//!     `ResumedHistory` (`codex-rs/history/src/lib.rs`) carries only
+//!     a process restart, but the resume boundary drops them for most resume
+//!     paths: `ResumedHistory` (`codex-rs/history/src/lib.rs`) carries only
 //!     `Vec<RolloutItem>`, not `Vec<RolloutLine>`, so the per-line `timestamp`
-//!     is gone by the time a `Session` is built. `StoredThread::updated_at`
-//!     still holds it one layer up, so plumbing it through is possible — see
-//!     the note below.
+//!     is gone by the time a `Session` is built.
 //!
-//! CONSEQUENCE. The clock is per-process: a session that resumes a thread from
-//! disk starts with no recorded request, so the first turn after a resume is
-//! treated as "cache warm" and does not cold-resume-shake, even though its
-//! prompt cache is certainly cold. The trigger therefore covers the common
-//! interactive case — a live session left idle past the TTL — and not a process
-//! restart. Extending it to restarts needs `StoredThread::updated_at` threaded
-//! through `ResumedHistory` into `Session::new`; that is deliberately out of
-//! scope here.
+//! SEEDING ON RESUME. `ResumedHistory` carries an additional
+//! `last_activity_at: Option<DateTime<Utc>>` used only to seed this clock so
+//! the *first* turn after a process restart can still see an expired TTL.
+//! The value is `StoredThread::updated_at` at every resume site that has a
+//! `StoredThread` in hand (thread-store resume, multi-agent resume, thread
+//! fork) — it is already loaded as part of the resume, requires no extra
+//! read, and is refreshed on every turn (see
+//! `codex-rs/thread-store/src/thread_metadata_sync.rs`), so it tracks "last
+//! request" closely enough for a TTL measured in minutes-to-hours. The one
+//! resume path without a `StoredThread` — `Recorder::get_rollout_history`,
+//! which parses a rollout file directly by path — instead carries forward the
+//! timestamp of the last `RolloutLine` it parses, since that loop already
+//! walks every line and the cost of remembering the last one is free. Fresh
+//! threads and forks built from an in-memory snapshot with no backing store
+//! record (`fork_prepared_thread`) seed nothing: their first turn is
+//! warm-by-definition, same as before this change.
+//!
+//! Seeding only ever *primes* the clock before the first real request: once
+//! `record_sampling_request` runs, it overwrites the seed like any other
+//! request, so dedupe (`cold_resume_already_decided`) behaves identically
+//! whether the current idle window opened from a seed or a live request.
+//!
+//! REPRESENTATION. The clock still stores a monotonic `Instant` internally —
+//! `record_sampling_request` and comparisons against "now" are unaffected by
+//! wall-clock adjustments. Seeding converts the wall-clock timestamp to an
+//! `Instant` once, at seed time: it computes `elapsed = Utc::now() -
+//! last_activity_at` and stores `Instant::now() - elapsed`. This keeps every
+//! later comparison monotonic, at the cost of baking in whatever
+//! wall-clock-vs-monotonic skew existed at the moment of seeding (a step of
+//! the wall clock between the persisted write and process start would offset
+//! the computed idle time by the size of the step — acceptable for a TTL
+//! measured in minutes-to-hours, and the same kind of skew any use of a
+//! persisted timestamp already accepts). A negative or unrepresentable
+//! `elapsed` (clock skew, or a timestamp older than the monotonic clock can
+//! represent) falls back to "no idle time", i.e. cache-warm — a safe default
+//! that just misses this one trigger rather than misfiring.
 
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
+
+use chrono::DateTime;
+use chrono::Utc;
 
 /// Per-thread idle clock. Monotonic (`Instant`), so a wall-clock adjustment
 /// while the session is idle cannot make the thread look arbitrarily stale or
@@ -61,6 +90,35 @@ impl PromptCacheClock {
     /// out. Opens a fresh idle window.
     pub(crate) fn record_sampling_request(&self) {
         self.record_sampling_request_at(Instant::now());
+    }
+
+    /// Called once, at session construction, when resuming a thread whose
+    /// last known activity is `last_activity_at`. Primes the idle window so
+    /// the first turn after a process restart can still see an expired TTL.
+    ///
+    /// A no-op if a sampling request has already been recorded (should not
+    /// happen at construction time, but keeps this safe to call more than
+    /// once and never lets a seed clobber a real request).
+    pub(crate) fn seed_from_last_activity(&self, last_activity_at: DateTime<Utc>) {
+        self.seed_from_last_activity_at(last_activity_at, Utc::now(), Instant::now());
+    }
+
+    fn seed_from_last_activity_at(
+        &self,
+        last_activity_at: DateTime<Utc>,
+        wall_now: DateTime<Utc>,
+        monotonic_now: Instant,
+    ) {
+        let mut inner = self.lock();
+        if inner.last_request_at.is_some() {
+            return;
+        }
+        let elapsed = wall_now
+            .signed_duration_since(last_activity_at)
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        let seeded = monotonic_now.checked_sub(elapsed).unwrap_or(monotonic_now);
+        inner.last_request_at = Some(seeded);
     }
 
     fn record_sampling_request_at(&self, at: Instant) {
@@ -148,6 +206,63 @@ mod tests {
         assert!(
             !clock.cold_resume_already_decided(),
             "a new sampling request opens a new idle window"
+        );
+    }
+
+    #[test]
+    fn seeding_from_a_stale_last_activity_reads_as_idle() {
+        let clock = PromptCacheClock::default();
+        let wall_now = Utc::now();
+        let last_activity_at = wall_now - chrono::Duration::hours(2);
+        let monotonic_now = Instant::now();
+        clock.seed_from_last_activity_at(last_activity_at, wall_now, monotonic_now);
+        let idle = clock.idle_since_last_request_at(monotonic_now);
+        assert_eq!(idle, Some(Duration::from_secs(2 * 60 * 60)));
+    }
+
+    #[test]
+    fn seeding_from_a_recent_last_activity_reads_as_nearly_warm() {
+        let clock = PromptCacheClock::default();
+        let wall_now = Utc::now();
+        let last_activity_at = wall_now - chrono::Duration::seconds(5);
+        let monotonic_now = Instant::now();
+        clock.seed_from_last_activity_at(last_activity_at, wall_now, monotonic_now);
+        let idle = clock.idle_since_last_request_at(monotonic_now);
+        assert_eq!(idle, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_real_request_recorded_after_seeding_wins_and_the_seed_never_reapplies() {
+        let clock = PromptCacheClock::default();
+        let wall_now = Utc::now();
+        let last_activity_at = wall_now - chrono::Duration::hours(2);
+        let monotonic_now = Instant::now();
+        clock.seed_from_last_activity_at(last_activity_at, wall_now, monotonic_now);
+        // A real sampling request supersedes the seed.
+        clock.record_sampling_request_at(monotonic_now);
+        assert_eq!(
+            clock.idle_since_last_request_at(monotonic_now),
+            Some(Duration::ZERO)
+        );
+        // Seeding again (e.g. a defensive second call) must not clobber the
+        // real request.
+        clock.seed_from_last_activity_at(last_activity_at, wall_now, monotonic_now);
+        assert_eq!(
+            clock.idle_since_last_request_at(monotonic_now),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn a_last_activity_timestamp_in_the_future_seeds_as_warm_not_negative() {
+        let clock = PromptCacheClock::default();
+        let wall_now = Utc::now();
+        let last_activity_at = wall_now + chrono::Duration::hours(1);
+        let monotonic_now = Instant::now();
+        clock.seed_from_last_activity_at(last_activity_at, wall_now, monotonic_now);
+        assert_eq!(
+            clock.idle_since_last_request_at(monotonic_now),
+            Some(Duration::ZERO)
         );
     }
 }

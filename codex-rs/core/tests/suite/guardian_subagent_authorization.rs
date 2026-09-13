@@ -799,6 +799,7 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
                         conversation_id: root_thread_id,
                         history: Arc::new(saved.items),
                         rollout_path: None,
+                        last_activity_at: None,
                     }),
                     test.thread_manager.auth_manager(),
                     /*parent_trace*/ None,

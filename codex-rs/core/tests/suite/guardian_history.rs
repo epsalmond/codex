@@ -111,6 +111,7 @@ async fn guardian_history_survives_restart_and_user_fork(
         conversation_id: thread_id,
         history: Arc::new(items),
         rollout_path: None,
+        last_activity_at: None,
     });
     let fork = if history_mode == ThreadHistoryMode::Paginated {
         let prepared = initial

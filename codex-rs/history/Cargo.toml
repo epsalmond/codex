@@ -13,6 +13,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+chrono = { workspace = true, features = ["serde"] }
 codex-protocol = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

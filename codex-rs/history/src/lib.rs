@@ -268,6 +268,18 @@ pub struct ResumedHistory {
     pub conversation_id: ThreadId,
     pub history: Arc<Vec<RolloutItem>>,
     pub rollout_path: Option<PathBuf>,
+    /// Best-effort "when did this thread last talk to the model", used only
+    /// to seed the prompt-cache idle clock (see
+    /// `codex-rs/core/src/session/prompt_cache_clock.rs`) so the first turn
+    /// after a process restart can still see an expired prompt-cache TTL.
+    /// Populated from `StoredThread::updated_at` at resume sites that load a
+    /// `StoredThread`, or from the last parsed `RolloutLine` timestamp when
+    /// resuming directly from a rollout file. `None` when no such timestamp
+    /// is available (e.g. a fork built from an in-memory history snapshot
+    /// with no backing store record) — the clock then seeds nothing, same as
+    /// before this field existed.
+    #[serde(default)]
+    pub last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

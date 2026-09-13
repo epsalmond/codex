@@ -86,6 +86,7 @@ fn resume_history(
             })),
         ]),
         rollout_path: Some(rollout_path.to_path_buf()),
+        last_activity_at: None,
     })
 }
 

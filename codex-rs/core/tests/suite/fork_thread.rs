@@ -232,6 +232,7 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
                 conversation_id: test.session_configured.thread_id,
                 history: Arc::new(supplied_history),
                 rollout_path: None,
+                last_activity_at: None,
             }),
             /*thread_source*/ None,
             /*parent_trace*/ None,

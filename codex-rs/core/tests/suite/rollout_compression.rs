@@ -176,6 +176,7 @@ async fn compressed_shared_fork_resume_preserves_checkpoint_and_frozen_history()
                 conversation_id: context.thread_id,
                 history: Arc::new(context.items),
                 rollout_path: Some(child_path),
+                last_activity_at: None,
             }),
             codex_core::test_support::auth_manager_from_auth(codex_login::CodexAuth::from_api_key(
                 "dummy",

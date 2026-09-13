@@ -4541,6 +4541,7 @@ impl ThreadRequestProcessor {
                 conversation_id: model_context.thread_id,
                 history: Arc::new(model_context.items),
                 rollout_path: stored_thread.rollout_path.clone(),
+                last_activity_at: Some(stored_thread.updated_at),
             });
             return Ok((history, stored_thread));
         }
@@ -4645,6 +4646,7 @@ impl ThreadRequestProcessor {
             conversation_id: thread_id,
             history: Arc::new(history),
             rollout_path: stored_thread.rollout_path.clone(),
+            last_activity_at: Some(stored_thread.updated_at),
         }))
     }
 
@@ -5118,6 +5120,7 @@ impl ThreadRequestProcessor {
                         conversation_id: source_thread_id,
                         history: history_items,
                         rollout_path: source_thread.rollout_path.clone(),
+                        last_activity_at: Some(source_thread.updated_at),
                     }),
                     thread_source,
                     parent_trace,

@@ -707,6 +707,14 @@ impl Session {
                 model: model_info.slug.clone(),
             })
         };
+        // Best-effort "when did this thread last talk to the model", carried on
+        // `ResumedHistory` (see its doc comment). Used only to seed the
+        // prompt-cache idle clock below so the first turn after a process
+        // restart can still see an expired TTL.
+        let resumed_last_activity_at = match &initial_history {
+            InitialHistory::Resumed(resumed) => resumed.last_activity_at,
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        };
         let forked_from_id = session_configuration
             .forked_from_thread_id
             .or_else(|| initial_history.forked_from_id());
@@ -1537,6 +1545,10 @@ impl Session {
                 next_internal_sub_id: AtomicU64::new(0),
                 prompt_cache_clock: Default::default(),
             });
+            if let Some(last_activity_at) = resumed_last_activity_at {
+                sess.prompt_cache_clock
+                    .seed_from_last_activity(last_activity_at);
+            }
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;
                 *guard = Arc::downgrade(&sess);

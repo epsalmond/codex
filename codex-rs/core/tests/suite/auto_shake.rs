@@ -4,6 +4,7 @@
 //! injected history with one oversized tool output, and assertions on the exact
 //! request bodies the model saw.
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::TurnInputRequest;
 use codex_protocol::models::ResponseItem;
@@ -19,6 +20,12 @@ use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
 use std::fs;
+use std::fs::FileTimes;
+use std::fs::OpenOptions;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::SystemTime;
+use tempfile::TempDir;
 
 /// Marker planted in the oversized tool output. Auto-shake must replace it with a
 /// recovery placeholder before the next sampling request.
@@ -777,6 +784,145 @@ async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCa
             assert!(
                 bodies[1].contains(AUTO_SHAKE_MARKER),
                 "no cold-resume shake was due, so the tool output must survive"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Which stored last-activity a
+/// `cold_resume_shakes_on_the_first_turn_after_resuming_a_stale_thread` case
+/// simulates, relative to `CACHE_TTL_SECS` below.
+#[derive(Clone, Copy)]
+enum ResumeColdResumeCase {
+    /// The rollout file's mtime is backdated past the TTL: the stored thread
+    /// looks like it last talked to the model well before the process
+    /// restarted, so the very first turn after resume should cold-resume shake.
+    Expired,
+    /// The rollout file's mtime is left recent (within the TTL): the resumed
+    /// thread looks freshly active, so nothing should fire.
+    Recent,
+}
+
+const RESUME_CACHE_TTL_SECS: i64 = 60;
+
+/// management-plane#989 follow-up: closing the "known limitation" that the
+/// cold-resume trigger only covered a live session left idle, and missed the
+/// case it most needed to cover — a process restart. `Session::new` now seeds
+/// `prompt_cache_clock` from `ResumedHistory::last_activity_at`, which for a
+/// thread resumed by rollout path through the local file-backed thread store
+/// falls back to the rollout file's mtime as `StoredThread::updated_at` (see
+/// `codex-rs/thread-store/src/local/read_thread.rs`,
+/// `stored_thread_from_meta_line`) whenever no SQLite metadata row overrides
+/// it, which is the case here. Backdating the rollout file's mtime before
+/// resuming is therefore a faithful, sleep-free way to simulate a thread that
+/// last talked to the model longer ago than the configured TTL.
+///
+/// Reported usage is 20,000 tokens against a 100,000-token window, so only the
+/// cold-resume trigger can explain a shake on this first turn.
+#[test_case::test_case(ResumeColdResumeCase::Expired; "stored last-activity older than the ttl")]
+#[test_case::test_case(ResumeColdResumeCase::Recent; "stored last-activity within the ttl")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_resume_shakes_on_the_first_turn_after_resuming_a_stale_thread(
+    case: ResumeColdResumeCase,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![sse(vec![
+            ev_assistant_message("m1", "resumed reply"),
+            ev_completed_with_input_tokens("r1", /*input_tokens*/ 20_000),
+        ])],
+    )
+    .await;
+
+    let home = Arc::new(TempDir::new()?);
+    let configure = |config: &mut codex_core::config::Config| {
+        config.model_context_window = Some(TEST_CONTEXT_WINDOW);
+        config.auto_shake.cache_ttl = Some(codex_config::config_toml::AutoShakeDurationToml(
+            RESUME_CACHE_TTL_SECS,
+        ));
+    };
+
+    let mut first_builder = test_codex()
+        .with_home(Arc::clone(&home))
+        .with_model("gpt-5.6-luna")
+        .with_config(configure);
+    let fixture = Box::pin(first_builder.build_with_auto_env(&server)).await?;
+    Box::pin(fixture.codex.inject_response_items(oversized_history()?)).await?;
+    let rollout_path = fixture.codex.rollout_path().context("rollout path")?;
+    fixture.codex.shutdown_and_wait().await?;
+
+    let backdate_by = match case {
+        // Comfortably past the TTL.
+        ResumeColdResumeCase::Expired => {
+            Duration::from_secs(RESUME_CACHE_TTL_SECS as u64 + 120)
+        }
+        // Comfortably within it.
+        ResumeColdResumeCase::Recent => Duration::from_secs(5),
+    };
+    let backdated = SystemTime::now() - backdate_by;
+    OpenOptions::new()
+        .write(true)
+        .open(&rollout_path)?
+        .set_times(FileTimes::new().set_modified(backdated))?;
+
+    let mut second_builder = test_codex()
+        .with_home(Arc::clone(&home))
+        .with_model("gpt-5.6-luna")
+        .with_config(configure);
+    let resumed = Box::pin(second_builder.resume(&server, Arc::clone(&home), rollout_path)).await?;
+
+    Box::pin(
+        resumed
+            .codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "resumed prompt".to_string(),
+                text_elements: Vec::new(),
+            }])),
+    )
+    .await?;
+    if matches!(case, ResumeColdResumeCase::Expired) {
+        // Its own marker, distinct from the plain automatic and escalated
+        // passes, so a benchmark can attribute the shake to this trigger.
+        Box::pin(wait_for_event(&resumed.codex, |event| {
+            matches!(event, EventMsg::Warning(warning)
+                if warning.message.starts_with("⛭ shake (auto, cold resume):"))
+        }))
+        .await;
+    }
+    Box::pin(wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    }))
+    .await;
+
+    let bodies: Vec<String> = request_log
+        .requests()
+        .iter()
+        .map(|request| request.body_json().to_string())
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        1,
+        "a cold-resume shake must not add a model request, and must not trigger compaction"
+    );
+    match case {
+        ResumeColdResumeCase::Expired => {
+            assert!(
+                !bodies[0].contains(AUTO_SHAKE_MARKER),
+                "a thread resumed well past its ttl should shake on its first turn"
+            );
+            assert!(
+                bodies[0].contains("[shaken ~"),
+                "the elided region should be replaced by a shaken placeholder"
+            );
+        }
+        ResumeColdResumeCase::Recent => {
+            assert!(
+                bodies[0].contains(AUTO_SHAKE_MARKER),
+                "a thread resumed well within its ttl has no cold-resume shake due"
             );
         }
     }

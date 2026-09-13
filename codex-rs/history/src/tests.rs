@@ -642,6 +642,7 @@ fn copied_history_uses_persisted_history_mode() -> Result<()> {
         conversation_id: thread_id,
         history: Arc::new(vec![session_meta.clone()]),
         rollout_path: None,
+        last_activity_at: None,
     });
 
     assert_eq!(
@@ -661,6 +662,7 @@ fn copied_history_uses_persisted_history_mode() -> Result<()> {
             conversation_id: thread_id,
             history: Arc::new(Vec::new()),
             rollout_path: None,
+            last_activity_at: None,
         })
         .get_history_mode(ThreadHistoryMode::Paginated),
         ThreadHistoryMode::Paginated

@@ -2257,6 +2257,7 @@ async fn record_initial_history_reconstructs_resumed_transcript() {
             conversation_id: ThreadId::default(),
             history: Arc::new(rollout_items),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+            last_activity_at: None,
         }))
         .await;
 
@@ -2629,6 +2630,7 @@ async fn prepares_resumed_history_before_installing_it() {
                 metadata: Some(CodexHarnessMetadata::default()),
             })]),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+            last_activity_at: None,
         }))
         .await;
 
@@ -2686,6 +2688,7 @@ fn resolve_multi_agent_version_handles_unset_and_legacy_history() {
                 conversation_id: thread_id,
                 history: Arc::new(Vec::new()),
                 rollout_path: None,
+                last_activity_at: None,
             }),
             /*inherited_multi_agent_version*/ None,
         ),
@@ -2697,6 +2700,7 @@ fn resolve_multi_agent_version_handles_unset_and_legacy_history() {
                 conversation_id: thread_id,
                 history: Arc::new(Vec::new()),
                 rollout_path: None,
+                last_activity_at: None,
             }),
             Some(MultiAgentVersion::V2),
         ),
@@ -2711,6 +2715,7 @@ fn resolve_multi_agent_version_handles_unset_and_legacy_history() {
                     Some(MultiAgentVersion::Disabled)
                 )]),
                 rollout_path: None,
+                last_activity_at: None,
             }),
             Some(MultiAgentVersion::V2),
         ),
@@ -2773,6 +2778,7 @@ async fn resumed_history_injects_initial_context_on_first_context_update_only() 
             conversation_id: ThreadId::default(),
             history: Arc::new(rollout_items),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+            last_activity_at: None,
         }))
         .await;
 
@@ -2883,6 +2889,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             conversation_id: ThreadId::default(),
             history: Arc::new(rollout_items),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+            last_activity_at: None,
         }))
         .await;
 
@@ -6978,6 +6985,7 @@ async fn resumed_root_session_uses_thread_id_as_session_id() {
             conversation_id: thread_id,
             history: Arc::new(Vec::new()),
             rollout_path: None,
+            last_activity_at: None,
         }),
         SessionSource::Exec,
         AgentControl::default(),
@@ -7021,6 +7029,7 @@ async fn resumed_subagent_session_restores_persisted_session_id() {
                 git: None,
             })]),
             rollout_path: None,
+            last_activity_at: None,
         }),
         session_source,
         AgentControl::default(),
@@ -7074,6 +7083,7 @@ async fn resumed_copied_fork_ignores_source_history_base() {
             conversation_id: thread_id,
             history: Arc::new(history),
             rollout_path: None,
+            last_activity_at: None,
         }),
         SessionSource::Exec,
         AgentControl::default(),

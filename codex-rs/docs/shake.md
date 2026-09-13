@@ -274,26 +274,47 @@ provider's cache entry for this thread was (re)written, which is the question
 the TTL is asking. It is also the dedupe key: the cold-resume decision stores
 the `Instant` it fired against, and the next sampling request supersedes it.
 
-The two alternatives were rejected:
+The last assistant message (what oh-my-pi's
+`runCacheExpiredPrePromptShakeIfNeeded` keys on) was rejected: it differs from
+the request timestamp only by one response's duration, which is noise against
+TTLs measured in minutes to hours, and reconstructing it means walking history
+on every pre-sampling check.
 
-- **the last assistant message** (what oh-my-pi's
-  `runCacheExpiredPrePromptShakeIfNeeded` keys on) differs from the request
-  timestamp only by one response's duration, which is noise against TTLs
-  measured in minutes to hours, and reconstructing it means walking history on
-  every pre-sampling check;
-- **the persisted rollout line timestamps** would additionally survive a
-  process restart, but the resume boundary drops them: `ResumedHistory`
-  (`codex-rs/history/src/lib.rs`) carries `Vec<RolloutItem>`, not
-  `Vec<RolloutLine>`, so the per-line `timestamp` is gone before a `Session`
-  exists.
+#### Surviving a process restart: seeding from resume
 
-**Known limitation.** The clock is therefore per-process. A session that
-resumes a thread from disk starts with no recorded request, so its first turn
-is treated as cache-warm and does not cold-resume shake, even though its
-prompt cache is certainly cold. The trigger covers the common interactive case
-— a live session left idle past the TTL — and not a process restart. Closing
-that case means threading `StoredThread::updated_at` through `ResumedHistory`
-into `Session::new`; deliberately out of scope for management-plane#989.
+The clock above is per-process — an in-memory `Instant` cannot itself survive
+a restart. But a session resuming a thread from disk is exactly the case the
+cold-resume trigger most needs to cover (nothing else in the new process has
+run a request yet, so the prompt cache is either warm from before the restart
+or, more likely, long expired), so `Session::new` primes the clock once, at
+construction, from a persisted "last activity" timestamp carried on
+`ResumedHistory::last_activity_at` (`codex-rs/history/src/lib.rs`):
+
+- Most resume paths (thread-store resume, multi-agent resume, thread fork)
+  already load a `StoredThread` to get the history in the first place, and use
+  `StoredThread::updated_at` — refreshed on every turn (see
+  `codex-rs/thread-store/src/thread_metadata_sync.rs`), so it tracks "last
+  request" closely enough for a TTL measured in minutes-to-hours, and free
+  since no extra read is needed.
+- `RolloutRecorder::get_rollout_history` resumes directly from a rollout file
+  by path, with no `StoredThread` in hand. It instead carries forward the
+  timestamp of the last `RolloutLine` it parses — that loop already walks
+  every line, so remembering the last one is free too. This is the case the
+  resume boundary drops per-line timestamps for, described above; carrying
+  just the last one through `ResumedHistory` avoids reconstructing full
+  `RolloutLine`-shaped history everywhere else.
+- A fresh thread, and a fork built from an in-memory history snapshot with no
+  backing store record (`fork_prepared_thread`), seed nothing — `None` — so
+  the first turn is warm-by-definition, same as before this existed.
+
+Seeding only ever primes the *first* idle window: `PromptCacheClock` still
+stores a monotonic `Instant` internally, converting the wall-clock seed to one
+at seed time (`Instant::now() - (Utc::now() - last_activity_at)`), so once the
+first real `record_sampling_request` runs it overwrites the seed exactly like
+any other request and dedupe behaves identically either way. See
+`codex-rs/core/src/session/prompt_cache_clock.rs` for the exact conversion and
+its edge cases (clock skew, timestamps older than the monotonic clock can
+represent).
 
 ### Turn ordering
 

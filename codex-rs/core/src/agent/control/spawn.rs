@@ -372,6 +372,7 @@ impl AgentControl {
             conversation_id: thread_id,
             history: Arc::new(history),
             rollout_path: stored_thread.rollout_path,
+            last_activity_at: Some(stored_thread.updated_at),
         });
         if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::ThreadNotFound(thread_id));
@@ -1228,6 +1229,7 @@ impl AgentControl {
             conversation_id: thread_id,
             history: Arc::new(history),
             rollout_path: stored_thread.rollout_path,
+            last_activity_at: Some(stored_thread.updated_at),
         });
         let parent_thread_id = stored_thread.parent_thread_id;
         let multi_agent_version = state
