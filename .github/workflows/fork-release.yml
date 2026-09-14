@@ -1,16 +1,14 @@
 name: fork-release
-# Builds and publishes the eric/local-features test builds on
-# free GitHub-hosted runners, replacing the manual ~/.bin/codex-fork-release
-# flow (nas + mbp over ssh). Reuses upstream's setup-rusty-v8 composite
-# action for the prebuilt sandboxed V8 archive; does not touch
-# rust-release.yml, which needs self-hosted runners and codesigning secrets
-# this fork does not have.
-#
-# Tag scheme: local-features-v<upstream version>-r<UTC minute>.<short sha>
-# (see codex-fork-release). This workflow only reacts to tags already
-# pushed by that scheme; it does not create tags itself.
+
+# Builds and publishes the eric/local-features test builds on GitHub-hosted
+# runners. A branch push is accepted only for a fast-forward two-parent merge;
+# the workflow then creates its deterministic tag after validation and both
+# archives succeed. Existing local-features-v* tag pushes remain a manual
+# recovery path.
 on:
   push:
+    branches:
+      - eric/local-features
     tags:
       - "local-features-v*"
 
@@ -21,12 +19,97 @@ permissions:
   contents: read
 
 concurrency:
-  group: fork-release-${{ github.ref_name }}
+  group: fork-release
+  queue: max
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Prepare exact release identity
+    runs-on: ubuntu-22.04
+    outputs:
+      release_sha: ${{ steps.metadata.outputs.release_sha }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      source_version: ${{ steps.metadata.outputs.source_version }}
+      stable_lineage: ${{ steps.metadata.outputs.stable_lineage }}
+      included_upstream_main_sha: ${{ steps.metadata.outputs.included_upstream_main_sha }}
+      source_kind: ${{ steps.metadata.outputs.source_kind }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve event identity
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          UPSTREAM_URL: https://github.com/openai/codex.git
+        run: |
+          set -euo pipefail
+          .github/scripts/fork-release-metadata.sh \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --event-name "$EVENT_NAME" \
+            --event-ref "$EVENT_REF" \
+            --event-sha "$EVENT_SHA" \
+            --event-before "$EVENT_BEFORE" \
+            --upstream-url "$UPSTREAM_URL" \
+            --output "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate workflow and updater
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs -> target
+          key: fork-release-validate
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Check formatting
+        run: just fmt-check
+
+      - name: Test release helpers offline
+        working-directory: .
+        run: |
+          bash .github/scripts/test_fork_release_metadata.sh
+          python3 -m unittest scripts/install/test_shake_install.py
+
+      - name: Test scoped release behavior
+        run: |
+          just test -p codex-core --lib -E 'test(/guardian|shake|artifact/)'
+          just test -p codex-app-server-protocol
+          just test -p codex-app-server -E 'test(/shake|attachment/)'
+          just test -p codex-cli -E 'test(/update|fork/)'
+          just test -p codex-tui --lib -E 'test(/completion|fork_update|shake|slash/)'
+
   build:
     name: Build - ${{ matrix.target }}
+    needs: [prepare, validate]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -37,7 +120,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Oldest Ubuntu GitHub still offers, to keep the glibc floor low.
+          # Oldest Ubuntu GitHub-hosted runner still offered, to keep the
+          # glibc floor low.
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           # GitHub-hosted Apple Silicon.
@@ -46,6 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -56,9 +141,7 @@ jobs:
           key: fork-release-${{ matrix.target }}
 
       # Downloads and verifies the Codex-built rusty_v8 archive/binding for
-      # this target, matching codex-update's --local build exactly (same
-      # profile, same RUSTY_V8_ARCHIVE / RUSTY_V8_SRC_BINDING_PATH env vars).
-      # rusty_v8_bazel.py imports tomllib (Python 3.11+); ubuntu-22.04 ships 3.10.
+      # this target, matching codex-update's --local build exactly.
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
@@ -70,15 +153,10 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      # Same cargo invocation as ~/.bin/codex-fork-release (via codex-update
-      # --local): plain `cargo build --release`, no extra features, building
-      # only the two binaries the fork ships. CODEX_FORK_RELEASE_TAG embeds
-      # this release's own tag in the binary (see tui/src/fork_update.rs) so
-      # it can check the fork's release feed and self-update.
       - name: Cargo build
         shell: bash
         env:
-          CODEX_FORK_RELEASE_TAG: ${{ github.ref_name }}
+          CODEX_FORK_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: cargo build --release --bin codex --bin codex-code-mode-host
 
       - name: Record glibc version (Linux)
@@ -87,26 +165,39 @@ jobs:
         run: |
           set -euo pipefail
           ldd --version | awk 'NR == 1 { print $NF }' > glibc-version.txt
-          cat glibc-version.txt
+          test -s glibc-version.txt
 
-      # Keep the binaries and the optional offline savings estimator at the
-      # archive root, with no leading directory. The installer can preserve
-      # all entries while older releases remain valid with only the binaries.
+      # Keep every shipped file at the archive root. The payload check makes
+      # an incomplete archive fail before it can be uploaded to the publish
+      # job.
       - name: Package archive
         shell: bash
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
+          archive="codex-$target.tar.gz"
           stage=$(mktemp -d)
+          trap 'rm -rf "$stage"' EXIT
           install -m 755 target/release/codex target/release/codex-code-mode-host "$stage/"
           install -m 755 docs/shake-bench/scripts/codex-shake-estimate \
             docs/shake-bench/scripts/shake-savings-estimate.py "$stage/"
           install -m 644 docs/shake-bench/scripts/pricing_lib.py \
             docs/shake-bench/pricing.json "$stage/"
-          tar -C "$stage" -czf "codex-$target.tar.gz" \
+          tar -C "$stage" -czf "$archive" \
             codex codex-code-mode-host codex-shake-estimate \
             shake-savings-estimate.py pricing_lib.py pricing.json
-          rm -rf "$stage"
+
+          required=(
+            codex
+            codex-code-mode-host
+            codex-shake-estimate
+            shake-savings-estimate.py
+            pricing_lib.py
+            pricing.json
+          )
+          for entry in "${required[@]}"; do
+            tar -tzf "$archive" | grep -Fx "$entry" >/dev/null
+          done
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -114,20 +205,21 @@ jobs:
           path: |
             codex-rs/codex-${{ matrix.target }}.tar.gz
             codex-rs/glibc-version.txt
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
 
-  release:
+  publish:
     name: Publish release
-    needs: build
+    needs: [prepare, validate, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.release_sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -135,54 +227,109 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Compose release body and checksums
+      - name: Verify artifacts and compose release body
         shell: bash
         env:
           FORK_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          STABLE_LINEAGE: ${{ needs.prepare.outputs.stable_lineage }}
+          INCLUDED_UPSTREAM_MAIN_SHA: ${{ needs.prepare.outputs.included_upstream_main_sha }}
+          SOURCE_KIND: ${{ needs.prepare.outputs.source_kind }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse --verify HEAD^{commit})" = "$RELEASE_SHA"
+          test "$(git rev-parse --verify "$RELEASE_SHA^{commit}")" = "$RELEASE_SHA"
 
-          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
-          base_tag=$(git describe --tags --match 'rust-v[0-9]*' --abbrev=0 "$commit")
-          glibc_version=$(cat dist/glibc-version.txt)
+          linux_archive="dist/codex-x86_64-unknown-linux-gnu.tar.gz"
+          macos_archive="dist/codex-aarch64-apple-darwin.tar.gz"
+          for archive in "$linux_archive" "$macos_archive"; do
+            test -s "$archive"
+            tar -tzf "$archive" >/dev/null
+          done
+          test -s dist/glibc-version.txt
 
-          {
-            echo "base_tag=$base_tag"
-            echo "release_commit=$commit"
-          } >> "$GITHUB_ENV"
-
-          # SHA256SUMS: same format as codex-fork-release (sha256sum-compatible
-          # two-space separated "<digest>  <filename>" lines).
           (
             cd dist
-            for asset in codex-*.tar.gz; do
-              printf '%s  %s\n' "$(sha256sum "$asset" | awk '{ print $1 }')" "$asset"
-            done
+            sha256sum "$(basename "$linux_archive")" "$(basename "$macos_archive")"
           ) > dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum -c SHA256SUMS
+          )
 
           .github/scripts/fork-release-notes.sh \
-            "$PWD" "$FORK_REPO" "$FORK_BRANCH" "$commit" "$glibc_version" \
-            > release-body.md
+            "$GITHUB_WORKSPACE" "$FORK_REPO" "$FORK_BRANCH" \
+            "$RELEASE_SHA" "$SOURCE_VERSION" "$STABLE_LINEAGE" \
+            "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version.txt)" \
+            "$SOURCE_KIND" > release-body.md
 
-      - name: Create or update release
+      - name: Create or update release after identity verification
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           FORK_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          SOURCE_KIND: ${{ needs.prepare.outputs.source_kind }}
         run: |
           set -euo pipefail
-          assets=(dist/codex-*.tar.gz dist/SHA256SUMS)
-          version=${base_tag#rust-v}
-          short=$(git rev-parse --short=12 "$release_commit")
+          assets=(
+            dist/codex-x86_64-unknown-linux-gnu.tar.gz
+            dist/codex-aarch64-apple-darwin.tar.gz
+            dist/SHA256SUMS
+          )
+          for asset in "${assets[@]}"; do
+            test -s "$asset"
+          done
 
-          if gh release view "$TAG" -R "$FORK_REPO" >/dev/null 2>&1; then
-            echo "release $TAG exists; clobbering assets and notes"
-            gh release upload "$TAG" -R "$FORK_REPO" "${assets[@]}" --clobber
-            gh release edit "$TAG" -R "$FORK_REPO" --notes-file release-body.md
+          resolve_remote_tag_commit() {
+            local object_type object_sha
+            local ref_data
+            ref_data=$(gh api \
+              "repos/$FORK_REPO/git/ref/tags/$RELEASE_TAG" \
+              --jq '.object.type + "\t" + .object.sha' 2>/dev/null) || return 1
+            IFS=$'\t' read -r object_type object_sha <<< "$ref_data"
+            if [[ "$object_type" == tag ]]; then
+              gh api "repos/$FORK_REPO/git/tags/$object_sha" --jq '.object.sha'
+            else
+              printf '%s\n' "$object_sha"
+            fi
+          }
+
+          remote_tag_sha="$(resolve_remote_tag_commit || true)"
+          if [[ -n "$remote_tag_sha" && "$remote_tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Tag $RELEASE_TAG resolves to $remote_tag_sha, expected $RELEASE_SHA" >&2
+            exit 1
+          fi
+
+          if [[ "$SOURCE_KIND" == branch-merge && -z "$remote_tag_sha" ]]; then
+            gh api --method POST "repos/$FORK_REPO/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_SHA" >/dev/null
+            remote_tag_sha="$(resolve_remote_tag_commit)"
+          fi
+          if [[ -z "$remote_tag_sha" || "$remote_tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Published tag $RELEASE_TAG is not anchored to $RELEASE_SHA" >&2
+            exit 1
+          fi
+
+          release_json="$(gh release view "$RELEASE_TAG" -R "$FORK_REPO" \
+            --json tagName 2>/dev/null || true)"
+          if [[ -n "$release_json" ]]; then
+            release_tag_name=$(jq -r '.tagName // empty' <<< "$release_json")
+            if [[ "$release_tag_name" != "$RELEASE_TAG" ]]; then
+              echo "Existing release has unexpected tag $release_tag_name" >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" -R "$FORK_REPO" \
+              "${assets[@]}" --clobber
+            gh release edit "$RELEASE_TAG" -R "$FORK_REPO" \
+              --notes-file release-body.md --prerelease
           else
-            gh release create "$TAG" -R "$FORK_REPO" --prerelease \
-              --title "local-features test build $version ($short)" \
+            gh release create "$RELEASE_TAG" -R "$FORK_REPO" \
+              --target "$RELEASE_SHA" --prerelease \
+              --title "local-features snapshot $SOURCE_VERSION" \
               --notes-file release-body.md "${assets[@]}"
           fi
