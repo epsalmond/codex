@@ -314,6 +314,22 @@ mod tests {
     }
 
     #[test]
+    fn release_counter_boundary_accepts_fourteen_digits_and_rejects_fifteen() {
+        let accepted = "local-features-v0.154.0-r20260914000000.abcdef123456";
+        let rejected = "local-features-v0.154.0-r202609140000000.abcdef123456";
+
+        assert!(fork_release_identity(accepted).is_some());
+        assert!(fork_release_identity(rejected).is_none());
+        assert_eq!(
+            newest_fork_release_tag(&format!(
+                r#"[{{"tag_name":"{rejected}","draft":false}},{{"tag_name":"{accepted}","draft":false}}]"#
+            ))
+            .as_deref(),
+            Some(accepted)
+        );
+    }
+
+    #[test]
     fn same_second_releases_use_ancestry_sequence_before_producer_sha() {
         assert!(fork_tag_is_newer(
             "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
