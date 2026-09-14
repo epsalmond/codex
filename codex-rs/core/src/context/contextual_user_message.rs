@@ -10,6 +10,8 @@ use super::LegacyApplyPatchExecCommandWarning;
 use super::LegacyModelMismatchWarning;
 use super::LegacyUnifiedExecProcessLimitWarning;
 use super::RecommendedPluginsInstructions;
+use super::SmartCompactHandoff;
+use super::SmartCompactSourceFragment;
 use super::SubagentNotification;
 use super::TurnAborted;
 use super::UserInstructions;
@@ -26,6 +28,8 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     SubagentNotification::matches_text,
     InternalModelContextFragment::matches_text,
     RecommendedPluginsInstructions::matches_text,
+    SmartCompactHandoff::matches_text,
+    SmartCompactSourceFragment::matches_text,
     LegacyUnifiedExecProcessLimitWarning::matches_text,
     LegacyApplyPatchExecCommandWarning::matches_text,
     LegacyModelMismatchWarning::matches_text,

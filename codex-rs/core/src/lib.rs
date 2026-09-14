@@ -108,6 +108,7 @@ mod session_prefix;
 mod session_startup_prewarm;
 mod shake;
 mod skills;
+mod smart_compact;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 pub(crate) use skills::skills_load_input_from_config;
 mod stream_events_utils;

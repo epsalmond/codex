@@ -53,6 +53,7 @@ use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
 use serde_json::Value;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
@@ -142,12 +143,14 @@ pub async fn shake(
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
+    let cancellation_token = CancellationToken::new();
     apply_shake(
         sess,
         turn_context.as_ref(),
         mode,
         expected_fingerprint,
         ShakeTrigger::Manual,
+        &cancellation_token,
     )
     .await;
 }
@@ -165,9 +168,14 @@ pub(crate) async fn apply_shake(
     mode: codex_protocol::protocol::ShakeMode,
     expected_fingerprint: Option<String>,
     trigger: ShakeTrigger,
+    cancellation_token: &CancellationToken,
 ) -> crate::shake::ShakeResult {
     let ephemeral_elide =
         mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
+    let collect_smart_sources = mode == codex_protocol::protocol::ShakeMode::Elide
+        && trigger != ShakeTrigger::Manual
+        && crate::smart_compact::eligible(turn_context);
+    let mut smart_sources = crate::smart_compact::SourceAccumulator::default();
 
     // Load the live model history and apply the surgical reduction.
     let mut envelopes = sess.clone_history().await.into_annotated_items();
@@ -204,8 +212,13 @@ pub(crate) async fn apply_shake(
                         // the same `label`) to compute the exact path it just
                         // wrote to, so the placeholder can name it for
                         // shell-tool search without a second filesystem call.
-                        uri.strip_prefix("artifact://")
-                            .map(|id| store.destination_path(id, label).display().to_string())
+                        let path = uri
+                            .strip_prefix("artifact://")
+                            .map(|id| store.destination_path(id, label));
+                        if collect_smart_sources && let Some(path) = path.as_deref() {
+                            smart_sources.record(content, label, path);
+                        }
+                        path.map(|path| path.display().to_string())
                     }
                     Err(err) => {
                         warn!(%err, "failed to save shake artifact; preserving original region");
@@ -231,6 +244,39 @@ pub(crate) async fn apply_shake(
             }
         }
     };
+
+    if mode == codex_protocol::protocol::ShakeMode::Elide
+        && !smart_sources.is_empty()
+        && trigger != ShakeTrigger::Manual
+    {
+        match crate::smart_compact::summarize(
+            sess,
+            turn_context,
+            &envelopes,
+            &smart_sources,
+            cancellation_token,
+        )
+        .await
+        {
+            Ok(Some(handoff)) => crate::smart_compact::insert_handoff(&mut envelopes, handoff),
+            Ok(None) => {}
+            Err(err)
+                if matches!(
+                    err.details(),
+                    codex_protocol::error::CodexErrorDetails::SessionBudgetExceeded
+                ) =>
+            {
+                cancellation_token.cancel();
+                sess.track_turn_codex_error(turn_context, &err);
+                sess.send_event(
+                    turn_context,
+                    EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+                )
+                .await;
+            }
+            Err(err) => warn!(%err, "smart compaction Luna usage accounting failed"),
+        }
+    }
 
     // Always surface the operator summary, even on a no-op. Prefix the message
     // with the well-known marker so the TUI can identify the completion notice

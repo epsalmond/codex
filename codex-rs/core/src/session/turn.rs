@@ -1137,7 +1137,11 @@ async fn track_turn_resolved_config_analytics(
 /// window. Escalation is a no-op after it: the escalation re-check is the same
 /// `decide` call that just declined, so it declines again. See
 /// management-plane#989.
-async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
+async fn maybe_run_pre_sampling_auto_shake(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
+) {
     let config = &turn_context.config.auto_shake;
     let model_info = turn_context.model_info();
     let persistent_thread = !turn_context.config.ephemeral;
@@ -1219,6 +1223,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         min_elidable_percent,
         min_savings_tokens,
         trigger,
+        cancellation_token,
     )
     .await;
 
@@ -1260,6 +1265,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         min_elidable_percent,
         min_savings_tokens / 2,
         ShakeTrigger::AutomaticEscalated,
+        cancellation_token,
     )
     .await;
 }
@@ -1277,6 +1283,7 @@ async fn run_auto_shake_pass(
     min_elidable_percent: i64,
     min_savings_tokens: i64,
     trigger: ShakeTrigger,
+    cancellation_token: &CancellationToken,
 ) -> bool {
     let escalated = trigger == ShakeTrigger::AutomaticEscalated;
 
@@ -1342,6 +1349,7 @@ async fn run_auto_shake_pass(
         ShakeMode::Elide,
         /*expected_fingerprint*/ None,
         trigger,
+        cancellation_token,
     )
     .await;
     true
@@ -1360,7 +1368,7 @@ async fn run_pre_sampling_compact(
     // remove the need to compact at all. Auto-compaction below re-reads token
     // status afterwards and remains the fallback whenever shake is disabled,
     // impossible, or did not free enough.
-    maybe_run_pre_sampling_auto_shake(sess, turn_context).await;
+    maybe_run_pre_sampling_auto_shake(sess, turn_context, cancellation_token).await;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;

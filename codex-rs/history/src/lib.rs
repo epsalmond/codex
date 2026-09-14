@@ -70,6 +70,10 @@ pub struct CodexHarnessMetadata {
     /// Copied parent context stays model-visible but must not become child-local authorization.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inherited_user_message: bool,
+
+    /// Host-owned provenance for a durable smart-compaction handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart_compact_artifact_path: Option<PathBuf>,
 }
 
 impl ResponseItemEnvelope {
