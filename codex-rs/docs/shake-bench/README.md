@@ -201,6 +201,39 @@ and the [prompt-caching guide](https://developers.openai.com/api/docs/guides/pro
 The generated scenario tables and read-sensitivity analysis are in
 [COST_ANALYSIS.md](COST_ANALYSIS.md).
 
+## Offline savings estimate
+
+The release archive includes a small, read-only estimator for existing Codex
+JSONL rollouts. With a current `codex-shake` install, run:
+
+```bash
+codex-shake-estimate --since 168
+```
+
+From a source checkout, the equivalent is:
+
+```bash
+python3 codex-rs/docs/shake-bench/scripts/shake-savings-estimate.py --since 168
+```
+
+The command reads `$CODEX_HOME/sessions` (or `~/.codex/sessions`) and the
+bundled `pricing.json`; it makes no network requests and never changes a
+transcript. `--since` selects session files by modification time and models
+each selected transcript in full. The default policy mirrors the current fork:
+gpt-5.6 shakes at
+160,000 input tokens, gpt-6-astra at 40% of its context window, and other
+families at 60%, with a 30% minimum removable share, a 4,000-token floor
+(2,000 on the escalated pass), and a 16,000-token protected tail.
+It models threshold-triggered shakes; the separate prompt-cache-expiry
+cold-resume trigger is not inferred.
+`--context-window` overrides all recorded values; otherwise a raw
+`model_context_window` in `config.toml` wins, then the recorded 95%-usable
+window is reconstructed to its raw size, and finally a 1,050,000-token
+fallback is used. Tool output sizes use the rough UTF-8 bytes/4 proxy. Credit
+values are
+projections from the dated Codex rate card printed in the report, not
+measurements of plan quota; no weekly quota conversion is reported.
+
 ## Outputs
 
 ```

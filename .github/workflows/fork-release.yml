@@ -62,6 +62,10 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
+
+      - name: Test offline savings estimator
+        run: python3 docs/shake-bench/scripts/test_shake_savings_estimate.py
+
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
@@ -85,8 +89,9 @@ jobs:
           ldd --version | awk 'NR == 1 { print $NF }' > glibc-version.txt
           cat glibc-version.txt
 
-      # Tarball layout matches codex-fork-release exactly: both binaries at
-      # the archive root, no leading directory.
+      # Keep the binaries and the optional offline savings estimator at the
+      # archive root, with no leading directory. The installer can preserve
+      # all entries while older releases remain valid with only the binaries.
       - name: Package archive
         shell: bash
         run: |
@@ -94,7 +99,13 @@ jobs:
           target="${{ matrix.target }}"
           stage=$(mktemp -d)
           install -m 755 target/release/codex target/release/codex-code-mode-host "$stage/"
-          tar -C "$stage" -czf "codex-$target.tar.gz" codex codex-code-mode-host
+          install -m 755 docs/shake-bench/scripts/codex-shake-estimate \
+            docs/shake-bench/scripts/shake-savings-estimate.py "$stage/"
+          install -m 644 docs/shake-bench/scripts/pricing_lib.py \
+            docs/shake-bench/pricing.json "$stage/"
+          tar -C "$stage" -czf "codex-$target.tar.gz" \
+            codex codex-code-mode-host codex-shake-estimate \
+            shake-savings-estimate.py pricing_lib.py pricing.json
           rm -rf "$stage"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

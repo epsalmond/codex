@@ -19,16 +19,31 @@ cost depends on how the worker authenticated:
 A null rate is never guessed: cost() returns None and the caller prints
 "unknown".
 """
+
 import json
 import os
 
-PRICING_PATH = os.environ.get(
-    "SHAKE_BENCH_PRICING", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pricing.json")
-)
+
+def default_pricing_path():
+    """Resolve the bundled card for both the source tree and release archive."""
+    override = os.environ.get("SHAKE_BENCH_PRICING")
+    if override:
+        return override
+    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pricing.json")
+    if os.path.isfile(sibling):
+        return sibling
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pricing.json"
+    )
 
 
-def load(path=PRICING_PATH):
-    return json.load(open(path))
+PRICING_PATH = default_pricing_path()
+
+
+def load(path=None):
+    path = path or default_pricing_path()
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 def profile(pricing, name="api"):
@@ -37,7 +52,13 @@ def profile(pricing, name="api"):
     p = profiles.get(name)
     if p is None:
         if name == "api":
-            return {"unit": "usd", "unitLabel": "USD", "models": pricing["models"], "source": None, "fetchedAt": None}
+            return {
+                "unit": "usd",
+                "unitLabel": "USD",
+                "models": pricing["models"],
+                "source": None,
+                "fetchedAt": None,
+            }
         raise KeyError(f"unknown pricing profile {name}; have {sorted(profiles)}")
     models = pricing[p["modelsRef"]] if p.get("modelsRef") else p.get("models", {})
     return {
@@ -67,7 +88,11 @@ def request_cost(m, inp, cached, out, tier="standard", cache_write=0):
 
     total = 0.0
     for tokens, rate_key, mult_key in (
-        (max(0, inp - cached - cache_write), "inputPerMTok", "longContextInputMultiplier"),
+        (
+            max(0, inp - cached - cache_write),
+            "inputPerMTok",
+            "longContextInputMultiplier",
+        ),
         (cached, "cachedInputPerMTok", "longContextCachedInputMultiplier"),
         (cache_write, "cacheWriteInputPerMTok", "longContextCacheWriteInputMultiplier"),
         (out, "outputPerMTok", "longContextOutputMultiplier"),
@@ -88,13 +113,17 @@ def request_cost(m, inp, cached, out, tier="standard", cache_write=0):
     return total
 
 
-def run_cost(requests, model="gpt-6-astra", profile_name="api", tier="standard", pricing=None):
+def run_cost(
+    requests, model="gpt-6-astra", profile_name="api", tier="standard", pricing=None
+):
     """Sum a replay's requests under one profile/tier. None if any rate is null."""
     pricing = pricing or load()
     m = profile(pricing, profile_name)["models"][model]
     total = 0.0
     for r in requests:
-        c = request_cost(m, r["inputTokens"], r["cachedInputTokens"], r["outputTokens"], tier=tier)
+        c = request_cost(
+            m, r["inputTokens"], r["cachedInputTokens"], r["outputTokens"], tier=tier
+        )
         if c is None:
             return None
         total += c
@@ -110,7 +139,9 @@ def all_costs(requests, model="gpt-6-astra", tier="standard", pricing=None):
     pricing = pricing or load()
     return {
         "apiUsd": run_cost(requests, model, "api", "standard", pricing),
-        "creditsStandard": run_cost(requests, model, "codex-credits", "standard", pricing),
+        "creditsStandard": run_cost(
+            requests, model, "codex-credits", "standard", pricing
+        ),
         "creditsFast": run_cost(requests, model, "codex-credits", "fast", pricing),
         "creditsActual": run_cost(requests, model, "codex-credits", tier, pricing),
         "tier": tier,
@@ -143,7 +174,9 @@ def fmt_credits(v):
     return "unknown" if v is None else f"{v:,.0f} cr"
 
 
-def summary_lines(requests, model="gpt-6-astra", tier="standard", pricing=None, indent="  "):
+def summary_lines(
+    requests, model="gpt-6-astra", tier="standard", pricing=None, indent="  "
+):
     """The cost block: API shadow dollars, then Codex credits at both tiers."""
     c = all_costs(requests, model, tier, pricing)
     return [
