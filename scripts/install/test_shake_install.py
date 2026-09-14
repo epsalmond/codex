@@ -35,7 +35,15 @@ class ShakeInstallTest(unittest.TestCase):
                     "draft": False,
                 },
                 {
-                    "tag_name": "local-features-v0.154.0-main-r20260914000001.bbbbbbbbbbbb",
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.0000000000000001ffffffffffff",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.0000000000000002.aaaaaaaaaaaa",
                     "draft": False,
                 },
                 {
@@ -59,7 +67,7 @@ class ShakeInstallTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 os.readlink(home_dir / "current"),
-                "local-features-v0.154.0-main-r20260914000001.bbbbbbbbbbbb",
+                "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
             )
 
     def test_update_helper_preserves_custom_paths_and_repository(self) -> None:
