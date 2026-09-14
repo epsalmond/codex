@@ -27,7 +27,7 @@ pub(crate) const FORK_RELEASE_TAG: Option<&str> = option_env!("CODEX_FORK_RELEAS
 /// User-facing feature version for the Shake branding. This intentionally
 /// stays separate from `FORK_RELEASE_TAG`, which identifies a particular
 /// upstream base and release build.
-pub(crate) const SHAKE_FEATURE_VERSION: &str = "0.1.0";
+pub(crate) const SHAKE_FEATURE_VERSION: &str = "0.2.0";
 
 #[cfg(any(not(debug_assertions), test))]
 #[cfg_attr(debug_assertions, allow(dead_code))]

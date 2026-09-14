@@ -4,7 +4,7 @@ assertion_line: 1827
 expression: "render_lines(&cell.display_lines(44)).join(\"\\n\")"
 ---
 ╭──────────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.154.0) · Shake v0.1… │
+│ >_ OpenAI Codex (v0.154.0) · Shake v0.2… │
 │                                          │
 │ model:     gpt-5.4 high   /model to cha… │
 │ directory: project                       │
