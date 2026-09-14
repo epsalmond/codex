@@ -123,7 +123,7 @@ else
             dot = index(tail, ".")
             digits = substr(tail, 1, dot - 1)
             suffix = substr(tail, dot + 1)
-            if (dot <= 1 || !valid_version(version) ||
+            if (dot <= 1 || length(digits) > 14 || !valid_version(version) ||
                 !is_digits(digits) || !is_hex(suffix)) next
             normalized = digits
             precision = length(digits)

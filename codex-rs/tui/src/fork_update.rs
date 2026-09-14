@@ -148,6 +148,7 @@ fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
         let counter_digits = &counter_and_suffix[..digit_count];
         let suffix = counter_and_suffix[digit_count..].strip_prefix('.')?;
         if counter_digits.is_empty()
+            || counter_digits.len() > 14
             || suffix.is_empty()
             || !suffix
                 .chars()
