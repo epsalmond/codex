@@ -1,30 +1,84 @@
 //! Layout rendering and cursor placement for the agent dashboard.
-//! The prompt and its cursor reserve the same height for wrapped footer hints.
+//! Only search and rename reserve an editor row; list actions share a wrapped footer.
 
 use super::*;
-use crossterm::cursor::SetCursorStyle;
 
 impl AgentsOverviewView {
     pub(super) fn footer_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if self.state().connection_notice.is_some() {
-            return vec![
-                "ctrl+c clear input, then quit · actions paused until the list is refreshed"
-                    .dim()
-                    .into(),
-            ];
+        let state = self.state();
+        let message = if let Some(items) = &state.key_chord_hint {
+            Some(
+                items
+                    .iter()
+                    .map(|(key, label)| format!("{key} {label}"))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            )
+        } else if state.editing_metadata() && state.connection_notice.is_some() {
+            Some("esc cancel · actions paused until reconnected".into())
+        } else if state.editing_metadata() {
+            Some(format!(
+                "{} {}  esc cancel",
+                self.keymap
+                    .primary_hint(ListAction::Accept)
+                    .map(crate::key_hint::ShortcutHint::display_label)
+                    .unwrap_or_default(),
+                if state.renaming { "rename" } else { "open" }
+            ))
+        } else if state.connection_notice.is_some() {
+            Some("ctrl+c quit · actions paused until the list is refreshed".into())
+        } else if state.creating_worktree {
+            Some("Creating worktree…  ctrl+c quit".into())
+        } else {
+            None
+        };
+        drop(state);
+        if let Some(message) = message {
+            return textwrap::wrap(&message, usize::from(width.max(1)))
+                .into_iter()
+                .map(|line| line.into_owned().dim().into())
+                .collect();
+        }
+        if width < 24 {
+            let hints = [
+                ("new_task", &self.agents_keymap.new_task, "new"),
+                (
+                    "new_worktree",
+                    &self.agents_keymap.new_worktree,
+                    "new worktree",
+                ),
+                ("search", &self.agents_keymap.search, "search"),
+            ]
+            .into_iter()
+            .filter(|(action, _, _)| *action != "new_worktree" || self.worktrees_enabled)
+            .filter_map(|(action, bindings, label)| {
+                self.agents_keymap
+                    .primary_hint(action, bindings)
+                    .map(|hint| format!("{} {label}", hint.display_label()))
+            });
+            return hints
+                .chain(["ctrl+c quit".into()])
+                .flat_map(|hint| {
+                    textwrap::wrap(&hint, usize::from(width.max(1)))
+                        .into_iter()
+                        .map(|line| line.into_owned().dim().into())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
         }
         let list_hint = |action| {
             self.keymap.primary_hint(action).filter(|hint| {
                 !matches!(hint, ShortcutHint::Single(binding)
-                if is_plain_text_key_event(KeyEvent::new(
-                    binding.parts().0,
-                    binding.parts().1,
-                )) || [
+                if [
                     &self.agents_keymap.resume,
                     &self.agents_keymap.search,
                     &self.agents_keymap.new_task,
+                    &self.agents_keymap.new_worktree,
                     &self.agents_keymap.rename,
                     &self.agents_keymap.stop,
+                    &self.agents_keymap.archive,
+                    &self.agents_keymap.delete,
+                    &self.agents_keymap.hide,
                     &self.agents_keymap.toggle_grouping,
                 ]
                 .into_iter()
@@ -46,15 +100,24 @@ impl AgentsOverviewView {
                 " "
             },
         );
-        let mut footer_spans = Vec::new();
+        let mut hints: Vec<Line<'static>> = Vec::new();
         if !navigation_hint.is_empty() {
-            footer_spans.extend([navigation_hint.bold(), " navigate  ".dim()]);
+            hints.push(vec![navigation_hint.bold(), " navigate".dim()].into());
         }
         let mut add_hint = |hint: Option<ShortcutHint>, label: &'static str, enabled: bool| {
             if let Some(hint) = hint {
                 let key = hint.display_label().replace(" + ", "+");
-                footer_spans.push(if enabled { key.bold() } else { key.dim() });
-                footer_spans.push(format!(" {label}  ").dim());
+                hints.push(
+                    vec![
+                        if enabled {
+                            key.bold()
+                        } else {
+                            key.bold().dim()
+                        },
+                        format!(" {label}").dim(),
+                    ]
+                    .into(),
+                );
             }
         };
         add_hint(
@@ -63,12 +126,19 @@ impl AgentsOverviewView {
             "resume",
             true,
         );
-        add_hint(list_hint(ListAction::Accept), "open", true);
+        let open_hint = list_hint(ListAction::Accept);
+        add_hint(open_hint, "open", true);
         add_hint(
             self.agents_keymap
                 .primary_hint("new_task", &self.agents_keymap.new_task),
-            "new task",
+            "new",
             true,
+        );
+        add_hint(
+            self.agents_keymap
+                .primary_hint("new_worktree", &self.agents_keymap.new_worktree),
+            "new worktree",
+            self.worktrees_enabled,
         );
         add_hint(
             self.agents_keymap
@@ -79,7 +149,11 @@ impl AgentsOverviewView {
         add_hint(
             self.agents_keymap
                 .primary_hint("toggle_grouping", &self.agents_keymap.toggle_grouping),
-            "group",
+            match self.state().grouping {
+                AgentsOverviewGrouping::Project => "group: project",
+                AgentsOverviewGrouping::Status => "group: status",
+                AgentsOverviewGrouping::Model => "group: model",
+            },
             true,
         );
         add_hint(
@@ -95,16 +169,43 @@ impl AgentsOverviewView {
             self.selected_row()
                 .is_some_and(|row| matches!(row.thread.status, ThreadStatus::Active { .. })),
         );
-        add_hint(list_hint(ListAction::Cancel), "back", true);
-        let mut footer_line: Line = footer_spans.into();
-        if footer_line.width() > usize::from(width) {
-            for span in &mut footer_line.spans {
-                if span.content.ends_with("  ") {
-                    span.content.to_mut().pop();
-                }
-            }
+        for (action, bindings) in [
+            ("hide", &self.agents_keymap.hide),
+            ("archive", &self.agents_keymap.archive),
+            ("delete", &self.agents_keymap.delete),
+        ] {
+            add_hint(
+                self.agents_keymap.primary_hint(action, bindings),
+                action,
+                self.selected_row().is_some(),
+            );
         }
-        crate::wrapping::word_wrap_lines([footer_line], usize::from(width))
+        if self.state().editing_metadata() {
+            add_hint(list_hint(ListAction::Cancel), "cancel", true);
+        }
+        hints.push(vec!["ctrl+c".bold(), " quit".dim()].into());
+        let separator = if hints.iter().map(Line::width).sum::<usize>()
+            + hints.len().saturating_sub(1) * 2
+            <= usize::from(width)
+        {
+            "  "
+        } else {
+            " "
+        };
+        crate::footer_hint::wrap_hint_rows(hints, width, separator.len(), Line::width)
+            .into_iter()
+            .flat_map(|row| {
+                let mut line = Line::default();
+                for hint in row {
+                    if !line.spans.is_empty() {
+                        line.spans.push(separator.dim());
+                    }
+                    line.spans.extend(hint.spans);
+                }
+                // An individual custom chord may be wider than the entire terminal.
+                crate::wrapping::word_wrap_lines([line], usize::from(width.max(1)))
+            })
+            .collect()
     }
 }
 
@@ -113,26 +214,12 @@ impl Renderable for AgentsOverviewView {
         24
     }
 
-    fn cursor_style(&self, area: Rect) -> SetCursorStyle {
-        let state = self.state();
-        if state.composing()
-            && let Some(composer) = &state.composer
-        {
-            composer.cursor_style(area)
-        } else {
-            SetCursorStyle::DefaultUserShape
-        }
-    }
-
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         if area.width < 12 || area.height < 8 {
             return None;
         }
-        let [_, _, _, _, _, prompt, _] = self.layout_areas(area);
+        let [_, _, _, _, prompt, _] = self.layout_areas(area);
         let state = self.state();
-        if state.composing() {
-            return state.composer.as_ref()?.cursor_pos(prompt);
-        }
         if !state.editing_metadata() {
             return None;
         }
@@ -153,10 +240,25 @@ impl Renderable for AgentsOverviewView {
             return;
         }
         Clear.render(area, buf);
-        let [header, summary, divider, body, title, prompt, footer] = self.layout_areas(area);
+        let [header, summary, divider, body, prompt, footer] = self.layout_areas(area);
         let inset =
             |rect: Rect| rect.inner(Margin::new(/*horizontal*/ 2, /*vertical*/ 0));
-        Line::from("Agent command center".bold()).render(inset(header), buf);
+        if let Some(notice) = &self.state().server_version_notice {
+            let header = inset(header);
+            let lines = textwrap::wrap(notice, usize::from(header.width.max(1)));
+            if lines.len() > usize::from(header.height) {
+                Line::from("Old srv".cyan()).render(header, buf);
+            } else {
+                for (offset, line) in lines.iter().enumerate() {
+                    Line::from(line.as_ref().cyan()).render(
+                        Rect::new(header.x, header.y + offset as u16, header.width, 1),
+                        buf,
+                    );
+                }
+            }
+        } else {
+            Line::from("Agent command center".bold()).render(inset(header), buf);
+        }
         let (needs_you, working, ready) = self.rows.iter().fold((0, 0, 0), |counts, row| {
             let (needs_you, working, ready) = counts;
             match row.group {
@@ -167,8 +269,12 @@ impl Renderable for AgentsOverviewView {
             }
         });
         let attention = format!("{needs_you} need input");
-        if let Some(notice) = self.state().connection_notice {
+        if self.state().creating_worktree {
+            Line::from("Creating worktree…".cyan()).render(inset(summary), buf);
+        } else if let Some(notice) = self.state().connection_notice {
             Line::from(notice.cyan()).render(inset(summary), buf);
+        } else if self.state().refresh_failed {
+            Line::from("Error loading tasks".red()).render(inset(summary), buf);
         } else {
             Line::from(format!("{attention}   {working} working   {ready} ready").dim())
                 .render(inset(summary), buf);
@@ -215,14 +321,6 @@ impl Renderable for AgentsOverviewView {
         if state.editing_metadata() {
             Line::from(vec![label.cyan().bold(), input[visible_start..].into()])
                 .render(inset(prompt), buf);
-        } else {
-            Line::from("New task".dim()).render(inset(title), buf);
-            if let Some(composer) = &state.composer {
-                composer.render(prompt, buf);
-            }
-        }
-        if state.composing() {
-            return;
         }
         drop(state);
         Paragraph::new(self.footer_lines(inset(footer).width)).render(inset(footer), buf);

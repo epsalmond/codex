@@ -68,20 +68,16 @@ pub(crate) fn protected_output_flags(items: &[ResponseItemEnvelope]) -> Vec<bool
                 name,
                 namespace,
                 ..
-            } => {
-                if is_protected_tool(namespace.as_deref(), name) {
-                    protected_call_ids.insert(call_id.as_str());
-                }
+            } if is_protected_tool(namespace.as_deref(), name) => {
+                protected_call_ids.insert(call_id.as_str());
             }
             ResponseItem::CustomToolCall {
                 call_id,
                 name,
                 namespace,
                 ..
-            } => {
-                if is_protected_tool(namespace.as_deref(), name) {
-                    protected_call_ids.insert(call_id.as_str());
-                }
+            } if is_protected_tool(namespace.as_deref(), name) => {
+                protected_call_ids.insert(call_id.as_str());
             }
             _ => {}
         }

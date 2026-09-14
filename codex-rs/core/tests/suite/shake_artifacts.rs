@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::ForkSnapshot;
+use codex_core::StartThreadOptions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -22,11 +23,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 /// Regular (non-hidden) `.log` files directly under `dir`, or an empty `Vec`
-/// if `dir` does not exist. Used instead of `Path::exists` because
-/// `ArtifactStore::for_thread` may create the (empty) per-thread directory as
-/// a side effect of canonicalizing its root — even for a preview, or for an
-/// ephemeral thread — so directory *existence* no longer implies a shake
-/// wrote anything.
+/// if it does not exist.
 fn artifact_log_files(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
         .into_iter()
@@ -190,10 +187,8 @@ fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + 
         ephemeral_fork_config.ephemeral = true;
         let ephemeral_fork = Box::pin(resumed.thread_manager.fork_thread(
             ForkSnapshot::Interrupted,
-            ephemeral_fork_config,
+            StartThreadOptions::new(ephemeral_fork_config),
             source_rollout.clone(),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         ))
         .await?;
         let ephemeral_fork_artifacts = resumed
@@ -205,10 +200,8 @@ fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + 
 
         let forked = Box::pin(resumed.thread_manager.fork_thread(
             ForkSnapshot::Interrupted,
-            resumed.config.clone(),
+            StartThreadOptions::new(resumed.config.clone()),
             source_rollout,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         ))
         .await?;
         let fork_artifacts = resumed

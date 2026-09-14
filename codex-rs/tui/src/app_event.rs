@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use tokio_util::sync::CancellationToken;
 
 use crate::inline_visualization::InlineVisualizationContext;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
@@ -61,10 +62,17 @@ use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
-use codex_protocol::config_types::Personality;
 use codex_protocol::models::ActivePermissionProfile;
+use codex_realtime_webrtc::StartedRealtimeWebrtcSession;
 
 use crate::history_cell::HistoryCell;
+
+/// Confirmed server lifecycle operations available from the agents dashboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentsOverviewAction {
+    Archive,
+    Delete,
+}
 
 /// Whether a managed checkout starts fresh or preserves the current conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,11 +283,15 @@ pub(crate) enum AppEvent {
     SelectAgentsOverviewThread {
         thread_id: ThreadId,
     },
-    /// Start a background task directly from the shared dashboard.
-    DispatchAgentsOverviewTask {
-        prompt: String,
+    /// Open an empty session in the selected checkout.
+    NewAgentsOverviewSession {
         cwd: Option<AbsolutePathBuf>,
     },
+    /// Create an empty session in a worktree from the selected project's default branch.
+    NewAgentsOverviewWorktree {
+        cwd: Option<AbsolutePathBuf>,
+    },
+    AgentsOverviewWorktreeCreated(Result<crate::app::PendingWorktree, String>),
     /// Rename a task directly from the shared dashboard.
     RenameAgentsOverviewThread {
         thread_id: ThreadId,
@@ -292,6 +304,7 @@ pub(crate) enum AppEvent {
     },
     /// Register a hidden title-generation thread started in the background.
     ThreadTitleStarted {
+        cancellation: CancellationToken,
         thread_id: ThreadId,
         destination: ThreadTitleDestination,
         prompt: String,
@@ -300,6 +313,7 @@ pub(crate) enum AppEvent {
     },
     /// Route a hidden title request to its automatic rename or editable prompt.
     GeneratedThreadTitle {
+        cancellation: CancellationToken,
         thread_id: ThreadId,
         temporary_thread_id: ThreadId,
         destination: ThreadTitleDestination,
@@ -308,6 +322,20 @@ pub(crate) enum AppEvent {
     /// Interrupt a task directly from the shared dashboard.
     StopAgentsOverviewThread {
         thread_id: ThreadId,
+    },
+    /// Hide a dashboard row locally without stopping its task.
+    HideAgentsOverviewThread {
+        thread_id: ThreadId,
+    },
+    /// Confirm a server lifecycle action for the selected dashboard task.
+    ConfirmAgentsOverviewAction {
+        thread_id: ThreadId,
+        action: AgentsOverviewAction,
+    },
+    /// Execute a confirmed dashboard lifecycle action.
+    RunAgentsOverviewAction {
+        thread_id: ThreadId,
+        action: AgentsOverviewAction,
     },
     /// Start the shared app-server daemon without moving the current embedded session.
     #[cfg(any(unix, windows))]
@@ -347,6 +375,21 @@ pub(crate) enum AppEvent {
         model: String,
         turn: AppCommand,
         prompt: UserMessage,
+    },
+
+    /// Sign the challenge associated with an approved elicitation.
+    UserVerificationApproved {
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+    },
+    /// Return a controller-owned verification result, never a native provider handle.
+    UserVerificationFinished {
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+        attempt_id: Uuid,
+        result: Result<codex_app_server_protocol::UserVerificationProof, String>,
     },
 
     /// Interrupt, fork, and retry a safety-buffered turn with the server-selected model.
@@ -444,6 +487,18 @@ pub(crate) enum AppEvent {
         request: crate::worktree_browser::Request,
         entry: crate::worktree_browser::Entry,
     },
+    ConfirmManagedWorktreeRemoval {
+        request: crate::worktree_browser::Request,
+        root: PathBuf,
+    },
+    RemoveManagedWorktree {
+        request: crate::worktree_browser::Request,
+        root: PathBuf,
+    },
+    ManagedWorktreeRemoved {
+        root: PathBuf,
+        result: Result<(), String>,
+    },
 
     /// Change the working directory of the originating idle primary thread.
     ChangeWorkingDirectory {
@@ -479,6 +534,9 @@ pub(crate) enum AppEvent {
     ClearUi {
         name: Option<String>,
     },
+
+    /// Clear history queued by the previous thread before the new thread's replay events.
+    ResetTranscriptForThreadSwitch,
 
     /// Re-render the transcript using the selected scrollback rendering mode.
     RawOutputModeChanged {
@@ -668,6 +726,13 @@ pub(crate) enum AppEvent {
     ThreadUsageLoaded {
         thread_id: ThreadId,
         request_id: u64,
+        result: Result<ThreadUsageOutcome, String>,
+    },
+
+    /// Result of fetching usage for the selected dashboard task.
+    AgentsOverviewUsageLoaded {
+        thread_id: ThreadId,
+        request_id: Uuid,
         result: Result<ThreadUsageOutcome, String>,
     },
 
@@ -1005,6 +1070,9 @@ pub(crate) enum AppEvent {
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
+    /// Move visible completed voice captions into history in one app event.
+    CommitRealtimeTranscriptHistory,
+
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
 
@@ -1050,8 +1118,24 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
-    /// Update the current personality in the running app and widget.
-    UpdatePersonality(Personality),
+    /// Result of creating a TUI-owned WebRTC offer for an active thread.
+    RealtimeWebrtcOfferCreated {
+        thread_id: ThreadId,
+        attempt_id: u64,
+        result: Result<StartedRealtimeWebrtcSession, String>,
+    },
+
+    /// Result of establishing the WebRTC connection for an active voice attempt.
+    RealtimeWebrtcConnected {
+        thread_id: ThreadId,
+        attempt_id: u64,
+        result: Result<(), codex_realtime_webrtc::ConnectionError>,
+    },
+
+    /// Stop voice on its original thread after its chat widget is replaced.
+    StopRealtimeConversation {
+        thread_id: ThreadId,
+    },
 
     /// Finish a settings selection after its preceding update events have been applied.
     SettingsSelectionClosed,
@@ -1067,9 +1151,12 @@ pub(crate) enum AppEvent {
     /// Show the cyber auto-review notice after the model selection confirmation.
     CyberModelAutoReviewNotice,
 
-    /// Persist the selected personality to the appropriate config.
-    PersistPersonalitySelection {
-        personality: Personality,
+    /// Read the owning server preference before showing the voice picker.
+    OpenRealtimeSettings,
+
+    /// Save the voice for subsequent conversations through the app server.
+    PersistRealtimeVoiceSelection {
+        voice: codex_protocol::protocol::RealtimeVoice,
     },
 
     /// Persist the selected service tier to the appropriate config.
@@ -1133,26 +1220,6 @@ pub(crate) enum AppEvent {
         selection: PermissionProfileSelection,
     },
 
-    /// Open the Windows world-writable directories warning.
-    /// If `preset` is `Some`, the confirmation will apply the provided
-    /// approval/sandbox configuration on Continue; if `None`, it performs no
-    /// policy change and only acknowledges/dismisses the warning.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    OpenWorldWritableWarningConfirmation {
-        preset: Option<ApprovalPreset>,
-        profile_selection: Option<PermissionProfileSelection>,
-        /// Up to 3 sample world-writable directories to display in the warning.
-        sample_paths: Vec<String>,
-        /// If there are more than `sample_paths`, this carries the remaining count.
-        extra_count: usize,
-        /// True when the scan failed (e.g. ACL query error) and protections could not be verified.
-        failed_scan: bool,
-    },
-
-    /// The startup world-writable scan finished and queued any protected warning it requires.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    StartupWorldWritableScanCompleted,
-
     /// Prompt to enable the Windows sandbox feature before using Agent mode.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     OpenWindowsSandboxEnablePrompt {
@@ -1179,19 +1246,6 @@ pub(crate) enum AppEvent {
     BeginWindowsSandboxLegacySetup {
         preset: ApprovalPreset,
         profile_selection: Option<PermissionProfileSelection>,
-    },
-
-    /// Begin a non-elevated grant of read access for an additional directory.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    BeginWindowsSandboxGrantReadRoot {
-        path: String,
-    },
-
-    /// Result of attempting to grant read access for an additional directory.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    WindowsSandboxGrantReadRootCompleted {
-        path: PathBuf,
-        error: Option<String>,
     },
 
     /// Enable the Windows sandbox feature and switch to Agent mode.
@@ -1249,19 +1303,11 @@ pub(crate) enum AppEvent {
     /// Clear all persisted local memory artifacts via the app-server.
     ResetMemories,
 
-    /// Update whether the world-writable directories warning has been acknowledged.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    UpdateWorldWritableWarningAcknowledged(bool),
-
     /// Update whether the rate limit switch prompt has been acknowledged for the session.
     UpdateRateLimitSwitchPromptHidden(bool),
 
     /// Update the Plan-mode-specific reasoning effort in memory.
     UpdatePlanModeReasoningEffort(Option<ReasoningEffort>),
-
-    /// Persist the acknowledgement flag for the world-writable directories warning.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    PersistWorldWritableWarningAcknowledged,
 
     /// Persist the acknowledgement flag for the rate limit switch prompt.
     PersistRateLimitSwitchPromptHidden,
@@ -1274,10 +1320,6 @@ pub(crate) enum AppEvent {
         from_model: String,
         to_model: String,
     },
-
-    /// Skip the next world-writable scan (one-shot) after a user-confirmed continue.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    SkipNextWorldWritableScan,
 
     /// Re-open the approval presets popup.
     OpenApprovalsPopup,
@@ -1352,6 +1394,11 @@ pub(crate) enum AppEvent {
 
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
+
+    /// Inspect the complete verification request without deciding it.
+    FullScreenUserVerificationRequest(
+        crate::bottom_pane::user_verification::UserVerificationRequest,
+    ),
 
     /// Open the feedback note entry overlay after the user selects a category.
     OpenFeedbackNote {

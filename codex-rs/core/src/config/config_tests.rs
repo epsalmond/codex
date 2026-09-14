@@ -334,6 +334,8 @@ consolidation_model = "gpt-5.2"
         toml::from_str::<ConfigToml>(memories).expect("TOML deserialization should succeed");
     assert_eq!(
         Some(MemoriesToml {
+            dual_write: None,
+            version: None,
             disable_on_external_context: Some(true),
             generate_memories: Some(false),
             use_memories: Some(false),
@@ -360,6 +362,8 @@ consolidation_model = "gpt-5.2"
     assert_eq!(
         config.memories,
         MemoriesConfig {
+            dual_write: false,
+            version: codex_protocol::MemoryVersion::V1,
             disable_on_external_context: true,
             generate_memories: false,
             use_memories: false,
@@ -1213,9 +1217,9 @@ command = "print-token"
     assert_eq!(config.model_provider, expected_provider);
 }
 
-#[tokio::test]
-async fn load_config_rejects_unsupported_amazon_bedrock_overrides() {
-    let cfg = toml::from_str::<ConfigToml>(
+#[test]
+fn config_toml_rejects_unsupported_amazon_bedrock_overrides() {
+    let err = toml::from_str::<ConfigToml>(
         r#"
 model_provider = "amazon-bedrock"
 
@@ -1225,19 +1229,9 @@ requires_openai_auth = true
 supports_websockets = true
 "#,
     )
-    .expect("Amazon Bedrock unsupported overrides should deserialize");
-
-    let err = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        tempdir().expect("tempdir").abs(),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    .expect_err("Amazon Bedrock unsupported overrides should fail validation");
     assert!(err.to_string().contains(
-        "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, and `aws.auth_refresh`; other non-default provider fields are not supported"
+        "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, `aws.credential_export`, and `aws.auth_refresh`; other non-default provider fields are not supported"
     ));
 }
 
@@ -1258,6 +1252,7 @@ fn config_toml_deserializes_model_availability_nux() {
             animations: true,
             whimsy: true,
             show_tooltips: true,
+            show_server_version_notice: true,
             auto_recap: true,
             disable_paste_burst: None,
             vim_mode_default: false,
@@ -4273,6 +4268,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             animations: true,
             whimsy: true,
             show_tooltips: true,
+            show_server_version_notice: true,
             auto_recap: true,
             disable_paste_burst: None,
             vim_mode_default: false,
@@ -6157,6 +6153,50 @@ async fn config_applies_managed_auth_store_and_chatgpt_base_url() -> std::io::Re
 }
 
 #[tokio::test]
+async fn project_cannot_be_the_only_xaa_opt_in_source() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_layer_stack = ConfigLayerStack::new(
+        vec![ConfigLayerEntry::new(
+            ConfigLayerSource::Project {
+                dot_codex_folder: codex_home.path().join("project/.codex").abs(),
+            },
+            toml::toml! {
+                [features]
+                use_xaa = true
+            }
+            .into(),
+        )],
+        Default::default(),
+        Default::default(),
+    )?;
+    let cfg = config_layer_stack
+        .effective_config()
+        .try_into()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+
+    let error = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
+        cfg,
+        ConfigOverrides {
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+        config_layer_stack,
+    )
+    .await
+    .expect_err("project-only XAA opt-in must fail");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        error
+            .to_string()
+            .contains("must be selected in a non-project config layer")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn config_resolves_default_oauth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml::default();
@@ -7012,7 +7052,7 @@ async fn to_mcp_config_flows_mcp_tool_prefix_from_feature() -> std::io::Result<(
 }
 
 #[tokio::test]
-async fn to_mcp_config_flows_mcp_2026_feature_from_config() -> std::io::Result<()> {
+async fn to_mcp_config_flows_independent_mcp_2026_features() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let mut config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
@@ -7024,13 +7064,42 @@ async fn to_mcp_config_flows_mcp_2026_feature_from_config() -> std::io::Result<(
         plugins_manager_for_config(&config, auth_manager_from_optional_auth(/*auth*/ None));
 
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
-    assert_eq!(mcp_config.protocol_mode, codex_mcp::McpProtocolMode::Legacy);
+    assert_eq!(
+        (
+            mcp_config.protocol_mode,
+            mcp_config.host_owned_apps_protocol_mode,
+        ),
+        (
+            codex_mcp::McpProtocolMode::Legacy,
+            codex_mcp::McpProtocolMode::Legacy,
+        )
+    );
 
     let _ = config.features.enable(Feature::Mcp20260728);
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert_eq!(
-        mcp_config.protocol_mode,
-        codex_mcp::McpProtocolMode::V20260728
+        (
+            mcp_config.protocol_mode,
+            mcp_config.host_owned_apps_protocol_mode,
+        ),
+        (
+            codex_mcp::McpProtocolMode::V20260728,
+            codex_mcp::McpProtocolMode::Legacy,
+        )
+    );
+
+    let _ = config.features.disable(Feature::Mcp20260728);
+    let _ = config.features.enable(Feature::CodexAppsMcp20260728);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+    assert_eq!(
+        (
+            mcp_config.protocol_mode,
+            mcp_config.host_owned_apps_protocol_mode,
+        ),
+        (
+            codex_mcp::McpProtocolMode::Legacy,
+            codex_mcp::McpProtocolMode::V20260728,
+        )
     );
 
     Ok(())
@@ -7927,6 +7996,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
                 client_id: Some("eci-prd-pub-codex-123".to_string()),
                 callback_url: None,
                 callback_port: None,
+                ..Default::default()
             }),
             oauth_resource: Some("https://resource.example.com".to_string()),
             tools: HashMap::new(),
@@ -9962,6 +10032,8 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
     let fixture = create_test_fixture()?;
 
     let requirements_toml = codex_config::ConfigRequirementsToml {
+        model_provider: None,
+        model_providers: None,
         allowed_login_methods: None,
         allowed_chatgpt_workspaces: None,
         cli_auth_credentials_store: None,
@@ -10845,6 +10917,10 @@ default_permissions = "dev"
 async fn permission_profile_override_falls_back_when_disallowed_by_requirements()
 -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        "[features.network_proxy]\nenabled = true\nproxy_url = 'http://127.0.0.1:43128'\n",
+    )?;
     let config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
         .fallback_cwd(Some(codex_home.path().to_path_buf()))
@@ -10866,6 +10942,17 @@ async fn permission_profile_override_falls_back_when_disallowed_by_requirements(
         config.permissions.effective_permission_profile(),
         PermissionProfile::read_only()
     );
+    // Prepare the proxy while the candidate permits network, before fallback.
+    let expected_network = NetworkProxySpec::from_config_and_constraints(
+        NetworkProxyConfig {
+            enabled: true,
+            proxy_url: "http://127.0.0.1:43128".to_string(),
+            ..Default::default()
+        },
+        /*requirements*/ None,
+        &PermissionProfile::read_only(),
+    )?;
+    assert_eq!(config.permissions.network, Some(expected_network));
     Ok(())
 }
 
@@ -11099,6 +11186,7 @@ async fn feature_requirements_normalize_effective_feature_values() -> std::io::R
 [features]
 personality = true
 shell_tool = false
+use_xaa = true
 "#,
             ),
         )
@@ -11122,6 +11210,10 @@ shell_tool = false
 #[tokio::test]
 async fn feature_requirements_can_still_disable_unified_exec() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        "[features]\nuse_xaa = true\n",
+    )?;
 
     let mut config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
@@ -11132,6 +11224,7 @@ async fn feature_requirements_can_still_disable_unified_exec() -> std::io::Resul
 unified_exec = false
 shell_tool = true
 unified_exec_zsh_fork = false
+use_xaa = false
 "#,
             ),
         )

@@ -3,6 +3,8 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
+pub use crate::mcp_ema::McpEnterpriseManagedAuthConfig;
+pub use crate::mcp_ema::McpServerIdpOAuthConfig;
 pub use crate::mcp_types::AppToolApproval;
 pub use crate::mcp_types::McpServerAuth;
 pub use crate::mcp_types::McpServerConfig;
@@ -286,10 +288,16 @@ pub struct ToolSuggestConfig {
     pub disabled_tools: Vec<ToolSuggestDisabledTool>,
 }
 
+pub use codex_protocol::MemoryVersion;
+
 /// Memories settings loaded from config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct MemoriesToml {
+    /// Selects the memory pipeline; v1 remains the default.
+    pub version: Option<MemoryVersion>,
+    /// Generate both versions while the selected version supplies context.
+    pub dual_write: Option<bool>,
     /// When `true`, external context sources mark the thread `memory_mode` as `"polluted"`.
     #[serde(alias = "no_memories_if_mcp_or_web_search")]
     pub disable_on_external_context: Option<bool>,
@@ -323,6 +331,8 @@ pub struct MemoriesToml {
 /// Effective memories settings after defaults are applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemoriesConfig {
+    pub version: MemoryVersion,
+    pub dual_write: bool,
     pub disable_on_external_context: bool,
     pub generate_memories: bool,
     pub use_memories: bool,
@@ -340,6 +350,8 @@ pub struct MemoriesConfig {
 impl Default for MemoriesConfig {
     fn default() -> Self {
         Self {
+            version: MemoryVersion::V1,
+            dual_write: false,
             disable_on_external_context: false,
             generate_memories: true,
             use_memories: true,
@@ -360,6 +372,8 @@ impl From<MemoriesToml> for MemoriesConfig {
     fn from(toml: MemoriesToml) -> Self {
         let defaults = Self::default();
         Self {
+            version: toml.version.unwrap_or(defaults.version),
+            dual_write: toml.dual_write.unwrap_or(defaults.dual_write),
             disable_on_external_context: toml
                 .disable_on_external_context
                 .unwrap_or(defaults.disable_on_external_context),
@@ -741,6 +755,11 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
 
+    /// Show an informational notice when the connected app server is an older stable release.
+    /// Defaults to `true`; this does not control compatibility errors or version status.
+    #[serde(default = "default_true")]
+    pub show_server_version_notice: bool,
+
     /// Generate automatic conversation recaps when the terminal is unfocused.
     /// Defaults to `true`. Disabling this leaves `/recap` available on demand.
     #[serde(default = "default_true")]
@@ -906,13 +925,17 @@ pub struct PluginConfig {
 /// Policy settings for a plugin-provided MCP server.
 ///
 /// This intentionally excludes transport settings: plugin manifests own how the
-/// MCP server is launched, while user config owns enablement and tool policy.
+/// MCP server is launched, while host config owns enablement, auth, and tool policy.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct PluginMcpServerConfig {
     /// When `false`, Codex skips initializing this plugin MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// Host-configured EMA registration; the plugin still owns its endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ema_auth: Option<PluginMcpServerEmaAuthConfig>,
 
     /// Approval mode for tools in this server unless a tool override exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -935,12 +958,27 @@ impl Default for PluginMcpServerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            ema_auth: None,
             default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
             tools: HashMap::new(),
         }
     }
+}
+
+/// Resource registration applied through an existing per-plugin policy overlay.
+/// The enterprise IdP is selected separately by trusted host configuration.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpServerEmaAuthConfig {
+    /// Exact plugin endpoint approved by the host; never overrides the declaration.
+    pub url: String,
+    pub client_id: String,
+    pub authorization_server_issuer: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub resource: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]

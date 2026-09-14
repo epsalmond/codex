@@ -20,7 +20,7 @@ use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::process_mcp_tool_result;
 use crate::tools::sandboxing::ApprovalAction;
 use crate::tools::sandboxing::ToolError;
-use crate::turn_metadata::McpTurnMetadataContext;
+use crate::turn_metadata::ExecutionMetadata;
 use codex_analytics::AppInvocation;
 use codex_analytics::InvocationType;
 use codex_analytics::build_track_events_context;
@@ -239,7 +239,7 @@ pub(crate) async fn handle_mcp_tool_call(
         let status = if result.is_ok() { "ok" } else { "error" };
         let outcome = McpCallMetricOutcome::from_status(status);
         emit_mcp_call_metrics(
-            turn_context.as_ref(),
+            &step_context.session_telemetry,
             &outcome,
             &server,
             &tool_name,
@@ -253,8 +253,8 @@ pub(crate) async fn handle_mcp_tool_call(
                 .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
         };
     }
-    sess.register_mcp_tool_approval_metadata(turn_context, &call_id, &invocation, metadata.clone())
-        .await;
+    let _approval_metadata =
+        sess.register_mcp_tool_approval_metadata(&call_id, &invocation, metadata.clone());
     notify_mcp_tool_call_started(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -348,7 +348,7 @@ pub(crate) async fn handle_mcp_tool_call(
         let status = if result.is_ok() { "ok" } else { "error" };
         let outcome = McpCallMetricOutcome::from_status(status);
         emit_mcp_call_metrics(
-            turn_context.as_ref(),
+            &step_context.session_telemetry,
             &outcome,
             &server,
             &tool_name,
@@ -489,7 +489,7 @@ async fn handle_approved_mcp_tool_call(
                         .map(|(connector_id, action_name)| HostedFileUploadContext {
                             connector_id: connector_id.clone(),
                             action_name: action_name.clone(),
-                            model: turn_context.model_info().slug.clone(),
+                            model: step_context.settings.model_info.slug.clone(),
                         });
                     let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
                         sess,
@@ -545,7 +545,7 @@ async fn handle_approved_mcp_tool_call(
             )
             .await;
             let result = sanitize_mcp_tool_result_for_model(
-                &turn_context.model_info().input_modalities,
+                &step_context.settings.model_info.input_modalities,
                 Ok(result),
             )?;
             Ok(maybe_request_codex_apps_auth_elicitation(
@@ -590,11 +590,11 @@ async fn handle_approved_mcp_tool_call(
         truncate_mcp_tool_result_for_event(&result),
     )
     .await;
-    maybe_track_codex_app_used(sess, turn_context, &server, &metadata).await;
+    maybe_track_codex_app_used(sess, step_context, &server, &metadata).await;
 
     let outcome = mcp_call_metric_outcome(&result);
     emit_mcp_call_metrics(
-        turn_context,
+        &step_context.session_telemetry,
         &outcome,
         &server,
         &tool_name,
@@ -1055,7 +1055,7 @@ async fn notify_mcp_tool_call_completed(
 
 async fn maybe_track_codex_app_used(
     sess: &Session,
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     server: &str,
     metadata: &McpToolApprovalMetadata,
 ) {
@@ -1075,8 +1075,9 @@ async fn maybe_track_codex_app_used(
         InvocationType::Implicit
     };
 
+    let turn_context = &step_context.turn;
     let tracking = build_track_events_context(
-        turn_context.model_info().slug.clone(),
+        step_context.settings.model_info.slug.clone(),
         sess.thread_id.to_string(),
         turn_context.sub_id.clone(),
         turn_context.originator.clone(),
@@ -1138,40 +1139,41 @@ pub(crate) struct McpToolApprovalMetadata {
 }
 
 impl Session {
-    async fn register_mcp_tool_approval_metadata(
+    fn register_mcp_tool_approval_metadata(
         &self,
-        turn_context: &TurnContext,
         call_id: &str,
         invocation: &McpInvocation,
         metadata: McpToolApprovalMetadata,
-    ) {
-        let Some(turn_state) = self
-            .input_queue
-            .turn_state_for_sub_id(&self.active_turn, &turn_context.sub_id)
-            .await
-        else {
-            return;
-        };
-        turn_state.lock().await.insert_mcp_tool_approval_metadata(
-            call_id.to_string(),
+    ) -> Arc<(Option<McpInvocation>, McpToolApprovalMetadata)> {
+        let key = (invocation.server.clone(), call_id.to_string());
+        let metadata = Arc::new((
             (invocation.server == CODEX_APPS_MCP_SERVER_NAME
                 || is_node_repl_backed_server(&invocation.server))
             .then(|| invocation.clone()),
             metadata,
-        );
+        ));
+        let mut registry = self
+            .mcp_tool_approval_metadata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Keep approval details available while a tool is running, even across turns.
+        // When a new call starts, clean up entries left by finished calls.
+        registry.retain(|_, entry| entry.strong_count() != 0);
+        registry.insert(key, Arc::downgrade(&metadata));
+        metadata
     }
 
-    pub(crate) async fn mcp_tool_approval_metadata(
+    pub(crate) fn mcp_tool_approval_metadata(
         &self,
-        sub_id: &str,
+        server: &str,
         call_id: &str,
     ) -> Option<(Option<McpInvocation>, McpToolApprovalMetadata)> {
-        let turn_state = self
-            .input_queue
-            .turn_state_for_sub_id(&self.active_turn, sub_id)
-            .await?;
-
-        turn_state.lock().await.mcp_tool_approval_metadata(call_id)
+        self.mcp_tool_approval_metadata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(server.to_string(), call_id.to_string()))
+            .and_then(std::sync::Weak::upgrade)
+            .map(|metadata| (*metadata).clone())
     }
 }
 
@@ -1250,11 +1252,9 @@ fn build_mcp_tool_call_request_meta(
     if let Some(turn_metadata) = step_context
         .turn
         .turn_metadata_state
-        .current_meta_value_for_mcp_request(McpTurnMetadataContext {
-            model: step_context.settings.model_info.slug.as_str(),
-            reasoning_effort: step_context.settings.effective_reasoning_effort(),
-            node_repl_disabled: step_context.settings.model_info.node_repl_disabled,
-        })
+        .current_meta_value_for_mcp_request(ExecutionMetadata::from_settings(
+            &step_context.settings,
+        ))
     {
         request_meta.insert(
             crate::X_CODEX_TURN_METADATA_HEADER.to_string(),
@@ -1373,6 +1373,7 @@ const MCP_TOOL_APPROVAL_CANCEL: &str = "Cancel";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct McpToolApprovalKey {
     server: String,
+    plugin_id: Option<String>,
     connector_id: Option<String>,
     link_id: Option<String>,
     tool_name: String,
@@ -1569,8 +1570,7 @@ pub(crate) async fn request_mcp_tool_user_approval(
     );
     if tool_call_mcp_elicitation_enabled {
         let link_id = sess
-            .mcp_tool_approval_metadata(&turn_context.sub_id, id)
-            .await
+            .mcp_tool_approval_metadata(server, id)
             .and_then(|(_, metadata)| metadata.link_id);
         let metadata = McpToolApprovalMetadata {
             annotations: None,
@@ -1641,6 +1641,7 @@ fn session_mcp_tool_approval_key(
 
     Some(McpToolApprovalKey {
         server: invocation.server.clone(),
+        plugin_id: metadata.and_then(|metadata| metadata.plugin_id.clone()),
         connector_id,
         link_id: metadata.and_then(|metadata| metadata.link_id.clone()),
         tool_name: invocation.tool.clone(),
@@ -2153,7 +2154,13 @@ async fn maybe_persist_mcp_tool_approval(
         };
         persist_codex_app_tool_approval(&turn_context.config, &connector_id, &tool_name).await
     } else {
-        persist_non_app_mcp_tool_approval(sess, &turn_context.config, &key.server, &tool_name).await
+        persist_non_app_mcp_tool_approval(
+            &turn_context.config,
+            &key.server,
+            &tool_name,
+            key.plugin_id.as_deref(),
+        )
+        .await
     };
 
     if let Err(err) = persist_result {
@@ -2206,33 +2213,22 @@ async fn persist_custom_mcp_tool_approval(
 }
 
 async fn persist_non_app_mcp_tool_approval(
-    sess: &Session,
     config: &Config,
     server: &str,
     tool_name: &str,
+    plugin_id: Option<&str>,
 ) -> anyhow::Result<()> {
     if let Some(config_edits_builder) = custom_mcp_tool_approval_config_builder(config, server)? {
         return persist_custom_mcp_tool_approval_with(config_edits_builder, server, tool_name)
             .await;
     }
 
-    let plugin_config_name = sess
-        .services
-        .plugins_manager
-        .plugins_for_config(&config.plugins_config_input())
-        .await
-        .plugins()
-        .iter()
-        .filter(|plugin| plugin.is_active())
-        .find(|plugin| plugin.mcp_servers.contains_key(server))
-        .map(|plugin| plugin.config_name.clone());
-
-    if let Some(plugin_config_name) = plugin_config_name {
+    if let Some(plugin_id) = plugin_id {
         return ConfigEditsBuilder::for_config(config)
             .with_edits([ConfigEdit::SetPath {
                 segments: vec![
                     "plugins".to_string(),
-                    plugin_config_name,
+                    plugin_id.to_string(),
                     "mcp_servers".to_string(),
                     server.to_string(),
                     "tools".to_string(),

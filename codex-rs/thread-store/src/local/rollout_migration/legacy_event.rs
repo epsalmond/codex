@@ -146,7 +146,7 @@ pub(super) fn completed_item(
                     error,
                     duration: Some(event.duration),
                 }),
-                None,
+                (!event.turn_id.is_empty()).then(|| event.turn_id.clone()),
             ))
         }
         EventMsg::WebSearchEnd(event) => Some((
@@ -168,6 +168,7 @@ pub(super) fn completed_item(
                 failure: event.failure.clone(),
                 saved_path: event.saved_path.clone(),
                 imagegen_request_id: None,
+                generation_id: None,
             })),
             None,
         )),

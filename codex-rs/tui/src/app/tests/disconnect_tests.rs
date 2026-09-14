@@ -206,7 +206,7 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
     app.handle_tui_event(
         &mut tui,
         &mut session,
-        TuiEvent::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+        TuiEvent::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE)),
     )
     .await?;
     app.handle_tui_event(
@@ -218,9 +218,9 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
     assert!(app.begin_reconnect());
     for key in [
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
-        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
-        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
     ] {
         app.handle_tui_event(&mut tui, &mut session, TuiEvent::Key(key))
             .await?;
@@ -233,21 +233,12 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
         TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
     )
     .await?;
-    assert_eq!(
-        app.agents_overview
-            .view_state
-            .lock()
-            .unwrap()
-            .composer
-            .as_ref()
-            .unwrap()
-            .current_text_with_pending(),
-        "task draft!"
-    );
     assert!(
         !std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
             event,
-            AppEvent::DispatchAgentsOverviewTask { .. } | AppEvent::OpenResumePicker
+            AppEvent::NewAgentsOverviewSession { .. }
+                | AppEvent::NewAgentsOverviewWorktree { .. }
+                | AppEvent::OpenResumePicker
         ))
     );
     assert_snapshot!(
@@ -255,6 +246,38 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
         render_bottom_popup(&app.chat_widget, /*width*/ 100)
     );
     session.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_disconnect_retires_voice_before_reconnecting() -> Result<()> {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
+    app.app_server_target = AppServerTarget::Remote {
+        endpoint: crate::resolve_remote_addr("ws://127.0.0.1:9")?,
+    };
+    crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, thread_id);
+    assert!(app.chat_widget.is_current_realtime_attempt(
+        thread_id, /*attempt_id*/ 0, /*input_generation*/ 0
+    ));
+
+    assert!(app.begin_reconnect());
+    assert_eq!(
+        (
+            app.reconnect.offline,
+            app.chat_widget.is_current_realtime_attempt(
+                thread_id, /*attempt_id*/ 0, /*input_generation*/ 0
+            ),
+        ),
+        (true, false)
+    );
+    assert!(app.begin_reconnect());
+    assert!(!app.chat_widget.is_current_realtime_attempt(
+        thread_id, /*attempt_id*/ 0, /*input_generation*/ 0
+    ));
     Ok(())
 }
 

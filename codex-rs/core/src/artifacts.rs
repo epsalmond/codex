@@ -29,17 +29,15 @@ pub(crate) struct ArtifactStore {
 }
 
 impl ArtifactStore {
-    /// Canonicalizes `root` once at construction (after ensuring it exists) so
-    /// every placeholder path is absolute and symlink-free, even when
-    /// `CODEX_HOME` is set to a relative path. Falls back to the joined
-    /// (non-canonical) path if the directory cannot be created or resolved —
-    /// still a valid, if less clean, path for the placeholder to name.
+    /// Resolves the existing `CODEX_HOME` once at construction without creating
+    /// the artifact directory, so previewing a Shake remains read-only. Every
+    /// placeholder path is absolute when `CODEX_HOME` is an existing relative
+    /// path; artifact directories are created only by `save` or `copy_from`.
     pub(crate) fn for_thread(codex_home: &Path, thread_id: impl std::fmt::Display) -> Self {
-        let root = codex_home
-            .join(ARTIFACT_DIR_NAME)
-            .join(thread_id.to_string());
-        let root = fs::create_dir_all(&root)
-            .and_then(|()| fs::canonicalize(&root))
+        let thread_id = thread_id.to_string();
+        let root = codex_home.join(ARTIFACT_DIR_NAME).join(&thread_id);
+        let root = fs::canonicalize(codex_home)
+            .map(|home| home.join(ARTIFACT_DIR_NAME).join(thread_id))
             .unwrap_or(root);
         Self { root }
     }
