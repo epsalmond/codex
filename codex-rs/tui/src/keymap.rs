@@ -41,6 +41,10 @@ pub(crate) use vim_search::VimSearchKeymap;
 #[path = "keymap/conflict_tests.rs"]
 mod conflict_tests;
 
+#[cfg(test)]
+#[path = "keymap/voice_tests.rs"]
+mod voice_tests;
+
 pub(crate) use bindings::KeymapContext;
 pub(crate) use bindings::bindings_for_action;
 pub(crate) use bindings::keymap_action_id;
@@ -111,6 +115,9 @@ pub(crate) struct AppKeymap {
 /// handler code, not here.
 #[derive(Clone, Debug)]
 pub(crate) struct ChatKeymap {
+    /// Toggle capture in the active voice session.
+    pub(crate) toggle_voice_mute: Vec<KeyBinding>,
+    chord_hints: Arc<RuntimeChordKeymap>,
     /// Interrupt the active turn.
     pub(crate) interrupt_turn: Vec<KeyBinding>,
     /// Decrease the active reasoning effort.
@@ -127,6 +134,14 @@ pub(crate) struct ChatKeymap {
     pub(crate) prompt_stack_back: Vec<KeyBinding>,
     /// Skip the focused question.
     pub(crate) skip_question: Vec<KeyBinding>,
+}
+
+impl ChatKeymap {
+    pub(crate) fn voice_mute_hint(&self) -> Option<ShortcutHint> {
+        let action = keymap_action_id("chat", "toggle_voice_mute")?;
+        self.chord_hints
+            .primary_hint(action, &self.toggle_voice_mute)
+    }
 }
 
 /// Composer-level keybindings validated in the second app-scope conflict pass.
@@ -394,8 +409,12 @@ pub(crate) struct AgentsKeymap {
     pub(crate) resume: Vec<KeyBinding>,
     pub(crate) search: Vec<KeyBinding>,
     pub(crate) new_task: Vec<KeyBinding>,
+    pub(crate) new_worktree: Vec<KeyBinding>,
     pub(crate) rename: Vec<KeyBinding>,
     pub(crate) stop: Vec<KeyBinding>,
+    pub(crate) archive: Vec<KeyBinding>,
+    pub(crate) delete: Vec<KeyBinding>,
+    pub(crate) hide: Vec<KeyBinding>,
     pub(crate) toggle_grouping: Vec<KeyBinding>,
     chord_hints: Arc<RuntimeChordKeymap>,
 }
@@ -608,6 +627,15 @@ impl RuntimeKeymap {
                     || configured_context_alias_is_used(&keymap.list, alias)
                     || configured_context_alias_is_used(&keymap.approval, alias)
             });
+        // Preserve existing Ctrl+X shortcuts and chord prefixes when adding this default.
+        let voice_mute_default_is_shadowed = keymap.chat.toggle_voice_mute.is_none()
+            && (configured_main_surface_alias_is_used(keymap, "ctrl-x")
+                || chords.bindings.iter().any(|binding| {
+                    binding.action.context.overlaps(KeymapContext::Voice)
+                        && binding.chord.prefix.parts()
+                            == key_hint::ctrl(KeyCode::Char('x')).parts()
+                }));
+
         let app = AppKeymap {
             open_agents: resolve_bindings(
                 keymap.global.open_agents.as_ref(),
@@ -661,6 +689,16 @@ impl RuntimeKeymap {
         };
 
         let mut chat = ChatKeymap {
+            toggle_voice_mute: if voice_mute_default_is_shadowed {
+                Vec::new()
+            } else {
+                resolve_bindings(
+                    keymap.chat.toggle_voice_mute.as_ref(),
+                    &defaults.chat.toggle_voice_mute,
+                    "tui.keymap.chat.toggle_voice_mute",
+                )?
+            },
+            chord_hints: Arc::clone(&chords),
             interrupt_turn: resolve_bindings(
                 keymap.chat.interrupt_turn.as_ref(),
                 &defaults.chat.interrupt_turn,
@@ -1237,27 +1275,53 @@ impl RuntimeKeymap {
             chord_hints: Arc::clone(&chords),
         };
 
-        let resume_default_is_shadowed = keymap.agents.resume.is_none()
-            && (configured_context_alias_is_used(&keymap.agents, "ctrl-o")
-                || configured_context_alias_is_used(&keymap.list, "ctrl-o")
-                || chords.bindings.iter().any(|binding| {
-                    binding.action.context.overlaps(KeymapContext::Agents)
-                        && binding.chord.prefix.parts()
-                            == key_hint::ctrl(KeyCode::Char('o')).parts()
-                }));
         let mut agents = AgentsKeymap {
-            resume: if resume_default_is_shadowed {
-                Vec::new()
-            } else {
-                resolve_local!(keymap, defaults, agents, resume)
-            },
+            resume: resolve_local!(keymap, defaults, agents, resume),
             search: resolve_local!(keymap, defaults, agents, search),
             new_task: resolve_local!(keymap, defaults, agents, new_task),
+            new_worktree: resolve_local!(keymap, defaults, agents, new_worktree),
             rename: resolve_local!(keymap, defaults, agents, rename),
             stop: resolve_local!(keymap, defaults, agents, stop),
+            archive: resolve_local!(keymap, defaults, agents, archive),
+            delete: resolve_local!(keymap, defaults, agents, delete),
+            hide: resolve_local!(keymap, defaults, agents, hide),
             toggle_grouping: resolve_local!(keymap, defaults, agents, toggle_grouping),
             chord_hints: Arc::clone(&chords),
         };
+
+        // New defaults yield to explicit bindings, including existing list shortcuts.
+        for (configured, bindings, alias) in [
+            (keymap.agents.resume.as_ref(), &mut agents.resume, "o"),
+            (keymap.agents.search.as_ref(), &mut agents.search, "f"),
+            (keymap.agents.new_task.as_ref(), &mut agents.new_task, "n"),
+            (
+                keymap.agents.new_worktree.as_ref(),
+                &mut agents.new_worktree,
+                "w",
+            ),
+            (keymap.agents.rename.as_ref(), &mut agents.rename, "r"),
+            (keymap.agents.stop.as_ref(), &mut agents.stop, "x"),
+            (keymap.agents.archive.as_ref(), &mut agents.archive, "a"),
+            (keymap.agents.delete.as_ref(), &mut agents.delete, "delete"),
+            (keymap.agents.hide.as_ref(), &mut agents.hide, "h"),
+            (
+                keymap.agents.toggle_grouping.as_ref(),
+                &mut agents.toggle_grouping,
+                "g",
+            ),
+        ] {
+            if configured.is_none()
+                && (configured_context_alias_is_used(&keymap.agents, alias)
+                    || configured_context_alias_is_used(&keymap.list, alias)
+                    || configured_context_alias_is_used(&keymap.global, alias)
+                    || chords.bindings.iter().any(|chord| {
+                        chord.action.context.overlaps(KeymapContext::Agents)
+                            && bindings.contains(&chord.chord.prefix)
+                    }))
+            {
+                bindings.clear();
+            }
+        }
 
         let approval = ApprovalKeymap {
             open_fullscreen: resolve_local!(keymap, defaults, approval, open_fullscreen),
@@ -1389,8 +1453,15 @@ impl RuntimeKeymap {
             (keymap.agents.resume.as_ref(), &mut agents.resume),
             (keymap.agents.search.as_ref(), &mut agents.search),
             (keymap.agents.new_task.as_ref(), &mut agents.new_task),
+            (
+                keymap.agents.new_worktree.as_ref(),
+                &mut agents.new_worktree,
+            ),
             (keymap.agents.rename.as_ref(), &mut agents.rename),
             (keymap.agents.stop.as_ref(), &mut agents.stop),
+            (keymap.agents.archive.as_ref(), &mut agents.archive),
+            (keymap.agents.delete.as_ref(), &mut agents.delete),
+            (keymap.agents.hide.as_ref(), &mut agents.hide),
             (
                 keymap.agents.toggle_grouping.as_ref(),
                 &mut agents.toggle_grouping,
@@ -1499,6 +1570,8 @@ impl RuntimeKeymap {
             },
             chords: Arc::default(),
             chat: ChatKeymap {
+                toggle_voice_mute: default_bindings![ctrl(KeyCode::Char('x'))],
+                chord_hints: Arc::default(),
                 interrupt_turn: default_bindings![plain(KeyCode::Esc)],
                 decrease_reasoning_effort: default_bindings![
                     alt(KeyCode::Char(',')),
@@ -1748,12 +1821,16 @@ impl RuntimeKeymap {
                 chord_hints: Arc::default(),
             },
             agents: AgentsKeymap {
-                resume: default_bindings![ctrl(KeyCode::Char('o'))],
-                search: default_bindings![ctrl(KeyCode::Char('f'))],
-                new_task: default_bindings![ctrl(KeyCode::Char('n'))],
-                rename: default_bindings![ctrl(KeyCode::Char('r'))],
-                stop: default_bindings![ctrl(KeyCode::Char('x'))],
-                toggle_grouping: default_bindings![ctrl(KeyCode::Char('s'))],
+                resume: default_bindings![plain(KeyCode::Char('o'))],
+                search: default_bindings![plain(KeyCode::Char('f'))],
+                new_task: default_bindings![plain(KeyCode::Char('n'))],
+                new_worktree: default_bindings![plain(KeyCode::Char('w'))],
+                rename: default_bindings![plain(KeyCode::Char('r'))],
+                stop: default_bindings![plain(KeyCode::Char('x'))],
+                archive: default_bindings![plain(KeyCode::Char('a'))],
+                delete: default_bindings![plain(KeyCode::Delete)],
+                hide: default_bindings![plain(KeyCode::Char('h'))],
+                toggle_grouping: default_bindings![plain(KeyCode::Char('g'))],
                 chord_hints: Arc::default(),
             },
             approval: ApprovalKeymap {
@@ -1846,6 +1923,10 @@ impl RuntimeKeymap {
             ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
             ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
             ("toggle_side_conversation", side_toggle_bindings.as_slice()),
+            (
+                "chat.toggle_voice_mute",
+                self.chat.toggle_voice_mute.as_slice(),
+            ),
             ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
             (
                 "chat.decrease_reasoning_effort",
@@ -1996,6 +2077,10 @@ impl RuntimeKeymap {
                 ),
                 ("copy", self.app.copy.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
+                (
+                    "chat.toggle_voice_mute",
+                    self.chat.toggle_voice_mute.as_slice(),
+                ),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
                 (
                     "chat.decrease_reasoning_effort",
@@ -2094,10 +2179,11 @@ impl RuntimeKeymap {
             KeymapContext::VimNormal,
             KeymapContext::VimOperator,
             KeymapContext::VimTextObject,
-            KeymapContext::Pager,
         ] {
             validate_unique(context.config_name(), context_bindings(context))?;
         }
+
+        validate_unique("pager", context_bindings(KeymapContext::Pager))?;
 
         validate_no_reserved(
             "pager",
@@ -2123,14 +2209,12 @@ impl RuntimeKeymap {
                 ));
             }
             if bindings.iter().any(|binding| {
-                matches!(binding.parts(), (KeyCode::Char(_), modifiers)
-                    if modifiers.is_empty()
-                        || modifiers == KeyModifiers::SHIFT
-                        || crate::key_hint::is_altgr(modifiers))
-                    || binding.parts() == (KeyCode::Backspace, KeyModifiers::NONE)
+                let (code, modifiers) = binding.normalized_parts();
+                (code == KeyCode::Backspace && modifiers == KeyModifiers::NONE)
+                    || (matches!(code, KeyCode::Char(_)) && crate::key_hint::is_altgr(modifiers))
             }) {
                 return Err(format!(
-                    "tui.keymap.agents.{action}: printable keys and backspace are reserved for task input"
+                    "tui.keymap.agents.{action}: AltGr and backspace are reserved for editing"
                 ));
             }
         }
@@ -3499,15 +3583,11 @@ mod tests {
         let runtime = RuntimeKeymap::from_config(&keymap).expect("list shortcut remains usable");
         assert_eq!(
             runtime.agents.rename,
-            vec![key_hint::ctrl(KeyCode::Char('r'))]
+            vec![key_hint::plain(KeyCode::Char('r'))]
         );
 
         keymap.agents.search = Some(one("s"));
-        assert!(
-            RuntimeKeymap::from_config(&keymap)
-                .expect_err("printable shortcut is reserved for input")
-                .contains("printable keys")
-        );
+        assert!(RuntimeKeymap::from_config(&keymap).is_ok());
 
         keymap.agents.search = None;
         keymap.agents.stop = Some(one("backspace"));
@@ -3536,18 +3616,22 @@ mod tests {
                 .expect_err("backspace is reserved for task input")
                 .contains("backspace")
         );
+        for binding in ["alt-backspace", "ctrl-backspace"] {
+            keymap.agents.stop = Some(one(binding));
+            assert!(RuntimeKeymap::from_config(&keymap).is_ok());
+        }
     }
 
     #[test]
     fn agents_resume_default_yields_to_existing_custom_shortcuts() {
-        for binding in ["ctrl-o", "ctrl-o f6"] {
+        for binding in ["o", "o f6"] {
             let mut keymap = TuiKeymap::default();
             keymap.agents.search = Some(one(binding));
             let runtime =
                 RuntimeKeymap::from_config(&keymap).expect("existing keymap remains valid");
             assert!(runtime.agents.resume.is_empty());
 
-            keymap.agents.resume = Some(one("ctrl-o"));
+            keymap.agents.resume = Some(one("o"));
             assert!(RuntimeKeymap::from_config(&keymap).is_err());
         }
     }

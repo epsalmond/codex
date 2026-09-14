@@ -6,6 +6,38 @@ use codex_config::types::SessionPickerViewMode;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn system_motion_suppresses_animations_without_changing_saved_preferences()
+-> anyhow::Result<()> {
+    use crate::motion::MotionMode;
+
+    for configured in [true, false] {
+        let home = tempfile::tempdir()?;
+        let config_text = format!("[tui]\nanimations = {configured}\nwhimsy = true\n");
+        std::fs::write(home.path().join("config.toml"), &config_text)?;
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .loader_overrides(LoaderOverrides {
+                ignore_project_config: true,
+                ..LoaderOverrides::without_managed_config_for_tests()
+            })
+            .build()
+            .await?;
+        let animated = LocalSettings::with_system_motion(&config, MotionMode::Animated);
+        let reduced = LocalSettings::with_system_motion(&config, MotionMode::Reduced);
+        let mut expected = animated.clone();
+        expected.tui.animations = false;
+        assert_eq!(reduced, expected);
+        assert_eq!(animated.tui.animations, configured);
+        assert_eq!(config.animations, configured);
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml"))?,
+            config_text
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_load_preserves_defaults_and_resolved_overrides() -> anyhow::Result<()> {
     for config_text in [
         "",
@@ -14,6 +46,7 @@ async fn local_load_preserves_defaults_and_resolved_overrides() -> anyhow::Resul
 animations = false
 whimsy = false
 show_tooltips = false
+show_server_version_notice = false
 auto_recap = false
 vim_mode_default = true
 terminal_resize_reflow_max_rows = 0
@@ -44,6 +77,7 @@ fast_default_opt_out = true
             expected.animations = false;
             expected.whimsy = false;
             expected.show_tooltips = false;
+            expected.show_server_version_notice = false;
             expected.auto_recap = false;
             expected.vim_mode_default = true;
             expected.terminal_resize_reflow_max_rows = Some(0);

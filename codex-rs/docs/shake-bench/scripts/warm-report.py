@@ -8,6 +8,7 @@ touching the earlier ones.
 
   warm-report.py <report.md> <label>=<results-dir>[=<note>] ...
 """
+
 import pathlib
 import subprocess
 import sys
@@ -16,7 +17,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 
 def gen(*args):
-    return subprocess.run(["python3", str(HERE / "warm-row.py"), *args], capture_output=True, text=True, check=True).stdout.rstrip()
+    return subprocess.run(
+        ["python3", str(HERE / "warm-row.py"), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.rstrip()
 
 
 def main():
@@ -29,7 +35,10 @@ def main():
         runs.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
 
     table = [gen("header")] + [gen("row", d, label, note) for label, d, note in runs]
-    details = [gen("detail", d, f"{label}{' — ' + note if note else ''}") for label, d, note in runs]
+    details = [
+        gen("detail", d, f"{label}{' — ' + note if note else ''}")
+        for label, d, note in runs
+    ]
 
     text = report.read_text()
     for marker, body in (("TABLE", "\n".join(table)), ("DETAIL", "\n\n".join(details))):

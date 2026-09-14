@@ -6,21 +6,15 @@
 
 use super::*;
 use codex_config::ConfigLayerSource;
-#[cfg(target_os = "windows")]
-use codex_utils_approval_presets::ApprovalPreset;
-
-#[cfg(target_os = "windows")]
-pub(super) struct WindowsSetupPermissions {
-    pub(super) permission_profile: PermissionProfile,
-    pub(super) workspace_roots: Vec<AbsolutePathBuf>,
-}
 
 async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
     error_context: String,
 ) -> Result<Config> {
-    match tokio::spawn(async move { builder.build().await }).await {
-        Ok(build_result) => build_result.wrap_err(error_context),
+    // Tokio stores the task output inline even when it boxes the future. Keep the large
+    // Config off the caller's stack while Tokio allocates the task during session switches.
+    match tokio::spawn(async move { builder.build().await.map(Box::new) }).await {
+        Ok(build_result) => build_result.map(|config| *config).wrap_err(error_context),
         Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
         Err(err) => Err(err).wrap_err_with(|| format!("{error_context} task failed")),
     }
@@ -125,29 +119,6 @@ impl App {
         .await
     }
 
-    #[cfg(target_os = "windows")]
-    pub(super) async fn windows_setup_permissions(
-        &self,
-        preset: &ApprovalPreset,
-        profile_selection: Option<&PermissionProfileSelection>,
-    ) -> Result<WindowsSetupPermissions> {
-        match profile_selection {
-            Some(selection) => {
-                let selected_config = self
-                    .rebuild_config_for_permission_profile(selection.profile_id.as_str())
-                    .await?;
-                Ok(WindowsSetupPermissions {
-                    permission_profile: selected_config.permissions.permission_profile().clone(),
-                    workspace_roots: selected_config.effective_workspace_roots(),
-                })
-            }
-            None => Ok(WindowsSetupPermissions {
-                permission_profile: preset.permission_profile.clone(),
-                workspace_roots: self.config.effective_workspace_roots(),
-            }),
-        }
-    }
-
     pub(super) async fn apply_permission_profile_selection(
         &mut self,
         selection: PermissionProfileSelection,
@@ -241,6 +212,11 @@ impl App {
             self.chat_widget.set_approvals_reviewer(reviewer);
         }
         self.chat_widget.set_permission_network(network);
+        if let Some(thread_id) = self.chat_widget.thread_id() {
+            self.agents_overview
+                .selected_permission_profiles
+                .insert(thread_id, profile_id.clone());
+        }
         self.runtime_permission_profile_override =
             Some(RuntimePermissionProfileOverride::from_config(&self.config));
         self.sync_active_thread_permission_settings_to_cached_session()
@@ -319,6 +295,9 @@ impl App {
                 .approvals_reviewer
                 .is_none_or(|reviewer| config.approvals_reviewer == reviewer)
         {
+            self.agents_overview
+                .selected_permission_profiles
+                .insert(thread_id, selection.profile_id);
             return;
         }
         let params = ThreadSettingsUpdateParams {
@@ -330,6 +309,9 @@ impl App {
         };
         match app_server.thread_settings_update(params).await {
             Ok(true) => {
+                self.agents_overview
+                    .selected_permission_profiles
+                    .insert(thread_id, selection.profile_id.clone());
                 self.pending_server_profiles
                     .insert(thread_id, selection.clone());
                 self.chat_widget.add_info_message(
@@ -404,6 +386,7 @@ impl App {
             .await?;
         self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::All);
         self.local_settings = crate::local_settings::LocalSettings::from(&config);
+        self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         // Other preferences have runtime caches and are adopted when the widget is replaced.
         self.chat_widget
             .local_settings
@@ -1072,17 +1055,12 @@ impl App {
                         profile.turn_override == RuntimePermissionProfileTurnOverride::LegacySandbox
                     });
         if explicitly_selected {
-            self.chat_widget.add_error_message(
+            self.add_agents_overview_error(
                 "Permission overrides are not supported when resuming a remote task.".into(),
             );
             return true;
         }
         false
-    }
-
-    pub(super) fn on_update_personality(&mut self, personality: Personality) {
-        self.config.personality = Some(personality);
-        self.chat_widget.set_personality(personality);
     }
 
     pub(super) fn sync_tui_theme_selection(&mut self, name: String) {
@@ -1119,14 +1097,6 @@ impl App {
             Some(&self.local_settings.codex_home),
         ) {
             crate::render::highlight::set_syntax_theme(theme);
-        }
-    }
-
-    pub(super) fn personality_label(personality: Personality) -> &'static str {
-        match personality {
-            Personality::None => "None",
-            Personality::Friendly => "Friendly",
-            Personality::Pragmatic => "Pragmatic",
         }
     }
 
@@ -1276,31 +1246,34 @@ impl App {
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) async fn sync_windows_sandbox_after_overridden_write(
+    pub(super) async fn verify_windows_sandbox_mode_after_setup(
         &mut self,
         app_server: &mut AppServerSession,
-        write_response: &ConfigWriteResponse,
-    ) {
-        let message = overridden_write_message(write_response);
-        tracing::warn!(
-            message,
-            "Windows sandbox config write was overridden by effective config"
-        );
-        self.chat_widget.add_error_message(format!(
-            "Windows sandbox changes were saved but not applied: {message}"
-        ));
-        let Some(effective_config) = self
-            .read_effective_config_after_overridden_write(app_server, "Windows sandbox changes")
+        requested_mode: codex_config::types::WindowsSandboxModeToml,
+    ) -> bool {
+        let cwd = self.chat_widget.config_ref().cwd.display().to_string();
+        let mode = crate::config_update::read_effective_config(app_server.request_handle(), cwd)
             .await
-        else {
-            return;
-        };
-        let Some(mode) = windows_sandbox_mode_from_effective_config(&effective_config) else {
-            return;
+            .ok()
+            .and_then(|config| windows_sandbox_mode_from_effective_config(&config));
+        let Some(mode) = mode else {
+            self.chat_widget.add_error_message(
+                "Windows sandbox setup completed, but Codex could not verify the effective sandbox mode."
+                    .to_string(),
+            );
+            return false;
         };
         self.config.permissions.windows_sandbox_mode = Some(mode);
+        if mode == requested_mode {
+            return true;
+        }
         self.chat_widget.set_windows_sandbox_mode(Some(mode));
         self.propagate_windows_sandbox_turn_context();
+        self.chat_widget.add_error_message(
+            "Windows sandbox setup completed, but its mode was overridden by the effective configuration."
+                .to_string(),
+        );
+        false
     }
 
     fn propagate_windows_sandbox_turn_context(&self) {
@@ -1446,17 +1419,17 @@ mod tests {
             (ReasoningEffortConfig::Ultra, ReasoningEffortConfig::Medium),
         ] {
             let mut app = make_test_app().await;
-            app.config.model = Some("gpt-5.4".to_string());
+            app.config.model = Some("gpt-5.5".to_string());
             app.config.model_reasoning_effort = Some(configured_effort.clone());
             app.chat_widget
                 .set_reasoning_effort(Some(configured_effort));
 
             let default_effort =
-                app.on_apply_advanced_reasoning("gpt-5.4", ReasoningEffortConfig::Ultra);
+                app.on_apply_advanced_reasoning("gpt-5.5", ReasoningEffortConfig::Ultra);
             let new_thread_config = app.fresh_session_config();
 
             assert_eq!(default_effort, Some(expected_default_effort.clone()));
-            assert_eq!(app.chat_widget.current_model(), "gpt-5.4");
+            assert_eq!(app.chat_widget.current_model(), "gpt-5.5");
             assert_eq!(
                 app.chat_widget.current_reasoning_effort(),
                 Some(ReasoningEffortConfig::Ultra)
@@ -1466,7 +1439,7 @@ mod tests {
                     new_thread_config.model.as_deref(),
                     new_thread_config.model_reasoning_effort,
                 ),
-                (Some("gpt-5.4"), Some(expected_default_effort))
+                (Some("gpt-5.5"), Some(expected_default_effort))
             );
         }
     }
@@ -1474,15 +1447,15 @@ mod tests {
     #[tokio::test]
     async fn conversation_reasoning_keeps_previous_default_for_ultra_only_model() {
         let mut app = make_test_app().await;
-        app.config.model = Some("gpt-5.4".to_string());
+        app.config.model = Some("gpt-5.5".to_string());
         app.config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
         let mut preset = app
             .model_catalog
             .try_list_models()
             .expect("model catalog is infallible")
             .into_iter()
-            .find(|preset| preset.model == "gpt-5.4")
-            .expect("gpt-5.4 preset");
+            .find(|preset| preset.model == "gpt-5.5")
+            .expect("gpt-5.5 preset");
         preset.model = "ultra-only".to_string();
         preset.default_reasoning_effort = ReasoningEffortConfig::Ultra;
         preset.supported_reasoning_efforts = vec![ReasoningEffortPreset {
@@ -1506,7 +1479,7 @@ mod tests {
                 new_thread_config.model.as_deref(),
                 new_thread_config.model_reasoning_effort,
             ),
-            (Some("gpt-5.4"), Some(ReasoningEffortConfig::Low))
+            (Some("gpt-5.5"), Some(ReasoningEffortConfig::Low))
         );
     }
 
@@ -1523,7 +1496,7 @@ mod tests {
             .handle_key_event(KeyEvent::from(KeyCode::BackTab));
 
         let default_effort =
-            app.on_apply_advanced_reasoning("gpt-5.4", ReasoningEffortConfig::Ultra);
+            app.on_apply_advanced_reasoning("gpt-5.5", ReasoningEffortConfig::Ultra);
 
         assert_eq!(default_effort, Some(ReasoningEffortConfig::Low));
         assert_eq!(

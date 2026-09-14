@@ -1,5 +1,6 @@
 use super::*;
 use crate::app_event::TranscriptExportDestination;
+use crate::bottom_pane::BottomPaneView;
 use app_test_support::create_fake_paginated_rollout;
 use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
@@ -111,6 +112,12 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
     app.ensure_thread_channel(thread_id).mark_external_writer();
     app.chat_widget.insert_str("Retained draft");
     app.chat_widget.show_external_writer_thread();
+    crate::legacy_core::config::set_project_trust_level(
+        app.config.codex_home.as_path(),
+        app.config.cwd.as_path(),
+        codex_protocol::config_types::TrustLevel::Trusted,
+    )
+    .map_err(std::io::Error::other)?;
     app.harness_overrides.cwd = Some(app.config.cwd.to_path_buf());
     requests.lock().expect("request recorder lock").clear();
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -143,10 +150,14 @@ pub(super) enum HistoryCapabilities {
     LegacyOnlyUnsupportedVariant,
     LegacyDynamicToolsAndHistory,
     ForkHydrationFails,
+    ReadAfterResumeFails,
     ThreadListFails,
     ThreadStartFails,
     ConfigReadUnsupported(i64),
     ConfigReadFails,
+    ConfigReadUnknownVoice,
+    VoiceCatalogCustom,
+    VoiceCatalogUnavailable,
 }
 
 /// Returns and resets `(thread/loaded/list, thread/read)` request counts.
@@ -199,9 +210,54 @@ pub(super) async fn start_recording_remote_app_server(
 pub(super) async fn start_recording_app_server_with_history(
     config: &Config,
     history_capabilities: HistoryCapabilities,
+    blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    failed_thread_name: Option<&'static str>,
+    thread_params_mode: crate::app_server_session::ThreadParamsMode,
+    loader_overrides: LoaderOverrides,
+) -> Result<RecordingAppServer> {
+    start_recording_app_server_with_realtime_speech(
+        config,
+        history_capabilities,
+        blocked_thread_list,
+        failed_thread_name,
+        thread_params_mode,
+        RealtimeRequestBehavior::Forward,
+        loader_overrides,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RealtimeRequestBehavior {
+    Forward,
+    AcceptStart,
+    AcceptSpeech,
+    AcceptSpeechAndStallStop,
+}
+
+pub(super) async fn start_recording_realtime_speech_app_server(
+    config: &Config,
+    realtime_behavior: RealtimeRequestBehavior,
+) -> Result<RecordingAppServer> {
+    start_recording_app_server_with_realtime_speech(
+        config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        realtime_behavior,
+        LoaderOverrides::default(),
+    )
+    .await
+}
+
+pub(super) async fn start_recording_app_server_with_realtime_speech(
+    config: &Config,
+    history_capabilities: HistoryCapabilities,
     mut blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
     failed_thread_name: Option<&'static str>,
     thread_params_mode: crate::app_server_session::ThreadParamsMode,
+    realtime_behavior: RealtimeRequestBehavior,
     loader_overrides: LoaderOverrides,
 ) -> Result<RecordingAppServer> {
     let state_db =
@@ -256,6 +312,11 @@ pub(super) async fn start_recording_app_server_with_history(
                         .lock()
                         .expect("request recorder lock")
                         .push(request.clone());
+                    if realtime_behavior == RealtimeRequestBehavior::AcceptSpeechAndStallStop
+                        && request.method == "thread/realtime/stop"
+                    {
+                        continue;
+                    }
                     let request_id = request.id.clone();
                     let params = request.params.as_ref();
                     let requires_pagination = match request.method.as_str() {
@@ -286,7 +347,36 @@ pub(super) async fn start_recording_app_server_with_history(
                             .is_some_and(|tools| {
                                 tools.iter().any(|tool| tool["type"] == "namespace")
                             });
-                    let response = if let HistoryCapabilities::ConfigReadUnsupported(code) =
+                    let fake_realtime_response = (realtime_behavior
+                        == RealtimeRequestBehavior::AcceptStart
+                        && request.method == "thread/realtime/start")
+                        || (matches!(
+                            realtime_behavior,
+                            RealtimeRequestBehavior::AcceptSpeech
+                                | RealtimeRequestBehavior::AcceptSpeechAndStallStop
+                        ) && request.method == "thread/realtime/appendSpeech");
+                    let response = if fake_realtime_response {
+                        JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request_id,
+                            result: serde_json::json!({}),
+                        })
+                    } else if history_capabilities == HistoryCapabilities::ReadAfterResumeFails
+                        && request.method == "thread/read"
+                        && request_sink
+                            .lock()
+                            .expect("request recorder lock")
+                            .iter()
+                            .any(|recorded| recorded.method == "thread/resume")
+                    {
+                        JSONRPCMessage::Error(JSONRPCError {
+                            id: request_id,
+                            error: JSONRPCErrorError {
+                                code: -32603,
+                                data: None,
+                                message: "saved history unavailable".to_string(),
+                            },
+                        })
+                    } else if let HistoryCapabilities::ConfigReadUnsupported(code) =
                         history_capabilities
                         && request.method == "config/read"
                     {
@@ -307,6 +397,17 @@ pub(super) async fn start_recording_app_server_with_history(
                                 code: -32603,
                                 data: None,
                                 message: "config temporarily unavailable".to_string(),
+                            },
+                        })
+                    } else if history_capabilities == HistoryCapabilities::VoiceCatalogUnavailable
+                        && request.method == "thread/realtime/listVoices"
+                    {
+                        JSONRPCMessage::Error(JSONRPCError {
+                            id: request_id,
+                            error: JSONRPCErrorError {
+                                code: -32601,
+                                data: None,
+                                message: "method not found".to_string(),
                             },
                         })
                     } else if history_capabilities == HistoryCapabilities::ThreadStartFails
@@ -421,7 +522,25 @@ pub(super) async fn start_recording_app_server_with_history(
                                 },
                             })
                         } else {
+                            let unknown_voice = history_capabilities
+                                == HistoryCapabilities::ConfigReadUnknownVoice
+                                && matches!(&request, ClientRequest::ConfigRead { .. });
+                            let custom_voice_catalog = history_capabilities
+                                == HistoryCapabilities::VoiceCatalogCustom
+                                && matches!(
+                                    &request,
+                                    ClientRequest::ThreadRealtimeListVoices { .. }
+                                );
                             let mut result = embedded.request(request).await?;
+                            if unknown_voice && let Ok(value) = &mut result {
+                                value["config"]["realtime"]["voice"] =
+                                    serde_json::json!("future_voice");
+                            }
+                            if custom_voice_catalog && let Ok(value) = &mut result {
+                                value["voices"]["v1"] =
+                                    serde_json::json!(["maple", "cove", "juniper"]);
+                                value["voices"]["defaultV1"] = serde_json::json!("maple");
+                            }
                             if background {
                                 let terminal = r#"{"data":[{"itemId":"x","processId":"x","command":"x","cwd":"/"}],"nextCursor":null}"#;
                                 result = Ok(serde_json::from_str(terminal)?);
@@ -522,29 +641,40 @@ async fn make_history_test_app() -> Result<(App, tempfile::TempDir)> {
 }
 
 #[tokio::test]
-async fn removing_remote_thread_omits_disconnect_guidance() -> Result<()> {
-    for event in [
-        AppEvent::ArchiveCurrentThread,
-        AppEvent::DeleteCurrentThread,
+async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:4500")?;
+    for target in [
+        AppServerTarget::Embedded,
+        AppServerTarget::LocalDaemon {
+            endpoint: endpoint.clone(),
+        },
+        AppServerTarget::Remote { endpoint },
     ] {
-        let (mut app, codex_home) = make_history_test_app().await?;
-        let thread_id = ThreadId::from_string(
-            &create_fake_rollout(
-                codex_home.path(),
-                "2026-01-01T00-00-00",
-                "2026-01-01T00:00:00Z",
-                "Saved user message",
-                Some(app.config.model_provider_id.as_str()),
-                /*git_info*/ None,
-            )
-            .expect("create rollout"),
-        )?;
-        let (mut server, _, proxy) = start_recording_app_server(
+        let (mut app, _codex_home) = make_history_test_app().await?;
+        let thread_id =
+            create_history_rollout(&app.config, ThreadHistoryMode::Legacy, "delete me")?;
+        let (mut server, requests, proxy) = start_recording_app_server(
             &app.config,
             /*blocked_thread_list*/ None,
             /*failed_thread_name*/ None,
         )
         .await?;
+        app.app_server_target = target;
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        let missing_id = ThreadId::new();
+        app.active_thread_id = Some(missing_id);
+        app.chat_widget.insert_str("Retained on failure");
+        assert_matches!(
+            app.delete_current_thread(&mut tui, &mut server).await?,
+            AppRunControl::Continue
+        );
+        assert_eq!(app.active_thread_id, Some(missing_id));
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "Retained on failure"
+        );
+        assert!(!app.chat_widget.has_active_view());
+
         let resumed = server
             .resume_thread(
                 &app.local_settings,
@@ -553,37 +683,84 @@ async fn removing_remote_thread_omits_disconnect_guidance() -> Result<()> {
                 crate::app_server_session::ResumeModelSettings::RestoreFromThread,
             )
             .await?;
-        app.app_server_target = AppServerTarget::Remote {
-            endpoint: crate::resolve_remote_addr("ws://127.0.0.1:4500")?,
-        };
         app.active_thread_id = Some(thread_id);
+        app.enqueue_primary_thread_session(resumed.session.clone(), resumed.turns)
+            .await?;
         app.chat_widget.handle_thread_session(resumed.session);
-        let mut tui = crate::tui::test_support::make_test_tui()?;
-        let archived = matches!(&event, AppEvent::ArchiveCurrentThread);
-        // Keep the large dispatcher future off the Windows test thread's stack.
-        let AppRunControl::Exit(reason) =
-            Box::pin(app.handle_event(&mut tui, &mut server, event)).await?
-        else {
-            panic!("removing the current thread must exit");
-        };
-        if archived {
-            assert_matches!(reason, ExitReason::Archived(id) if id == thread_id);
-        } else {
-            assert_matches!(reason, ExitReason::ThreadRemoved);
+        let mut side_config = app.config.clone();
+        side_config.ephemeral = true;
+        let side = server
+            .fork_side_thread(&app.local_settings, side_config.clone(), thread_id)
+            .await?;
+        let side_id = side.session.thread_id;
+        app.side_threads
+            .insert(side_id, SideThreadState::new(thread_id));
+        if !matches!(app.app_server_target, AppServerTarget::Embedded) {
+            // The recording proxy rejects the next unsubscribe after a failed fork.
+            side_config.cwd = side_config.cwd.join("failure");
+            assert!(
+                server
+                    .fork_side_thread(&app.local_settings, side_config, thread_id)
+                    .await
+                    .is_err()
+            );
+            assert_matches!(
+                app.delete_current_thread(&mut tui, &mut server).await?,
+                AppRunControl::Continue
+            );
+            assert_eq!(app.active_thread_id, Some(thread_id));
+            assert!(app.side_threads.contains_key(&side_id));
+            assert!(!app.chat_widget.has_active_view());
+            assert_eq!(recorded_params(&requests, "thread/delete").len(), 1);
         }
-        let mut exit_info = app.exit_info(reason);
-        exit_info.token_usage = TokenUsage {
-            output_tokens: 2,
-            total_tokens: 2,
-            ..Default::default()
-        };
-        let mut expected = vec!["Token usage: total=2 input=0 output=2".to_string()];
-        if archived {
-            expected.push(format!("Session archived: {thread_id}"));
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        app.app_event_tx = AppEventSender::new(tx);
+        let control =
+            Box::pin(app.handle_event(&mut tui, &mut server, AppEvent::DeleteCurrentThread))
+                .await?;
+        assert!(
+            server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+                .is_err()
+        );
+        if matches!(app.app_server_target, AppServerTarget::Embedded) {
+            assert_matches!(control, AppRunControl::Exit(ExitReason::ThreadRemoved));
+            assert!(recorded_params(&requests, "thread/unsubscribe").is_empty());
+        } else {
+            assert_matches!(control, AppRunControl::Continue);
+            assert!(app.side_threads.is_empty());
+            assert_eq!(
+                recorded_params(&requests, "thread/unsubscribe"),
+                vec![serde_json::json!({"threadId": side_id.to_string()}); 2]
+            );
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv())
+                    .await?
+                    .expect("command center refresh");
+                let refreshed = matches!(&event, AppEvent::AgentsOverviewThreadsLoaded { .. });
+                Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+                if refreshed {
+                    break;
+                }
+            }
+            assert_eq!(
+                (
+                    app.active_thread_id,
+                    app.primary_thread_id,
+                    app.chat_widget.thread_id()
+                ),
+                (None, None, None)
+            );
+            assert!(app.chat_widget.composer_is_empty());
+            assert!(app.chat_widget.has_active_view());
         }
         assert_eq!(
-            exit_info.format_exit_messages(/*color_enabled*/ false),
-            expected
+            recorded_params(&requests, "thread/delete"),
+            vec![
+                serde_json::json!({"threadId": missing_id.to_string()}),
+                serde_json::json!({"threadId": thread_id.to_string()}),
+            ]
         );
         server.shutdown().await?;
         proxy.await??;
@@ -750,19 +927,118 @@ async fn archive_current_thread_reports_success_only_after_archiving() -> Result
     )?;
     let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
 
+    let mut tui = crate::tui::test_support::make_test_tui()?;
     app.active_thread_id = Some(ThreadId::new());
     assert_matches!(
-        app.archive_current_thread(&mut app_server).await,
+        app.archive_current_thread(&mut tui, &mut app_server)
+            .await?,
         AppRunControl::Continue
     );
 
     app.active_thread_id = Some(thread_id);
     assert_matches!(
-        app.archive_current_thread(&mut app_server).await,
+        app.archive_current_thread(&mut tui, &mut app_server).await?,
         AppRunControl::Exit(ExitReason::Archived(archived_id)) if archived_id == thread_id
     );
 
     app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn archive_current_thread_returns_shared_servers_to_agents() -> Result<()> {
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:4500")?;
+    for target in [
+        AppServerTarget::LocalDaemon {
+            endpoint: endpoint.clone(),
+        },
+        AppServerTarget::Remote { endpoint },
+    ] {
+        let (mut app, _codex_home) = make_history_test_app().await?;
+        let thread_id =
+            create_history_rollout(&app.config, ThreadHistoryMode::Legacy, "archive me")?;
+        let (mut server, requests, proxy) = start_recording_app_server(
+            &app.config,
+            /*blocked_thread_list*/ None,
+            /*failed_thread_name*/ None,
+        )
+        .await?;
+        let resumed = server
+            .resume_thread(
+                &app.local_settings,
+                app.config.clone(),
+                thread_id,
+                crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+            )
+            .await?;
+        let mut side_config = app.config.clone();
+        side_config.ephemeral = true;
+        let side = server
+            .fork_side_thread(&app.local_settings, side_config, thread_id)
+            .await?;
+        let side_id = side.session.thread_id;
+        app.side_threads
+            .insert(side_id, SideThreadState::new(thread_id));
+        app.app_server_target = target;
+        app.enqueue_primary_thread_session(resumed.session.clone(), resumed.turns)
+            .await?;
+        app.chat_widget.handle_thread_session(resumed.session);
+        app.chat_widget.insert_str("Unsent archived draft");
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        app.app_event_tx = AppEventSender::new(tx);
+
+        assert_matches!(
+            Box::pin(app.handle_event(&mut tui, &mut server, AppEvent::ArchiveCurrentThread))
+                .await?,
+            AppRunControl::Continue
+        );
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv())
+                .await?
+                .expect("expected command center refresh");
+            let refreshed = matches!(&event, AppEvent::AgentsOverviewThreadsLoaded { .. });
+            Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+            if refreshed {
+                break;
+            }
+        }
+        assert!(app.agents_overview.initialized);
+        assert_eq!(
+            (
+                app.active_thread_id,
+                app.primary_thread_id,
+                app.chat_widget.thread_id()
+            ),
+            (None, None, None)
+        );
+        assert!(!app.agents_overview.threads.contains_key(&thread_id));
+        assert!(app.thread_event_channels.is_empty());
+        assert!(app.side_threads.is_empty());
+        assert_eq!(
+            recorded_params(&requests, "thread/unsubscribe"),
+            vec![serde_json::json!({"threadId": side_id.to_string()})]
+        );
+        assert!(app.chat_widget.composer_is_empty());
+        assert_eq!(
+            recorded_params(&requests, "thread/archive"),
+            vec![serde_json::json!({"threadId": thread_id.to_string()})]
+        );
+        assert!(
+            app.chat_widget
+                .selected_index_for_present_view(
+                    crate::app::agents_overview::AGENTS_OVERVIEW_VIEW_ID
+                )
+                .is_some()
+        );
+        assert_snapshot!(
+            "agents_command_center_after_archive",
+            render_bottom_popup(&app.chat_widget, /*width*/ 100)
+        );
+
+        server.shutdown().await?;
+        proxy.await??;
+    }
     Ok(())
 }
 
@@ -1676,6 +1952,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
     ]);
     let events = std::iter::once(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: "cross-page-review-turn".to_string(),
+        root_turn_id: None,
         trace_id: None,
         started_at: None,
         model_context_window: None,
@@ -1838,6 +2115,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
     let events = std::iter::once(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: "multi-page-turn".to_string(),
+        root_turn_id: None,
         trace_id: None,
         started_at: None,
         model_context_window: None,
@@ -2246,6 +2524,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
         .collect::<Result<Vec<_>, _>>()?;
     let events = std::iter::once(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: "scrollback-pagination-turn".to_string(),
+        root_turn_id: None,
         trace_id: None,
         started_at: None,
         model_context_window: None,
@@ -2995,8 +3274,9 @@ model_reasoning_effort = "low"
         .pop()
         .expect("unused checkout");
     browser_entries.push(crate::worktree_browser::Entry {
+        root: unused.root.clone(),
         cwd: unused.cwd.clone(),
-        owner: None,
+        owner: crate::worktree_browser::Owner::None,
     });
     assert_eq!(
         manager
@@ -3068,8 +3348,9 @@ terminal_visualization_instructions = true
         .find(|checkout| checkout.cwd != unused.cwd)
         .expect("feature mismatch leaves an unused checkout");
     browser_entries.push(crate::worktree_browser::Entry {
+        root: feature_mismatch_checkout.root,
         cwd: feature_mismatch_checkout.cwd,
-        owner: None,
+        owner: crate::worktree_browser::Owner::None,
     });
     while events.try_recv().is_ok() {}
     app.handle_event(
@@ -3139,8 +3420,9 @@ terminal_visualization_instructions = true
         None
     );
     browser_entries.push(crate::worktree_browser::Entry {
+        root: stale_checkout,
         cwd: stale_cwd,
-        owner: None,
+        owner: crate::worktree_browser::Owner::None,
     });
     for mode in [ManagedWorktreeMode::New, ManagedWorktreeMode::Fork] {
         requests.lock().expect("request recorder lock").clear();
@@ -3171,8 +3453,9 @@ terminal_visualization_instructions = true
             .find(|checkout| checkout.cwd.canonicalize().ok().as_ref() == Some(&cwd))
             .expect("managed checkout");
         browser_entries.push(crate::worktree_browser::Entry {
+            root: checkout.root.clone(),
             cwd: checkout.cwd.clone(),
-            owner: Some(replacement),
+            owner: crate::worktree_browser::Owner::Unavailable(replacement),
         });
         assert!(checkout.root.starts_with(home.join("worktrees")));
         assert!(!project_pool.exists());
@@ -3246,8 +3529,9 @@ terminal_visualization_instructions = true
         })
         .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
     browser_entries.push(crate::worktree_browser::Entry {
-        cwd: unowned.cwd,
-        owner: None,
+        root: unowned.root.clone(),
+        cwd: unowned.cwd.clone(),
+        owner: crate::worktree_browser::Owner::None,
     });
     browser_entries.sort_by(|left, right| left.cwd.cmp(&right.cwd));
     for owner in [None, Some("not-a-thread-uuid")] {
@@ -3263,6 +3547,45 @@ terminal_visualization_instructions = true
             browser_entries
         );
     }
+    let missing_owner = ThreadId::new();
+    let missing_checkout = manager
+        .create(&codex_worktree::CreateWorktree {
+            source_cwd: source.clone(),
+            base: None,
+        })
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+    manager
+        .bind_thread(&missing_checkout.root, &missing_owner.to_string())
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+    let (browser_tx, mut browser_rx) = tokio::sync::mpsc::unbounded_channel();
+    crate::worktree_browser::fetch(
+        crate::worktree_browser::Request {
+            id: uuid::Uuid::new_v4(),
+            cwd: source.clone(),
+            thread_id: Some(original),
+        },
+        home.clone(),
+        server.request_handle(),
+        crate::app_event_sender::AppEventSender::new(browser_tx),
+    );
+    let Some(AppEvent::ManagedWorktreesLoaded {
+        result: Ok(entries),
+        ..
+    }) = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 5),
+        browser_rx.recv(),
+    )
+    .await?
+    else {
+        panic!("browser must return annotated worktrees");
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.root == missing_checkout.root)
+            .map(|entry| &entry.owner),
+        Some(&crate::worktree_browser::Owner::Unavailable(missing_owner))
+    );
     app.start_fresh_session_with_summary_hint(
         &mut tui,
         &mut server,
@@ -3297,6 +3620,82 @@ terminal_visualization_instructions = true
         assert_eq!(app.chat_widget.thread_id() != Some(unsaved), is_new);
         assert_eq!(recorded_params(&requests, "thread/fork").len(), 0);
     }
+    let saved_owner = entries
+        .iter()
+        .find_map(|entry| match &entry.owner {
+            crate::worktree_browser::Owner::Resumable(thread) => Some(thread.clone()),
+            _ => None,
+        })
+        .expect("browser should resolve a saved owner");
+    // Archive stops the writer; unarchive leaves a stored thread eligible for compression.
+    server.thread_archive(saved_owner.id).await?;
+    let saved_path = server
+        .thread_unarchive(saved_owner.id)
+        .await?
+        .path
+        .expect("saved rollout path");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&saved_path)?
+        .set_times(std::fs::FileTimes::new().set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 60 * 60),
+        ))?;
+    codex_rollout::spawn_rollout_compression_worker(home.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while saved_path.exists() || !saved_path.with_extension("jsonl.zst").is_file() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await?;
+    let (browser_tx, mut browser_rx) = tokio::sync::mpsc::unbounded_channel();
+    crate::worktree_browser::fetch(
+        crate::worktree_browser::Request {
+            id: uuid::Uuid::new_v4(),
+            cwd: source.clone(),
+            thread_id: Some(original),
+        },
+        home.clone(),
+        server.request_handle(),
+        crate::app_event_sender::AppEventSender::new(browser_tx),
+    );
+    let Some(AppEvent::ManagedWorktreesLoaded {
+        result: Ok(compressed_entries),
+        ..
+    }) = tokio::time::timeout(std::time::Duration::from_secs(10), browser_rx.recv()).await?
+    else {
+        panic!("browser must return compressed owner metadata");
+    };
+    assert!(compressed_entries.iter().any(|entry| matches!(
+        &entry.owner,
+        crate::worktree_browser::Owner::Resumable(thread) if thread.id == saved_owner.id
+    )));
+    server.thread_archive(saved_owner.id).await?;
+    let (browser_tx, mut browser_rx) = tokio::sync::mpsc::unbounded_channel();
+    crate::worktree_browser::fetch(
+        crate::worktree_browser::Request {
+            id: uuid::Uuid::new_v4(),
+            cwd: source.clone(),
+            thread_id: Some(original),
+        },
+        home,
+        server.request_handle(),
+        crate::app_event_sender::AppEventSender::new(browser_tx),
+    );
+    let Some(AppEvent::ManagedWorktreesLoaded {
+        result: Ok(entries),
+        ..
+    }) = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 10),
+        browser_rx.recv(),
+    )
+    .await?
+    else {
+        panic!("browser must return archived owner metadata");
+    };
+    assert!(entries.iter().any(|entry| matches!(
+        &entry.owner,
+        crate::worktree_browser::Owner::Archived(thread) if thread.id == saved_owner.id
+    )));
     server.shutdown().await?;
     proxy.await??;
     Ok(())
@@ -3846,6 +4245,12 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     .count();
                 assert!(loaded_threads.contains(&child_thread_id.to_string()));
                 take_backfill_counts(&requests);
+                crate::legacy_core::config::set_project_trust_level(
+                    app.config.codex_home.as_path(),
+                    app.config.cwd.as_path(),
+                    codex_protocol::config_types::TrustLevel::Trusted,
+                )
+                .map_err(std::io::Error::other)?;
                 app.harness_overrides.cwd = Some(app.config.cwd.to_path_buf());
 
                 let control = app
@@ -3988,3 +4393,168 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 mod new_session_tests;
 #[path = "startup_defaults_tests.rs"]
 mod startup_defaults_tests;
+
+#[tokio::test]
+async fn external_writer_escape_preserves_snapshot_and_explicit_quits() -> Result<()> {
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:4500")?;
+    for target in [
+        AppServerTarget::LocalDaemon {
+            endpoint: endpoint.clone(),
+        },
+        AppServerTarget::Remote { endpoint },
+    ] {
+        let (mut app, _codex_home) = make_history_test_app().await?;
+        let thread_id =
+            create_history_rollout(&app.config, ThreadHistoryMode::Legacy, "owned elsewhere")?;
+        let (mut server, requests, proxy) = start_recording_app_server(
+            &app.config,
+            /*blocked_thread_list*/ None,
+            /*failed_thread_name*/ None,
+        )
+        .await?;
+        app.app_server_target = target;
+        app.active_thread_id = Some(thread_id);
+        app.primary_thread_id = Some(thread_id);
+        app.ensure_thread_channel(thread_id).mark_external_writer();
+        app.chat_widget.show_external_writer_thread();
+        app.chat_widget.insert_str("Retained draft");
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        app.app_event_tx = AppEventSender::new(tx);
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        for key in [
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ] {
+            app.handle_key_event(&mut tui, &mut server, key).await;
+            assert_matches!(events.try_recv(), Ok(AppEvent::Exit(ExitMode::Immediate)));
+        }
+        app.handle_key_event(
+            &mut tui,
+            &mut server,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .await;
+        assert!(app.chat_widget.has_active_view());
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv())
+                .await?
+                .expect("command center refresh");
+            let refreshed = matches!(&event, AppEvent::AgentsOverviewThreadsLoaded { .. });
+            Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+            if refreshed {
+                break;
+            }
+        }
+        assert_matches!(
+            Box::pin(app.handle_event(
+                &mut tui,
+                &mut server,
+                AppEvent::SelectAgentsOverviewThread { thread_id },
+            ))
+            .await?,
+            AppRunControl::Continue
+        );
+        assert!(!app.chat_widget.has_active_view());
+        assert_eq!(app.active_thread_id, Some(thread_id));
+        assert!(app.chat_widget.is_external_writer_view());
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "Retained draft"
+        );
+        assert_eq!(
+            app.thread_event_channels[&thread_id].attachment(),
+            ThreadEventAttachment::ExternalWriter
+        );
+        assert!(requests.lock().unwrap().iter().all(|request| matches!(
+            request.method.as_str(),
+            "thread/read" | "thread/list" | "thread/loaded/list" | "thread/turns/list"
+        )));
+        server.shutdown().await?;
+        proxy.await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_center_read_only_open_requests_and_failure_preservation() -> Result<()> {
+    for history_capabilities in [
+        HistoryCapabilities::Current,
+        HistoryCapabilities::ReadAfterResumeFails,
+    ] {
+        let (mut app, _codex_home) = Box::pin(make_history_test_app()).await?;
+        std::fs::write(
+            app.config.codex_home.join("config.toml"),
+            "[tui]\nresume_cwd = \"current\"\n",
+        )?;
+        for cwd in [test_path_buf("/"), app.config.cwd.to_path_buf()] {
+            crate::legacy_core::config::set_project_trust_level(
+                app.config.codex_home.as_path(),
+                &cwd,
+                codex_protocol::config_types::TrustLevel::Trusted,
+            )
+            .map_err(std::io::Error::other)?;
+        }
+        let thread_id =
+            create_history_rollout(&app.config, ThreadHistoryMode::Legacy, "Locked task")?;
+        let mut owner = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+        Box::pin(owner.resume_thread(
+            &app.local_settings,
+            app.config.clone(),
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+        ))
+        .await?;
+        let (mut server, requests, proxy) = start_recording_app_server_with_history(
+            &app.config,
+            history_capabilities,
+            /*blocked_thread_list*/ None,
+            /*failed_thread_name*/ None,
+            crate::app_server_session::ThreadParamsMode::Embedded,
+            LoaderOverrides::default(),
+        )
+        .await?;
+        app.app_server_target = AppServerTarget::LocalDaemon {
+            endpoint: crate::resolve_remote_addr("ws://127.0.0.1:4500")?,
+        };
+        let current = Box::pin(server.start_thread(&app.config)).await?;
+        let current_id = current.session.thread_id;
+        app.enqueue_primary_thread_session(current.session, current.turns)
+            .await?;
+        let thread = owner
+            .thread_read(thread_id, /*include_turns*/ false)
+            .await?;
+        let mut view = app.agents_overview_view(vec![thread], Some(thread_id));
+        view.handle_paste("Keep this draft".into());
+        app.chat_widget.show_bottom_pane_view(Box::new(view));
+        let before = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+        requests.lock().unwrap().clear();
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+
+        Box::pin(app.select_agents_overview_thread(&mut tui, &mut server, thread_id)).await?;
+        assert_eq!(recorded_params(&requests, "thread/resume").len(), 1);
+        assert!(recorded_params(&requests, "turn/start").is_empty());
+        if history_capabilities == HistoryCapabilities::ReadAfterResumeFails {
+            let error = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+            assert!(
+                error.contains("Failed to view task open elsewhere"),
+                "{error}"
+            );
+            assert_eq!(app.current_displayed_thread_id(), Some(current_id));
+            assert!(recorded_params(&requests, "thread/unsubscribe").is_empty());
+            app.chat_widget.handle_key_event(KeyCode::Esc.into());
+            assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 96), before);
+        } else {
+            assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
+            assert!(app.chat_widget.is_external_writer_view());
+            assert_eq!(
+                app.thread_event_channels[&thread_id].attachment(),
+                ThreadEventAttachment::ExternalWriter
+            );
+        }
+        owner.shutdown().await?;
+        server.shutdown().await?;
+        proxy.await??;
+    }
+    Ok(())
+}

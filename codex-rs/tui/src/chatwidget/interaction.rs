@@ -60,6 +60,10 @@ impl ChatWidget {
             return;
         }
 
+        if self.handle_realtime_microphone_shortcut(key_event) {
+            return;
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -512,7 +516,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {
-        if self.external_writer_view {
+        if self.external_writer_view && !self.bottom_pane.has_active_view() {
             return;
         }
         self.bottom_pane.handle_paste(text);
@@ -569,6 +573,15 @@ impl ChatWidget {
             if modal_or_popup_active && self.bottom_pane.no_modal_or_popup_active() {
                 self.on_modal_or_popup_closed();
             }
+            return;
+        }
+
+        if self
+            .bottom_pane
+            .selected_index_for_active_view(crate::app::AGENTS_OVERVIEW_VIEW_ID)
+            .is_some()
+        {
+            self.request_quit_without_confirmation();
             return;
         }
 

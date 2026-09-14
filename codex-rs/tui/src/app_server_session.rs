@@ -6,6 +6,7 @@
 mod fs;
 mod history;
 mod models;
+mod realtime;
 mod rollout_history;
 mod thread_list;
 
@@ -135,6 +136,7 @@ use codex_config::ConfigLayerSource;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
+use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BaseInstructionsProvenance;
@@ -353,7 +355,7 @@ impl ThreadParamsMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
@@ -557,6 +559,13 @@ impl AppServerSession {
             return None;
         };
         client.server_version()
+    }
+
+    pub(crate) fn server_codex_home(&self) -> Option<&str> {
+        let AppServerClient::Remote(client) = &self.client else {
+            return None;
+        };
+        client.codex_home()
     }
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
@@ -1332,6 +1341,7 @@ impl AppServerSession {
             .request_typed(ClientRequest::TurnStart {
                 request_id,
                 params: TurnStartParams {
+                    disabled_plugin_ids: None,
                     thread_id: thread_id.to_string(),
                     turn_trigger: None,
                     client_user_message_id: Some(client_user_message_id),
@@ -1351,7 +1361,7 @@ impl AppServerSession {
                     service_tier_for_turn: None,
                     effort,
                     summary,
-                    personality,
+                    personality: personality_opt_out_only(personality),
                     output_schema,
                     collaboration_mode,
                     multi_agent_mode: None,
@@ -1839,6 +1849,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
             })
             .collect(),
         default_service_tier: model.default_service_tier,
+        available_access_programs: model.available_access_programs.map(Into::into),
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
@@ -1856,6 +1867,11 @@ fn approvals_reviewer_override_from_config(
     config: &Config,
 ) -> Option<codex_app_server_protocol::ApprovalsReviewer> {
     Some(config.approvals_reviewer.into())
+}
+
+// Keep the explicit Bridge opt-out while retiring Friendly/Pragmatic selection.
+pub(crate) fn personality_opt_out_only(personality: Option<Personality>) -> Option<Personality> {
+    personality.filter(|personality| *personality == Personality::None)
 }
 
 fn config_request_overrides_from_config(
@@ -1915,9 +1931,7 @@ fn config_request_overrides_from_config(
     );
     insert(
         "personality",
-        config
-            .personality
-            .map(|personality| personality.to_string()),
+        personality_opt_out_only(config.personality).map(|personality| personality.to_string()),
     );
     insert(
         "web_search",
@@ -1943,6 +1957,36 @@ fn remove_permission_config_overrides(config: &mut Option<HashMap<String, serde_
     if config.as_ref().is_some_and(HashMap::is_empty) {
         *config = None;
     }
+}
+
+fn new_thread_reasoning_overrides(config: &Config) -> Option<HashMap<String, serde_json::Value>> {
+    let mut overrides = config_request_overrides_from_config(config).unwrap_or_default();
+    let summary = config
+        .model_reasoning_summary
+        .unwrap_or(codex_protocol::config_types::ReasoningSummary::Detailed);
+    overrides.insert(
+        "model_reasoning_summary".to_string(),
+        serde_json::Value::String(summary.to_string()),
+    );
+    let explicit_feature = config
+        .config_layer_stack
+        .effective_config()
+        .get("features")
+        .and_then(|features| features.get("concurrent_reasoning_summaries"))
+        .and_then(toml::Value::as_bool);
+    let features = overrides
+        .entry("features".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(features) = features.as_object_mut() {
+        features.insert(
+            "concurrent_reasoning_summaries".to_string(),
+            serde_json::Value::Bool(
+                summary != codex_protocol::config_types::ReasoningSummary::None
+                    && explicit_feature.unwrap_or(/*default*/ false),
+            ),
+        );
+    }
+    Some(overrides)
 }
 
 fn service_tier_override_from_config(config: &Config) -> Option<Option<String>> {
@@ -2077,7 +2121,10 @@ pub(crate) fn thread_start_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox,
         permissions,
-        config: config_request_overrides_from_config(config),
+        config: match thread_params_mode {
+            ThreadParamsMode::Embedded => new_thread_reasoning_overrides(config),
+            ThreadParamsMode::Remote => config_request_overrides_from_config(config),
+        },
         ephemeral: Some(config.ephemeral),
         history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
         session_start_source,
@@ -2503,6 +2550,10 @@ pub(crate) fn app_server_rate_limit_snapshots(
 }
 
 #[cfg(test)]
+#[path = "app_server_session/reasoning_defaults_tests.rs"]
+mod reasoning_defaults_tests;
+
+#[cfg(test)]
 #[path = "app_server_session/prompt_history_tests.rs"]
 mod prompt_history_tests;
 
@@ -2642,6 +2693,7 @@ mod tests {
             additional_speed_tiers: Vec::new(),
             service_tiers: Vec::new(),
             default_service_tier: None,
+            available_access_programs: None,
             is_default: false,
         }
     }
@@ -3386,11 +3438,15 @@ mod tests {
             ("model_reasoning_effort".to_string(), string("high")),
             ("model_reasoning_summary".to_string(), string("detailed")),
             ("model_verbosity".to_string(), string("low")),
-            ("personality".to_string(), string("pragmatic")),
             ("web_search".to_string(), string("disabled")),
             ("bypass_hook_trust".to_string(), true.into()),
         ]);
-        assert_eq!(start.config, Some(expected_config.clone()));
+        let mut expected_start_config = expected_config.clone();
+        expected_start_config.insert(
+            "features".to_string(),
+            serde_json::json!({"concurrent_reasoning_summaries": false}),
+        );
+        assert_eq!(start.config, Some(expected_start_config));
         assert_eq!(resume.config, Some(expected_config.clone()));
         assert_eq!(fork.config, Some(expected_config));
     }
@@ -3403,6 +3459,7 @@ mod tests {
         config.model_provider_id = "configured-provider".to_string();
         config.model_reasoning_effort = Some(ReasoningEffort::Ultra);
         config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+        config.personality = Some(Personality::Pragmatic);
 
         let params = thread_resume_params_from_config(
             config,
@@ -3420,10 +3477,6 @@ mod tests {
                 (
                     "model_reasoning_summary".to_string(),
                     serde_json::Value::String("detailed".to_string()),
-                ),
-                (
-                    "personality".to_string(),
-                    serde_json::Value::String("pragmatic".to_string()),
                 ),
                 (
                     "web_search".to_string(),
@@ -3460,7 +3513,7 @@ mod tests {
     async fn persisted_resume_does_not_forward_implicit_service_tier() -> Result<()> {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&codex_home).await;
-        config.model = Some("gpt-5.4".to_string());
+        config.model = Some("gpt-5.5".to_string());
         config.service_tier = None;
         config
             .features
@@ -3480,8 +3533,8 @@ mod tests {
         let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
         let mut preset = crate::test_support::TEST_MODEL_PRESETS
             .iter()
-            .find(|preset| preset.model == "gpt-5.4")
-            .expect("gpt-5.4 test preset")
+            .find(|preset| preset.model == "gpt-5.5")
+            .expect("gpt-5.5 test preset")
             .clone();
         preset.service_tiers = vec![ModelServiceTier {
             id: ServiceTier::Fast.request_value().to_string(),
@@ -3692,7 +3745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_request_overrides_preserve_implicit_personality_default() {
+    async fn config_request_overrides_only_forward_explicit_personality_opt_out() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&temp_dir).await;
         config.personality = None;
@@ -3702,6 +3755,13 @@ mod tests {
 
         assert!(!implicit_overrides.contains_key("personality"));
 
+        for personality in [Personality::Friendly, Personality::Pragmatic] {
+            config.personality = Some(personality);
+            let ordinary_overrides =
+                config_request_overrides_from_config(&config).expect("config overrides");
+            assert!(!ordinary_overrides.contains_key("personality"));
+        }
+
         config.personality = Some(Personality::None);
         let explicit_overrides =
             config_request_overrides_from_config(&config).expect("config overrides");
@@ -3710,6 +3770,34 @@ mod tests {
             explicit_overrides.get("personality"),
             Some(&serde_json::Value::String("none".to_string()))
         );
+
+        for mode in [ThreadParamsMode::Embedded, ThreadParamsMode::Remote] {
+            let start = thread_start_params_from_config(
+                &config, mode, /*remote_cwd_override*/ None,
+                /*session_start_source*/ None,
+            );
+            let resume = thread_resume_params_from_config(
+                config.clone(),
+                ThreadId::new(),
+                mode,
+                /*remote_cwd_override*/ None,
+                ResumeModelSettings::OverrideFromCurrentConfig,
+            );
+            let fork = thread_fork_params_from_config(
+                config.clone(),
+                ThreadId::new(),
+                mode,
+                /*remote_cwd_override*/ None,
+            );
+            for overrides in [start.config, resume.config, fork.config] {
+                assert_eq!(
+                    overrides
+                        .as_ref()
+                        .and_then(|overrides| overrides.get("personality")),
+                    Some(&serde_json::Value::String("none".to_string()))
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -3869,6 +3957,7 @@ mod tests {
         let forked_from_id = ThreadId::new();
         let read_only_profile = PermissionProfile::read_only();
         let response = ThreadResumeResponse {
+            disabled_plugin_ids: Vec::new(),
             thread: codex_app_server_protocol::Thread {
                 originator: None,
                 environments: None,

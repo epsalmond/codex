@@ -69,6 +69,7 @@ const fn context_bit(context: KeymapContext) -> u16 {
         KeymapContext::Approval => 9,
         KeymapContext::Agents => 10,
         KeymapContext::VimSearch => 11,
+        KeymapContext::Voice => 12,
     }
 }
 
@@ -466,9 +467,10 @@ Windows. Choose a different chord and retry.",
     if matches!(prefix_key, KeyCode::Char(_))
         && !crate::key_hint::has_ctrl_or_alt(prefix_modifiers)
         && !binding.action.context.allows_plain_chord_prefix()
+        && binding.action.context != KeymapContext::Agents
     {
         return Err(format!(
-            "Invalid `{path}` = `{}`: a chord prefix outside Vim must use ctrl, \
+            "Invalid `{path}` = `{}`: a chord prefix outside Vim or the command center must use ctrl, \
 alt, or a non-character key so ordinary text input is not intercepted.",
             binding.spec
         ));
@@ -513,6 +515,7 @@ Choose a different chord and retry.",
         KeymapContext::Pager => TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS,
         KeymapContext::Global
         | KeymapContext::Chat
+        | KeymapContext::Voice
         | KeymapContext::Composer
         | KeymapContext::Editor
         | KeymapContext::VimNormal

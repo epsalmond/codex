@@ -857,9 +857,7 @@ async fn cold_resume_shakes_on_the_first_turn_after_resuming_a_stale_thread(
 
     let backdate_by = match case {
         // Comfortably past the TTL.
-        ResumeColdResumeCase::Expired => {
-            Duration::from_secs(RESUME_CACHE_TTL_SECS as u64 + 120)
-        }
+        ResumeColdResumeCase::Expired => Duration::from_secs(RESUME_CACHE_TTL_SECS as u64 + 120),
         // Comfortably within it.
         ResumeColdResumeCase::Recent => Duration::from_secs(5),
     };

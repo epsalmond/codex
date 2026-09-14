@@ -40,12 +40,13 @@ fn copies_only_regular_artifacts_for_forks() {
 /// The placeholder names the artifact's on-disk path directly, with no
 /// recovery tool to resolve a URI through, so the path must be usable as-is
 /// by a shell tool regardless of how `CODEX_HOME` was spelled. `for_thread`
-/// canonicalizes its root at construction, so the resulting placeholder path
-/// must be absolute even if a caller ever passes a relative `codex_home`.
+/// resolves an existing relative `codex_home` at construction, so the resulting
+/// placeholder path must be absolute without creating the artifact directory.
 #[test]
 fn for_thread_canonicalizes_to_an_absolute_root() {
     let temp = TempDir::new().unwrap();
     let store = ArtifactStore::for_thread(temp.path(), "thread-1");
     let path = store.destination_path("00000000000000000000000000000000", "tool");
     assert!(path.is_absolute(), "expected an absolute path: {path:?}");
+    assert!(!temp.path().join("artifacts/thread-1").exists());
 }

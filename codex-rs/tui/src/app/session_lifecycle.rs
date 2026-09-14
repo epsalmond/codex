@@ -477,13 +477,14 @@ impl App {
         Ok(live_attached)
     }
 
-    /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
-    /// cache.
+    /// Replaces the chat widget, carrying the editor yank and re-seeding collab metadata from the
+    /// navigation cache.
     ///
     /// Thread switches reconstruct the `ChatWidget`, which loses the `collab_agent_metadata` map.
     /// This helper copies every known nickname/role from `AgentNavigationState` into the
     /// replacement widget so that replayed collab items render agent names immediately.
     pub(super) fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
+        self.retain_realtime_replay_state_before_replace();
         chat_widget.cyber_policy_notice = self.chat_widget.cyber_policy_notice.clone();
         self.commit_animation = None;
         // Transfer the last-written terminal title to the replacement widget
@@ -496,6 +497,12 @@ impl App {
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
         chat_widget.set_local_worktree_operations(self.chat_widget.local_worktree_operations);
+        chat_widget.windows_sandbox_host = self.chat_widget.windows_sandbox_host;
+        #[cfg(any(target_os = "windows", test))]
+        {
+            chat_widget.windows_sandbox_elevated_setup_complete =
+                self.chat_widget.windows_sandbox_elevated_setup_complete;
+        }
         chat_widget.set_agents_navigation_enabled(matches!(
             self.app_server_target,
             AppServerTarget::LocalDaemon { .. }
@@ -508,6 +515,7 @@ impl App {
                 entry.agent_role.clone(),
             );
         }
+        chat_widget.restore_kill_buffer_snapshot(self.chat_widget.take_kill_buffer_snapshot());
         self.chat_widget = chat_widget;
         self.sync_active_agent_label();
     }
@@ -530,10 +538,17 @@ impl App {
         } else {
             None
         };
+        if self.active_thread_id == Some(thread_id) && !self.thread_unavailable(thread_id) {
+            return Ok(());
+        }
+        if self.windows_sandbox_blocks_thread_switch() {
+            self.chat_widget.add_info_message(
+                "Finish Windows sandbox setup before switching threads.".to_string(),
+                /*hint*/ None,
+            );
+            return Ok(());
+        }
         if self.active_thread_id == Some(thread_id) {
-            if !self.thread_unavailable(thread_id) {
-                return Ok(());
-            }
             // Detach the cached receiver before a successful attachment replaces its channel.
             self.store_active_thread_receiver().await;
         }
@@ -546,8 +561,9 @@ impl App {
                 .refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await)
         {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
+            self.add_agents_overview_error(format!(
+                "Agent thread {thread_id} is no longer available."
+            ));
             return Ok(());
         }
         let mut is_replay_only = self
@@ -569,24 +585,34 @@ impl App {
                     attached_replay_only = true;
                 }
                 Err(err) => {
-                    self.chat_widget.add_error_message(format!(
+                    self.add_agents_overview_error(format!(
                         "Failed to attach to agent thread {thread_id}: {err}"
                     ));
                     return Ok(());
                 }
             }
         } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
+            self.add_agents_overview_error(format!(
+                "Agent thread {thread_id} is no longer available."
+            ));
             return Ok(());
         }
         let previous_thread_id = self.active_thread_id;
+        // Notifications already routed to the active channel must reach the old
+        // widget before its transcript state is transferred. Events routed after
+        // deactivation are retained separately for that thread.
+        if let Some(mut receiver) = self.active_thread_rx.take() {
+            while let Ok(event) = receiver.try_recv() {
+                self.handle_thread_event_now_recovering_file_changes(event)
+                    .await;
+            }
+            self.active_thread_rx = Some(receiver);
+        }
         self.store_active_thread_receiver().await;
         self.active_thread_id = None;
         let Some((receiver, mut snapshot)) = self.activate_thread_for_replay(thread_id).await
         else {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is already active."));
+            self.add_agents_overview_error(format!("Agent thread {thread_id} is already active."));
             if let Some(previous_thread_id) = previous_thread_id {
                 self.activate_thread_channel(previous_thread_id).await;
             }
@@ -620,8 +646,9 @@ impl App {
         // Refreshing can merge restored turns into the store, so recap progress must be read only
         // after the refresh while the activated thread channel is still retained.
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
+            self.add_agents_overview_error(format!(
+                "Agent thread {thread_id} is no longer available."
+            ));
             return Ok(());
         };
         let recap_progress = {
@@ -656,6 +683,10 @@ impl App {
         self.recap.seed_from_progress(recap_progress, now);
         self.schedule_recap_check(thread_id, now);
 
+        // The old widget owns the local helper and its undelivered answers.
+        // Transfer replay state before stopping its backend voice session.
+        self.retain_realtime_replay_state_before_replace();
+        self.stop_realtime_conversation(app_server).await;
         self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
         if is_replay_only
             && self
@@ -707,6 +738,9 @@ impl App {
             self.chat_widget.set_parent_owned_thread();
         }
         self.reset_for_thread_switch(tui)?;
+        self.pending_thread_switch_resets += 1;
+        self.app_event_tx
+            .send(AppEvent::ResetTranscriptForThreadSwitch);
         self.replay_thread_snapshot(snapshot, resume_restored_queue);
         if external_writer {
             self.chat_widget.show_external_writer_thread();
@@ -725,6 +759,9 @@ impl App {
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
+        if tui.is_alt_screen_active() {
+            tui.leave_alt_screen()?;
+        }
         self.reset_transcript_state_after_clear();
         tui.clear_pending_history_lines();
         Self::clear_terminal_for_thread_switch(&mut tui.terminal)?;
@@ -749,6 +786,9 @@ impl App {
     pub(super) fn reset_thread_event_state(&mut self) {
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
+        self.pending_realtime_speech_replay.clear();
+        self.pending_realtime_transcript_replay.clear();
+        self.realtime_replay_order.clear();
         self.pending_server_profiles.clear();
         self.agents_overview.activity.clear();
         self.agent_navigation.clear();
@@ -761,6 +801,7 @@ impl App {
         self.pending_primary_events.clear();
         self.pending_app_server_requests.clear();
         self.pending_startup_thread_start = false;
+        self.pending_server_version_notice = None;
         self.chat_widget.set_pending_thread_approvals(Vec::new());
         self.sync_active_agent_label();
     }
@@ -842,6 +883,9 @@ impl App {
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.apply_backend_banner_fallback(app_server).await;
+                if let Some(notice) = self.pending_server_version_notice.take() {
+                    self.chat_widget.add_server_version_warning(notice);
+                }
                 if !recovery_was_pending {
                     self.chat_widget.finish_rate_limit_recovery();
                 }
@@ -922,6 +966,7 @@ impl App {
                     }
                 }
                 self.local_settings = crate::local_settings::LocalSettings::from(&config);
+                self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
                 self.config = config;
 
                 let name_error = if let Some(name) = new_thread_name {
@@ -990,6 +1035,10 @@ impl App {
         // Initial messages are for freshly attached primary threads only. Thread switches and
         // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
         // user turn by accident.
+        self.reset_for_thread_switch(tui)?;
+        self.pending_thread_switch_resets += 1;
+        self.app_event_tx
+            .send(AppEvent::ResetTranscriptForThreadSwitch);
         self.reset_thread_event_state();
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
@@ -1158,7 +1207,18 @@ impl App {
         target_session: SessionTarget,
     ) -> Result<AppRunControl> {
         if self.ignore_same_thread_resume(&target_session) {
+            self.agents_overview
+                .hidden_threads
+                .remove(&target_session.thread_id);
+            self.repaint_agents_overview();
             tui.frame_requester().schedule_frame();
+            return Ok(AppRunControl::Continue);
+        }
+        if self.windows_sandbox_blocks_thread_switch() {
+            self.chat_widget.add_info_message(
+                "Finish Windows sandbox setup before switching threads.".to_string(),
+                /*hint*/ None,
+            );
             return Ok(AppRunControl::Continue);
         }
 
@@ -1169,9 +1229,6 @@ impl App {
             Ok(config) => config,
             Err(control) => return Ok(control),
         };
-        if self.reject_remote_resume_permission_override(&resume_config) {
-            return Ok(AppRunControl::Continue);
-        }
         let baseline_approval = resume_config.permissions.approval_policy.value();
         let baseline_permissions = RuntimePermissionProfileOverride::from_config(&resume_config);
         self.apply_runtime_policy_overrides(&mut resume_config, RuntimePolicyOverrideScope::All);
@@ -1227,6 +1284,7 @@ impl App {
             self.shutdown_current_thread(app_server).await;
         }
         self.local_settings = local_settings;
+        self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         self.config = resume_config;
         tui.set_notification_settings(
             self.local_settings.tui.notification_settings.method,

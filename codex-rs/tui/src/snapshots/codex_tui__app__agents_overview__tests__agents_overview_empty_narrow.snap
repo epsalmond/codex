@@ -1,6 +1,6 @@
 ---
 source: tui/src/app/agents_overview_tests.rs
-expression: "render_bottom_popup(&app.chat_widget, 48)"
+expression: rendered
 ---
   Agent command center
   0 need input   0 working   0 ready
@@ -19,10 +19,10 @@ expression: "render_bottom_popup(&app.chat_widget, 48)"
 
 
 
-  New task
 
-› Describe a new task
 
-  ↑↓ navigate ctrl+o resume enter open ctrl+n
-  new task ctrl+f search ctrl+s group ctrl+r
-  rename ctrl+x stop esc back
+
+  ↑↓ navigate o resume enter open n new
+  w new worktree f search g group: project
+  r rename x stop h hide a archive del delete
+  ctrl+c quit

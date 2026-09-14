@@ -13,6 +13,7 @@ Both cost profiles are printed for every run (scripts/pricing_lib.py):
 
 Usage: arms-row.py <label> <replay.json> [<label> <replay.json> ...]
 """
+
 import json, pathlib, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -29,7 +30,11 @@ def tier_of(rec):
     """The tier the run actually ran on, from thread/start's echoed value."""
     applied = rec.get("serviceTierApplied")
     requested = rec.get("serviceTier")
-    return "fast" if (applied in ("priority", "fast") or requested == "fast") else "standard"
+    return (
+        "fast"
+        if (applied in ("priority", "fast") or requested == "fast")
+        else "standard"
+    )
 
 
 def retrieval_from_rollout(rec):
@@ -52,7 +57,9 @@ def retrieval_from_rollout(rec):
     top = nested = 0
     for path in paths:
         text = path.read_text(errors="replace")
-        top += text.count('"name":"read_artifact"') + text.count('"name": "read_artifact"')
+        top += text.count('"name":"read_artifact"') + text.count(
+            '"name": "read_artifact"'
+        )
         nested += text.count("tools.read_artifact")
     return {"topLevelToolCalls": top, "codeModeCalls": nested, "rollouts": len(paths)}
 
@@ -79,32 +86,64 @@ for i in range(1, len(sys.argv), 2):
     r1 = reqs[0] if reqs else {}
     steady = reqs[1:] if len(reqs) > 1 else []
     print(f"## {label}  ({path})")
-    print(f"  arm                {rec.get('arm')}   tier requested={rec.get('serviceTier')} applied={rec.get('serviceTierApplied')}")
-    print(f"  history tokens     {rec.get('historyTokens')}  after arm {rec.get('historyTokensAfterArm')}")
-    print(f"  requests           {len(reqs)}" + (f"  (+{len(prime)} priming)" if prime else ""))
+    print(
+        f"  arm                {rec.get('arm')}   tier requested={rec.get('serviceTier')} applied={rec.get('serviceTierApplied')}"
+    )
+    print(
+        f"  history tokens     {rec.get('historyTokens')}  after arm {rec.get('historyTokensAfterArm')}"
+    )
+    print(
+        f"  requests           {len(reqs)}"
+        + (f"  (+{len(prime)} priming)" if prime else "")
+    )
     cc = rec.get("cacheCondition") or {}
     if cc:
-        print(f"  cache condition    {cc.get('cache')}" + (f" / warm {cc.get('warm')}" if cc.get("warm") else "")
-              + f"   req1 cached frac {cc.get('firstArmRequestCachedFraction')}"
-              + f"   assertion {'met' if cc.get('assertionMet') else 'NOT MET'}")
-    print(f"  input/cached/out   {wt.get('inputTokens')} / {wt.get('cachedInputTokens')} / {wt.get('outputTokens')}")
-    for line in pricing_lib.summary_lines(reqs, rec.get("model", "gpt-6-astra"), tier_of(rec), PRICING):
+        print(
+            f"  cache condition    {cc.get('cache')}"
+            + (f" / warm {cc.get('warm')}" if cc.get("warm") else "")
+            + f"   req1 cached frac {cc.get('firstArmRequestCachedFraction')}"
+            + f"   assertion {'met' if cc.get('assertionMet') else 'NOT MET'}"
+        )
+    print(
+        f"  input/cached/out   {wt.get('inputTokens')} / {wt.get('cachedInputTokens')} / {wt.get('outputTokens')}"
+    )
+    for line in pricing_lib.summary_lines(
+        reqs, rec.get("model", "gpt-6-astra"), tier_of(rec), PRICING
+    ):
         print(line)
     if prime:
-        for line in pricing_lib.summary_lines(prime, rec.get("model", "gpt-6-astra"), tier_of(rec), PRICING, indent="    priming "):
+        for line in pricing_lib.summary_lines(
+            prime,
+            rec.get("model", "gpt-6-astra"),
+            tier_of(rec),
+            PRICING,
+            indent="    priming ",
+        ):
             print(line)
     print(f"  quota primary      {window(q, 'primary')}")
     print(f"  quota secondary    {window(q, 'secondary')}")
-    print(f"  codex procs        {len(q.get('codexProcessesBefore', []))} start / {len(q.get('codexProcessesAfter', []))} end")
-    print(f"  wall               {wt.get('wallMs', 0) / 1000:.0f}s   turns {len(rec.get('turns', []))}   stop {rec.get('stopReason')}")
-    print(f"  read_artifact (items, over-counts) {ra.get('total')}  {ra.get('byItemType')}")
+    print(
+        f"  codex procs        {len(q.get('codexProcessesBefore', []))} start / {len(q.get('codexProcessesAfter', []))} end"
+    )
+    print(
+        f"  wall               {wt.get('wallMs', 0) / 1000:.0f}s   turns {len(rec.get('turns', []))}   stop {rec.get('stopReason')}"
+    )
+    print(
+        f"  read_artifact (items, over-counts) {ra.get('total')}  {ra.get('byItemType')}"
+    )
     print(f"  read_artifact (rollout, exact)     {retrieval_from_rollout(rec)}")
-    print(f"  compaction         passed={rec.get('compaction', {}).get('passed')}   window ok={rec.get('contextWindow', {}).get('ok')}")
+    print(
+        f"  compaction         passed={rec.get('compaction', {}).get('passed')}   window ok={rec.get('contextWindow', {}).get('ok')}"
+    )
     if r1:
-        print(f"  req1               in {r1['inputTokens']} cached {r1['cachedInputTokens']} -> cached frac {r1['cachedInputTokens'] / max(1, r1['inputTokens']):.4f}")
+        print(
+            f"  req1               in {r1['inputTokens']} cached {r1['cachedInputTokens']} -> cached frac {r1['cachedInputTokens'] / max(1, r1['inputTokens']):.4f}"
+        )
     if steady:
         si = sum(r["inputTokens"] for r in steady)
         sc = sum(r["cachedInputTokens"] for r in steady)
-        print(f"  steady state       {len(steady)} reqs, cached frac {sc / max(1, si):.4f}")
+        print(
+            f"  steady state       {len(steady)} reqs, cached frac {sc / max(1, si):.4f}"
+        )
     print(f"  per-turn requests  {[t['requests'] for t in rec.get('turns', [])]}")
     print()
