@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -25,6 +26,96 @@ class ShakeInstallTest(unittest.TestCase):
             self.assertTrue((bin_dir / "codex-shake-update").is_file())
             self.assertFalse((bin_dir / "codex-shake-estimate").exists())
             self.assertEqual(os.readlink(home_dir / "current"), TAG)
+
+    def test_latest_selection_uses_maximum_release_identity(self) -> None:
+        release_feed = json.dumps(
+            [
+                {
+                    "tag_name": "local-features-v0.154.0-main-r202609140000.aaaaaaaaaaaa",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.0000000000000001ffffffffffff",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.0000000000000002.aaaaaaaaaaaa",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v9.9.9-r99999999999999.cccccccccccc",
+                    "draft": True,
+                },
+                {
+                    "tag_name": "local-features-vnot-a-release-r1.deadbeef",
+                    "draft": False,
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root,
+                tag=None,
+                release_feed=release_feed,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                os.readlink(home_dir / "current"),
+                "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
+            )
+
+    def test_latest_selection_treats_source_sequence_hex_as_numeric(self) -> None:
+        release_feed = json.dumps(
+            [
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.000000000000000Baaaaaaaaaaaa",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.000000000000000abbbbbbbbbbbb",
+                    "draft": False,
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root,
+                tag=None,
+                release_feed=release_feed,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                os.readlink(home_dir / "current"),
+                "local-features-v0.154.0-main-r20260914000000.000000000000000Baaaaaaaaaaaa",
+            )
+
+    def test_latest_selection_accepts_fourteen_digits_and_ignores_fifteen(self) -> None:
+        accepted = "local-features-v0.154.0-main-r20260914000000.abcdef123456"
+        rejected = "local-features-v0.154.0-main-r202609140000000.ffffffffffff"
+        release_feed = json.dumps(
+            [
+                {"tag_name": rejected, "draft": False},
+                {"tag_name": accepted, "draft": False},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root,
+                tag=None,
+                release_feed=release_feed,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(os.readlink(home_dir / "current"), accepted)
 
     def test_update_helper_preserves_custom_paths_and_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -74,6 +165,8 @@ class ShakeInstallTest(unittest.TestCase):
 def run_installer(
     root: Path,
     *,
+    tag: str | None = TAG,
+    release_feed: str | None = None,
     home_dir: Path | None = None,
     bin_dir: Path | None = None,
     repo: str = "owner/repo",
@@ -110,6 +203,9 @@ def run_installer(
               previous="$arg"
             done
             case "$url" in
+              https://api.github.com/*/releases*)
+                printf '%s\\n' "$CODEX_TEST_RELEASE_FEED"
+                ;;
               https://github.com/*/releases/download/*/{ASSET}) cp "$CODEX_TEST_ARCHIVE" "$output" ;;
               https://github.com/*/releases/download/*/SHA256SUMS) cp "$CODEX_TEST_CHECKSUM" "$output" ;;
               *) exit 22 ;;
@@ -180,7 +276,6 @@ def run_installer(
     env.update(
         {
             "CODEX_SHAKE_REPO": repo,
-            "CODEX_SHAKE_TAG": TAG,
             "CODEX_TEST_ARCHIVE": str(archive),
             "CODEX_TEST_CHECKSUM": str(checksum),
             "CODEX_TEST_HELPER_ENV": str(helper_env),
@@ -188,6 +283,10 @@ def run_installer(
             "PATH": f"{fake_bin}:/usr/bin:/bin",
         }
     )
+    if tag is not None:
+        env["CODEX_SHAKE_TAG"] = tag
+    if release_feed is not None:
+        env["CODEX_TEST_RELEASE_FEED"] = release_feed
     if not use_default_home:
         env["CODEX_SHAKE_HOME"] = str(home_dir)
     if not use_default_bin:

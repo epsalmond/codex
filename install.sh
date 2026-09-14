@@ -57,10 +57,103 @@ api="https://api.github.com/repos/$repo/releases?per_page=30"
 if [ -n "${CODEX_SHAKE_TAG:-}" ]; then
   tag="$CODEX_SHAKE_TAG"
 else
-  # Releases come back newest first; take the first tag with our prefix.
-  tag=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api" \
-    | grep -o "\"tag_name\": *\"${tag_prefix}[^\"]*\"" \
-    | head -n1 | sed 's/.*"\('"$tag_prefix"'[^"]*\)"/\1/')
+  # GitHub's list order is publication order, not source order. Keep this
+  # selector consistent with tui/src/fork_update.rs: normalize legacy
+  # minute counters, accept second counters, and order generated same-second
+  # tags by their fixed-width ancestry sequence before the producer SHA.
+  release_feed=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api") || \
+    die "could not fetch releases for $repo"
+  if command -v jq >/dev/null 2>&1; then
+    release_tags=$(printf '%s\n' "$release_feed" |
+      jq -r '.[] | select(.draft != true) | .tag_name' 2>/dev/null || true)
+  else
+    release_tags=$(printf '%s\n' "$release_feed" |
+      awk -v prefix="$tag_prefix" -v RS='}' '
+        {
+          record = $0
+          if (record !~ /"tag_name"[[:space:]]*:/ ||
+              record ~ /"draft"[[:space:]]*:[[:space:]]*true/) next
+          tag = record
+          sub(/^.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", tag)
+          sub(/".*$/, "", tag)
+          if (substr(tag, 1, length(prefix)) == prefix) print tag
+        }
+      ' || true)
+  fi
+  tag=$(
+    printf '%s\n' "$release_tags" |
+      awk -v prefix="$tag_prefix" '
+        function is_digits(value, i, character) {
+          if (value == "") return 0
+          for (i = 1; i <= length(value); i++) {
+            character = substr(value, i, 1)
+            if (character < "0" || character > "9") return 0
+          }
+          return 1
+        }
+        function is_hex(value, i, character) {
+          if (value == "") return 0
+          for (i = 1; i <= length(value); i++) {
+            character = tolower(substr(value, i, 1))
+            if (character !~ /^[0-9a-f]$/) return 0
+          }
+          return 1
+        }
+        function valid_version(value, count, parts, i) {
+          if (substr(value, 1, 1) != "v") return 0
+          value = substr(value, 2)
+          if (substr(value, length(value) - 4) == "-main") {
+            value = substr(value, 1, length(value) - 5)
+          }
+          count = split(value, parts, ".")
+          if (count != 3) return 0
+          for (i = 1; i <= count; i++) {
+            if (!is_digits(parts[i])) return 0
+          }
+          return 1
+        }
+        {
+          tag = $0
+          if (substr(tag, 1, length(prefix)) != prefix) next
+          rest = substr(tag, length(prefix) + 1)
+          marker = index(rest, "-r")
+          if (marker > 0) {
+            version = substr(rest, 1, marker - 1)
+            tail = substr(rest, marker + 2)
+            dot = index(tail, ".")
+            digits = substr(tail, 1, dot - 1)
+            suffix = substr(tail, dot + 1)
+            if (dot <= 1 || length(digits) > 14 || !valid_version(version) ||
+                !is_digits(digits) || !is_hex(suffix)) next
+            normalized = digits
+            precision = length(digits)
+            if (precision == 12) normalized = digits "00"
+            source_sequence = ""
+            if (length(suffix) == 28) source_sequence = tolower(substr(suffix, 1, 16))
+            printf "%020d\t%02d\t%s\t%s:%s\t%s\n", normalized + 0, precision,
+              source_sequence, tolower(version), tolower(suffix), tag
+            next
+          }
+          dash = 0
+          for (i = length(rest); i > 0; i--) {
+            if (substr(rest, i, 1) == "-") {
+              dash = i
+              break
+            }
+          }
+          if (dash <= 1) next
+          version = substr(rest, 1, dash - 1)
+          suffix = substr(rest, dash + 1)
+          if (valid_version(version) && length(suffix) == 12 && is_hex(suffix)) {
+            printf "%020d\t%02d\t%s\t%s:%s\t%s\n", 0, 0, "",
+              tolower(version), tolower(suffix), tag
+          }
+        }
+      ' |
+      LC_ALL=C sort -t '	' -k1,1n -k2,2n -k3,3 -k4,4 |
+      tail -n 1 |
+      cut -f5-
+  )
   [ -n "$tag" ] || die "no $tag_prefix* release found in $repo"
 fi
 base="https://github.com/$repo/releases/download/$tag"
