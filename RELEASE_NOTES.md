@@ -1,22 +1,36 @@
-<!-- This file is the top of every GitHub release for this branch. codex-fork-release
-     appends the base tag, install block and commit list after it. Plain markdown. -->
+<!-- This file is the notes section of every GitHub release for this branch.
+     codex-fork-release adds the install block before it and the base tag and
+     commit list after it. Plain markdown. -->
 
-Test builds of Codex with **shake**, a context reducer that cuts instead of summarizing.
+**Codex Shake keeps long coding sessions smaller by removing older tool output
+from active context. In our replay benchmark, shaken runs used 2.3–2.7× fewer
+Codex credits.**
 
-**What it does.** Compaction replaces the history with a model-written summary. Shake removes the parts of the history that are almost never needed again: old tool output, images, thinking. Each removed item is written to a file under `$CODEX_HOME/artifacts/` and the placeholder names the path. The rest of the thread is untouched.
+Surviving conversation content stays byte-identical, and removed content remains
+available in local artifact files. Auto-shake runs by default; `/shake` lets you
+preview and trigger it yourself.
 
-**Why it helps.** Every request re-sends the whole history, and gpt-5.6 charges a long-context premium above 272k input tokens. A thread that shakes at 160k stays below that line, and every request after the shake is a fraction of the size.
+The published replay reduced active history from 536k to 176k tokens. Its
+measured results were:
 
-**What it costs.** One uncached request of the surviving history. The thread is fully cached again on the next request.
+| arm | active history | standard Codex credits | end state |
+|---|---:|---:|---|
+| full history, cold cache | 536k | 840 | 12/12 |
+| shaken, cold cache | 176k | 312 | 11/12 |
+| full history, warm cache | 536k | 809 | 12/12 |
+| shaken, warm cache | 176k | 358 | 12/12 |
 
-**What was measured**, replaying a real 536k-token session from a frozen checkpoint:
+This was n=1 per cell, with builds stubbed; the one cold shaken run missed one
+structural check. An earlier replay projected 4.8x lower API cost using the API
+rate card ($59.46/$12.37); it used 2.42× fewer Codex credits.
 
-- Shaken threads reach the same end state at 2.3x to 2.7x fewer credits.
-- Nothing elided is ever read back: zero reads in nine benchmark runs and zero across 346 oh-my-pi sessions. So there is no read tool, only the path.
-- Plan quota meters total input tokens, not uncached tokens. Warming the cache does not save quota. Shrinking the prompt does.
-- Over one busy week of real rollouts, auto-shake would have cut 2.0B of 12.4B input tokens.
+No artifact recovery reads were observed in the nine runs covered by the
+recovery report. Cache behavior and savings vary by workload; see the
+benchmark methodology.
 
-**Auto-shake is on by default** in this build: at 160k tokens on gpt-5.6, at 40% of the window on Astra, and on any resume after the prompt cache has expired. `/shake` in the TUI does it by hand, with a preview.
+The weekly projection estimated 2.04B fewer input tokens out of 12.37B across
+182 historical threads. It is a projection from rollouts, not a plan-quota
+measurement.
 
 - Headline numbers: [RESULTS.md](codex-rs/docs/shake-bench/RESULTS.md)
 - Docs and config: [shake.md](codex-rs/docs/shake.md)

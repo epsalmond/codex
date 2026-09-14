@@ -1,0 +1,6 @@
+#!/bin/sh
+# Run the offline estimator bundled beside this helper in a release archive.
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$script_dir/shake-savings-estimate.py" "$@"
