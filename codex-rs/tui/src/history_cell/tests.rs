@@ -24,6 +24,7 @@ use http::StatusCode;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1263,6 +1264,14 @@ fn vite_plus_update_available_history_cell_snapshot() {
 }
 
 #[test]
+fn codex_shake_update_notice_snapshot() {
+    let cell = new_codex_shake_update_notice();
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn web_search_history_cell_without_detail_snapshot() {
     let cell = new_web_search_call("call-1".to_string(), String::new(), WebSearchAction::Other);
     let rendered = render_lines(&cell.display_lines(/*width*/ 64)).join("\n");
@@ -1789,6 +1798,41 @@ fn session_header_clamps_to_narrow_width() {
 
     assert_eq!(widths, vec![usize::from(WIDTH); lines.len()]);
     insta::assert_snapshot!(render_lines(&lines).join("\n"));
+}
+
+#[test]
+fn session_header_shows_shake_branding() {
+    let cell = SessionHeaderHistoryCell::new(
+        "gpt-5.4".to_string(),
+        Some(ReasoningEffortConfig::High),
+        /*show_fast_status*/ false,
+        PathBuf::from("project"),
+        "0.154.0",
+    )
+    .with_feature_version(Some(crate::fork_update::SHAKE_FEATURE_VERSION));
+
+    let lines = cell.display_lines(/*width*/ 80);
+    let shake = lines[1]
+        .spans
+        .iter()
+        .find(|span| span.content == "Shake")
+        .expect("Shake branding span");
+    assert!(shake.style.add_modifier.contains(Modifier::BOLD));
+    insta::assert_snapshot!(render_lines(&lines).join("\n"));
+}
+
+#[test]
+fn session_header_shows_shake_branding_in_narrow_width() {
+    let cell = SessionHeaderHistoryCell::new(
+        "gpt-5.4".to_string(),
+        Some(ReasoningEffortConfig::High),
+        /*show_fast_status*/ false,
+        PathBuf::from("project"),
+        "0.154.0",
+    )
+    .with_feature_version(Some(crate::fork_update::SHAKE_FEATURE_VERSION));
+
+    insta::assert_snapshot!(render_lines(&cell.display_lines(/*width*/ 44)).join("\n"));
 }
 
 #[test]

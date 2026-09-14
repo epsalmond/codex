@@ -241,6 +241,20 @@ pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHist
     PlainHistoryCell { lines }
 }
 
+/// Creates the compact release reminder used by fork builds at startup.
+///
+/// Fork updates stay out of the interactive upstream update screen so a
+/// release check never delays session startup. The app inserts this cell once
+/// for the session when its cached fork release is newer.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn new_codex_shake_update_notice() -> PlainHistoryCell {
+    new_info_event(
+        "A new codex-shake release is available. Run codex-shake-update when you’re ready."
+            .to_string(),
+        /*hint*/ None,
+    )
+}
+
 pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     // Use a hair space (U+200A) to create a subtle, near-invisible separation
     // before the text. VS16 is intentionally omitted to keep spacing tighter

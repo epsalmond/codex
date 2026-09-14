@@ -991,10 +991,17 @@ async fn run_update_command(yes: bool) -> anyhow::Result<()> {
             match codex_tui::check_fork_update_now(http_client_factory).await? {
                 Some(latest_tag) if codex_tui::fork_tag_is_newer(&latest_tag, current_tag) => {
                     let install_command = codex_tui::fork_install_command();
+                    let update_command = std::env::var_os("CODEX_SHAKE_BIN_DIR")
+                        .map(|bin_dir| PathBuf::from(bin_dir).join("codex-shake-update"))
+                        .map(|path| {
+                            let path = path.to_string_lossy().replace('\'', "'\\''");
+                            format!("'{path}'")
+                        })
+                        .unwrap_or_else(|| "codex-shake-update".to_string());
                     println!("Latest release:  {latest_tag}");
-                    println!("Update available. Run:\n  {install_command}");
+                    println!("Update available. Run:\n  {update_command}");
                     if yes {
-                        return run_shell_command(install_command);
+                        return run_shell_command(&install_command);
                     }
                 }
                 Some(latest_tag) => {

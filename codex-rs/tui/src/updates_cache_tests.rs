@@ -27,3 +27,24 @@ async fn dismiss_version_creates_cache_file_when_missing() {
         ("999.0.0", Some("999.0.0"))
     );
 }
+
+#[tokio::test]
+async fn fork_cache_path_isolated_and_safe_for_custom_repository() {
+    let codex_home = tempdir().expect("temp codex home");
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await
+        .expect("load config");
+
+    assert_eq!(
+        fork_version_filepath(&config, "owner/repo '$x'")
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("version-fork-owner%2Frepo%20%27%24x%27.json")
+    );
+    assert_ne!(
+        fork_version_filepath(&config, "owner/repo"),
+        version_filepath(&config)
+    );
+}
