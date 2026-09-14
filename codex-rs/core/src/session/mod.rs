@@ -224,6 +224,8 @@ pub(crate) mod context_window;
 mod environment;
 pub(crate) mod extension_metrics;
 mod handlers;
+pub(crate) use handlers::ShakeTrigger;
+pub(crate) use handlers::apply_shake;
 mod inject;
 mod input_queue;
 mod mcp;

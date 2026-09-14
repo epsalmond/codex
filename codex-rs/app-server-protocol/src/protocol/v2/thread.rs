@@ -1130,7 +1130,7 @@ pub struct ThreadCompactStartResponse {}
 #[ts(export_to = "v2/")]
 pub struct ThreadShakeStartParams {
     pub thread_id: String,
-    /// Surgical context-reduction mode: "elide" | "images" | "thinking".
+    /// Surgical context-reduction mode: "elide" | "smartCompact" | "images" | "thinking".
     pub mode: String,
     /// Fingerprint returned by a preview; omit to apply without a preview.
     #[ts(optional = nullable)]
@@ -1147,7 +1147,7 @@ pub struct ThreadShakeStartResponse {}
 #[ts(export_to = "v2/")]
 pub struct ThreadShakePreviewParams {
     pub thread_id: String,
-    /// Surgical context-reduction mode: "elide" | "images" | "thinking".
+    /// Surgical context-reduction mode: "elide" | "smartCompact" | "images" | "thinking".
     pub mode: String,
 }
 

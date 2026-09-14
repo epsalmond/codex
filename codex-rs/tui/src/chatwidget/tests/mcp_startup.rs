@@ -964,6 +964,44 @@ async fn shake_submits_op_with_default_elide_mode() {
 }
 
 #[tokio::test]
+async fn smart_compact_submits_preview_op_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command(crate::slash_command::SlashCommand::SmartCompact);
+
+    match rx.try_recv() {
+        Ok(AppEvent::CodexOp(crate::app_command::AppCommand::PreviewShake { mode })) => {
+            assert_eq!(mode, codex_protocol::protocol::ShakeMode::SmartCompact);
+        }
+        other => panic!("expected AppEvent::CodexOp(SmartCompact preview), got {other:?}"),
+    }
+    assert!(chat.input_queue.user_turn_pending_start);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn smart_compact_rejects_args_without_submitting_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        crate::slash_command::SlashCommand::SmartCompact,
+        "unexpected".to_string(),
+        Vec::new(),
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert!(rendered.contains("Usage: /smart-compact"));
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
 async fn shake_with_args_submits_selected_mode() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -1001,6 +1039,32 @@ async fn shake_rejects_unknown_mode_without_submit() {
         "expected usage error"
     );
     assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
+async fn shake_rejects_smart_compact_mode_with_explicit_command_guidance() {
+    for mode in ["smart-compact", "smartCompact"] {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+
+        chat.dispatch_command_with_args(
+            crate::slash_command::SlashCommand::Shake,
+            mode.to_string(),
+            Vec::new(),
+        );
+
+        let rendered = drain_insert_history(&mut rx)
+            .iter()
+            .map(|lines| lines_to_single_string(lines))
+            .collect::<String>();
+        assert!(
+            rendered.contains("Use /smart-compact"),
+            "expected explicit smart-compact guidance for /shake {mode}, got {rendered:?}"
+        );
+        assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+        assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+        assert!(!chat.input_queue.user_turn_pending_start);
+    }
 }
 
 #[tokio::test]
@@ -1045,6 +1109,42 @@ async fn shake_notice_releases_input_gate() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
     assert_chatwidget_snapshot!("shake_notice_renders_summary", rendered);
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
+async fn smart_compact_notice_reports_handoff_path() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.dispatch_command(crate::slash_command::SlashCommand::SmartCompact);
+    assert!(chat.input_queue.user_turn_pending_start);
+
+    chat.on_warning(
+        "⛭ smart-compact: Shook 2 tool outputs (~1500 tokens freed).; Luna handoff saved at /tmp/smart-compact-handoff.md".to_string(),
+    );
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("smart_compact_notice_handoff_path", rendered);
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
+async fn smart_compact_notice_reports_mechanical_fallback() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.dispatch_command(crate::slash_command::SlashCommand::SmartCompact);
+    assert!(chat.input_queue.user_turn_pending_start);
+
+    chat.on_warning(
+        "⛭ smart-compact: Shook 2 tool outputs (~1500 tokens freed).; no Luna handoff was created; the mechanical Elide checkpoint is retained.".to_string(),
+    );
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("smart_compact_notice_mechanical_fallback", rendered);
     assert!(!chat.input_queue.user_turn_pending_start);
 }
 

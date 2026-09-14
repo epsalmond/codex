@@ -4,6 +4,6 @@
 
 export type ThreadShakePreviewParams = { threadId: string,
 /**
- * Surgical context-reduction mode: "elide" | "images" | "thinking".
+ * Surgical context-reduction mode: "elide" | "smartCompact" | "images" | "thinking".
  */
 mode: string, };

@@ -1,0 +1,7 @@
+---
+source: tui/src/chatwidget/tests/mcp_startup.rs
+assertion_line: 1128
+expression: rendered
+---
+⚠ Shook 2 tool outputs (~1500 tokens freed).; Luna handoff saved at /tmp/smart-
+  compact-handoff.md

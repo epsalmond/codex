@@ -6,7 +6,8 @@ use std::path::PathBuf;
 const CONTEXT_START_MARKER: &str = "<codex_smart_compact_handoff>";
 const CONTEXT_END_MARKER: &str = "</codex_smart_compact_handoff>";
 
-/// Durable context produced by the optional Luna pass after an automatic shake.
+/// Durable context produced by the optional Luna pass after an explicit
+/// smart-compact shake.
 ///
 /// The body is historical derived data. It is inserted as a user-role context
 /// fragment so the normal context parser can distinguish it from a real user

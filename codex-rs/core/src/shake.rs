@@ -452,7 +452,7 @@ impl ShakeResult {
                     )
                 }
             }
-            ShakeMode::Elide => {
+            ShakeMode::Elide | ShakeMode::SmartCompact => {
                 let mut parts: Vec<String> = Vec::new();
                 if self.tool_outputs_elided > 0 {
                     parts.push(format!(

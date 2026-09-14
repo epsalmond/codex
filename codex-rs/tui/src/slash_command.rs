@@ -40,6 +40,7 @@ pub enum SlashCommand {
     Init,
     Compact,
     Shake,
+    SmartCompact,
     Recap,
     Plan,
     Goal,
@@ -95,6 +96,9 @@ impl SlashCommand {
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Shake => {
                 "reclaim context by eliding tool outputs, images, or thinking blocks"
+            }
+            SlashCommand::SmartCompact => {
+                "elide heavy context; eligible OpenAI Astra sessions can ask Luna for a bounded handoff"
             }
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
@@ -190,6 +194,7 @@ impl SlashCommand {
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
                 | SlashCommand::Shake
+                | SlashCommand::SmartCompact
         )
     }
 
@@ -221,6 +226,7 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Shake
+            | SlashCommand::SmartCompact
             | SlashCommand::Recap
             | SlashCommand::Export
             | SlashCommand::Keymap

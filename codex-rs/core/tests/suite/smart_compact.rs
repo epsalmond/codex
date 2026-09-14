@@ -1,4 +1,4 @@
-//! Core integration coverage for Astra's optional summary-assisted Elide path.
+//! Core integration coverage for Astra's explicit summary-assisted Elide path.
 
 use anyhow::Context;
 use anyhow::Result;
@@ -118,6 +118,21 @@ async fn turn(codex: &codex_core::CodexThread, prompt: &str) -> Result<()> {
     Ok(())
 }
 
+async fn smart_compact(codex: &codex_core::CodexThread) -> Result<()> {
+    codex
+        .submit(Op::Shake {
+            mode: ShakeMode::SmartCompact,
+            expected_fingerprint: None,
+        })
+        .await?;
+    wait_for_event(codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.contains("smart-compact:"))
+    })
+    .await;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    Ok(())
+}
+
 fn text(item: &ResponseItem) -> Option<&str> {
     let ResponseItem::Message { content, .. } = item else {
         return None;
@@ -141,7 +156,7 @@ fn checkpoint(path: &Path) -> Result<Vec<ResponseItem>> {
             found = Some(history.into_iter().map(|item| item.item).collect());
         }
     }
-    found.context("automatic smart compact checkpoint")
+    found.context("smart compact checkpoint")
 }
 
 fn assert_handoff(item: &ResponseItem) {
@@ -245,7 +260,7 @@ fn fallback_response(case: Fallback) -> String {
     }
 }
 
-async fn auto_fixture(
+async fn explicit_fixture(
     server: &MockServer,
     summary: String,
 ) -> Result<(TestCodexBuilder, TestCodex, ResponseMock)> {
@@ -264,22 +279,60 @@ async fn auto_fixture(
         ],
     )
     .await;
-    let mut builder = test_codex().with_model(ASTRA).with_config(configure);
+    let mut builder = test_codex()
+        .with_model(ASTRA)
+        .with_config(|config| configure_skip(config, /*manual*/ true));
     let fixture = Box::pin(builder.build_with_auto_env(server)).await?;
     fixture
         .codex
         .inject_response_items(history("smart-call", SOURCE)?)
         .await?;
     turn(&fixture.codex, FIRST).await?;
+    smart_compact(&fixture.codex).await?;
+    let usage_after_smart = fixture
+        .codex
+        .token_usage_info()
+        .await
+        .context("usage after explicit smart compact")?;
+    let model_context_window = usage_after_smart
+        .model_context_window
+        .context("model context window after smart compact")?;
+    assert!(usage_after_smart.last_token_usage.total_tokens < model_context_window);
     turn(&fixture.codex, LAST).await?;
     Ok((builder, fixture, requests))
 }
 
+async fn automatic_fixture(server: &MockServer) -> Result<ResponseMock> {
+    let requests = mount_sse_sequence(
+        server,
+        vec![
+            sse(vec![
+                ev_assistant_message("first", "first"),
+                completed("r1", 70_000),
+            ]),
+            sse(vec![
+                ev_assistant_message("last", "last"),
+                completed("r2", 10_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex().with_model(ASTRA).with_config(configure);
+    let fixture = Box::pin(builder.build_with_auto_env(server)).await?;
+    fixture
+        .codex
+        .inject_response_items(history("automatic-call", SOURCE)?)
+        .await?;
+    turn(&fixture.codex, FIRST).await?;
+    turn(&fixture.codex, LAST).await?;
+    Ok(requests)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn astra_auto_elide_uses_luna_and_persists_bounded_handoff() -> Result<()> {
+async fn astra_explicit_smart_compact_uses_luna_and_persists_bounded_handoff() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = Box::pin(core_test_support::responses::start_mock_server()).await;
-    let (mut builder, fixture, requests) = auto_fixture(
+    let (mut builder, fixture, requests) = explicit_fixture(
         &server,
         sse(vec![
             ev_assistant_message(
@@ -313,7 +366,7 @@ async fn astra_auto_elide_uses_luna_and_persists_bounded_handoff() -> Result<()>
     assert!(
         luna_body
             .to_string()
-            .contains("portable handoff after an automatic mechanical context shake")
+            .contains("portable handoff after an explicit mechanical context shake")
     );
     assert!(luna_body.to_string().len() < 32 * 1024);
     let usage = fixture
@@ -386,7 +439,9 @@ async fn astra_auto_elide_uses_luna_and_persists_bounded_handoff() -> Result<()>
             .iter()
             .all(|item| !text(item).is_some_and(|text| text.contains(SOURCE)))
     );
-    builder = builder.with_model(ASTRA).with_config(configure);
+    builder = builder
+        .with_model(ASTRA)
+        .with_config(|config| configure_skip(config, /*manual*/ true));
     let resumed = Box::pin(builder.restart(&server, &fixture)).await?;
     let resumed_request = mount_sse_sequence(
         &server,
@@ -417,10 +472,11 @@ async fn astra_auto_elide_uses_luna_and_persists_bounded_handoff() -> Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resumed_auto_elide_summarizes_the_previous_handoff_and_artifact() -> Result<()> {
+async fn resumed_explicit_smart_compact_summarizes_the_previous_handoff_and_artifact() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
     let server = Box::pin(core_test_support::responses::start_mock_server()).await;
-    let (mut builder, fixture, first_requests) = auto_fixture(
+    let (mut builder, fixture, first_requests) = explicit_fixture(
         &server,
         sse(vec![
             ev_assistant_message(
@@ -468,13 +524,16 @@ async fn resumed_auto_elide_summarizes_the_previous_handoff_and_artifact() -> Re
         ],
     )
     .await;
-    builder = builder.with_model(ASTRA).with_config(configure);
+    builder = builder
+        .with_model(ASTRA)
+        .with_config(|config| configure_skip(config, /*manual*/ true));
     let resumed = Box::pin(builder.restart(&server, &fixture)).await?;
     turn(&resumed.codex, RESUMED).await?;
     resumed
         .codex
         .inject_response_items(history("smart-call-2", SECOND_SOURCE)?)
         .await?;
+    smart_compact(&resumed.codex).await?;
     turn(&resumed.codex, "SMART_COMPACT_SECOND_PROMPT").await?;
 
     let requests = resumed_requests.requests();
@@ -541,7 +600,9 @@ async fn cancelled_luna_handoff_keeps_mechanical_checkpoint() -> Result<()> {
     ];
     let (streaming_server, _completions) =
         start_streaming_sse_server(vec![vec![first_response], summary_response]).await;
-    let mut builder = test_codex().with_model(ASTRA).with_config(configure);
+    let mut builder = test_codex()
+        .with_model(ASTRA)
+        .with_config(|config| configure_skip(config, /*manual*/ true));
     let fixture = builder
         .build_with_streaming_server(&streaming_server)
         .await?;
@@ -552,10 +613,10 @@ async fn cancelled_luna_handoff_keeps_mechanical_checkpoint() -> Result<()> {
     turn(&fixture.codex, FIRST).await?;
     fixture
         .codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: LAST.to_string(),
-            text_elements: Vec::new(),
-        }]))
+        .submit(Op::Shake {
+            mode: ShakeMode::SmartCompact,
+            expected_fingerprint: None,
+        })
         .await?;
     streaming_server.wait_for_request_count(2).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -593,7 +654,7 @@ async fn cancelled_luna_handoff_keeps_mechanical_checkpoint() -> Result<()> {
 async fn summary_failure_falls_back_to_mechanical_elide(case: Fallback) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = Box::pin(core_test_support::responses::start_mock_server()).await;
-    let (_builder, fixture, requests) = auto_fixture(&server, fallback_response(case)).await?;
+    let (_builder, fixture, requests) = explicit_fixture(&server, fallback_response(case)).await?;
     let requests = requests.requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[1].body_json()["model"], LUNA);
@@ -680,6 +741,24 @@ async fn luna_and_manual_elide_skip_summary_model(model: &str) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn astra_automatic_elide_never_requests_luna() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = Box::pin(core_test_support::responses::start_mock_server()).await;
+    let requests = automatic_fixture(&server).await?.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| {
+        request.body_json()["model"] == ASTRA
+            && !request.body_json().to_string().contains("smart_compact")
+            && !request
+                .body_json()
+                .to_string()
+                .contains("SMART_COMPACT_SUMMARY_MARKER")
+    }));
+    assert!(requests[1].body_json().to_string().contains("[shaken ~"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn luna_usage_exhausts_budget_before_survivor_sampling() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = Box::pin(core_test_support::responses::start_mock_server()).await;
@@ -704,7 +783,7 @@ async fn luna_usage_exhausts_budget_before_survivor_sampling() -> Result<()> {
         test_codex()
             .with_model(ASTRA)
             .with_config(|config| {
-                configure(config);
+                configure_skip(config, /*manual*/ true);
                 config.rollout_budget = Some(codex_core::config::RolloutBudgetConfig {
                     limit_tokens: 70_100,
                     reminder_at_remaining_tokens: vec![],
@@ -722,10 +801,10 @@ async fn luna_usage_exhausts_budget_before_survivor_sampling() -> Result<()> {
     turn(&fixture.codex, FIRST).await?;
     fixture
         .codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: LAST.to_string(),
-            text_elements: vec![],
-        }]))
+        .submit(Op::Shake {
+            mode: ShakeMode::SmartCompact,
+            expected_fingerprint: None,
+        })
         .await?;
     wait_for_event(&fixture.codex, |event| matches!(event, EventMsg::Error(error)
         if error.codex_error_info == Some(codex_protocol::protocol::CodexErrorInfo::SessionBudgetExceeded)
@@ -734,6 +813,15 @@ async fn luna_usage_exhausts_budget_before_survivor_sampling() -> Result<()> {
         matches!(event, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
     })
     .await;
+    let usage_after_smart = fixture
+        .codex
+        .token_usage_info()
+        .await
+        .context("usage after budget-stopped smart compact")?;
+    let model_context_window = usage_after_smart
+        .model_context_window
+        .context("model context window after budget stop")?;
+    assert!(usage_after_smart.last_token_usage.total_tokens < model_context_window);
     assert_eq!(requests.requests().len(), 2);
     let usage = fixture
         .codex
