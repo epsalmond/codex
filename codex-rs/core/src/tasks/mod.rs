@@ -2,6 +2,7 @@ mod compact;
 mod lifecycle;
 mod regular;
 mod review;
+mod smart_compact;
 mod user_shell;
 
 use std::sync::Arc;
@@ -63,6 +64,7 @@ use codex_protocol::error::Result as CodexResult;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
+pub(crate) use smart_compact::SmartCompactTask;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;

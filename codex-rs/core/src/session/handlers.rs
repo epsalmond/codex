@@ -22,6 +22,7 @@ use crate::context::NodeReplReviewEvidence;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
+use crate::tasks::SmartCompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
@@ -53,6 +54,7 @@ use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
 use serde_json::Value;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
@@ -118,6 +120,10 @@ pub async fn shake(
     mode: codex_protocol::protocol::ShakeMode,
     expected_fingerprint: Option<String>,
 ) {
+    if mode == codex_protocol::protocol::ShakeMode::SmartCompact {
+        smart_compact(sess, sub_id, expected_fingerprint).await;
+        return;
+    }
     // Rewriting history mid-turn is unsafe (the running task holds a history
     // snapshot); refuse while a turn is active, mirroring thread_rollback.
     //
@@ -142,12 +148,67 @@ pub async fn shake(
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
+    let cancellation_token = CancellationToken::new();
     apply_shake(
         sess,
         turn_context.as_ref(),
         mode,
         expected_fingerprint,
         ShakeTrigger::Manual,
+        &cancellation_token,
+    )
+    .await;
+}
+
+async fn smart_compact(sess: &Arc<Session>, sub_id: String, expected_fingerprint: Option<String>) {
+    // The task itself owns the history rewrite and the cancellable Luna
+    // request. Refuse an existing turn before spawning it so it cannot race a
+    // step context that already captured the live history.
+    let has_active_turn = { sess.active_turn.lock().await.is_some() };
+    if has_active_turn {
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Warning(WarningEvent {
+                message: "Cannot smart-compact while a turn is in progress.".to_string(),
+            }),
+        })
+        .await;
+        return;
+    }
+    if let Some(expected) = expected_fingerprint.as_deref() {
+        let history = sess.clone_history().await;
+        let envelopes = history.into_annotated_items();
+        let smart_context = format!(
+            "{}|{}",
+            sess.effective_model_slug().await,
+            sess.provider().await.name,
+        );
+        let current = crate::shake::preview::fingerprint(
+            &envelopes,
+            codex_protocol::protocol::ShakeMode::SmartCompact,
+            Some(&smart_context),
+        )
+        .ok();
+        if current.as_deref() != Some(expected) {
+            sess.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::Warning(WarningEvent {
+                    message: "⛭ shake: History or model settings changed since the preview. Run /smart-compact again to review it.".to_string(),
+                }),
+            })
+            .await;
+            return;
+        }
+    }
+    let turn_context = sess
+        .new_turn_with_default_settings(sub_id, Default::default())
+        .await;
+    sess.spawn_task(
+        turn_context,
+        Vec::new(),
+        SmartCompactTask {
+            expected_fingerprint,
+        },
     )
     .await;
 }
@@ -165,24 +226,46 @@ pub(crate) async fn apply_shake(
     mode: codex_protocol::protocol::ShakeMode,
     expected_fingerprint: Option<String>,
     trigger: ShakeTrigger,
+    cancellation_token: &CancellationToken,
 ) -> crate::shake::ShakeResult {
-    let ephemeral_elide =
-        mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
+    let is_smart_compact = mode == codex_protocol::protocol::ShakeMode::SmartCompact;
+    let ephemeral_elide = matches!(
+        mode,
+        codex_protocol::protocol::ShakeMode::Elide
+            | codex_protocol::protocol::ShakeMode::SmartCompact
+    ) && turn_context.config.ephemeral;
+    let smart_eligible = crate::smart_compact::eligible(turn_context);
+    let collect_smart_sources = is_smart_compact && smart_eligible;
+    let mut smart_sources = crate::smart_compact::SourceAccumulator::default();
 
     // Load the live model history and apply the surgical reduction.
     let mut envelopes = sess.clone_history().await.into_annotated_items();
+    let smart_context = if is_smart_compact {
+        Some(format!(
+            "{}|{}",
+            sess.effective_model_slug().await,
+            turn_context.provider.info().name,
+        ))
+    } else {
+        None
+    };
     if let Some(expected) = expected_fingerprint
-        && crate::shake::preview::fingerprint(&envelopes, mode)
+        && crate::shake::preview::fingerprint(&envelopes, mode, smart_context.as_deref())
             .ok()
             .as_ref()
             != Some(&expected)
     {
+        let command = if is_smart_compact {
+            "/smart-compact"
+        } else {
+            "/shake"
+        };
         sess.send_event(
             turn_context,
             EventMsg::Warning(WarningEvent {
-                message:
-                    "⛭ shake: History changed since the preview. Run /shake again to review it."
-                        .to_string(),
+                message: format!(
+                    "⛭ shake: History changed since the preview. Run {command} again to review it."
+                ),
             }),
         )
         .await;
@@ -193,7 +276,8 @@ pub(crate) async fn apply_shake(
         codex_protocol::protocol::ShakeMode::Thinking => {
             crate::shake::shake_thinking(&mut envelopes)
         }
-        codex_protocol::protocol::ShakeMode::Elide => {
+        codex_protocol::protocol::ShakeMode::Elide
+        | codex_protocol::protocol::ShakeMode::SmartCompact => {
             if ephemeral_elide {
                 crate::shake::ShakeResult::default()
             } else {
@@ -204,8 +288,13 @@ pub(crate) async fn apply_shake(
                         // the same `label`) to compute the exact path it just
                         // wrote to, so the placeholder can name it for
                         // shell-tool search without a second filesystem call.
-                        uri.strip_prefix("artifact://")
-                            .map(|id| store.destination_path(id, label).display().to_string())
+                        let path = uri
+                            .strip_prefix("artifact://")
+                            .map(|id| store.destination_path(id, label));
+                        if collect_smart_sources && let Some(path) = path.as_deref() {
+                            smart_sources.record(content, label, path);
+                        }
+                        path.map(|path| path.display().to_string())
                     }
                     Err(err) => {
                         warn!(%err, "failed to save shake artifact; preserving original region");
@@ -232,6 +321,76 @@ pub(crate) async fn apply_shake(
         }
     };
 
+    let mut mechanical_checkpoint_persisted = false;
+    if is_smart_compact && !result.is_noop() {
+        // Make the mechanical rewrite durable before waiting on Luna. The
+        // explicit task is cancellable and the session may hard-abort it
+        // after its short interruption grace period.
+        sess.replace_history_and_persist_after_shake(
+            std::mem::take(&mut envelopes),
+            trigger.compacted_item_message(),
+        )
+        .await;
+        sess.recompute_token_usage(turn_context).await;
+        if let Err(err) = sess.flush_rollout().await {
+            warn!(%err, "failed to flush mechanical smart-compact checkpoint");
+        }
+        envelopes = sess.clone_history().await.into_annotated_items();
+        mechanical_checkpoint_persisted = true;
+    }
+
+    let mut smart_handoff_artifact_path = None;
+    if is_smart_compact && !smart_sources.is_empty() {
+        let mut smart_handoff_inserted = false;
+        match crate::smart_compact::summarize(
+            sess,
+            turn_context,
+            &envelopes,
+            &smart_sources,
+            cancellation_token,
+        )
+        .await
+        {
+            Ok(Some(handoff)) => {
+                smart_handoff_artifact_path = Some(handoff.artifact_path().display().to_string());
+                crate::smart_compact::insert_handoff(&mut envelopes, handoff);
+                smart_handoff_inserted = true;
+            }
+            Ok(None) => {}
+            Err(err)
+                if matches!(
+                    err.details(),
+                    codex_protocol::error::CodexErrorDetails::SessionBudgetExceeded
+                ) =>
+            {
+                cancellation_token.cancel();
+                sess.track_turn_codex_error(turn_context, &err);
+                sess.send_event(
+                    turn_context,
+                    EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+                )
+                .await;
+            }
+            Err(err) => warn!(%err, "smart compaction Luna usage accounting failed"),
+        }
+        if smart_handoff_inserted {
+            sess.replace_history_and_persist_after_shake(
+                std::mem::take(&mut envelopes),
+                trigger.compacted_item_message(),
+            )
+            .await;
+            sess.recompute_token_usage(turn_context).await;
+            if let Err(err) = sess.flush_rollout().await {
+                warn!(%err, "failed to flush smart-compact handoff checkpoint");
+            }
+        }
+    }
+
+    // Luna usage is charged to the temporary task context. Restore the
+    // surviving Astra history estimate after every outcome, including
+    // fallback and budget-stop paths, while keeping cumulative billing.
+    sess.recompute_token_usage(turn_context).await;
+
     // Always surface the operator summary, even on a no-op. Prefix the message
     // with the well-known marker so the TUI can identify the completion notice
     // and release its input gate; the message stays human-readable for other
@@ -239,6 +398,17 @@ pub(crate) async fn apply_shake(
     let summary = if ephemeral_elide {
         "⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery."
             .to_string()
+    } else if is_smart_compact {
+        match smart_handoff_artifact_path {
+            Some(path) => format!(
+                "⛭ smart-compact: {}; Luna handoff saved at {path}",
+                result.summary_line(mode)
+            ),
+            None => format!(
+                "⛭ smart-compact: {}; no Luna handoff was created; the mechanical Elide checkpoint is retained.",
+                result.summary_line(mode)
+            ),
+        }
     } else if trigger == ShakeTrigger::AutomaticEscalated {
         format!("⛭ shake (auto, escalated): {}", result.summary_line(mode))
     } else if trigger == ShakeTrigger::AutomaticColdResume {
@@ -249,7 +419,7 @@ pub(crate) async fn apply_shake(
     } else {
         format!("⛭ shake: {}", result.summary_line(mode))
     };
-    if !result.is_noop() {
+    if !result.is_noop() && !mechanical_checkpoint_persisted {
         // Persist a full compaction checkpoint with the post-shake replacement
         // history so a cold resume reconstructs the rewritten (not pre-shake)
         // context, then update token accounting for the live session.
@@ -259,6 +429,9 @@ pub(crate) async fn apply_shake(
         )
         .await;
         sess.recompute_token_usage(turn_context).await;
+    }
+
+    if !result.is_noop() {
         info!(
             target: "codex_core::shake",
             trigger = trigger.as_str(),

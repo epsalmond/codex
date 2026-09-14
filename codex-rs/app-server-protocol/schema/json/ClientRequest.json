@@ -5052,7 +5052,7 @@
     "ThreadShakePreviewParams": {
       "properties": {
         "mode": {
-          "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+          "description": "Surgical context-reduction mode: \"elide\" | \"smartCompact\" | \"images\" | \"thinking\".",
           "type": "string"
         },
         "threadId": {
@@ -5075,7 +5075,7 @@
           ]
         },
         "mode": {
-          "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+          "description": "Surgical context-reduction mode: \"elide\" | \"smartCompact\" | \"images\" | \"thinking\".",
           "type": "string"
         },
         "threadId": {

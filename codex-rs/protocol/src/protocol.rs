@@ -788,6 +788,10 @@ pub enum ShakeMode {
     /// Replace whole tool-call outputs and large fenced/XML blocks with a
     /// short placeholder.
     Elide,
+    /// Replace elidable content with placeholders and ask Luna for an
+    /// explicit, bounded durable handoff when the active model is eligible.
+    #[serde(rename = "smartCompact")]
+    SmartCompact,
     /// Strip every image block out of message and tool-output content.
     Images,
     /// Drop every reasoning (thinking) item from history.
@@ -798,6 +802,7 @@ impl ShakeMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Elide => "elide",
+            Self::SmartCompact => "smartCompact",
             Self::Images => "images",
             Self::Thinking => "thinking",
         }
@@ -806,6 +811,7 @@ impl ShakeMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "elide" => Some(Self::Elide),
+            "smartCompact" | "smart-compact" => Some(Self::SmartCompact),
             "images" => Some(Self::Images),
             "thinking" => Some(Self::Thinking),
             _ => None,

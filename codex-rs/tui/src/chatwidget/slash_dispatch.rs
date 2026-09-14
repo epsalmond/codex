@@ -287,6 +287,7 @@ impl ChatWidget {
                 self.app_event_tx.compact();
             }
             SlashCommand::Shake => self.handle_shake_slash_command(""),
+            SlashCommand::SmartCompact => self.handle_smart_compact_slash_command(),
             SlashCommand::Recap => {
                 let Some(thread_id) = self.thread_id else {
                     self.add_error_message(
@@ -745,6 +746,13 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Shake => self.handle_shake_slash_command(trimmed),
+            SlashCommand::SmartCompact => {
+                if !trimmed.is_empty() {
+                    self.add_error_message("Usage: /smart-compact".to_string());
+                    return;
+                }
+                self.handle_smart_compact_slash_command();
+            }
             SlashCommand::Cd => self.request_working_directory_change(trimmed),
             SlashCommand::Pwd => {
                 self.add_error_message("Usage: /pwd".to_string());
@@ -1187,7 +1195,8 @@ impl ChatWidget {
             | SlashCommand::Rename
             | SlashCommand::Recap
             | SlashCommand::TestApproval
-            | SlashCommand::Shake => QueueDrain::Continue,
+            | SlashCommand::Shake
+            | SlashCommand::SmartCompact => QueueDrain::Continue,
             SlashCommand::Cd => match self.thread_id {
                 Some(thread_id) if self.can_change_working_directory(thread_id) => QueueDrain::Stop,
                 _ => QueueDrain::Continue,
@@ -1311,6 +1320,15 @@ impl ChatWidget {
             );
             return;
         }
+        if trimmed.eq_ignore_ascii_case("smart-compact")
+            || trimmed.eq_ignore_ascii_case("smartcompact")
+        {
+            self.add_error_message(
+                "Use /smart-compact for the Luna handoff; /shake only supports mechanical modes."
+                    .to_string(),
+            );
+            return;
+        }
         let mode = if trimmed.is_empty() {
             codex_protocol::protocol::ShakeMode::parse("elide")
         } else {
@@ -1329,8 +1347,21 @@ impl ChatWidget {
         self.app_event_tx.shake(mode);
     }
 
-    /// A `/shake` completion notice arrived from the core: release the pending
-    /// input gate. Paired with `handle_shake_slash_command`.
+    /// Handler for `/smart-compact`, the only product entry point that can
+    /// request a Luna handoff. The existing shake preview/start path performs
+    /// the same stale-history and active-turn checks as `/shake`.
+    fn handle_smart_compact_slash_command(&mut self) {
+        if self.blocks_direct_input {
+            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            return;
+        }
+        self.input_queue.user_turn_pending_start = true;
+        self.app_event_tx
+            .shake(codex_protocol::protocol::ShakeMode::SmartCompact);
+    }
+
+    /// A `/shake` or `/smart-compact` completion notice arrived from the core:
+    /// release the pending input gate.
     pub(crate) fn handle_shake_completed(&mut self) {
         self.input_queue.user_turn_pending_start = false;
         self.refresh_pending_input_preview();

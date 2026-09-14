@@ -1,7 +1,8 @@
 # Shake — surgical context reduction
 
-`shake` reduces a thread's live context by removing heavy content *mechanically*,
-without asking a model to summarize. It is a fork-local feature (not upstream),
+`shake` reduces a thread's live context by removing heavy content *mechanically*.
+The separate `/smart-compact` action can explicitly ask an eligible OpenAI Astra
+thread to have Luna summarize the removed material. It is a fork-local feature (not upstream),
 so this file is its reference documentation.
 
 (Naming note: this doc is about the context-reduction feature above, not the
@@ -39,6 +40,7 @@ Implementation:
 | Mode | What it removes | Recoverable? |
 | --- | --- | --- |
 | `elide` | Whole tool-call outputs and large fenced/XML blocks in message text, replaced by short placeholders | **Yes, via the filesystem** — each region is saved to a per-thread file first, and the placeholder names that file's absolute on-disk path, so the model can search it directly with a shell tool |
+| `smartCompact` | The same mechanical Elide transformation, followed by an explicit bounded Luna handoff on OpenAI Astra | **Yes, via the filesystem**, with the derived handoff persisted alongside the source artifacts |
 | `images` | Image blocks | No — content is discarded |
 | `thinking` | Reasoning items | No — content is discarded |
 
@@ -139,6 +141,20 @@ exact history that was measured, so a stale confirmation is rejected.
 `/shake` refuses while a turn is in progress, because a running task may hold a
 `StepContext` snapshot of the history that the rewrite would invalidate.
 
+## Explicit `/smart-compact`
+
+`/smart-compact` uses the same preview and confirmation flow as `/shake`, but
+selects the `smartCompact` mode. The mechanical Elide checkpoint is persisted
+before the optional Luna request, so an interrupt during the request leaves the
+reduced history and source artifacts recoverable. The Luna request is bounded
+and cancellable; a malformed, oversized, timed-out, or cancelled response keeps
+the mechanical checkpoint and omits the derived handoff.
+
+Only OpenAI Astra-family threads use Luna. Other models and providers perform
+the mechanical Elide operation without a model handoff. The app-server
+`thread/shake/preview` and `thread/shake/start` methods accept `mode:
+"smartCompact"` for this explicit action.
+
 ## Persistence
 
 Codex's thread store is append-only, so the pre-shake rollout bytes cannot be
@@ -153,6 +169,8 @@ Auto-shake runs `elide` automatically at the pre-sampling point in `run_turn`,
 the same place auto-compaction decides. The intent is that a cheap surgical
 reduction removes the *need* to compact; auto-compaction stays the fallback and
 still fires when auto-shake is disabled, impossible, or would not free enough.
+Automatic `elide` never invokes Luna or creates a smart-compact handoff; Luna is
+available only through the explicit `/smart-compact`/`smartCompact` action.
 
 ### Decision sequence
 
@@ -367,12 +385,13 @@ when its parent does — which is the intended per-model behavior.
 A shake that changed anything emits:
 
 - the persisted `CompactedItem` message, `[shake] context reduced surgically`
-  for a manual shake, `[shake] context reduced surgically (automatic)` for the
+  for a manual shake, including explicit `smartCompact`, `[shake] context reduced surgically (automatic)` for the
   plain automatic pass, `[shake] context reduced surgically (automatic, cold
   resume)` for the prompt-cache-expiry pass, and `[shake] context reduced
   surgically (automatic, escalated)` for the escalated pass — the shared prefix
   keeps existing readers matching, the suffix lets benchmarks separate the four;
-- a transcript `Warning` event, prefixed `⛭ shake:` (manual), `⛭ shake (auto):`
+- a transcript `Warning` event, prefixed `⛭ shake:` (manual mechanical),
+  `⛭ smart-compact:` (explicit `smartCompact`), `⛭ shake (auto):`
   (automatic), `⛭ shake (auto, cold resume):` (cold resume), or
   `⛭ shake (auto, escalated):` (escalated);
 - a structured `INFO` log on target `codex_core::shake` with

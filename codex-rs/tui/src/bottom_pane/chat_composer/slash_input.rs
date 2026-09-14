@@ -684,4 +684,29 @@ mod tests {
         );
         assert!(composer.draft.textarea.is_empty());
     }
+
+    #[test]
+    fn smart_compact_args_are_dispatched_for_usage_validation() {
+        let mut composer = composer_with_text_at_cursor(
+            "/smart-compact unexpected",
+            "/smart-compact unexpected".len(),
+        );
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::CommandWithArgs(
+                SlashCommand::SmartCompact,
+                "unexpected".to_string(),
+                Vec::new(),
+            )
+        );
+    }
+
+    #[test]
+    fn smart_compact_completion_uses_command_name() {
+        let mut composer = composer_with_text_at_cursor("/smart", "/smart".len());
+
+        assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);
+        assert_eq!(composer.draft.textarea.text(), "/smart-compact ");
+    }
 }

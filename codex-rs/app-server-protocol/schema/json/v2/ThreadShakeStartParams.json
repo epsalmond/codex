@@ -9,7 +9,7 @@
       ]
     },
     "mode": {
-      "description": "Surgical context-reduction mode: \"elide\" | \"images\" | \"thinking\".",
+      "description": "Surgical context-reduction mode: \"elide\" | \"smartCompact\" | \"images\" | \"thinking\".",
       "type": "string"
     },
     "threadId": {

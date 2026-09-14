@@ -30,7 +30,16 @@ impl CodexThread {
             /*persistent_thread*/ !ephemeral,
             &artifact_store,
         );
-        let fingerprint = fingerprint(items, mode)?;
+        let smart_context = if mode == ShakeMode::SmartCompact {
+            Some(format!(
+                "{}|{}",
+                self.session.effective_model_slug().await,
+                self.session.provider().await.name,
+            ))
+        } else {
+            None
+        };
+        let fingerprint = fingerprint(items, mode, smart_context.as_deref())?;
         Ok(ShakePreview {
             fingerprint,
             tokens_before: estimate.tokens_before,
@@ -74,14 +83,14 @@ pub(crate) fn estimate_shake(
 ) -> ShakeEstimate {
     let tokens_before = sum_item_tokens(items);
     let mut reduced = items.to_vec();
-    let unavailable_reason = (!persistent_thread && mode == ShakeMode::Elide).then(|| {
-        "Elide requires a persistent thread so removed text can be recovered.".to_string()
-    });
+    let unavailable_reason = (!persistent_thread
+        && matches!(mode, ShakeMode::Elide | ShakeMode::SmartCompact))
+    .then(|| "Elide requires a persistent thread so removed text can be recovered.".to_string());
     let result = if unavailable_reason.is_some() {
         super::ShakeResult::default()
     } else {
         match mode {
-            ShakeMode::Elide => super::shake_elide_with_recovery(
+            ShakeMode::Elide | ShakeMode::SmartCompact => super::shake_elide_with_recovery(
                 &mut reduced,
                 protect_tokens,
                 &mut |content, label| {
@@ -116,10 +125,15 @@ fn sum_item_tokens(items: &[ResponseItemEnvelope]) -> i64 {
 pub(crate) fn fingerprint(
     items: &[ResponseItemEnvelope],
     mode: ShakeMode,
+    smart_context: Option<&str>,
 ) -> serde_json::Result<String> {
     // This digest detects stale previews; it is not an authorization token.
     let mut digest = Sha1::new();
     digest.update(mode.as_str());
+    if let Some(smart_context) = smart_context {
+        digest.update("smartCompact-context");
+        digest.update(smart_context);
+    }
     for envelope in items {
         digest.update(serde_json::to_vec(&envelope.item)?);
     }
@@ -206,5 +220,22 @@ mod tests {
         );
         assert_eq!(estimate.result.tool_outputs_elided, 1);
         assert!(estimate.tokens_after < estimate.tokens_before);
+    }
+
+    #[test]
+    fn smart_compact_fingerprint_binds_model_provider_context() {
+        let items = history(/*namespace*/ None, "exec_command");
+        let openai_astra = fingerprint(&items, ShakeMode::SmartCompact, Some("gpt-6-astra|OpenAI"))
+            .expect("fingerprint should serialize");
+        let other_provider = fingerprint(
+            &items,
+            ShakeMode::SmartCompact,
+            Some("gpt-6-astra|Other provider"),
+        )
+        .expect("fingerprint should serialize");
+        assert_ne!(openai_astra, other_provider);
+        let mechanical =
+            fingerprint(&items, ShakeMode::Elide, None).expect("fingerprint should serialize");
+        assert_ne!(openai_astra, mechanical);
     }
 }

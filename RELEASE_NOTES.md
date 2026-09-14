@@ -10,6 +10,12 @@ Surviving conversation content stays byte-identical, and removed content remains
 available in local artifact files. Auto-shake runs by default; `/shake` lets you
 preview and trigger it yourself.
 
+Shake v0.2.0 adds an explicit `/smart-compact` action for bounded smart-compaction
+handoffs on OpenAI's gpt-6-astra family. A fresh gpt-5.6-luna pass preserves the goals,
+decisions, open threads, files, commands, and user context that matter after a
+shake, while the mechanical artifacts remain the source of truth if the pass
+is unavailable.
+
 The published replay reduced active history from 536k to 176k tokens. Its
 measured results were:
 

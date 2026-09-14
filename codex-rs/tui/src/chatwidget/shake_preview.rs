@@ -88,6 +88,10 @@ impl ChatWidget {
                 "{} tool outputs and {} text blocks. Recent ~4k tokens stay protected; removed text is recoverable.",
                 preview.tool_outputs, preview.text_blocks,
             ),
+            ShakeMode::SmartCompact => format!(
+                "{} tool outputs and {} text blocks. Recent ~4k tokens stay protected; removed text is recoverable. Mechanical Elide runs first. Eligible OpenAI Astra sessions then ask Luna for an explicit bounded handoff; other models keep the mechanical Elide checkpoint only.",
+                preview.tool_outputs, preview.text_blocks,
+            ),
             ShakeMode::Images => format!(
                 "Images to remove: {}. This mode does not save recovery artifacts.",
                 preview.images

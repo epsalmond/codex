@@ -51,6 +51,29 @@ async fn shake_preview_confirms_only_after_selection() {
 }
 
 #[tokio::test]
+async fn smart_compact_preview_explains_explicit_luna_handoff() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-6-astra")).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.show_shake_preview(thread_id, ShakeMode::SmartCompact, preview());
+    assert_chatwidget_snapshot!(
+        "smart_compact_preview",
+        render_bottom_popup(&chat, /*width*/ 90)
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let AppEvent::SubmitThreadOp { op, .. } = rx.try_recv().unwrap() else {
+        panic!("expected confirmed smart compact");
+    };
+    assert_eq!(
+        op,
+        Op::Shake {
+            mode: ShakeMode::SmartCompact,
+            expected_fingerprint: "measured-history".to_string(),
+        }
+    );
+}
+
+#[tokio::test]
 async fn shake_preview_cancel_and_escape_leave_input_available() {
     for cancel_key in [KeyCode::Esc, KeyCode::Enter] {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

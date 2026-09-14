@@ -333,7 +333,7 @@ async fn shake_preview_measures_non_text_modes(mode: ShakeMode) -> Result<()> {
         match mode {
             ShakeMode::Images => (1, 0),
             ShakeMode::Thinking => (0, 1),
-            ShakeMode::Elide => unreachable!(),
+            ShakeMode::Elide | ShakeMode::SmartCompact => unreachable!(),
         }
     );
     assert!(before.tokens_before > before.tokens_after);

@@ -23,6 +23,8 @@ expression: commands
 /app - continue this session in the Desktop app
 /init - create an AGENTS.md file with instructions for Codex
 /compact - summarize conversation to prevent hitting the context limit
+/shake - reclaim context by eliding tool outputs, images, or thinking blocks
+/smart-compact - elide heavy context; eligible OpenAI Astra sessions can ask Luna for a bounded handoff
 /recap - summarize the current conversation now
 /agents - view and switch between all active agent sessions
 /side - start a side conversation in an ephemeral fork

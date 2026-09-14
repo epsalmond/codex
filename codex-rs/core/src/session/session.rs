@@ -598,6 +598,15 @@ async fn warm_plugins_and_skills_for_session_init(
 }
 
 impl Session {
+    pub(crate) async fn effective_model_slug(&self) -> String {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .step_settings
+            .collaboration_mode
+            .model()
+            .to_string()
+    }
     /// Returns the concrete identity for this thread.
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.thread_id
