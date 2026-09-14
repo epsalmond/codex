@@ -259,7 +259,7 @@ jobs:
             sha256sum -c SHA256SUMS
           )
 
-          .github/scripts/fork-release-notes.sh \
+          bash .github/scripts/fork-release-notes.sh \
             "$GITHUB_WORKSPACE" "$FORK_REPO" "$FORK_BRANCH" \
             "$RELEASE_SHA" "$SOURCE_VERSION" "$STABLE_LINEAGE" \
             "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version.txt)" \

@@ -105,7 +105,7 @@ case "$event_ref" in
     ;;
   refs/tags/*)
     tag=${event_ref#refs/tags/}
-    [[ "$tag" =~ ^local-features-v[0-9]+\.[0-9]+\.[0-9]+(-main)?(-r[0-9]+(\.[0-9a-fA-F]+)+|-[0-9a-fA-F]{12})$ ]] ||
+    [[ "$tag" =~ ^local-features-v[0-9]+\.[0-9]+\.[0-9]+(-main)?(-r[0-9]{1,14}\.[0-9a-fA-F]+|-[0-9a-fA-F]{12})$ ]] ||
       die "tag is not a supported local-features-v* identity: $tag"
     tag_sha=$("${git_cmd[@]}" rev-parse --verify "refs/tags/$tag^{commit}") ||
       die "tag does not resolve to a commit: $tag"
@@ -120,6 +120,9 @@ esac
 
 if [[ "$source_kind" == branch-merge ]]; then
   [[ -n "$upstream_url" ]] || die "branch release needs public openai/main for provenance"
+fi
+
+if [[ -n "$upstream_url" ]]; then
   upstream_ref=refs/remotes/fork-release-upstream/main
   "${git_cmd[@]}" fetch --no-tags --quiet "$upstream_url" \
     "+refs/heads/main:$upstream_ref" \
@@ -129,20 +132,12 @@ if [[ "$source_kind" == branch-merge ]]; then
     die "public openai/main has no common history with $release_sha"
   [[ -n "$included_upstream_main_sha" ]] ||
     die "public openai/main merge-base is empty"
-elif [[ -n "$upstream_url" ]]; then
-  upstream_ref=refs/remotes/fork-release-upstream/main
-  if "${git_cmd[@]}" fetch --no-tags --quiet "$upstream_url" "+refs/heads/main:$upstream_ref"; then
-    if [[ "$parent_count" -eq 2 ]]; then
-      included_upstream_main_sha=$("${git_cmd[@]}" merge-base "$release_sha" "$upstream_ref" || true)
-      included_upstream_main_sha=${included_upstream_main_sha:-none}
-    fi
-  else
-    printf 'fork-release metadata: public openai/main was unavailable; upstream provenance is none\\n' >&2
-  fi
 fi
 
 if [[ "$source_kind" == branch-merge ]]; then
   short_sha=$("${git_cmd[@]}" rev-parse --short=12 "$release_sha")
+  source_sequence=$("${git_cmd[@]}" rev-list --first-parent --count "$release_sha")
+  printf -v source_sequence_hex '%016x' "$source_sequence"
   commit_epoch=$("${git_cmd[@]}" show -s --format=%ct "$release_sha")
   commit_timestamp=$(python3 - "$commit_epoch" <<'PY'
 import datetime
@@ -151,7 +146,7 @@ import sys
 print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
 PY
 )
-  release_tag="local-features-v${source_version}-main-r${commit_timestamp}.${short_sha}"
+  release_tag="local-features-v${source_version}-main-r${commit_timestamp}.${source_sequence_hex}${short_sha}"
 fi
 
 if existing_tag_sha=$("${git_cmd[@]}" rev-parse --verify "refs/tags/$release_tag^{commit}" 2>/dev/null); then
@@ -160,17 +155,22 @@ if existing_tag_sha=$("${git_cmd[@]}" rev-parse --verify "refs/tags/$release_tag
 fi
 
 stable_lineage=$(
-  "${git_cmd[@]}" for-each-ref --merged "$release_sha" \
-    --sort=-version:refname --format='%(refname)' refs/tags refs/tags/fork-release-upstream |
-    while IFS= read -r tag; do
-      tag=${tag#refs/tags/fork-release-upstream/}
-      tag=${tag#refs/tags/}
-      if [[ "$tag" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        printf '%s\n' "$tag"
+  "${git_cmd[@]}" for-each-ref --merged "$release_sha" --format='%(refname)' refs/tags |
+    while IFS= read -r ref; do
+      case "$ref" in
+        refs/tags/fork-release-upstream/rust-v*) tag=${ref#refs/tags/fork-release-upstream/} ;;
+        refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
+        *) continue ;;
+      esac
+      if [[ "$tag" =~ ^rust-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        printf '%s\t%s\t%s\t%s\n' \
+          "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "$tag"
       fi
-    done
+    done |
+  LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 |
+    tail -n 1 |
+    cut -f4-
 )
-stable_lineage=$(printf '%s\n' "$stable_lineage" | awk 'NR == 1 { first = $0 } END { print first }')
 stable_lineage=${stable_lineage:-none}
 
 {

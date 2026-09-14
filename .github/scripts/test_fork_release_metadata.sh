@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 metadata_script="$script_dir/fork-release-metadata.sh"
+workflow_file="$script_dir/../workflows/fork-release.yml"
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 
@@ -41,7 +42,10 @@ git -C "$fixture" push -q "$upstream_remote" \
   upstream/main:refs/heads/main \
   refs/tags/rust-v1.2.3:refs/tags/rust-v1.2.3 \
   refs/tags/rust-v9.9.9-alpha.1:refs/tags/rust-v9.9.9-alpha.1
-git -C "$fixture" tag -d rust-v1.2.3 rust-v9.9.9-alpha.1 >/dev/null
+git -C "$fixture" tag rust-v2.0.0 "$upstream_tip"
+git -C "$fixture" push -q "$upstream_remote" \
+  refs/tags/rust-v2.0.0:refs/tags/rust-v2.0.0
+git -C "$fixture" tag -d rust-v9.9.9-alpha.1 rust-v2.0.0 >/dev/null
 
 # A later local head proves preparation uses the event SHA, not a live branch.
 git -C "$fixture" commit --allow-empty -q -m 'later local head'
@@ -57,20 +61,25 @@ bash "$metadata_script" \
 
 grep -Fxq "release_sha=$merge_sha" "$event_output"
 grep -Fxq "source_version=0.154.0" "$event_output"
-grep -Fxq "stable_lineage=rust-v1.2.3" "$event_output"
+grep -Fxq "stable_lineage=rust-v2.0.0" "$event_output"
 grep -Fxq "included_upstream_main_sha=$upstream_tip" "$event_output"
 grep -Fxq 'source_kind=branch-merge' "$event_output"
 release_tag=$(sed -n 's/^release_tag=//p' "$event_output")
-[[ "$release_tag" =~ ^local-features-v0\.154\.0-main-r[0-9]{14}\.[0-9a-f]{12}$ ]]
+source_sequence=$(git -C "$fixture" rev-list --first-parent --count "$merge_sha")
+printf -v source_sequence_hex '%016x' "$source_sequence"
+producer_sha=$(git -C "$fixture" rev-parse --short=12 "$merge_sha")
+[[ "$release_tag" =~ ^local-features-v0\.154\.0-main-r[0-9]{14}\.[0-9a-f]{28}$ ]]
+[[ "${release_tag##*.}" == "$source_sequence_hex$producer_sha" ]]
 
+grep -Fq 'bash .github/scripts/fork-release-notes.sh' "$workflow_file"
 body=$(bash "$script_dir/fork-release-notes.sh" \
   "$fixture" epsalmond/codex eric/local-features "$merge_sha" \
-  0.154.0 rust-v1.2.3 "$upstream_tip" 2.35.0 branch-merge)
+  0.154.0 rust-v2.0.0 "$upstream_tip" 2.35.0 branch-merge)
 grep -Fq "Fork release commit: \`$merge_sha\`" <<< "$body"
 grep -Fq "Integrated upstream main commit: \`$upstream_tip\`" <<< "$body"
-grep -Fq 'Exact stable lineage: `rust-v1.2.3`' <<< "$body"
+grep -Fq 'Exact stable lineage: `rust-v2.0.0`' <<< "$body"
 grep -Fq 'https://github.com/epsalmond/codex/blob/' <<< "$body"
-grep -Fq 'https://github.com/epsalmond/codex/compare/rust-v1.2.3...' <<< "$body"
+grep -Fq 'https://github.com/epsalmond/codex/compare/rust-v2.0.0...' <<< "$body"
 
 # A same-name tag pointing elsewhere is rejected before any publish step.
 git -C "$fixture" tag "$release_tag" HEAD
@@ -96,6 +105,39 @@ if bash "$metadata_script" \
   --event-sha "$(git -C "$fixture" rev-parse HEAD)" \
   --output "$fixture/wrong-tag-output"; then
   echo "expected tag SHA mismatch to fail" >&2
+  exit 1
+fi
+
+# Recovery tags on a one-parent descendant still fetch exact stable lineage
+# and compute the public-main merge-base.
+recovery_sha=$(git -C "$fixture" rev-parse HEAD)
+recovery_tag=local-features-v0.154.0-r202609140000.fedcba654321
+git -C "$fixture" tag "$recovery_tag" "$recovery_sha"
+recovery_output="$fixture/recovery-output"
+bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name push \
+  --event-ref "refs/tags/$recovery_tag" \
+  --event-sha "$recovery_sha" \
+  --upstream-url "$upstream_remote" \
+  --output "$recovery_output"
+grep -Fxq "release_sha=$recovery_sha" "$recovery_output"
+grep -Fxq "release_tag=$recovery_tag" "$recovery_output"
+grep -Fxq "stable_lineage=rust-v2.0.0" "$recovery_output"
+grep -Fxq "included_upstream_main_sha=$upstream_tip" "$recovery_output"
+grep -Fxq 'source_kind=tag' "$recovery_output"
+
+# Publisher fallback identities use one hexadecimal suffix, matching the
+# Rust updater and installer grammar; multi-dot variants are rejected.
+invalid_tag=local-features-v0.154.0-r202609140001.abcd.ef
+git -C "$fixture" tag "$invalid_tag" "$merge_sha"
+if bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name push \
+  --event-ref "refs/tags/$invalid_tag" \
+  --event-sha "$merge_sha" \
+  --output "$fixture/invalid-output"; then
+  echo "expected multi-dot recovery tag to fail" >&2
   exit 1
 fi
 
