@@ -18,6 +18,7 @@ is available anyway for a worker home placed somewhere unusual.
 Exit codes for `compare`: 0 = no other session wrote a rollout (quota delta is
 attributable), 1 = at least one did (mark the run's quota "unattributable").
 """
+
 import glob
 import json
 import os
@@ -41,7 +42,9 @@ def snapshot(exclude=()):
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in ("snapshot", "compare"):
         sys.exit(__doc__)
-    exclude = tuple(a.split("=", 1)[1] for a in sys.argv[2:] if a.startswith("--exclude="))
+    exclude = tuple(
+        a.split("=", 1)[1] for a in sys.argv[2:] if a.startswith("--exclude=")
+    )
     if sys.argv[1] == "snapshot":
         print(json.dumps(snapshot(exclude), indent=2))
         return 0
@@ -52,7 +55,9 @@ def main():
     for path, mtime in after["mtimes"].items():
         was = before["mtimes"].get(path)
         if was is None or mtime > was + 0.001:
-            advanced.append({"rollout": os.path.basename(path), "new": was is None, "mtime": mtime})
+            advanced.append(
+                {"rollout": os.path.basename(path), "new": was is None, "mtime": mtime}
+            )
     verdict = {
         "otherSessionsWroteDuringRun": bool(advanced),
         "rolloutsBefore": before["count"],

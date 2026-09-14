@@ -4521,13 +4521,17 @@ async fn build_agent_spawn_config_inherits_auto_shake() {
     let (_session, mut turn) = make_session_and_context().await;
     let parent = Arc::make_mut(&mut turn.config);
     parent.auto_shake = crate::config::AutoShakeConfig {
-        threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(42)),
+        threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(
+            42,
+        )),
         min_elidable_percent: Some(7),
         min_savings_tokens: None,
         models: std::collections::BTreeMap::from([(
             "gpt-6-astra".to_string(),
             crate::config::AutoShakeModelConfig {
-                threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(71)),
+                threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(
+                    71,
+                )),
                 min_elidable_percent: None,
             },
         )]),

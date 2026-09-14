@@ -19,6 +19,7 @@ priming overhead: they are paid, but they are not part of the arm.
 
 Usage: run-cost.py <replay.json> [pricing.json]
 """
+
 import json
 import pathlib
 import sys
@@ -29,7 +30,14 @@ import pricing_lib
 rec = json.load(open(sys.argv[1]))
 pricing = pricing_lib.load(sys.argv[2]) if len(sys.argv) > 2 else pricing_lib.load()
 model = rec.get("model", "gpt-6-astra")
-tier = "fast" if (rec.get("serviceTierApplied") in ("priority", "fast") or rec.get("serviceTier") == "fast") else "standard"
+tier = (
+    "fast"
+    if (
+        rec.get("serviceTierApplied") in ("priority", "fast")
+        or rec.get("serviceTier") == "fast"
+    )
+    else "standard"
+)
 
 api = pricing_lib.profile(pricing, "api")["models"][model]
 credits = pricing_lib.profile(pricing, "codex-credits")["models"][model]
@@ -39,15 +47,24 @@ all_reqs = rec.get("compaction", {}).get("requests", [])
 first_arm = pricing_lib.first_arm_index(rec)
 prime, reqs = all_reqs[: first_arm - 1], all_reqs[first_arm - 1 :]
 
-print(f"model {model}   tier {tier}   requests {len(reqs)}" + (f" (+{len(prime)} priming)" if prime else ""))
-print(f"long-context (>{thr:,} in, API card only) {sum(1 for r in reqs if r['inputTokens'] > thr)}")
-print(f"peak input {max((r['inputTokens'] for r in reqs), default=0):,}   min input {min((r['inputTokens'] for r in reqs), default=0):,}")
+print(
+    f"model {model}   tier {tier}   requests {len(reqs)}"
+    + (f" (+{len(prime)} priming)" if prime else "")
+)
+print(
+    f"long-context (>{thr:,} in, API card only) {sum(1 for r in reqs if r['inputTokens'] > thr)}"
+)
+print(
+    f"peak input {max((r['inputTokens'] for r in reqs), default=0):,}   min input {min((r['inputTokens'] for r in reqs), default=0):,}"
+)
 print()
 for line in pricing_lib.summary_lines(reqs, model, tier, pricing, indent=""):
     print(line)
 if prime:
     print()
-    print("priming overhead (a --cache warm run's pre-arm request(s); paid, but not part of the arm):")
+    print(
+        "priming overhead (a --cache warm run's pre-arm request(s); paid, but not part of the arm):"
+    )
     for line in pricing_lib.summary_lines(prime, model, tier, pricing, indent="  "):
         print(line)
 print()

@@ -11,6 +11,7 @@ and the classified census that the run harness wrote beside it.
 
 `<results-dir>` is a run directory under `$BENCH_REPLAY/results`.
 """
+
 import json
 import pathlib
 import sys
@@ -57,7 +58,11 @@ def load(results_dir):
     acc = d / "acceptance.txt"
     if acc.exists():
         text = acc.read_text(errors="replace")
-        accepted = "ACCEPTED" if "\nACCEPTED" in text else ("REJECTED" if "REJECTED" in text else None)
+        accepted = (
+            "ACCEPTED"
+            if "\nACCEPTED" in text
+            else ("REJECTED" if "REJECTED" in text else None)
+        )
         fails = text.count("\nFAIL ")
     else:
         fails = None
@@ -65,7 +70,14 @@ def load(results_dir):
 
 
 def tier_of(rec):
-    return "fast" if (rec.get("serviceTierApplied") in ("priority", "fast") or rec.get("serviceTier") == "fast") else "standard"
+    return (
+        "fast"
+        if (
+            rec.get("serviceTierApplied") in ("priority", "fast")
+            or rec.get("serviceTier") == "fast"
+        )
+        else "standard"
+    )
 
 
 def split_requests(rec):
@@ -85,8 +97,16 @@ def row(results_dir, label, note=""):
     prime, arm = split_requests(rec)
     tier = tier_of(rec)
     costs = pricing_lib.all_costs(arm, rec.get("model", "gpt-6-astra"), tier, PRICING)
-    fast = pricing_lib.run_cost(arm, rec.get("model", "gpt-6-astra"), "codex-credits", "fast", PRICING)
-    pcost = pricing_lib.run_cost(prime, rec.get("model", "gpt-6-astra"), "codex-credits", tier, PRICING) if prime else None
+    fast = pricing_lib.run_cost(
+        arm, rec.get("model", "gpt-6-astra"), "codex-credits", "fast", PRICING
+    )
+    pcost = (
+        pricing_lib.run_cost(
+            prime, rec.get("model", "gpt-6-astra"), "codex-credits", tier, PRICING
+        )
+        if prime
+        else None
+    )
     cc = rec.get("cacheCondition") or {}
     cache = cc.get("cache", rec.get("cache", "?"))
     if cc.get("warm"):
@@ -100,8 +120,10 @@ def row(results_dir, label, note=""):
         if q
         else "not reported"
     )
-    attributable = "no — another session wrote" if verdict and not verdict.get("quotaAttributable", True) else (
-        "yes" if verdict else "?"
+    attributable = (
+        "no — another session wrote"
+        if verdict and not verdict.get("quotaAttributable", True)
+        else ("yes" if verdict else "?")
     )
     r1 = arm[0] if arm else None
     steady = arm[1:] if len(arm) > 1 else []
@@ -123,7 +145,13 @@ def row(results_dir, label, note=""):
         f"{frac(steady):.4f} ({len(steady)} reqs)" if steady else "—",
         qtxt,
         attributable,
-        (f"{accepted} — {12 - (fails or 0)}/12" if accepted == "ACCEPTED" else f"{accepted} ({fails} failing)") if accepted else "?",
+        (
+            f"{accepted} — {12 - (fails or 0)}/12"
+            if accepted == "ACCEPTED"
+            else f"{accepted} ({fails} failing)"
+        )
+        if accepted
+        else "?",
         f"{rec.get('workerTotals', {}).get('wallMs', 0) / 1000:.0f}s",
         "PASSED" if rec.get("compaction", {}).get("passed") else "FAILED",
     ]
@@ -141,19 +169,23 @@ def detail(results_dir, label):
         f"{rec.get('startedAt')} → {rec.get('finishedAt')}."
     )
     lines.append("")
-    lines.append(f"- per-turn requests: `{[t['requests'] for t in rec.get('turns', [])]}`, stop `{rec.get('stopReason')}`")
+    lines.append(
+        f"- per-turn requests: `{[t['requests'] for t in rec.get('turns', [])]}`, stop `{rec.get('stopReason')}`"
+    )
     # Fractions and priming overhead are RECOMPUTED from the request sequence
     # rather than read from the record: the live values were computed against
     # firstArmRequestIndex, which over-counted priming by one on run (d) because
     # shake emits a usage notification that carries no request. Where the two
     # disagree, both are shown and the stored one is labelled.
     f1 = arm[0]["cachedInputTokens"] / max(1, arm[0]["inputTokens"]) if arm else None
-    f2 = arm[1]["cachedInputTokens"] / max(1, arm[1]["inputTokens"]) if len(arm) > 1 else None
+    f2 = (
+        arm[1]["cachedInputTokens"] / max(1, arm[1]["inputTokens"])
+        if len(arm) > 1
+        else None
+    )
     stored = cc.get("firstArmRequestCachedFraction")
     drifted = stored is not None and f1 is not None and abs(stored - f1) > 1e-6
-    lines.append(
-        f"- cache condition: {cc.get('assertionRule')}"
-    )
+    lines.append(f"- cache condition: {cc.get('assertionRule')}")
     lines.append(
         f"  - recomputed from the arm's own requests: request 1 cached fraction **{f1:.4f}**"
         + (f", request 2 **{f2:.4f}**" if f2 is not None else "")

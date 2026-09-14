@@ -20,6 +20,7 @@ Exit codes:
 
 Usage: codex-census.py [--json] [--personal-home ~/.codex]
 """
+
 import json
 import os
 import re
@@ -31,7 +32,9 @@ PERSONAL_HOME = os.path.expanduser("~/.codex")
 
 def pgrep_codex():
     try:
-        out = subprocess.run(["pgrep", "-af", "codex"], capture_output=True, text=True, check=False).stdout
+        out = subprocess.run(
+            ["pgrep", "-af", "codex"], capture_output=True, text=True, check=False
+        ).stdout
     except FileNotFoundError:
         return []
     rows = []
@@ -112,12 +115,16 @@ def main():
             continue
         home, how = codex_home_of(pid, cmd)
         kind = classify(home, how)
-        rows.append({"pid": pid, "cmd": cmd, "codexHome": home, "source": how, "account": kind})
+        rows.append(
+            {"pid": pid, "cmd": cmd, "codexHome": home, "source": how, "account": kind}
+        )
 
     personal = [r for r in rows if r["account"] == "personal"]
     unknown = [r for r in rows if r["account"] == "unknown"]
     result = {
-        "checkedAt": subprocess.run(["date", "-Is"], capture_output=True, text=True).stdout.strip(),
+        "checkedAt": subprocess.run(
+            ["date", "-Is"], capture_output=True, text=True
+        ).stdout.strip(),
         "personalHome": os.path.realpath(PERSONAL_HOME),
         "total": len(rows),
         "personal": len(personal),
@@ -134,7 +141,9 @@ def main():
         print(f"  unclassifiable:                       {result['unknown']}")
         for r in rows:
             if r["account"] != "other-account" or "--json" in sys.argv:
-                print(f"  [{r['account']:13}] {r['pid']:>8} {r['codexHome']} ({r['source']})  {r['cmd'][:110]}")
+                print(
+                    f"  [{r['account']:13}] {r['pid']:>8} {r['codexHome']} ({r['source']})  {r['cmd'][:110]}"
+                )
     # Unclassifiable processes are treated as NOT blocking but are always
     # printed: a process whose environ cannot be read is not evidence of a
     # personal-account session, and silently promoting it to one would make the

@@ -127,7 +127,11 @@ def toolresult_text_blocks(message: dict) -> list[str]:
     out = []
     if isinstance(content, list):
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
                 out.append(block["text"])
     elif isinstance(content, str):
         out.append(content)
@@ -150,8 +154,12 @@ def preview(text: str, n: int = 100) -> str:
 def censor_session(path: str) -> SessionCensus:
     census = SessionCensus(path=path)
 
-    tool_calls: dict[str, dict] = {}  # toolCallId -> {name, arguments, index, timestamp}
-    elided_hashes: dict[str, int] = {}  # args_hash -> earliest shake index that elided it
+    tool_calls: dict[
+        str, dict
+    ] = {}  # toolCallId -> {name, arguments, index, timestamp}
+    elided_hashes: dict[
+        str, int
+    ] = {}  # args_hash -> earliest shake index that elided it
     shaken_ids: dict[str, int] = {}  # artifact id (numeric str) -> earliest shake index
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -190,11 +198,18 @@ def censor_session(path: str) -> SessionCensus:
                 content = message.get("content")
                 if isinstance(content, list):
                     for block in content:
-                        if not isinstance(block, dict) or block.get("type") != "toolCall":
+                        if (
+                            not isinstance(block, dict)
+                            or block.get("type") != "toolCall"
+                        ):
                             continue
                         tc_id = block.get("id")
                         name = block.get("name")
-                        arguments = block.get("arguments") if isinstance(block.get("arguments"), dict) else {}
+                        arguments = (
+                            block.get("arguments")
+                            if isinstance(block.get("arguments"), dict)
+                            else {}
+                        )
                         if not tc_id or not name:
                             continue
                         tool_calls[tc_id] = {
@@ -245,7 +260,11 @@ def censor_session(path: str) -> SessionCensus:
                         # naming a shaken artifact's file (<id>.shake.log) by
                         # relative name within that directory.
                         if name in ("bash", "shell"):
-                            command = arguments.get("command") if isinstance(arguments, dict) else None
+                            command = (
+                                arguments.get("command")
+                                if isinstance(arguments, dict)
+                                else None
+                            )
                             if isinstance(command, str):
                                 # The artifacts dir also holds unrelated files (local:// scratch
                                 # writes under <dir>/local/, other tools' <id>.bash.log spills,
@@ -318,9 +337,19 @@ def print_table(rows: list[tuple[str, ...]], headers: tuple[str, ...]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("roots", nargs="+", help="Session root directories (or individual .jsonl files) to scan")
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of the summary table")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "roots",
+        nargs="+",
+        help="Session root directories (or individual .jsonl files) to scan",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the summary table",
+    )
     args = parser.parse_args()
 
     files = find_session_files(args.roots)
@@ -366,7 +395,9 @@ def main() -> int:
         print(json.dumps(out, indent=2))
         return 0
 
-    print(f"Session roots: {', '.join(os.path.abspath(os.path.expanduser(r)) for r in args.roots)}")
+    print(
+        f"Session roots: {', '.join(os.path.abspath(os.path.expanduser(r)) for r in args.roots)}"
+    )
     print()
     print_table(
         [
@@ -375,7 +406,10 @@ def main() -> int:
                 str(len(censuses)),
             ),
             ("shaken sessions", str(len(shaken_sessions))),
-            ("total shake events (placeholders)", str(sum(len(c.shake_events) for c in censuses))),
+            (
+                "total shake events (placeholders)",
+                str(sum(len(c.shake_events) for c in censuses)),
+            ),
             ("total artifacts created by shake", str(total_artifacts)),
             ("total recoveries", str(total_recoveries)),
             ("total re-runs", str(total_reruns)),
@@ -401,7 +435,18 @@ def main() -> int:
                     str(len(c.reruns)),
                 )
             )
-        print_table(rows, ("session file", "session id", "model", "messages", "shakes", "recoveries", "reruns"))
+        print_table(
+            rows,
+            (
+                "session file",
+                "session id",
+                "model",
+                "messages",
+                "shakes",
+                "recoveries",
+                "reruns",
+            ),
+        )
 
         print()
         print("Example recovery/re-run lines (up to 10):")
@@ -410,7 +455,9 @@ def main() -> int:
             for r in c.recoveries:
                 if shown >= 10:
                     break
-                print(f"  [{c.session_id or os.path.basename(c.path)}] t={r.timestamp} RECOVERY({r.kind}) {r.tool_name}: {r.preview}")
+                print(
+                    f"  [{c.session_id or os.path.basename(c.path)}] t={r.timestamp} RECOVERY({r.kind}) {r.tool_name}: {r.preview}"
+                )
                 shown += 1
             if shown >= 10:
                 break
@@ -418,7 +465,9 @@ def main() -> int:
             for r in c.reruns:
                 if shown >= 10:
                     break
-                print(f"  [{c.session_id or os.path.basename(c.path)}] t={r.timestamp} RERUN {r.tool_name}: {r.preview}")
+                print(
+                    f"  [{c.session_id or os.path.basename(c.path)}] t={r.timestamp} RERUN {r.tool_name}: {r.preview}"
+                )
                 shown += 1
             if shown >= 10:
                 break
