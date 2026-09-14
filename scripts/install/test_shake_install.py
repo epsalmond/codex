@@ -70,6 +70,53 @@ class ShakeInstallTest(unittest.TestCase):
                 "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
             )
 
+    def test_latest_selection_treats_source_sequence_hex_as_numeric(self) -> None:
+        release_feed = json.dumps(
+            [
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.000000000000000Baaaaaaaaaaaa",
+                    "draft": False,
+                },
+                {
+                    "tag_name": "local-features-v0.154.0-main-r20260914000000.000000000000000abbbbbbbbbbbb",
+                    "draft": False,
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root,
+                tag=None,
+                release_feed=release_feed,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                os.readlink(home_dir / "current"),
+                "local-features-v0.154.0-main-r20260914000000.000000000000000Baaaaaaaaaaaa",
+            )
+
+    def test_latest_selection_accepts_fourteen_digits_and_ignores_fifteen(self) -> None:
+        accepted = "local-features-v0.154.0-main-r20260914000000.abcdef123456"
+        rejected = "local-features-v0.154.0-main-r202609140000000.ffffffffffff"
+        release_feed = json.dumps(
+            [
+                {"tag_name": rejected, "draft": False},
+                {"tag_name": accepted, "draft": False},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root,
+                tag=None,
+                release_feed=release_feed,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(os.readlink(home_dir / "current"), accepted)
+
     def test_update_helper_preserves_custom_paths_and_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

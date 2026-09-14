@@ -129,7 +129,7 @@ else
             precision = length(digits)
             if (precision == 12) normalized = digits "00"
             source_sequence = ""
-            if (length(suffix) == 28) source_sequence = substr(suffix, 1, 16)
+            if (length(suffix) == 28) source_sequence = tolower(substr(suffix, 1, 16))
             printf "%020d\t%02d\t%s\t%s:%s\t%s\n", normalized + 0, precision,
               source_sequence, tolower(version), tolower(suffix), tag
             next
