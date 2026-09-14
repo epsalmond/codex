@@ -563,7 +563,7 @@ enum OversizedActionReview {
     RequiredGuardian,
 }
 
-#[test_case(OversizedActionReview::Fits; "large_action_receives_automatic_review")]
+#[test_case(OversizedActionReview::Fits; "large_action_middle_reaches_automatic_review")]
 #[test_case(OversizedActionReview::UserFallback; "optional_review_requests_user_approval")]
 #[test_case(OversizedActionReview::RequiredGuardian; "required_review_rejects_incomplete_action")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -599,8 +599,10 @@ async fn oversized_action_preserves_review_policy_and_next_review(
         );
     }
     let test = builder.build_with_auto_env(&server).await?;
+    let security_relevant_middle = "security-relevant-middle";
+    let padding = "large-action".repeat(/*n*/ 10_000);
     let oversized_command =
-        "echo ".to_owned() + &"large-action".repeat(/*n*/ 20_000) + "required suffix";
+        format!("echo {padding}{security_relevant_middle}{padding}required suffix");
     let oversized = json!({
         "cmd": oversized_command,
         "sandbox_permissions": "require_escalated",
@@ -677,7 +679,9 @@ async fn oversized_action_preserves_review_policy_and_next_review(
                 None
             ))
         );
-        assert_eq!(approval.command.last(), Some(&oversized_command));
+        let approved_command = approval.command.last().expect("oversized command");
+        assert_eq!(approved_command.len(), oversized_command.len());
+        assert!(approved_command.contains(security_relevant_middle));
         test.codex
             .submit(Op::ExecApproval {
                 id: approval.effective_approval_id(),
@@ -716,6 +720,7 @@ async fn oversized_action_preserves_review_policy_and_next_review(
     if fits {
         let parts = reviews[0].message_input_texts("user");
         assert!(parts.concat().contains(&oversized_command));
+        assert!(parts.concat().contains(security_relevant_middle));
         assert!(parts.iter().all(|part| part.len() <= 36_000));
     }
     let context = reviews

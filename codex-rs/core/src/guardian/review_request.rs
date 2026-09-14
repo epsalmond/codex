@@ -151,7 +151,7 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
             format_guardian_action_pretty(&request).ok().map(|action| {
                 (
                     evidence,
-                    action.text,
+                    action,
                     authorization_version,
                     root_authorization_version,
                 )

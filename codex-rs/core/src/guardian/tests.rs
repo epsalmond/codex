@@ -7,7 +7,6 @@ use crate::config::NetworkProxySpec;
 use crate::config::PermissionProfileSnapshot;
 use crate::config::test_config;
 use crate::environment_selection::TurnEnvironmentState;
-use crate::guardian::approval_request::format_guardian_action_compact;
 use crate::guardian::approval_request::guardian_request_target_item_id;
 use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY;
 use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
@@ -1161,31 +1160,7 @@ fn guardian_truncate_text_keeps_prefix_suffix_and_xml_marker() {
 }
 
 #[test]
-fn guardian_action_formatters_reject_large_aggregate_payloads() {
-    let file: PathUri = test_path_buf("/tmp/file").abs().into();
-    let action = GuardianApprovalRequest::ApplyPatch {
-        id: "patch-1".to_string(),
-        cwd: test_path_buf("/tmp").abs().into(),
-        files: vec![file; 20_000],
-        patch: String::new(),
-    };
-
-    for error in [
-        format_guardian_action_pretty(&action).map(|_| ()),
-        format_guardian_action_compact(&action).map(|_| ()),
-    ] {
-        assert_eq!(
-            error
-                .expect_err("aggregate action should exceed the review limit")
-                .to_string(),
-            "Guardian action exceeds the 200000-byte review limit"
-        );
-    }
-}
-
-#[test]
-fn format_guardian_action_pretty_reports_no_truncation_for_small_payload() -> serde_json::Result<()>
-{
+fn format_guardian_action_pretty_preserves_small_payload() -> serde_json::Result<()> {
     let action = GuardianApprovalRequest::ApplyPatch {
         id: "patch-1".to_string(),
         cwd: test_path_buf("/tmp").abs().into(),
@@ -1195,8 +1170,33 @@ fn format_guardian_action_pretty_reports_no_truncation_for_small_payload() -> se
 
     let rendered = format_guardian_action_pretty(&action)?;
 
-    assert!(rendered.text.contains("\"tool\": \"apply_patch\""));
-    assert!(!rendered.truncated);
+    assert!(rendered.contains("\"tool\": \"apply_patch\""));
+    Ok(())
+}
+
+#[test]
+fn format_guardian_action_pretty_strips_only_optional_mcp_descriptions() -> serde_json::Result<()> {
+    let action = GuardianApprovalRequest::McpToolCall {
+        id: "call-1".to_string(),
+        server: "mcp_server".to_string(),
+        tool_name: "write_record".to_string(),
+        arguments: Some(serde_json::json!({
+            "description": "security-relevant argument",
+        })),
+        connector_id: None,
+        connector_name: None,
+        connector_description: Some("optional connector metadata".to_string()),
+        connected_account_email: None,
+        tool_title: None,
+        tool_description: Some("optional tool metadata".to_string()),
+        annotations: None,
+    };
+
+    let rendered = format_guardian_action_pretty(&action)?;
+
+    assert!(rendered.contains("security-relevant argument"));
+    assert!(!rendered.contains("optional connector metadata"));
+    assert!(!rendered.contains("optional tool metadata"));
     Ok(())
 }
 

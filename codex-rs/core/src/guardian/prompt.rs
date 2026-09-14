@@ -117,7 +117,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .get_or_init(GuardianReviewEvidence::default)
         .user_input_snapshot(history)
         .fragments;
-    let planned_action_json = format_guardian_action_pretty(&request)?.text;
+    let planned_action_json = format_guardian_action_pretty(&request)?;
     let planned_action = PlannedAction {
         json: planned_action_json,
         tool_descriptions: if let GuardianApprovalRequest::McpToolCall {
