@@ -111,7 +111,7 @@ fi
 # Recovery tags on a one-parent descendant still fetch exact stable lineage
 # and compute the public-main merge-base.
 recovery_sha=$(git -C "$fixture" rev-parse HEAD)
-recovery_tag=local-features-v0.154.0-r202609140000.fedcba654321
+recovery_tag=local-features-v0.154.0-r20260914000000.fedcba654321
 git -C "$fixture" tag "$recovery_tag" "$recovery_sha"
 recovery_output="$fixture/recovery-output"
 bash "$metadata_script" \
@@ -126,6 +126,18 @@ grep -Fxq "release_tag=$recovery_tag" "$recovery_output"
 grep -Fxq "stable_lineage=rust-v2.0.0" "$recovery_output"
 grep -Fxq "included_upstream_main_sha=$upstream_tip" "$recovery_output"
 grep -Fxq 'source_kind=tag' "$recovery_output"
+
+rejected_recovery_tag=local-features-v0.154.0-r202609140000000.fedcba654321
+git -C "$fixture" tag "$rejected_recovery_tag" "$recovery_sha"
+if bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name push \
+  --event-ref "refs/tags/$rejected_recovery_tag" \
+  --event-sha "$recovery_sha" \
+  --output "$fixture/rejected-recovery-output"; then
+  echo "expected fifteen-digit recovery tag to fail" >&2
+  exit 1
+fi
 
 # Publisher fallback identities use one hexadecimal suffix, matching the
 # Rust updater and installer grammar; multi-dot variants are rejected.
