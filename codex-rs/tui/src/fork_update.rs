@@ -7,9 +7,8 @@
 //! upstream Codex.
 //!
 //! `.github/workflows/fork-release.yml` sets `CODEX_FORK_RELEASE_TAG` to the
-//! release tag (`github.ref_name`) in the cargo build step that produces a
-//! release binary; `~/.bin/codex-fork-release` does the same for local
-//! builds.
+//! prepared release tag in the cargo build step that produces a release
+//! binary; `~/.bin/codex-fork-release` does the same for local builds.
 
 #[cfg(any(not(debug_assertions), test))]
 use serde::Deserialize;
@@ -58,7 +57,7 @@ pub(crate) fn is_fork_build() -> bool {
 /// Returns whether a cached release value belongs to the fork's release feed.
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) fn is_fork_release_tag(tag: &str) -> bool {
-    tag.starts_with(FORK_TAG_PREFIX)
+    fork_release_identity(tag).is_some()
 }
 
 /// Return the configured fork repository, falling back to the release repo.
@@ -104,56 +103,127 @@ pub(crate) fn fork_install_command() -> String {
 #[cfg(any(not(debug_assertions), test))]
 #[derive(Deserialize, Debug, Clone)]
 struct ForkReleaseEntry {
+    #[serde(default)]
     tag_name: String,
     #[serde(default)]
     draft: bool,
 }
 
+#[cfg(any(not(debug_assertions), test))]
+#[derive(Debug, Eq, PartialEq)]
+struct ReleaseIdentity {
+    normalized_counter: Option<u64>,
+    counter_precision: Option<u8>,
+    tie_break: String,
+}
+
+#[cfg(any(not(debug_assertions), test))]
+fn valid_fork_version(version: &str) -> bool {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let version = version.strip_suffix("-main").unwrap_or(version);
+    let mut components = version.split('.');
+    components.clone().count() == 3
+        && components.all(|component| {
+            !component.is_empty()
+                && component
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+        })
+}
+
+#[cfg(any(not(debug_assertions), test))]
+fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
+    let rest = tag.strip_prefix(FORK_TAG_PREFIX)?;
+    if let Some(counter_start) = rest.rfind("-r") {
+        let version = &rest[..counter_start];
+        if !valid_fork_version(version) {
+            return None;
+        }
+        let counter_and_suffix = &rest[counter_start + 2..];
+        let digit_count = counter_and_suffix
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        let counter_digits = &counter_and_suffix[..digit_count];
+        let suffix = counter_and_suffix[digit_count..].strip_prefix('.')?;
+        if counter_digits.is_empty()
+            || suffix.is_empty()
+            || !suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let (normalized_digits, counter_precision) = if counter_digits.len() == 12 {
+            (format!("{counter_digits}00"), 12)
+        } else {
+            (counter_digits.to_string(), counter_digits.len() as u8)
+        };
+        let normalized_counter = normalized_digits.parse().ok()?;
+        return Some(ReleaseIdentity {
+            normalized_counter: Some(normalized_counter),
+            counter_precision: Some(counter_precision),
+            tie_break: format!("{version}:{suffix}").to_ascii_lowercase(),
+        });
+    }
+
+    let (version, suffix) = rest.rsplit_once('-')?;
+    if !valid_fork_version(version)
+        || suffix.len() != 12
+        || !suffix
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(ReleaseIdentity {
+        normalized_counter: None,
+        counter_precision: None,
+        tie_break: format!("{version}:{suffix}").to_ascii_lowercase(),
+    })
+}
+
+#[cfg(any(not(debug_assertions), test))]
+fn compare_fork_release_tags(left: &str, right: &str) -> std::cmp::Ordering {
+    match (fork_release_identity(left), fork_release_identity(right)) {
+        (Some(left), Some(right)) => left
+            .normalized_counter
+            .cmp(&right.normalized_counter)
+            .then_with(|| left.counter_precision.cmp(&right.counter_precision))
+            .then_with(|| left.tie_break.cmp(&right.tie_break)),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => left.cmp(right),
+    }
+}
+
 /// Parse the JSON body of `GET /repos/epsalmond/codex/releases` and return
-/// the tag of the newest non-draft release whose tag starts with
-/// `local-features-v`. GitHub returns releases newest-created-first, so the
-/// first matching entry is the newest.
+/// the newest non-draft valid fork release. The API's creation order is not
+/// source order, so select the maximum parsed release identity instead.
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) fn newest_fork_release_tag(releases_json: &str) -> Option<String> {
     let entries: Vec<ForkReleaseEntry> = serde_json::from_str(releases_json).ok()?;
     entries
         .into_iter()
-        .find(|entry| !entry.draft && entry.tag_name.starts_with(FORK_TAG_PREFIX))
+        .filter(|entry| !entry.draft && fork_release_identity(&entry.tag_name).is_some())
         .map(|entry| entry.tag_name)
+        .max_by(|left, right| compare_fork_release_tags(left, right))
 }
 
-/// Extract the `-r<digits>` release-counter component from a fork tag, e.g.
-/// `local-features-v0.155.0-r202609131200.abcdef1` -> `202609131200`.
-#[cfg(any(not(debug_assertions), test))]
-fn release_counter(tag: &str) -> Option<u64> {
-    let idx = tag.rfind("-r")?;
-    let digits: String = tag[idx + 2..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse().ok()
-    }
-}
-
-/// Returns whether `candidate` should be treated as newer than `current`.
-///
-/// Current-scheme tags both carry a `-r<UTC-yyyymmddHHMM>` release counter;
-/// compare those digits numerically. Releases cut before the counter existed
-/// used a bare commit-sha suffix instead (`local-features-v0.154.0-<12
-/// hex>`); since those predate any ordering scheme, treat any different tag
-/// as newer than one of those.
+/// Current tags carry a `-r<UTC timestamp>` counter. Twelve-digit legacy
+/// minute counters are normalized to second precision before comparison, so
+/// they cannot outrank a new fourteen-digit counter merely because it has more
+/// digits. The suffix is a deterministic tie-breaker for distinct releases in
+/// the same second. Bare SHA-suffixed tags predate numeric ordering.
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) fn fork_tag_is_newer(candidate: &str, current: &str) -> bool {
     if candidate == current {
         return false;
     }
-    match (release_counter(candidate), release_counter(current)) {
-        (Some(candidate_counter), Some(current_counter)) => candidate_counter > current_counter,
-        _ => true,
+    if fork_release_identity(candidate).is_some() && fork_release_identity(current).is_some() {
+        return compare_fork_release_tags(candidate, current).is_gt();
     }
+    fork_release_identity(candidate).is_some() && fork_release_identity(current).is_none()
 }
 
 #[cfg(test)]
@@ -162,18 +232,19 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     const SAMPLE_RELEASES_JSON: &str = r#"[
-        {"tag_name": "local-features-v0.155.0-r202609131200.abcdef1", "draft": false},
-        {"tag_name": "local-features-v0.154.0-r202609010800.9876543", "draft": false},
+        {"tag_name": "local-features-v0.155.0-r202609131159.9876543", "draft": false},
+        {"tag_name": "local-features-v0.154.0-r202609131200.abcdef1", "draft": false},
         {"tag_name": "local-features-v0.154.0-1122334455aa", "draft": false},
         {"tag_name": "v0.155.0", "draft": false},
-        {"tag_name": "local-features-v0.156.0-r202609140000.deadbee", "draft": true}
+        {"tag_name": "local-features-v0.156.0-r202609140000.deadbee", "draft": true},
+        {"tag_name": "local-features-vnot-a-release-r99999999999999.bad", "draft": false}
     ]"#;
 
     #[test]
     fn picks_newest_non_draft_fork_release() {
         assert_eq!(
             newest_fork_release_tag(SAMPLE_RELEASES_JSON).as_deref(),
-            Some("local-features-v0.155.0-r202609131200.abcdef1")
+            Some("local-features-v0.154.0-r202609131200.abcdef1")
         );
     }
 
@@ -181,7 +252,8 @@ mod tests {
     fn ignores_non_fork_and_draft_entries() {
         let json = r#"[
             {"tag_name": "v0.155.0", "draft": false},
-            {"tag_name": "local-features-v0.150.0-r1.abc", "draft": true}
+            {"tag_name": "local-features-v0.150.0-r1.abc", "draft": true},
+            {"draft": false}
         ]"#;
         assert_eq!(newest_fork_release_tag(json), None);
     }
@@ -195,12 +267,12 @@ mod tests {
     #[test]
     fn release_counter_orders_newer_tag_as_newer() {
         assert!(fork_tag_is_newer(
-            "local-features-v0.155.0-r202609131200.abcdef1",
-            "local-features-v0.154.0-r202609010800.9876543",
+            "local-features-v0.155.0-r202609131201.abcdef1",
+            "local-features-v0.154.0-r202609131200.9876543",
         ));
         assert!(!fork_tag_is_newer(
-            "local-features-v0.154.0-r202609010800.9876543",
-            "local-features-v0.155.0-r202609131200.abcdef1",
+            "local-features-v0.154.0-r202609131200.9876543",
+            "local-features-v0.155.0-r202609131201.abcdef1",
         ));
     }
 
@@ -209,6 +281,34 @@ mod tests {
         assert!(fork_tag_is_newer(
             "local-features-v0.154.0-r202609131201.abcdef1",
             "local-features-v0.154.0-r202609131200.abcdef1",
+        ));
+    }
+
+    #[test]
+    fn normalizes_legacy_minute_counter_before_comparing_seconds() {
+        assert!(fork_tag_is_newer(
+            "local-features-v0.154.0-main-r20260914000000.abcdef123456",
+            "local-features-v0.154.0-r202609140000.987654321000",
+        ));
+        assert!(fork_tag_is_newer(
+            "local-features-v0.154.0-main-r20260914000001.abcdef123456",
+            "local-features-v0.154.0-r202609140000.987654321000",
+        ));
+        assert!(!fork_tag_is_newer(
+            "local-features-v0.154.0-r202609140000.987654321000",
+            "local-features-v0.154.0-main-r20260914000001.abcdef123456",
+        ));
+    }
+
+    #[test]
+    fn same_second_releases_use_deterministic_suffix_tie_breaker() {
+        assert!(fork_tag_is_newer(
+            "local-features-v0.154.0-main-r20260914000000.bbbbbbbbbbbb",
+            "local-features-v0.154.0-main-r20260914000000.aaaaaaaaaaaa",
+        ));
+        assert!(!fork_tag_is_newer(
+            "local-features-v0.154.0-main-r20260914000000.aaaaaaaaaaaa",
+            "local-features-v0.154.0-main-r20260914000000.bbbbbbbbbbbb",
         ));
     }
 
@@ -261,7 +361,7 @@ mod tests {
             "local-features-v0.155.0-r202609131200.abcdef1",
             "local-features-v0.154.0-1122334455aa",
         ));
-        assert!(fork_tag_is_newer(
+        assert!(!fork_tag_is_newer(
             "local-features-v0.154.0-1122334455aa",
             "local-features-v0.155.0-r202609131200.abcdef1",
         ));
