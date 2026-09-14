@@ -59,8 +59,8 @@ if [ -n "${CODEX_SHAKE_TAG:-}" ]; then
 else
   # GitHub's list order is publication order, not source order. Keep this
   # selector consistent with tui/src/fork_update.rs: normalize legacy
-  # minute counters, accept second counters, and use the suffix as a
-  # deterministic tie-break for same-second releases.
+  # minute counters, accept second counters, and order generated same-second
+  # tags by their fixed-width ancestry sequence before the producer SHA.
   release_feed=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api") || \
     die "could not fetch releases for $repo"
   if command -v jq >/dev/null 2>&1; then
@@ -128,8 +128,10 @@ else
             normalized = digits
             precision = length(digits)
             if (precision == 12) normalized = digits "00"
-            printf "%020d\t%02d\t%s:%s\t%s\n", normalized + 0, precision,
-              tolower(version), tolower(suffix), tag
+            source_sequence = ""
+            if (length(suffix) == 28) source_sequence = substr(suffix, 1, 16)
+            printf "%020d\t%02d\t%s\t%s:%s\t%s\n", normalized + 0, precision,
+              source_sequence, tolower(version), tolower(suffix), tag
             next
           }
           dash = 0
@@ -143,13 +145,14 @@ else
           version = substr(rest, 1, dash - 1)
           suffix = substr(rest, dash + 1)
           if (valid_version(version) && length(suffix) == 12 && is_hex(suffix)) {
-            printf "%020d\t%02d\t%s:%s\t%s\n", 0, 0, tolower(version), tolower(suffix), tag
+            printf "%020d\t%02d\t%s\t%s:%s\t%s\n", 0, 0, "",
+              tolower(version), tolower(suffix), tag
           }
         }
       ' |
-      sort -t '	' -k1,1n -k2,2n -k3,3 -k4,4 |
+      LC_ALL=C sort -t '	' -k1,1n -k2,2n -k3,3 -k4,4 |
       tail -n 1 |
-      cut -f4-
+      cut -f5-
   )
   [ -n "$tag" ] || die "no $tag_prefix* release found in $repo"
 fi

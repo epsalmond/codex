@@ -114,6 +114,7 @@ struct ForkReleaseEntry {
 struct ReleaseIdentity {
     normalized_counter: Option<u64>,
     counter_precision: Option<u8>,
+    source_sequence: Option<u64>,
     tie_break: String,
 }
 
@@ -160,9 +161,15 @@ fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
             (counter_digits.to_string(), counter_digits.len() as u8)
         };
         let normalized_counter = normalized_digits.parse().ok()?;
+        let source_sequence = if suffix.len() == 28 {
+            Some(u64::from_str_radix(&suffix[..16], 16).ok()?)
+        } else {
+            None
+        };
         return Some(ReleaseIdentity {
             normalized_counter: Some(normalized_counter),
             counter_precision: Some(counter_precision),
+            source_sequence,
             tie_break: format!("{version}:{suffix}").to_ascii_lowercase(),
         });
     }
@@ -179,6 +186,7 @@ fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
     Some(ReleaseIdentity {
         normalized_counter: None,
         counter_precision: None,
+        source_sequence: None,
         tie_break: format!("{version}:{suffix}").to_ascii_lowercase(),
     })
 }
@@ -190,6 +198,7 @@ fn compare_fork_release_tags(left: &str, right: &str) -> std::cmp::Ordering {
             .normalized_counter
             .cmp(&right.normalized_counter)
             .then_with(|| left.counter_precision.cmp(&right.counter_precision))
+            .then_with(|| left.source_sequence.cmp(&right.source_sequence))
             .then_with(|| left.tie_break.cmp(&right.tie_break)),
         (Some(_), None) => std::cmp::Ordering::Greater,
         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -214,7 +223,10 @@ pub(crate) fn newest_fork_release_tag(releases_json: &str) -> Option<String> {
 /// minute counters are normalized to second precision before comparison, so
 /// they cannot outrank a new fourteen-digit counter merely because it has more
 /// digits. The suffix is a deterministic tie-breaker for distinct releases in
-/// the same second. Bare SHA-suffixed tags predate numeric ordering.
+/// the same second. Generated tags use a single hexadecimal suffix containing
+/// a fixed-width ancestry sequence followed by the producer SHA; this keeps
+/// the format readable by older binaries while making same-second ordering
+/// follow source chronology. Bare SHA-suffixed tags predate numeric ordering.
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) fn fork_tag_is_newer(candidate: &str, current: &str) -> bool {
     if candidate == current {
@@ -301,20 +313,26 @@ mod tests {
     }
 
     #[test]
-    fn same_second_releases_use_deterministic_suffix_tie_breaker() {
+    fn same_second_releases_use_ancestry_sequence_before_producer_sha() {
         assert!(fork_tag_is_newer(
-            "local-features-v0.154.0-main-r20260914000000.bbbbbbbbbbbb",
-            "local-features-v0.154.0-main-r20260914000000.aaaaaaaaaaaa",
+            "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
+            "local-features-v0.154.0-main-r20260914000000.0000000000000001ffffffffffff",
         ));
         assert!(!fork_tag_is_newer(
-            "local-features-v0.154.0-main-r20260914000000.aaaaaaaaaaaa",
-            "local-features-v0.154.0-main-r20260914000000.bbbbbbbbbbbb",
+            "local-features-v0.154.0-main-r20260914000000.0000000000000001ffffffffffff",
+            "local-features-v0.154.0-main-r20260914000000.0000000000000002aaaaaaaaaaaa",
         ));
     }
 
     #[test]
     fn cached_release_tag_must_belong_to_the_fork() {
         assert!(is_fork_release_tag("local-features-v0.154.0-r1.abc"));
+        assert!(is_fork_release_tag(
+            "local-features-v0.154.0-main-r20260914000000.0000000000000001aaaaaaaaaaaa"
+        ));
+        assert!(!is_fork_release_tag(
+            "local-features-v0.154.0-main-r20260914000000.0000000000000001.aaaaaaaaaaaa"
+        ));
         assert!(!is_fork_release_tag("0.155.0"));
     }
 
