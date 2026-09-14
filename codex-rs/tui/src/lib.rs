@@ -1082,7 +1082,8 @@ async fn run_ratatui_app(
     {
         use crate::update_prompt::UpdatePromptOutcome;
 
-        let skip_update_prompt = cli.prompt.as_ref().is_some_and(|prompt| !prompt.is_empty());
+        let skip_update_prompt = crate::fork_update::is_fork_build()
+            || cli.prompt.as_ref().is_some_and(|prompt| !prompt.is_empty());
         if !skip_update_prompt {
             startup_draft.flush_pending_events(&mut tui).await?;
             match update_prompt::run_update_prompt_if_needed(&mut tui, &initial_config).await? {

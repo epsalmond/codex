@@ -21,6 +21,15 @@ say() { printf 'codex-shake: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+# Render one shell word without allowing an install path or repository name to
+# become shell syntax in one of the generated wrappers. The generated scripts
+# are deliberately self-contained so updates keep using the same effective
+# locations even when the caller's environment changes later.
+shell_quote() {
+  escaped=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+  printf "'%s'" "$escaped"
+}
 need curl; need tar
 
 case "$(uname -s)" in
@@ -92,14 +101,63 @@ ln -sfn "$tag" "$home_dir/current"
 
 mkdir -p "$bin_dir"
 wrapper="$bin_dir/codex-shake"
+repo_q=$(shell_quote "$repo")
+home_q=$(shell_quote "$home_dir")
+bin_q=$(shell_quote "$bin_dir")
+current_codex_q=$(shell_quote "$home_dir/current/codex")
 cat > "$wrapper.tmp.$$" <<EOF
 #!/bin/sh
 # codex-shake: eric/local-features test build. Reinstall/update with install.sh.
-dir="$home_dir/current"
+CODEX_SHAKE_REPO=$repo_q
+CODEX_SHAKE_HOME=$home_q
+CODEX_SHAKE_BIN_DIR=$bin_q
+export CODEX_SHAKE_REPO CODEX_SHAKE_HOME CODEX_SHAKE_BIN_DIR
+dir=$(shell_quote "$home_dir/current")
 PATH="\$dir:\$PATH" exec "\$dir/codex" "\$@"
 EOF
 chmod 755 "$wrapper.tmp.$$"
 mv -f "$wrapper.tmp.$$" "$wrapper"
+
+# Keep the convenience updater beside the launcher. It delegates to the
+# installed binary's existing update implementation, so release lookup and
+# comparison stay in one place. Persist the install settings in the generated
+# environment assignments; shell quoting keeps spaces and metacharacters inert.
+update_helper="$bin_dir/codex-shake-update"
+cat > "$update_helper.tmp.$$" <<EOF
+#!/bin/sh
+# codex-shake-update: check and install the latest codex-shake release.
+CODEX_SHAKE_REPO=$repo_q
+CODEX_SHAKE_HOME=$home_q
+CODEX_SHAKE_BIN_DIR=$bin_q
+export CODEX_SHAKE_REPO CODEX_SHAKE_HOME CODEX_SHAKE_BIN_DIR
+exec $current_codex_q update --yes "\$@"
+EOF
+chmod 755 "$update_helper.tmp.$$"
+mv -f "$update_helper.tmp.$$" "$update_helper"
+
+# Some releases also carry the offline savings estimator. Expose it through a
+# PATH wrapper only when the complete payload is present; older releases keep
+# working and never advertise a helper that would fail at runtime. If a
+# previous managed wrapper points at a payload that is no longer installed,
+# remove only that wrapper and leave any user-owned file alone.
+estimator_wrapper="$bin_dir/codex-shake-estimate"
+if [ -x "$home_dir/current/codex-shake-estimate" ] &&
+  [ -f "$home_dir/current/shake-savings-estimate.py" ] &&
+  [ -f "$home_dir/current/pricing_lib.py" ] &&
+  [ -f "$home_dir/current/pricing.json" ]; then
+  estimator_dir_q=$(shell_quote "$home_dir/current")
+  cat > "$estimator_wrapper.tmp.$$" <<EOF
+#!/bin/sh
+# codex-shake-estimate: offline savings estimator bundled with this release.
+exec $estimator_dir_q/codex-shake-estimate "\$@"
+EOF
+  chmod 755 "$estimator_wrapper.tmp.$$"
+  mv -f "$estimator_wrapper.tmp.$$" "$estimator_wrapper"
+elif [ -f "$estimator_wrapper" ] &&
+  grep -q '^# codex-shake-estimate: offline savings estimator bundled with this release\.$' "$estimator_wrapper";
+then
+  rm -f "$estimator_wrapper"
+fi
 
 version=$("$home_dir/current/codex" --version 2>/dev/null || true)
 say "installed $tag -> $wrapper (${version:-version check failed})"
@@ -108,3 +166,4 @@ case ":$PATH:" in
   *) say "note: $bin_dir is not on your PATH; add it or run $wrapper directly" ;;
 esac
 say 'run: codex-shake'
+say 'update: codex-shake-update'

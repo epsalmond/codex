@@ -9,6 +9,7 @@ use crate::update_versions::extract_version_from_latest_tag;
 use crate::update_versions::is_newer;
 use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
+use crate::updates_cache::fork_version_filepath;
 use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
 use chrono::Duration;
@@ -19,10 +20,22 @@ use codex_http_client::RouteAwareClientPool;
 use codex_login::default_client::default_headers;
 use serde::Deserialize;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::version::CODEX_CLI_VERSION;
 
-pub(crate) use crate::updates_cache::dismiss_version;
+fn version_filepath_for_install(config: &Config) -> PathBuf {
+    if crate::fork_update::FORK_RELEASE_TAG.is_some() {
+        fork_version_filepath(config, &crate::fork_update::fork_repository())
+    } else {
+        version_filepath(config)
+    }
+}
+
+pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
+    let version_file = version_filepath_for_install(config);
+    crate::updates_cache::dismiss_version_at_path(&version_file, version).await
+}
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
@@ -30,13 +43,19 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     }
 
     let action = update_action::get_update_action();
-    let version_file = version_filepath(config);
+    let version_file = version_filepath_for_install(config);
     let info = read_version_info(&version_file).ok();
 
-    if match &info {
-        None => true,
-        Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
-    } {
+    let refresh_fork_source = crate::fork_update::FORK_RELEASE_TAG.is_some()
+        && info
+            .as_ref()
+            .is_some_and(|info| !crate::fork_update::is_fork_release_tag(&info.latest_version));
+    if refresh_fork_source
+        || match &info {
+            None => true,
+            Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
+        }
+    {
         let http_client_factory = config.http_client_factory();
         // Refresh the cached latest version in the background so TUI startup
         // isn’t blocked by a network call. The UI reads the previously cached
@@ -50,10 +69,17 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
     info.and_then(|info| {
         let is_update = match crate::fork_update::FORK_RELEASE_TAG {
-            Some(current_tag) => crate::fork_update::fork_tag_is_newer(&info.latest_version, current_tag),
+            Some(current_tag) => {
+                crate::fork_update::is_fork_release_tag(&info.latest_version)
+                    && crate::fork_update::fork_tag_is_newer(&info.latest_version, current_tag)
+            }
             None => is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false),
         };
-        if is_update { Some(info.latest_version) } else { None }
+        if is_update {
+            Some(info.latest_version)
+        } else {
+            None
+        }
     })
 }
 
@@ -85,37 +111,37 @@ async fn check_for_update(
         fetch_latest_fork_release_tag(&client_pool).await?
     } else {
         match action {
-        Some(UpdateAction::BrewUpgrade) => {
-            let HomebrewCaskInfo { version } = client_pool
-                .get(HOMEBREW_CASK_API_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<HomebrewCaskInfo>()
-                .await?;
-            version
-        }
-        Some(UpdateAction::NpmGlobalLatest)
-        | Some(UpdateAction::BunGlobalLatest)
-        | Some(UpdateAction::VitePlusGlobalLatest)
-        | Some(UpdateAction::PnpmGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version(&client_pool).await?;
-            let package_info = client_pool
-                .get(npm_registry::PACKAGE_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<NpmPackageInfo>()
-                .await?;
-            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            latest_version
-        }
-        Some(UpdateAction::StandaloneUnix)
-        | Some(UpdateAction::StandaloneWindows)
-        | Some(UpdateAction::CodexShakeInstallScript)
-        | None => fetch_latest_github_release_version(&client_pool).await?,
+            Some(UpdateAction::BrewUpgrade) => {
+                let HomebrewCaskInfo { version } = client_pool
+                    .get(HOMEBREW_CASK_API_URL)
+                    .headers(default_headers())
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<HomebrewCaskInfo>()
+                    .await?;
+                version
+            }
+            Some(UpdateAction::NpmGlobalLatest)
+            | Some(UpdateAction::BunGlobalLatest)
+            | Some(UpdateAction::VitePlusGlobalLatest)
+            | Some(UpdateAction::PnpmGlobalLatest) => {
+                let latest_version = fetch_latest_github_release_version(&client_pool).await?;
+                let package_info = client_pool
+                    .get(npm_registry::PACKAGE_URL)
+                    .headers(default_headers())
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<NpmPackageInfo>()
+                    .await?;
+                npm_registry::ensure_version_ready(&package_info, &latest_version)?;
+                latest_version
+            }
+            Some(UpdateAction::StandaloneUnix)
+            | Some(UpdateAction::StandaloneWindows)
+            | Some(UpdateAction::CodexShakeInstallScript)
+            | None => fetch_latest_github_release_version(&client_pool).await?,
         }
     };
 
@@ -155,15 +181,16 @@ async fn fetch_latest_fork_release_tag(
     client_pool: &RouteAwareClientPool,
 ) -> anyhow::Result<String> {
     let body = client_pool
-        .get(crate::fork_update::FORK_RELEASES_API_URL)
+        .get(crate::fork_update::fork_releases_api_url())
         .headers(default_headers())
         .send()
         .await?
         .error_for_status()?
         .text()
         .await?;
+    let repository = crate::fork_update::fork_repository();
     crate::fork_update::newest_fork_release_tag(&body)
-        .ok_or_else(|| anyhow::anyhow!("no local-features-v* release found in epsalmond/codex"))
+        .ok_or_else(|| anyhow::anyhow!("no local-features-v* release found in {repository}"))
 }
 
 /// Check the fork's release feed for a newer tag right now, bypassing the
@@ -196,8 +223,8 @@ pub fn fork_tag_is_newer(candidate: &str, current: &str) -> bool {
 }
 
 /// The command that reinstalls the latest fork release.
-pub fn fork_install_command() -> &'static str {
-    crate::fork_update::FORK_INSTALL_COMMAND
+pub fn fork_install_command() -> String {
+    crate::fork_update::fork_install_command()
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
@@ -207,7 +234,7 @@ pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
         return None;
     }
 
-    let version_file = version_filepath(config);
+    let version_file = version_filepath_for_install(config);
     let latest = get_upgrade_version(config)?;
     // If the user dismissed this exact version previously, do not show the popup.
     if let Ok(info) = read_version_info(&version_file)

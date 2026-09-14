@@ -16,9 +16,21 @@ pub(crate) struct VersionInfo {
 }
 
 const VERSION_FILENAME: &str = "version.json";
+const FORK_VERSION_FILENAME_PREFIX: &str = "version-fork-";
 
 pub(crate) fn version_filepath(config: &Config) -> PathBuf {
     config.codex_home.join(VERSION_FILENAME).into_path_buf()
+}
+
+/// Return a cache path isolated from the upstream updater and other fork
+/// repositories. Percent encoding keeps repository names safe as filenames,
+/// including when an installer override contains shell metacharacters.
+pub(crate) fn fork_version_filepath(config: &Config, repository: &str) -> PathBuf {
+    let repository = urlencoding::encode(repository);
+    config
+        .codex_home
+        .join(format!("{FORK_VERSION_FILENAME_PREFIX}{repository}.json"))
+        .into_path_buf()
 }
 
 pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
@@ -28,9 +40,17 @@ pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<VersionIn
 
 /// Persist a dismissal for the current latest version so we don't show
 /// the update popup again for this version.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
     let version_file = version_filepath(config);
-    let mut info = match read_version_info(&version_file) {
+    dismiss_version_at_path(&version_file, version).await
+}
+
+pub(crate) async fn dismiss_version_at_path(
+    version_file: &Path,
+    version: &str,
+) -> anyhow::Result<()> {
+    let mut info = match read_version_info(version_file) {
         Ok(info) => info,
         Err(_) => VersionInfo {
             latest_version: version.to_string(),

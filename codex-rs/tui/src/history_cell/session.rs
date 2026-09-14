@@ -230,6 +230,7 @@ pub(crate) fn has_yolo_permissions(
 #[derive(Debug)]
 pub(crate) struct SessionHeaderHistoryCell {
     version: &'static str,
+    feature_version: Option<&'static str>,
     model: String,
     model_style: Style,
     reasoning_effort: Option<ReasoningEffortConfig>,
@@ -266,6 +267,7 @@ impl SessionHeaderHistoryCell {
     ) -> Self {
         Self {
             version,
+            feature_version: None,
             model: crate::model_catalog::model_display_name(&model).to_string(),
             model_style,
             reasoning_effort,
@@ -273,10 +275,20 @@ impl SessionHeaderHistoryCell {
             directory,
             yolo_mode: false,
         }
+        .with_feature_version(crate::fork_update::shake_feature_version())
     }
 
     pub(crate) fn with_yolo_mode(mut self, yolo_mode: bool) -> Self {
         self.yolo_mode = yolo_mode;
+        self
+    }
+
+    /// Overrides the build-provided feature version for a rendered header.
+    /// Production callers use the compiled Shake branding automatically;
+    /// keeping this setter available also lets rendering tests cover the
+    /// fork-specific title without changing the build environment.
+    pub(crate) fn with_feature_version(mut self, feature_version: Option<&'static str>) -> Self {
+        self.feature_version = feature_version;
         self
     }
 
@@ -323,12 +335,19 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
         // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
-        let title_spans: Vec<Span<'static>> = vec![
+        let mut title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
             Span::from("OpenAI Codex").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];
+        if let Some(feature_version) = self.feature_version {
+            title_spans.extend([
+                Span::from(" · ").dim(),
+                Span::from("Shake").bold(),
+                Span::from(format!(" v{feature_version}")).dim(),
+            ]);
+        }
 
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
@@ -395,8 +414,17 @@ impl HistoryCell for SessionHeaderHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
+        let title = self
+            .feature_version
+            .map(|feature_version| {
+                format!(
+                    "OpenAI Codex (v{}) · Shake v{feature_version}",
+                    self.version
+                )
+            })
+            .unwrap_or_else(|| format!("OpenAI Codex (v{})", self.version));
         let mut lines = vec![
-            Line::from(format!("OpenAI Codex (v{})", self.version)),
+            Line::from(title),
             Line::from(format!(
                 "model: {}{}",
                 self.model,
