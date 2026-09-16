@@ -198,6 +198,7 @@ impl WidgetRef for &UpdatePromptScreen {
         let mut column = ColumnRenderable::new();
 
         let update_command = self.update_action.command_str();
+        let manual_instructions = self.update_action.manual_instructions();
 
         column.push("");
         column.push(Line::from(vec![
@@ -219,10 +220,18 @@ impl WidgetRef for &UpdatePromptScreen {
             ])
             .inset(Insets::tlbr(0, 2, 0, 0)),
         );
+        if let Some(instructions) = manual_instructions {
+            column.push("");
+            column.push(Line::from(instructions.to_string().dim()).inset(Insets::tlbr(0, 2, 0, 0)));
+        }
         column.push("");
+        let update_now_label = match update_command {
+            Some(update_command) => format!("Update now (runs `{update_command}`)"),
+            None => "Acknowledge".to_string(),
+        };
         column.push(selection_option_row(
             0,
-            format!("Update now (runs `{update_command}`)"),
+            update_now_label,
             self.highlighted == UpdateSelection::UpdateNow,
         ));
         column.push(selection_option_row(

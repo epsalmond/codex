@@ -4,7 +4,7 @@
 #
 # usage: fork-release-notes.sh <repo-root> <fork-repo> <branch> <commit>
 #   <source-version> <stable-lineage> <upstream-main-sha> <glibc-version>
-#   <source-kind>
+#   <source-kind> <release-tag> <deb-asset-name>
 set -euo pipefail
 
 repo_root=$1
@@ -16,6 +16,8 @@ stable_lineage=$6
 upstream_main_sha=$7
 glibc_version=$8
 source_kind=$9
+release_tag=${10}
+deb_asset_name=${11}
 
 commit=$(git -C "$repo_root" rev-parse --verify "$commit^{commit}")
 case "$source_kind" in
@@ -26,13 +28,31 @@ esac
 
 cat <<EOF
 
-**Install and update** as \`codex-shake\` beside your official \`codex\`:
+**Install** as \`codex-shake\` beside your official \`codex\` (pick one):
+
+**Homebrew** (macOS Apple Silicon, or Linux x86_64):
+
+\`\`\`sh
+brew install epsalmond/codex-shake/codex-shake
+\`\`\`
+
+**Debian/Ubuntu (x86_64)**, download and install the \`.deb\` from this release:
+
+\`\`\`sh
+curl -fsSL -o $deb_asset_name \\
+  https://github.com/$fork_repo/releases/download/$release_tag/$deb_asset_name
+sudo dpkg -i $deb_asset_name
+\`\`\`
+
+**curl | sh** (any supported platform, installs to \`~/.local\`):
 
 \`\`\`sh
 curl -fsSL https://raw.githubusercontent.com/$fork_repo/$branch/install.sh | sh
 \`\`\`
 
-Run \`codex-shake\`. Rerun the installer or use \`codex-shake-update\` to update.
+Run \`codex-shake\`. To update: \`codex-shake-update\` (curl|sh installs),
+\`brew upgrade epsalmond/codex-shake/codex-shake\` (Homebrew), or reinstall the
+\`.deb\` for the latest release (Debian/Ubuntu).
 **Estimate sessions active in the past 7 days (offline; Python 3):** \`codex-shake-estimate --since 168\`.
 
 EOF

@@ -77,6 +77,13 @@ binary. It deliberately stops on a missing tag or rebase conflict.
 `codex` launches the managed local build; `codex-official` launches the npm
 installation directly as an escape hatch.
 
+Fork test builds of this branch are also published as `codex-shake`, beside
+your official `codex`, via `curl -fsSL .../install.sh | sh`, Homebrew
+(`brew install epsalmond/codex-shake/codex-shake`), or a `.deb` for
+Debian/Ubuntu x86_64 attached to each release. See the release notes on
+[epsalmond/codex releases](https://github.com/epsalmond/codex/releases) for
+the exact commands.
+
 ### Using Codex with your ChatGPT plan
 
 Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).

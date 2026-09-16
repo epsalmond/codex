@@ -29,14 +29,19 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         use ratatui_macros::line;
         use ratatui_macros::text;
-        let update_instruction = if let Some(update_action) = self.update_action {
-            line!["Run ", update_action.command_str().cyan(), " to update."]
-        } else {
-            line![
-                "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
-                " for installation options."
-            ]
+        let update_instruction = match self.update_action.and_then(UpdateAction::command_str) {
+            Some(command_str) => line!["Run ", command_str.cyan(), " to update."],
+            None => match self
+                .update_action
+                .and_then(UpdateAction::manual_instructions)
+            {
+                Some(instructions) => line![instructions.to_string()],
+                None => line![
+                    "See ",
+                    "https://github.com/openai/codex".cyan().underlined(),
+                    " for installation options."
+                ],
+            },
         };
 
         let content = text![
@@ -63,10 +68,15 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let update_instruction = if let Some(update_action) = self.update_action {
-            format!("Run {} to update.", update_action.command_str())
-        } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+        let update_instruction = match self.update_action.and_then(UpdateAction::command_str) {
+            Some(command_str) => format!("Run {command_str} to update."),
+            None => match self
+                .update_action
+                .and_then(UpdateAction::manual_instructions)
+            {
+                Some(instructions) => instructions.to_string(),
+                None => "See https://github.com/openai/codex for installation options.".to_string(),
+            },
         };
         vec![
             Line::from("Update available!"),
@@ -263,14 +273,29 @@ pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHist
 ///
 /// Fork updates stay out of the interactive upstream update screen so a
 /// release check never delays session startup. The app inserts this cell once
-/// for the session when its cached fork release is newer.
+/// for the session when its cached fork release is newer. The message
+/// depends on how this binary was installed: `install.sh` installs provide
+/// the `codex-shake-update` wrapper, but Homebrew and Debian package installs
+/// do not, so those show their own update instructions instead.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn new_codex_shake_update_notice() -> PlainHistoryCell {
-    new_info_event(
-        "A new codex-shake release is available. Run codex-shake-update when you’re ready."
+pub(crate) fn new_codex_shake_update_notice(
+    update_action: Option<UpdateAction>,
+) -> PlainHistoryCell {
+    let message = match update_action {
+        Some(UpdateAction::CodexShakeBrewUpgrade) => {
+            "A new codex-shake release is available. Run brew upgrade epsalmond/codex-shake/codex-shake when you’re ready."
+                .to_string()
+        }
+        Some(UpdateAction::CodexShakeDebManual) => match UpdateAction::CodexShakeDebManual.manual_instructions() {
+            Some(instructions) => {
+                format!("A new codex-shake release is available. {instructions}.")
+            }
+            None => "A new codex-shake release is available.".to_string(),
+        },
+        _ => "A new codex-shake release is available. Run codex-shake-update when you’re ready."
             .to_string(),
-        /*hint*/ None,
-    )
+    };
+    new_info_event(message, /*hint*/ None)
 }
 
 pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {

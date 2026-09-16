@@ -141,6 +141,8 @@ async fn check_for_update(
             Some(UpdateAction::StandaloneUnix)
             | Some(UpdateAction::StandaloneWindows)
             | Some(UpdateAction::CodexShakeInstallScript)
+            | Some(UpdateAction::CodexShakeBrewUpgrade)
+            | Some(UpdateAction::CodexShakeDebManual)
             | None => fetch_latest_github_release_version(&client_pool).await?,
         }
     };

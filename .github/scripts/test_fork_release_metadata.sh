@@ -72,14 +72,30 @@ producer_sha=$(git -C "$fixture" rev-parse --short=12 "$merge_sha")
 [[ "${release_tag##*.}" == "$source_sequence_hex$producer_sha" ]]
 
 grep -Fq 'bash .github/scripts/fork-release-notes.sh' "$workflow_file"
+sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
+sample_deb_asset="codex-shake_0.154.0+r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")_amd64.deb"
 body=$(bash "$script_dir/fork-release-notes.sh" \
   "$fixture" epsalmond/codex eric/local-features "$merge_sha" \
-  0.154.0 rust-v2.0.0 "$upstream_tip" 2.35.0 branch-merge)
+  0.154.0 rust-v2.0.0 "$upstream_tip" 2.35.0 branch-merge \
+  "$sample_release_tag" "$sample_deb_asset")
 grep -Fq "Fork release commit: \`$merge_sha\`" <<< "$body"
 grep -Fq "Integrated upstream main commit: \`$upstream_tip\`" <<< "$body"
 grep -Fq 'Exact stable lineage: `rust-v2.0.0`' <<< "$body"
 grep -Fq 'https://github.com/epsalmond/codex/blob/' <<< "$body"
 grep -Fq 'https://github.com/epsalmond/codex/compare/rust-v2.0.0...' <<< "$body"
+
+# Install block must offer all three options, and must not emit the
+# provenance phrase before the actual provenance block (fork-upstream-poll.yml
+# greps for "Based on upstream `rust-v" with head -1).
+grep -Fq 'brew install epsalmond/codex-shake/codex-shake' <<< "$body"
+grep -Fq "sudo dpkg -i $sample_deb_asset" <<< "$body"
+grep -Fq "releases/download/$sample_release_tag/$sample_deb_asset" <<< "$body"
+grep -Fq 'curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh' <<< "$body"
+grep -Fq 'brew upgrade epsalmond/codex-shake/codex-shake' <<< "$body"
+first_provenance_line=$(grep -n 'Based on upstream `rust-v' <<< "$body" | head -1 | cut -d: -f1)
+[[ -n "$first_provenance_line" ]]
+install_block_end=$(grep -n 'codex-shake-estimate --since 168' <<< "$body" | head -1 | cut -d: -f1)
+[[ -n "$install_block_end" && "$install_block_end" -lt "$first_provenance_line" ]]
 
 # A same-name tag pointing elsewhere is rejected before any publish step.
 git -C "$fixture" tag "$release_tag" HEAD

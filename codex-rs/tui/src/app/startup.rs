@@ -973,7 +973,9 @@ See the Codex keymap documentation for supported actions and examples."
         #[cfg(not(debug_assertions))]
         let pre_loop_exit_reason = if let Some(latest_version) = upgrade_version {
             let update_cell: Box<dyn HistoryCell> = if crate::fork_update::is_fork_build() {
-                Box::new(history_cell::new_codex_shake_update_notice())
+                Box::new(history_cell::new_codex_shake_update_notice(
+                    crate::update_action::get_update_action(),
+                ))
             } else {
                 Box::new(UpdateAvailableHistoryCell::new(
                     latest_version,

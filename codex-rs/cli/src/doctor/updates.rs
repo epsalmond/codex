@@ -396,6 +396,10 @@ fn update_action_label(context: &InstallContext) -> &'static str {
         InstallMethod::Brew => "brew upgrade --cask codex",
         InstallMethod::Standalone { .. } => "standalone installer",
         InstallMethod::CodexShake { .. } => "install.sh (codex-shake)",
+        InstallMethod::CodexShakeBrew { .. } => "brew upgrade epsalmond/codex-shake/codex-shake",
+        InstallMethod::CodexShakeDeb { .. } => {
+            "manual: download .deb from https://github.com/epsalmond/codex/releases and sudo dpkg -i"
+        }
         InstallMethod::Other => "manual or unknown",
     }
 }
@@ -412,6 +416,8 @@ async fn fetch_latest_version(
         | InstallMethod::Pnpm
         | InstallMethod::Standalone { .. }
         | InstallMethod::CodexShake { .. }
+        | InstallMethod::CodexShakeBrew { .. }
+        | InstallMethod::CodexShakeDeb { .. }
         | InstallMethod::Other => fetch_latest_github_release_version(client).await,
     }
 }

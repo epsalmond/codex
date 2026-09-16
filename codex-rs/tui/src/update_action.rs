@@ -24,7 +24,17 @@ pub enum UpdateAction {
     StandaloneWindows,
     /// Update via `install.sh` for Eric's `codex-shake` fork build.
     CodexShakeInstallScript,
+    /// Update via `brew upgrade epsalmond/codex-shake/codex-shake`.
+    CodexShakeBrewUpgrade,
+    /// No runnable command: the `codex-shake` Debian package has no apt
+    /// repo, so updating means downloading a newer `.deb` and installing it
+    /// manually with `sudo dpkg -i`.
+    CodexShakeDebManual,
 }
+
+/// The advisory text shown for update actions that have no runnable
+/// command (currently only [`UpdateAction::CodexShakeDebManual`]).
+const CODEX_SHAKE_DEB_MANUAL_INSTRUCTIONS: &str = "Download the latest codex-shake .deb from https://github.com/epsalmond/codex/releases and install it with sudo dpkg -i";
 
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
@@ -40,26 +50,30 @@ impl UpdateAction {
                 StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
             }),
             InstallMethod::CodexShake { .. } => Some(UpdateAction::CodexShakeInstallScript),
+            InstallMethod::CodexShakeBrew { .. } => Some(UpdateAction::CodexShakeBrewUpgrade),
+            InstallMethod::CodexShakeDeb { .. } => Some(UpdateAction::CodexShakeDebManual),
             InstallMethod::Other => None,
         }
     }
 
-    /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+    /// Returns the list of command-line arguments for invoking the update,
+    /// or `None` when this action has no runnable command (see
+    /// [`Self::manual_instructions`] for what to show the user instead).
+    pub fn command_args(self) -> Option<(&'static str, &'static [&'static str])> {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
+            UpdateAction::NpmGlobalLatest => Some(("npm", &["install", "-g", "@openai/codex"])),
+            UpdateAction::BunGlobalLatest => Some(("bun", &["install", "-g", "@openai/codex"])),
+            UpdateAction::VitePlusGlobalLatest => Some(("vp", &["install", "-g", "@openai/codex"])),
+            UpdateAction::PnpmGlobalLatest => Some(("pnpm", &["add", "-g", "@openai/codex"])),
+            UpdateAction::BrewUpgrade => Some(("brew", &["upgrade", "--cask", "codex"])),
+            UpdateAction::StandaloneUnix => Some((
                 "sh",
                 &[
                     "-c",
                     "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
                 ],
-            ),
-            UpdateAction::StandaloneWindows => (
+            )),
+            UpdateAction::StandaloneWindows => Some((
                 "powershell",
                 &[
                     "-ExecutionPolicy",
@@ -67,18 +81,35 @@ impl UpdateAction {
                     "-c",
                     "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
                 ],
-            ),
+            )),
             UpdateAction::CodexShakeInstallScript => {
-                ("sh", &["-c", crate::fork_update::FORK_INSTALL_COMMAND])
+                Some(("sh", &["-c", crate::fork_update::FORK_INSTALL_COMMAND]))
             }
+            UpdateAction::CodexShakeBrewUpgrade => {
+                Some(("brew", &["upgrade", "epsalmond/codex-shake/codex-shake"]))
+            }
+            UpdateAction::CodexShakeDebManual => None,
         }
     }
 
-    /// Returns string representation of the command-line arguments for invoking the update.
-    pub fn command_str(self) -> String {
-        let (command, args) = self.command_args();
-        shlex::try_join(std::iter::once(command).chain(args.iter().copied()))
-            .unwrap_or_else(|_| format!("{command} {}", args.join(" ")))
+    /// Returns string representation of the command-line arguments for
+    /// invoking the update, or `None` when this action has no runnable
+    /// command.
+    pub fn command_str(self) -> Option<String> {
+        let (command, args) = self.command_args()?;
+        Some(
+            shlex::try_join(std::iter::once(command).chain(args.iter().copied()))
+                .unwrap_or_else(|_| format!("{command} {}", args.join(" "))),
+        )
+    }
+
+    /// Returns advisory instructions to show the user when this action has
+    /// no runnable command (i.e. `command_args()` returns `None`).
+    pub fn manual_instructions(self) -> Option<&'static str> {
+        match self {
+            UpdateAction::CodexShakeDebManual => Some(CODEX_SHAKE_DEB_MANUAL_INSTRUCTIONS),
+            _ => None,
+        }
     }
 }
 
@@ -162,11 +193,29 @@ mod tests {
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::CodexShake {
-                    release_dir: codex_shake_release_dir,
+                    release_dir: codex_shake_release_dir.clone(),
                 },
                 package_layout: None,
             }),
             Some(UpdateAction::CodexShakeInstallScript)
+        );
+        assert_eq!(
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::CodexShakeBrew {
+                    release_dir: codex_shake_release_dir.clone(),
+                },
+                package_layout: None,
+            }),
+            Some(UpdateAction::CodexShakeBrewUpgrade)
+        );
+        assert_eq!(
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::CodexShakeDeb {
+                    release_dir: codex_shake_release_dir,
+                },
+                package_layout: None,
+            }),
+            Some(UpdateAction::CodexShakeDebManual)
         );
     }
 
@@ -174,31 +223,61 @@ mod tests {
     fn codex_shake_update_command_matches_install_sh() {
         assert_eq!(
             UpdateAction::CodexShakeInstallScript.command_args(),
-            (
+            Some((
                 "sh",
                 &[
                     "-c",
                     "curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | bash"
                 ][..],
-            )
+            ))
         );
+    }
+
+    #[test]
+    fn codex_shake_brew_update_command_targets_the_tap_formula() {
+        assert_eq!(
+            UpdateAction::CodexShakeBrewUpgrade.command_args(),
+            Some((
+                "brew",
+                &["upgrade", "epsalmond/codex-shake/codex-shake"][..],
+            ))
+        );
+        assert_eq!(
+            UpdateAction::CodexShakeBrewUpgrade.command_str(),
+            Some("brew upgrade epsalmond/codex-shake/codex-shake".to_string())
+        );
+        assert_eq!(
+            UpdateAction::CodexShakeBrewUpgrade.manual_instructions(),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_shake_deb_update_is_manual_only() {
+        assert_eq!(UpdateAction::CodexShakeDebManual.command_args(), None);
+        assert_eq!(UpdateAction::CodexShakeDebManual.command_str(), None);
+        let instructions = UpdateAction::CodexShakeDebManual
+            .manual_instructions()
+            .expect("deb update action should have manual instructions");
+        assert!(instructions.contains("https://github.com/epsalmond/codex/releases"));
+        assert!(instructions.contains("sudo dpkg -i"));
     }
 
     #[test]
     fn standalone_update_commands_rerun_latest_installer() {
         assert_eq!(
             UpdateAction::StandaloneUnix.command_args(),
-            (
+            Some((
                 "sh",
                 &[
                     "-c",
                     "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
                 ][..],
-            )
+            ))
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
-            (
+            Some((
                 "powershell",
                 &[
                     "-ExecutionPolicy",
@@ -206,7 +285,7 @@ mod tests {
                     "-c",
                     "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
                 ][..],
-            )
+            ))
         );
     }
 }

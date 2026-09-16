@@ -113,6 +113,8 @@ fn install_method_name(context: &InstallContext) -> &'static str {
         InstallMethod::Pnpm => "pnpm",
         InstallMethod::Brew => "brew",
         InstallMethod::CodexShake { .. } => "codex-shake",
+        InstallMethod::CodexShakeBrew { .. } => "codex-shake (brew)",
+        InstallMethod::CodexShakeDeb { .. } => "codex-shake (deb)",
         InstallMethod::Other => "local build",
     }
 }
