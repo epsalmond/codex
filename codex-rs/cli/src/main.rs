@@ -1037,8 +1037,15 @@ async fn run_update_command(yes: bool) -> anyhow::Result<()> {
             );
             return Ok(());
         };
-        let cmd_str = action.command_str();
-        println!("Update command: {cmd_str}");
+        match action.command_str() {
+            Some(cmd_str) => println!("Update command: {cmd_str}"),
+            None => println!(
+                "{}",
+                action
+                    .manual_instructions()
+                    .unwrap_or("Self-update is not supported for this install.")
+            ),
+        }
         if yes {
             run_update_action(action)
         } else {
