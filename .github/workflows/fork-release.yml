@@ -165,6 +165,23 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      # The v8 crate's build script extracts RUSTY_V8_ARCHIVE to
+      # target/<profile>/gn_out/obj/librusty_v8.a, outside its OUT_DIR.
+      # Swatinem/rust-cache prunes that directory when saving, while the
+      # restored fingerprint still marks the build script as fresh, so a
+      # cache hit links against a library that no longer exists ("could not
+      # find native static library `rusty_v8`"). Re-extract it up front; if
+      # the build script does rerun it simply overwrites the same file.
+      - name: Restore rusty_v8 static library for cached builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUSTY_V8_ARCHIVE"
+          lib_dir=target/release/gn_out/obj
+          mkdir -p "$lib_dir"
+          gunzip -c "$RUSTY_V8_ARCHIVE" > "$lib_dir/librusty_v8.a"
+          test -s "$lib_dir/librusty_v8.a"
+
       - name: Cargo build
         shell: bash
         env:
