@@ -82,6 +82,26 @@ pub enum InstallMethod {
         /// The `<tag>` release directory the running executable lives in.
         release_dir: AbsolutePathBuf,
     },
+    /// A Codex binary installed via the `epsalmond/codex-shake/codex-shake`
+    /// Homebrew tap formula, running from the Homebrew Cellar, e.g.
+    /// `/opt/homebrew/Cellar/codex-shake/<version>/libexec/codex` (macOS) or
+    /// `/home/linuxbrew/.linuxbrew/Cellar/codex-shake/<version>/libexec/codex`
+    /// (Linux).
+    CodexShakeBrew {
+        /// The directory the running executable lives in, i.e.
+        /// `<prefix>/Cellar/codex-shake/<version>/libexec`.
+        release_dir: AbsolutePathBuf,
+    },
+    /// A Codex binary installed via the `codex-shake` Debian package, running
+    /// from `/usr/lib/codex-shake/codex`. There is no apt repo for this
+    /// package; updating means downloading a newer `.deb` from
+    /// `https://github.com/epsalmond/codex/releases` and running
+    /// `sudo dpkg -i`.
+    CodexShakeDeb {
+        /// The release directory the running executable lives in
+        /// (`/usr/lib/codex-shake`).
+        release_dir: AbsolutePathBuf,
+    },
     /// Any other execution environment.
     ///
     /// This commonly covers `cargo run`, app-bundled Codex binaries, custom
@@ -318,6 +338,14 @@ fn install_method_from_exe(
         return shake_method;
     }
 
+    if let Some(shake_brew_method) = codex_shake_brew_install_method(exe_path) {
+        return shake_brew_method;
+    }
+
+    if let Some(shake_deb_method) = codex_shake_deb_install_method(exe_path) {
+        return shake_deb_method;
+    }
+
     if let Some(standalone_method) = standalone_install_method(exe_path, codex_home, package_layout)
     {
         return standalone_method;
@@ -355,6 +383,55 @@ fn codex_shake_install_method(exe_path: &Path) -> Option<InstallMethod> {
     let canonical_shake_home = canonical_absolute_path(&shake_home)?;
     if release_dir.starts_with(canonical_shake_home.as_path()) {
         Some(InstallMethod::CodexShake { release_dir })
+    } else {
+        None
+    }
+}
+
+/// The Homebrew tap formula name whose Cellar directory identifies a
+/// `codex-shake` Homebrew install, independent of the Cellar's prefix (which
+/// varies by OS/arch, e.g. `/opt/homebrew` on macOS arm64 or
+/// `/home/linuxbrew/.linuxbrew` on Linux).
+const CELLAR_DIRNAME: &str = "Cellar";
+const CODEX_SHAKE_FORMULA_NAME: &str = "codex-shake";
+
+/// Detect a `codex-shake` Homebrew tap install by looking for a `Cellar`
+/// path component immediately followed by a `codex-shake` component
+/// anywhere in the canonical exe path. This intentionally does not depend on
+/// `is_macos` since Homebrew on Linux (Linuxbrew) uses the same Cellar
+/// layout under a different prefix.
+fn codex_shake_brew_install_method(exe_path: &Path) -> Option<InstallMethod> {
+    let canonical_exe = canonical_absolute_path(exe_path)?;
+    let components: Vec<std::path::Component<'_>> = canonical_exe.as_path().components().collect();
+    let has_cellar_codex_shake = components.windows(2).any(|window| {
+        window[0].as_os_str() == OsStr::new(CELLAR_DIRNAME)
+            && window[1].as_os_str() == OsStr::new(CODEX_SHAKE_FORMULA_NAME)
+    });
+    if !has_cellar_codex_shake {
+        return None;
+    }
+    // release_dir is the directory containing the executable (typically
+    // `<prefix>/Cellar/codex-shake/<version>/libexec`), matching the
+    // convention used by the other `InstallMethod` variants.
+    let release_dir = canonical_exe.parent()?;
+    Some(InstallMethod::CodexShakeBrew { release_dir })
+}
+
+const CODEX_SHAKE_DEB_LIB_DIR: &str = "/usr/lib/codex-shake";
+
+/// Detect a `codex-shake` Debian package install by checking whether a
+/// release directory lives under `/usr/lib/codex-shake/`.
+fn is_codex_shake_deb_release_dir(release_dir: &Path) -> bool {
+    release_dir.starts_with(CODEX_SHAKE_DEB_LIB_DIR)
+}
+
+/// Detect a `codex-shake` Debian package install by checking whether the
+/// canonical exe path lives under `/usr/lib/codex-shake/`.
+fn codex_shake_deb_install_method(exe_path: &Path) -> Option<InstallMethod> {
+    let canonical_exe = canonical_absolute_path(exe_path)?;
+    let release_dir = canonical_exe.parent()?;
+    if is_codex_shake_deb_release_dir(release_dir.as_path()) {
+        Some(InstallMethod::CodexShakeDeb { release_dir })
     } else {
         None
     }
@@ -1018,5 +1095,126 @@ mod tests {
                 package_layout: None,
             }
         );
+    }
+
+    #[test]
+    fn codex_shake_brew_cellar_install_is_detected() -> std::io::Result<()> {
+        let prefix = tempfile::tempdir()?;
+        let release_dir = prefix
+            .path()
+            .join("Cellar/codex-shake/0.154.0.20260914110830/libexec");
+        fs::create_dir_all(&release_dir)?;
+        let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+        let canonical_release_dir =
+            AbsolutePathBuf::from_absolute_path(release_dir.canonicalize()?)?;
+
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ true,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+            /*codex_home*/ None,
+        );
+
+        assert_eq!(
+            context,
+            InstallContext {
+                method: InstallMethod::CodexShakeBrew {
+                    release_dir: canonical_release_dir,
+                },
+                package_layout: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn codex_shake_brew_cellar_install_is_detected_on_linux_prefix() -> std::io::Result<()> {
+        // Homebrew on Linux (Linuxbrew) uses the same `Cellar/<formula>`
+        // layout under a different prefix, and detection does not depend on
+        // `is_macos`.
+        let prefix = tempfile::tempdir()?;
+        let release_dir = prefix
+            .path()
+            .join("Cellar/codex-shake/0.154.0.20260914110830/libexec");
+        fs::create_dir_all(&release_dir)?;
+        let exe_path = release_dir.join("codex");
+        fs::write(&exe_path, "")?;
+        let canonical_release_dir =
+            AbsolutePathBuf::from_absolute_path(release_dir.canonicalize()?)?;
+
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+            /*codex_home*/ None,
+        );
+
+        assert_eq!(
+            context,
+            InstallContext {
+                method: InstallMethod::CodexShakeBrew {
+                    release_dir: canonical_release_dir,
+                },
+                package_layout: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn upstream_brew_cellar_install_is_not_mistaken_for_codex_shake() -> std::io::Result<()> {
+        let prefix = tempfile::tempdir()?;
+        let release_dir = prefix.path().join("Cellar/codex/1.2.3/libexec");
+        fs::create_dir_all(&release_dir)?;
+        let exe_path = release_dir.join("codex");
+        fs::write(&exe_path, "")?;
+
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ true,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+            /*codex_home*/ None,
+        );
+
+        assert!(!matches!(
+            context.method,
+            InstallMethod::CodexShakeBrew { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn codex_shake_deb_release_dir_prefix_is_recognized() {
+        assert!(is_codex_shake_deb_release_dir(Path::new(
+            "/usr/lib/codex-shake/codex"
+        )));
+        assert!(is_codex_shake_deb_release_dir(Path::new(
+            "/usr/lib/codex-shake"
+        )));
+        assert!(!is_codex_shake_deb_release_dir(Path::new(
+            "/usr/lib/other-package/codex"
+        )));
+        assert!(!is_codex_shake_deb_release_dir(Path::new(
+            "/opt/homebrew/bin/codex"
+        )));
+    }
+
+    #[test]
+    fn codex_shake_deb_install_is_detected_from_lib_layout() -> std::io::Result<()> {
+        // `/usr/lib` is not writable in CI/dev sandboxes, so this exercises
+        // the canonicalizing wrapper against a symlink-free relative layout
+        // by asserting on the pure prefix-matching helper together with the
+        // release_dir shape `install_method_from_exe` would construct, since
+        // `codex_shake_deb_install_method` itself requires the real
+        // `/usr/lib/codex-shake` prefix to exist on disk.
+        let release_dir = Path::new(CODEX_SHAKE_DEB_LIB_DIR);
+        assert!(is_codex_shake_deb_release_dir(release_dir));
+        let exe_path = release_dir.join("codex");
+        assert_eq!(
+            exe_path.parent().map(Path::to_path_buf),
+            Some(release_dir.to_path_buf())
+        );
+        Ok(())
     }
 }

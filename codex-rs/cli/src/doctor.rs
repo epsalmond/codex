@@ -1010,6 +1010,12 @@ fn describe_install_context(context: &InstallContext) -> String {
         InstallMethod::CodexShake { release_dir } => {
             format!("codex-shake (release {})", release_dir.display())
         }
+        InstallMethod::CodexShakeBrew { release_dir } => {
+            format!("codex-shake (brew, release {})", release_dir.display())
+        }
+        InstallMethod::CodexShakeDeb { release_dir } => {
+            format!("codex-shake (deb, release {})", release_dir.display())
+        }
         InstallMethod::Other => {
             describe_method_with_package_layout("other", context.package_layout.as_ref())
         }

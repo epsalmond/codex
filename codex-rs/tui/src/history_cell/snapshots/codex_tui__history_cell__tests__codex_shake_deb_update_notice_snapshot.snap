@@ -1,0 +1,6 @@
+---
+source: tui/src/history_cell/tests.rs
+assertion_line: 1345
+expression: rendered
+---
+• A new codex-shake release is available. Download the latest codex-shake .deb from https://github.com/epsalmond/codex/releases and install it with sudo dpkg -i.

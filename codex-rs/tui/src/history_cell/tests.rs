@@ -1323,7 +1323,23 @@ fn vite_plus_update_available_history_cell_snapshot() {
 
 #[test]
 fn codex_shake_update_notice_snapshot() {
-    let cell = new_codex_shake_update_notice();
+    let cell = new_codex_shake_update_notice(None);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn codex_shake_brew_update_notice_snapshot() {
+    let cell = new_codex_shake_update_notice(Some(UpdateAction::CodexShakeBrewUpgrade));
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn codex_shake_deb_update_notice_snapshot() {
+    let cell = new_codex_shake_update_notice(Some(UpdateAction::CodexShakeDebManual));
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
     insta::assert_snapshot!(rendered);

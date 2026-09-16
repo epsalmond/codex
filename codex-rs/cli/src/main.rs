@@ -909,12 +909,21 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
 /// Run the update action and print the result.
 fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     println!();
-    let cmd_str = action.command_str();
+    let Some((cmd, args)) = action.command_args() else {
+        if let Some(instructions) = action.manual_instructions() {
+            println!("{instructions}");
+        } else {
+            println!(
+                "Self-update is not supported for this install. Please update manually: https://developers.openai.com/codex/cli/"
+            );
+        }
+        return Ok(());
+    };
+    let cmd_str = action.command_str().unwrap_or_default();
     println!("Updating Codex via `{cmd_str}`...");
     let status = {
         #[cfg(windows)]
         {
-            let (cmd, args) = action.command_args();
             let cmd = if action == UpdateAction::StandaloneWindows {
                 // These args contain PowerShell metacharacters, so do not let
                 // PATHEXT select a batch shim for this action.
@@ -938,7 +947,6 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
         }
         #[cfg(not(windows))]
         {
-            let (cmd, args) = action.command_args();
             let command_path = crate::wsl_paths::normalize_for_wsl(cmd);
             let normalized_args: Vec<String> = args
                 .iter()

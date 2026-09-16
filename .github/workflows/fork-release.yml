@@ -107,6 +107,8 @@ jobs:
         working-directory: .
         run: |
           bash .github/scripts/test_fork_release_metadata.sh
+          bash .github/scripts/test_build_fork_deb.sh
+          bash .github/scripts/test_render_brew_formula.sh
           python3 -m unittest scripts/install/test_shake_install.py
 
       - name: Test scoped release behavior
@@ -237,6 +239,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Build .deb package
+        id: deb
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          out=$(bash .github/scripts/build-fork-deb.sh \
+            dist/codex-x86_64-unknown-linux-gnu.tar.gz \
+            "$RELEASE_TAG" "$SOURCE_VERSION" dist)
+          deb_path="${out#deb_path=}"
+          test -s "$deb_path"
+          echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
+          echo "deb_name=$(basename "$deb_path")" >> "$GITHUB_OUTPUT"
+
       - name: Verify artifacts and compose release body
         shell: bash
         env:
@@ -247,6 +265,7 @@ jobs:
           STABLE_LINEAGE: ${{ needs.prepare.outputs.stable_lineage }}
           INCLUDED_UPSTREAM_MAIN_SHA: ${{ needs.prepare.outputs.included_upstream_main_sha }}
           SOURCE_KIND: ${{ needs.prepare.outputs.source_kind }}
+          DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
           set -euo pipefail
           test "$(git rev-parse --verify HEAD^{commit})" = "$RELEASE_SHA"
@@ -259,10 +278,11 @@ jobs:
             tar -tzf "$archive" >/dev/null
           done
           test -s dist/glibc-version.txt
+          test -s "dist/$DEB_NAME"
 
           (
             cd dist
-            sha256sum "$(basename "$linux_archive")" "$(basename "$macos_archive")"
+            sha256sum "$(basename "$linux_archive")" "$(basename "$macos_archive")" "$DEB_NAME"
           ) > dist/SHA256SUMS
           (
             cd dist
@@ -273,7 +293,7 @@ jobs:
             "$GITHUB_WORKSPACE" "$FORK_REPO" "$FORK_BRANCH" \
             "$RELEASE_SHA" "$SOURCE_VERSION" "$STABLE_LINEAGE" \
             "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version.txt)" \
-            "$SOURCE_KIND" > release-body.md
+            "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" > release-body.md
 
       - name: Create or update release after identity verification
         shell: bash
@@ -284,11 +304,13 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
           SOURCE_KIND: ${{ needs.prepare.outputs.source_kind }}
+          DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
           set -euo pipefail
           assets=(
             dist/codex-x86_64-unknown-linux-gnu.tar.gz
             dist/codex-aarch64-apple-darwin.tar.gz
+            "dist/$DEB_NAME"
             dist/SHA256SUMS
           )
           for asset in "${assets[@]}"; do
@@ -343,3 +365,49 @@ jobs:
               --title "local-features snapshot $SOURCE_VERSION" \
               --notes-file release-body.md "${assets[@]}"
           fi
+
+      - name: Update Homebrew tap
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping Homebrew tap update"
+            exit 0
+          fi
+
+          darwin_sha=$(awk '$2 == "codex-aarch64-apple-darwin.tar.gz" { print $1 }' dist/SHA256SUMS)
+          linux_sha=$(awk '$2 == "codex-x86_64-unknown-linux-gnu.tar.gz" { print $1 }' dist/SHA256SUMS)
+          test -n "$darwin_sha"
+          test -n "$linux_sha"
+
+          bash .github/scripts/render-brew-formula.sh \
+            "$RELEASE_TAG" "$SOURCE_VERSION" "$darwin_sha" "$linux_sha" \
+            > rendered-codex-shake.rb
+
+          tap_dir=$(mktemp -d)
+          # The token is passed via the URL's userinfo only inside this git
+          # command's argv, never echoed or logged; do not print the clone URL.
+          git -c credential.helper= clone --quiet \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/epsalmond/homebrew-codex-shake" \
+            "$tap_dir" >/dev/null 2>&1
+
+          mkdir -p "$tap_dir/Formula"
+          if [[ -f "$tap_dir/Formula/codex-shake.rb" ]] && \
+            cmp -s rendered-codex-shake.rb "$tap_dir/Formula/codex-shake.rb"; then
+            echo "::notice::Homebrew formula is unchanged; skipping tap commit"
+            exit 0
+          fi
+          cp rendered-codex-shake.rb "$tap_dir/Formula/codex-shake.rb"
+
+          git -C "$tap_dir" -c user.name="codex-fork-release" \
+            -c user.email="epsalmond@gmail.com" \
+            add Formula/codex-shake.rb
+          git -C "$tap_dir" -c user.name="codex-fork-release" \
+            -c user.email="epsalmond@gmail.com" \
+            commit --quiet -m "codex-shake $RELEASE_TAG"
+          git -C "$tap_dir" push --quiet origin HEAD >/dev/null 2>&1
+          rm -rf "$tap_dir"
