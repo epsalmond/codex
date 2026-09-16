@@ -212,6 +212,7 @@ EOF
 
 deb_name="codex-shake_${deb_version}_amd64.deb"
 deb_path="$out_dir/$deb_name"
-dpkg-deb --build --root-owner-group "$pkg_root" "$deb_path"
+# dpkg-deb reports progress on stdout; keep stdout reserved for deb_path=.
+dpkg-deb --build --root-owner-group "$pkg_root" "$deb_path" >&2
 
 echo "deb_path=$deb_path"

@@ -250,7 +250,8 @@ jobs:
           out=$(bash .github/scripts/build-fork-deb.sh \
             dist/codex-x86_64-unknown-linux-gnu.tar.gz \
             "$RELEASE_TAG" "$SOURCE_VERSION" dist)
-          deb_path="${out#deb_path=}"
+          deb_path=$(sed -n 's/^deb_path=//p' <<<"$out" | tail -n1)
+          test -n "$deb_path"
           test -s "$deb_path"
           echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
           echo "deb_name=$(basename "$deb_path")" >> "$GITHUB_OUTPUT"
