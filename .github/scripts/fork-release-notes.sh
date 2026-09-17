@@ -53,6 +53,11 @@ curl -fsSL https://raw.githubusercontent.com/$fork_repo/$branch/install.sh | sh
 Run \`codex-shake\`. To update: \`codex-shake-update\` (curl|sh installs),
 \`brew upgrade epsalmond/codex-shake/codex-shake\` (Homebrew), or reinstall the
 \`.deb\` for the latest release (Debian/Ubuntu).
+
+Binaries are stripped; debug symbols are attached as
+\`codex-symbols-<target>.tar.gz\` (\`.debug\` files for Linux, \`.dSYM\`
+bundles for macOS) if you need to symbolicate a crash.
+
 **Estimate sessions active in the past 7 days (offline; Python 3):** \`codex-shake-estimate --since 168\`.
 
 EOF

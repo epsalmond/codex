@@ -182,11 +182,40 @@ jobs:
           gunzip -c "$RUSTY_V8_ARCHIVE" > "$lib_dir/librusty_v8.a"
           test -s "$lib_dir/librusty_v8.a"
 
+      # The release profile keeps debug info (strip = false) so the symbols
+      # can be archived before the shipped binaries are stripped. macOS needs
+      # packed split debuginfo to get a .dSYM next to each binary.
       - name: Cargo build
         shell: bash
         env:
           CODEX_FORK_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
         run: cargo build --release --bin codex --bin codex-code-mode-host
+
+      # Archives the debug symbols as codex-symbols-<target>.tar.gz (attached
+      # to the release) and strips the binaries in place, so the tarball, the
+      # .deb and the Homebrew download stay small.
+      - name: Archive symbols and strip binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          bash "$GITHUB_WORKSPACE/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
+            --target "$target" \
+            --artifact-name "$target" \
+            --release-dir target/release \
+            --archive-dir . \
+            --binaries "codex codex-code-mode-host"
+          test -s "codex-symbols-$target.tar.gz"
+          for binary in codex codex-code-mode-host; do
+            if [[ "$RUNNER_OS" == Linux ]]; then
+              if readelf -S "target/release/$binary" | grep -q '\.debug_info'; then
+                echo "$binary still carries .debug_info after strip" >&2
+                exit 1
+              fi
+            fi
+            ls -l "target/release/$binary"
+          done
 
       - name: Record glibc version (Linux)
         if: runner.os == 'Linux'
@@ -233,6 +262,7 @@ jobs:
           name: release-${{ matrix.target }}
           path: |
             codex-rs/codex-${{ matrix.target }}.tar.gz
+            codex-rs/codex-symbols-${{ matrix.target }}.tar.gz
             codex-rs/glibc-version.txt
           if-no-files-found: error
           retention-days: 7
@@ -291,7 +321,9 @@ jobs:
 
           linux_archive="dist/codex-x86_64-unknown-linux-gnu.tar.gz"
           macos_archive="dist/codex-aarch64-apple-darwin.tar.gz"
-          for archive in "$linux_archive" "$macos_archive"; do
+          linux_symbols="dist/codex-symbols-x86_64-unknown-linux-gnu.tar.gz"
+          macos_symbols="dist/codex-symbols-aarch64-apple-darwin.tar.gz"
+          for archive in "$linux_archive" "$macos_archive" "$linux_symbols" "$macos_symbols"; do
             test -s "$archive"
             tar -tzf "$archive" >/dev/null
           done
@@ -300,7 +332,8 @@ jobs:
 
           (
             cd dist
-            sha256sum "$(basename "$linux_archive")" "$(basename "$macos_archive")" "$DEB_NAME"
+            sha256sum "$(basename "$linux_archive")" "$(basename "$macos_archive")" "$DEB_NAME" \
+              "$(basename "$linux_symbols")" "$(basename "$macos_symbols")"
           ) > dist/SHA256SUMS
           (
             cd dist
@@ -329,6 +362,8 @@ jobs:
             dist/codex-x86_64-unknown-linux-gnu.tar.gz
             dist/codex-aarch64-apple-darwin.tar.gz
             "dist/$DEB_NAME"
+            dist/codex-symbols-x86_64-unknown-linux-gnu.tar.gz
+            dist/codex-symbols-aarch64-apple-darwin.tar.gz
             dist/SHA256SUMS
           )
           for asset in "${assets[@]}"; do
