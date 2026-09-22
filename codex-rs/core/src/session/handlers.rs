@@ -256,8 +256,18 @@ pub(crate) async fn apply_shake(
         )
         .await;
         sess.recompute_token_usage(turn_context).await;
+        let resolved_cache_ttl = turn_context
+            .config
+            .auto_shake
+            .resolved_cache_ttl_for_provider(Some(turn_context.config.model_provider_id.as_str()));
         info!(
             target: "codex_core::shake",
+            thread_id = %sess.thread_id,
+            turn_id = %turn_context.sub_id,
+            model = %turn_context.model_info().slug,
+            provider_id = %turn_context.config.model_provider_id,
+            cache_ttl_secs = resolved_cache_ttl.ttl.map(|ttl| ttl.as_secs()),
+            cache_ttl_source = resolved_cache_ttl.source.as_str(),
             trigger = trigger.as_str(),
             mode = mode.as_str(),
             tool_outputs_elided = result.tool_outputs_elided,

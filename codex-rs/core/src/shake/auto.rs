@@ -11,6 +11,11 @@ use std::time::Duration;
 use codex_config::config_toml::AutoShakeDurationToml;
 use codex_config::config_toml::AutoShakeThresholdToml;
 use codex_config::config_toml::AutoShakeToml;
+use codex_model_provider_info::CacheStaleness;
+use codex_model_provider_info::CacheTtlInputs;
+use codex_model_provider_info::ResolvedCacheTtl;
+use codex_model_provider_info::classify_cache_staleness;
+use codex_model_provider_info::resolve_cache_ttl;
 
 use crate::config::AutoShakeConfig;
 use crate::config::AutoShakeModelConfig;
@@ -71,32 +76,6 @@ const FAMILY_DEFAULTS: &[(&str, AutoShakeThresholdToml)] = &[
 /// cheaper.
 const DEFAULT_COLD_RESUME: bool = true;
 
-/// Generic prompt-cache TTL, in seconds, for a provider not in
-/// `PROVIDER_CACHE_TTL_SECS`. Deliberately short: guessing *too long* means
-/// missing free shakes, while guessing too short means paying for a warm-thread
-/// shake, so the conservative direction for an unknown provider is a short TTL
-/// only if we are sure. Five minutes matches the shortest documented implicit
-/// cache lifetime among the APIs the fork can be pointed at, and it is what
-/// oh-my-pi falls back to as well.
-const DEFAULT_CACHE_TTL_SECS: i64 = 300;
-
-/// Prompt-cache TTL per model-provider id, in seconds.
-///
-/// Keyed on the `model_providers` id, i.e. the ids in
-/// `codex_model_provider_info::built_in_model_providers`: the fork ships
-/// `openai` (which covers both the ChatGPT/Codex backend at
-/// `chatgpt.com/backend-api/codex` and the plain OpenAI Responses endpoint),
-/// `amazon-bedrock`, `amazon-bedrock-runtime`, `ollama` and `lmstudio`. Every
-/// one of them speaks `WireApi::Responses` — the fork has no
-/// `anthropic-messages` or chat-completions transport — so the table is keyed
-/// on the provider rather than on the wire API, unlike oh-my-pi's.
-///
-/// Only `openai` is listed: it is the provider the fork actually talks to in
-/// practice, and its Responses prompt cache holds for about an hour. Everything
-/// else falls through to `DEFAULT_CACHE_TTL_SECS`, and can be raised per
-/// provider with `[auto_shake.providers."<id>"] cache_ttl = ...`.
-const PROVIDER_CACHE_TTL_SECS: &[(&str, i64)] = &[("openai", 3_600)];
-
 /// A resolved threshold, after layering precedence and resolving `inherit`:
 /// either a percent of the model's resolved context window, or an absolute
 /// token count.
@@ -145,6 +124,8 @@ pub(crate) enum AutoShakeSkip {
     /// A cold-resume shake was already decided for this idle window (the same
     /// last-request timestamp). Fires at most once per window.
     ColdResumeAlreadyDecided,
+    /// The idle interval or provider TTL could not be resolved.
+    CacheStalenessUnknown,
 }
 
 impl AutoShakeSkip {
@@ -157,6 +138,7 @@ impl AutoShakeSkip {
             Self::ColdResumeDisabled => "cold_resume_disabled",
             Self::CacheStillWarm => "cache_still_warm",
             Self::ColdResumeAlreadyDecided => "cold_resume_already_decided",
+            Self::CacheStalenessUnknown => "cache_staleness_unknown",
         }
     }
 }
@@ -306,25 +288,19 @@ impl AutoShakeConfig {
         }
     }
 
-    /// Resolve the prompt-cache TTL for a `model_providers` id. Highest
-    /// precedence first: the per-provider override, the global
-    /// `auto_shake.cache_ttl`, the built-in per-provider table, the generic
-    /// default.
-    pub(crate) fn cache_ttl_for_provider(&self, provider_id: &str) -> Duration {
-        let secs = self
-            .providers
-            .get(provider_id)
-            .and_then(|provider| provider.cache_ttl)
-            .or(self.cache_ttl)
-            .map(AutoShakeDurationToml::as_secs)
-            .unwrap_or_else(|| {
-                PROVIDER_CACHE_TTL_SECS
-                    .iter()
-                    .find(|(id, _)| *id == provider_id)
-                    .map(|(_, secs)| *secs)
-                    .unwrap_or(DEFAULT_CACHE_TTL_SECS)
-            });
-        Duration::from_secs(secs.max(0).unsigned_abs())
+    /// Resolve the prompt-cache TTL using the shared provider policy.
+    pub(crate) fn resolved_cache_ttl_for_provider(
+        &self,
+        provider_id: Option<&str>,
+    ) -> ResolvedCacheTtl {
+        resolve_cache_ttl(CacheTtlInputs {
+            provider_id,
+            provider_override: provider_id
+                .and_then(|provider_id| self.providers.get(provider_id))
+                .and_then(|provider| provider.cache_ttl)
+                .map(auto_shake_duration),
+            global_override: self.cache_ttl.map(auto_shake_duration),
+        })
     }
 
     /// Decide whether this thread should measure a shake because its prompt
@@ -349,7 +325,7 @@ impl AutoShakeConfig {
     pub(crate) fn decide_cold_resume(
         &self,
         model_slug: &str,
-        provider_id: &str,
+        provider_id: Option<&str>,
         persistent_thread: bool,
         idle: Option<Duration>,
         already_decided: bool,
@@ -369,11 +345,15 @@ impl AutoShakeConfig {
         if already_decided {
             return AutoShakeDecision::Skip(AutoShakeSkip::ColdResumeAlreadyDecided);
         }
-        let Some(idle) = idle else {
-            return AutoShakeDecision::Skip(AutoShakeSkip::CacheStillWarm);
-        };
-        if idle < self.cache_ttl_for_provider(provider_id) {
-            return AutoShakeDecision::Skip(AutoShakeSkip::CacheStillWarm);
+        match classify_cache_staleness(idle, self.resolved_cache_ttl_for_provider(provider_id).ttl)
+        {
+            CacheStaleness::Warm => {
+                return AutoShakeDecision::Skip(AutoShakeSkip::CacheStillWarm);
+            }
+            CacheStaleness::LikelyExpired => {}
+            CacheStaleness::Unknown => {
+                return AutoShakeDecision::Skip(AutoShakeSkip::CacheStalenessUnknown);
+            }
         }
         AutoShakeDecision::Preview {
             min_elidable_percent: settings.min_elidable_percent,
@@ -430,6 +410,10 @@ impl AutoShakeConfig {
             min_savings_tokens: settings.min_savings_tokens,
         }
     }
+}
+
+fn auto_shake_duration(value: AutoShakeDurationToml) -> Duration {
+    Duration::from_secs(value.as_secs().unsigned_abs())
 }
 
 /// Share of the measured context the preview says a shake would free, as a
@@ -814,11 +798,14 @@ threshold = "off"
     }
 
     #[test]
-    fn the_builtin_cache_ttl_table_covers_the_providers_the_fork_talks_to() {
+    fn the_builtin_cache_ttl_policy_only_identifies_openai() {
         let config = AutoShakeConfig::default();
         // ChatGPT/Codex + OpenAI Responses: one hour.
-        assert_eq!(config.cache_ttl_for_provider(OPENAI), HOUR);
-        // Everything else the fork ships falls back to the generic default.
+        assert_eq!(
+            config.resolved_cache_ttl_for_provider(Some(OPENAI)).ttl,
+            Some(HOUR)
+        );
+        // Unknown providers have no safe built-in TTL.
         for provider in [
             "amazon-bedrock",
             "amazon-bedrock-runtime",
@@ -827,25 +814,39 @@ threshold = "off"
             "some-custom-provider",
         ] {
             assert_eq!(
-                config.cache_ttl_for_provider(provider),
-                Duration::from_secs(300),
+                config.resolved_cache_ttl_for_provider(Some(provider)).ttl,
+                None,
                 "{provider}"
             );
         }
     }
 
     #[test]
+    fn cold_resume_skips_when_provider_ttl_is_unknown() {
+        assert_eq!(
+            AutoShakeConfig::default().decide_cold_resume(
+                LUNA,
+                Some("ollama"),
+                true,
+                Some(Duration::from_secs(3_600)),
+                false,
+            ),
+            AutoShakeDecision::Skip(AutoShakeSkip::CacheStalenessUnknown)
+        );
+    }
+
+    #[test]
     fn cache_ttl_precedence_is_provider_then_global_then_builtin() {
         let config = toml("cache_ttl = \"30m\"\n");
         assert_eq!(
-            config.cache_ttl_for_provider(OPENAI),
-            Duration::from_secs(1_800),
+            config.resolved_cache_ttl_for_provider(Some(OPENAI)).ttl,
+            Some(Duration::from_secs(1_800)),
             "a global override replaces the built-in openai entry"
         );
         assert_eq!(
-            config.cache_ttl_for_provider("ollama"),
-            Duration::from_secs(1_800),
-            "a global override also replaces the generic default"
+            config.resolved_cache_ttl_for_provider(Some("ollama")).ttl,
+            Some(Duration::from_secs(1_800)),
+            "a global override resolves an otherwise unknown provider"
         );
 
         let config = toml(
@@ -856,12 +857,12 @@ cache_ttl = "2h"
 "#,
         );
         assert_eq!(
-            config.cache_ttl_for_provider("ollama"),
-            Duration::from_secs(7_200)
+            config.resolved_cache_ttl_for_provider(Some("ollama")).ttl,
+            Some(Duration::from_secs(7_200))
         );
         assert_eq!(
-            config.cache_ttl_for_provider(OPENAI),
-            Duration::from_secs(1_800)
+            config.resolved_cache_ttl_for_provider(Some(OPENAI)).ttl,
+            Some(Duration::from_secs(1_800))
         );
     }
 
@@ -873,7 +874,7 @@ cache_ttl = "2h"
         assert_eq!(
             config.decide_cold_resume(
                 LUNA,
-                OPENAI,
+                Some(OPENAI),
                 /*persistent_thread*/ true,
                 Some(HOUR - Duration::from_secs(1)),
                 /*already_decided*/ false,
@@ -883,7 +884,7 @@ cache_ttl = "2h"
         // Exactly at the TTL, and beyond it, the rebuild is already owed.
         for idle in [HOUR, HOUR + Duration::from_secs(1), HOUR * 10] {
             assert_eq!(
-                config.decide_cold_resume(LUNA, OPENAI, true, Some(idle), false),
+                config.decide_cold_resume(LUNA, Some(OPENAI), true, Some(idle), false),
                 preview(30),
                 "{idle:?}"
             );
@@ -900,7 +901,7 @@ cache_ttl = "2h"
             AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold)
         );
         assert_eq!(
-            config.decide_cold_resume(LUNA, OPENAI, true, Some(HOUR), false),
+            config.decide_cold_resume(LUNA, Some(OPENAI), true, Some(HOUR), false),
             preview(30)
         );
     }
@@ -911,7 +912,7 @@ cache_ttl = "2h"
         assert_eq!(
             config.decide_cold_resume(
                 LUNA,
-                OPENAI,
+                Some(OPENAI),
                 true,
                 Some(HOUR * 5),
                 /*already_decided*/ true
@@ -923,8 +924,8 @@ cache_ttl = "2h"
     #[test]
     fn a_thread_that_never_sampled_has_nothing_to_cold_resume_from() {
         assert_eq!(
-            AutoShakeConfig::default().decide_cold_resume(LUNA, OPENAI, true, None, false),
-            AutoShakeDecision::Skip(AutoShakeSkip::CacheStillWarm)
+            AutoShakeConfig::default().decide_cold_resume(LUNA, Some(OPENAI), true, None, false),
+            AutoShakeDecision::Skip(AutoShakeSkip::CacheStalenessUnknown)
         );
     }
 
@@ -932,7 +933,7 @@ cache_ttl = "2h"
     fn cold_resume_false_disables_only_this_trigger() {
         let config = toml("cold_resume = false\n");
         assert_eq!(
-            config.decide_cold_resume(LUNA, OPENAI, true, Some(HOUR * 5), false),
+            config.decide_cold_resume(LUNA, Some(OPENAI), true, Some(HOUR * 5), false),
             AutoShakeDecision::Skip(AutoShakeSkip::ColdResumeDisabled)
         );
         // The threshold triggers are untouched.
@@ -951,12 +952,12 @@ threshold = "off"
 "#,
         );
         assert_eq!(
-            config.decide_cold_resume(LUNA, OPENAI, true, Some(HOUR * 5), false),
+            config.decide_cold_resume(LUNA, Some(OPENAI), true, Some(HOUR * 5), false),
             AutoShakeDecision::Skip(AutoShakeSkip::Disabled)
         );
         // A family that is still enabled keeps cold resume.
         assert_eq!(
-            config.decide_cold_resume(ASTRA, OPENAI, true, Some(HOUR * 5), false),
+            config.decide_cold_resume(ASTRA, Some(OPENAI), true, Some(HOUR * 5), false),
             preview(30)
         );
     }
@@ -966,7 +967,7 @@ threshold = "off"
         assert_eq!(
             AutoShakeConfig::default().decide_cold_resume(
                 LUNA,
-                OPENAI,
+                Some(OPENAI),
                 /*persistent_thread*/ false,
                 Some(HOUR * 5),
                 false,
@@ -987,7 +988,7 @@ min_savings_tokens = 900
 "#,
         );
         assert_eq!(
-            config.decide_cold_resume(LUNA, OPENAI, true, Some(HOUR * 5), false),
+            config.decide_cold_resume(LUNA, Some(OPENAI), true, Some(HOUR * 5), false),
             AutoShakeDecision::Preview {
                 min_elidable_percent: 12,
                 min_savings_tokens: 900,
@@ -1000,9 +1001,12 @@ min_savings_tokens = 900
         // Useful for tests and for anyone who wants to shake on every idle
         // turn; must not be rejected or silently turned into the default.
         let config = toml("cache_ttl = 0\n");
-        assert_eq!(config.cache_ttl_for_provider(OPENAI), Duration::ZERO);
         assert_eq!(
-            config.decide_cold_resume(LUNA, OPENAI, true, Some(Duration::ZERO), false),
+            config.resolved_cache_ttl_for_provider(Some(OPENAI)).ttl,
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            config.decide_cold_resume(LUNA, Some(OPENAI), true, Some(Duration::ZERO), false),
             preview(30)
         );
     }
@@ -1019,8 +1023,8 @@ min_savings_tokens = 900
         ] {
             let config = toml(&format!("cache_ttl = {written}\n"));
             assert_eq!(
-                config.cache_ttl_for_provider(OPENAI),
-                Duration::from_secs(expected_secs),
+                config.resolved_cache_ttl_for_provider(Some(OPENAI)).ttl,
+                Some(Duration::from_secs(expected_secs)),
                 "{written}"
             );
         }

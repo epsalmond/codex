@@ -1305,7 +1305,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
             let idle = sess.prompt_cache_clock.idle_since_last_request();
             let cold_resume_decision = config.decide_cold_resume(
                 model_info.slug.as_str(),
-                provider_id,
+                Some(provider_id),
                 persistent_thread,
                 idle,
                 sess.prompt_cache_clock.cold_resume_already_decided(),
@@ -1321,7 +1321,10 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
                         model = %model_info.slug,
                         provider = provider_id,
                         idle_secs = idle.map(|idle| idle.as_secs()).unwrap_or_default(),
-                        cache_ttl_secs = config.cache_ttl_for_provider(provider_id).as_secs(),
+                        cache_ttl_secs = config
+                            .resolved_cache_ttl_for_provider(Some(provider_id))
+                            .ttl
+                            .map(|ttl| ttl.as_secs()),
                         active_context_tokens = token_status.active_context_tokens,
                         "auto-shake cold resume: prompt cache expired"
                     );
@@ -2709,6 +2712,20 @@ async fn try_run_sampling_request(
     // Opens a fresh idle window for auto-shake's cold-resume trigger: this is
     // the instant the provider's prompt cache for this thread is (re)written.
     sess.prompt_cache_clock.record_sampling_request();
+    let resolved_cache_ttl = turn_context
+        .config
+        .auto_shake
+        .resolved_cache_ttl_for_provider(Some(turn_context.config.model_provider_id.as_str()));
+    info!(
+        target: "codex_core::sampling_request_started",
+        thread_id = %sess.thread_id,
+        turn_id = %turn_context.sub_id,
+        model = %step_context.settings.model_info.slug,
+        provider_id = %turn_context.config.model_provider_id,
+        cache_ttl_secs = resolved_cache_ttl.ttl.map(|ttl| ttl.as_secs()),
+        cache_ttl_source = resolved_cache_ttl.source.as_str(),
+        "sampling request started"
+    );
     let mut stream = client_session
         .stream(
             prompt,
@@ -3309,3 +3326,7 @@ pub(crate) fn get_last_assistant_message_from_turn<'a>(
 #[cfg(test)]
 #[path = "turn_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "turn_runtime_tests.rs"]
+mod runtime_tests;
