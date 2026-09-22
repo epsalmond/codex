@@ -8,12 +8,25 @@ use chrono::DateTime;
 use chrono::Utc;
 use clap::Parser;
 use codex_core::config::ConfigBuilder;
+use codex_model_provider_info::CacheStaleness;
 use codex_state::LogQuery;
 use codex_state::LogRow;
 use codex_state::SqliteConfig;
 use codex_state::StateRuntime;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
+
+#[path = "code_shake_stats/cache.rs"]
+mod cache;
+#[path = "code_shake_stats/output.rs"]
+mod output;
+
+use cache::SAMPLING_TARGET;
+use cache::classify_cache_evidence;
+use cache::parse_cache_metadata;
+use output::print_report;
+#[cfg(test)]
+use output::render_report;
 
 const SHAKE_TARGET: &str = "codex_core::shake";
 
@@ -57,6 +70,16 @@ struct Totals {
     following_prompts_observed: usize,
     likely_saved_tokens: i64,
     net_estimated_tokens: i64,
+    incremental_cache_rewrite_tokens: i64,
+    provisional_estimates: usize,
+    cache_state_counts: CacheStateCounts,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+struct CacheStateCounts {
+    warm: usize,
+    likely_expired: usize,
+    unknown: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +88,7 @@ struct ShakeReport {
     thread_id: Option<String>,
     turn_id: Option<String>,
     model: String,
+    provider_id: Option<String>,
     trigger: String,
     tokens_freed: i64,
     cache_rewrite_burn_tokens: Option<i64>,
@@ -72,7 +96,18 @@ struct ShakeReport {
     quota_usage_tokens: i64,
     following_prompts_observed: usize,
     likely_saved_tokens: i64,
+    raw_net_estimated_tokens: i64,
+    incremental_cache_rewrite_tokens: i64,
     net_estimated_tokens: i64,
+    cache_state: String,
+    measured_idle_secs: Option<f64>,
+    cache_ttl_secs: Option<i64>,
+    cache_ttl_source: Option<String>,
+    previous_sampling_timestamp: Option<String>,
+    evidence_source: Option<String>,
+    evidence_confidence: Option<String>,
+    unknown_reason: Option<String>,
+    estimate_provisional: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -85,7 +120,10 @@ struct ModelStats {
     quota_usage_tokens: i64,
     likely_saved_tokens: i64,
     following_prompts_observed: usize,
+    incremental_cache_rewrite_tokens: i64,
     net_estimated_tokens: i64,
+    provisional_estimates: usize,
+    cache_state_counts: CacheStateCounts,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,6 +153,7 @@ struct ShakeEvent {
     turn_id: Option<String>,
     trigger: String,
     tokens_freed: i64,
+    cache_metadata: cache::CacheMetadata,
 }
 
 #[tokio::main]
@@ -136,7 +175,34 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to query thread-bound Shake logs")?;
     rows.sort_by_key(|row| row.id);
-    let report = build_report(&rows, since_ts, args.following_turns);
+    let mut sampling_rows = HashMap::new();
+    for shake in rows.iter().filter(|row| {
+        row.target == SHAKE_TARGET
+            && row
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("[shake]"))
+    }) {
+        let Some(thread_id) = effective_thread_id(shake) else {
+            sampling_rows.insert(shake.id, None);
+            continue;
+        };
+        let preceding = runtime
+            .query_logs(&LogQuery {
+                thread_ids: vec![thread_id],
+                before_id: Some(shake.id),
+                target: Some(SAMPLING_TARGET.to_string()),
+                limit: Some(1),
+                descending: true,
+                ..LogQuery::default()
+            })
+            .await
+            .with_context(|| format!("failed to query sampling evidence before log {}", shake.id))?
+            .into_iter()
+            .next();
+        sampling_rows.insert(shake.id, preceding);
+    }
+    let report = build_report_with_sampling(&rows, &sampling_rows, since_ts, args.following_turns);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -164,7 +230,17 @@ async fn resolve_sqlite_config(args: &Args) -> anyhow::Result<SqliteConfig> {
     Ok(config.sqlite_config().clone())
 }
 
+#[cfg(test)]
 fn build_report(rows: &[LogRow], since_ts: i64, following_turns: usize) -> Report {
+    build_report_with_sampling(rows, &HashMap::new(), since_ts, following_turns)
+}
+
+fn build_report_with_sampling(
+    rows: &[LogRow],
+    sampling_rows: &HashMap<i64, Option<LogRow>>,
+    since_ts: i64,
+    following_turns: usize,
+) -> Report {
     let mut current_models = HashMap::new();
     let shakes = rows
         .iter()
@@ -213,11 +289,25 @@ fn build_report(rows: &[LogRow], since_ts: i64, following_turns: usize) -> Repor
                 }
             }
         }
+        let cache_evidence = classify_cache_evidence(
+            &shake.row,
+            &shake.cache_metadata,
+            sampling_rows.get(&shake.row.id).and_then(Option::as_ref),
+        );
+        let incremental_cache_rewrite_tokens = match cache_evidence.state {
+            CacheStaleness::LikelyExpired => 0,
+            CacheStaleness::Warm | CacheStaleness::Unknown => {
+                cache_rewrite_burn_tokens.unwrap_or_default()
+            }
+        };
+        let raw_net_estimated_tokens =
+            likely_saved_tokens - cache_rewrite_burn_tokens.unwrap_or_default();
         reports.push(ShakeReport {
             timestamp: format_timestamp(shake.row.ts, shake.row.ts_nanos),
             thread_id: shake.thread_id.clone(),
             turn_id: shake.turn_id.clone(),
             model: shake.model.clone(),
+            provider_id: shake.cache_metadata.provider_id.clone(),
             trigger: shake.trigger.clone(),
             tokens_freed: shake.tokens_freed,
             cache_rewrite_burn_tokens,
@@ -225,8 +315,27 @@ fn build_report(rows: &[LogRow], since_ts: i64, following_turns: usize) -> Repor
             quota_usage_tokens,
             following_prompts_observed,
             likely_saved_tokens,
-            net_estimated_tokens: likely_saved_tokens
-                - cache_rewrite_burn_tokens.unwrap_or_default(),
+            raw_net_estimated_tokens,
+            incremental_cache_rewrite_tokens,
+            net_estimated_tokens: likely_saved_tokens - incremental_cache_rewrite_tokens,
+            cache_state: cache_evidence.state.as_str().to_string(),
+            measured_idle_secs: cache_evidence.measured_idle_secs,
+            cache_ttl_secs: cache_evidence.ttl_secs,
+            cache_ttl_source: cache_evidence.ttl_source.clone(),
+            previous_sampling_timestamp: cache_evidence
+                .previous_sampling
+                .map(|timestamp| format_timestamp(timestamp.ts, timestamp.ts_nanos)),
+            evidence_source: cache_evidence
+                .evidence_source
+                .map(|source| source.as_str().to_string()),
+            evidence_confidence: cache_evidence.evidence_source.map(|source| {
+                match source {
+                    cache::CacheEvidenceSource::HistoricalTimestamp => "lower_than_runtime_clock",
+                }
+                .to_string()
+            }),
+            unknown_reason: cache_evidence.unknown_reason.map(str::to_string),
+            estimate_provisional: cache_evidence.state == CacheStaleness::Unknown,
         });
     }
 
@@ -263,10 +372,30 @@ fn build_report(rows: &[LogRow], since_ts: i64, following_turns: usize) -> Repor
         model.cache_rewrite_burn_tokens += report.cache_rewrite_burn_tokens.unwrap_or_default();
         model.likely_saved_tokens += report.likely_saved_tokens;
         model.following_prompts_observed += report.following_prompts_observed;
+        model.incremental_cache_rewrite_tokens += report.incremental_cache_rewrite_tokens;
         model.net_estimated_tokens += report.net_estimated_tokens;
+        if report.estimate_provisional {
+            model.provisional_estimates += 1;
+        }
+        match report.cache_state.as_str() {
+            "warm" => model.cache_state_counts.warm += 1,
+            "likely_expired" => model.cache_state_counts.likely_expired += 1,
+            "unknown" => model.cache_state_counts.unknown += 1,
+            _ => unreachable!("cache state is produced by CacheStaleness"),
+        }
         totals.tokens_freed += report.tokens_freed;
         totals.likely_saved_tokens += report.likely_saved_tokens;
+        totals.incremental_cache_rewrite_tokens += report.incremental_cache_rewrite_tokens;
         totals.net_estimated_tokens += report.net_estimated_tokens;
+        if report.estimate_provisional {
+            totals.provisional_estimates += 1;
+        }
+        match report.cache_state.as_str() {
+            "warm" => totals.cache_state_counts.warm += 1,
+            "likely_expired" => totals.cache_state_counts.likely_expired += 1,
+            "unknown" => totals.cache_state_counts.unknown += 1,
+            _ => unreachable!("cache state is produced by CacheStaleness"),
+        }
         if let Some(tokens) = report.cache_rewrite_burn_tokens {
             totals.cache_rewrite_requests += 1;
             totals.cache_rewrite_burn_tokens += tokens;
@@ -276,7 +405,7 @@ fn build_report(rows: &[LogRow], since_ts: i64, following_turns: usize) -> Repor
     Report {
         since: format_timestamp(since_ts, 0),
         following_turns,
-        estimate_note: "Cache reads and total tokens are observed telemetry. Rewrite burn is a proxy for the first uncached follow-up input, not necessarily a provider cache-write charge. Estimated saved input is capped by observed follow-up input, assigned to one Shake window, and is not a plan-specific quota measurement. Net is saved-input proxy minus rewrite proxy.",
+        estimate_note: "Cache reads and total tokens are observed telemetry. Rewrite burn is a raw proxy for the first uncached follow-up input, not necessarily a provider cache-write charge. Incremental rewrite is zero when the cache is likely expired and otherwise uses that proxy; net is saved-input proxy minus incremental rewrite. Historical timestamp evidence has lower confidence than runtime clock evidence. Unknown-derived estimates are provisional, and no cache state guarantees a provider cache hit.",
         totals,
         models: models.into_values().collect(),
         shakes: reports,
@@ -295,10 +424,12 @@ fn parse_shake(
         row: row.clone(),
         thread_id,
         model: model.unwrap_or_else(|| "unknown".to_string()),
-        turn_id: parse_field(row.message.as_deref()?, "turn.id"),
+        turn_id: parse_field(row.message.as_deref()?, "turn.id")
+            .or_else(|| parse_field(row.message.as_deref()?, "turn_id")),
         trigger: parse_field(row.message.as_deref()?, "trigger")
             .unwrap_or_else(|| "unknown".to_string()),
         tokens_freed: parse_metric(row.message.as_deref()?, "tokens_freed")?,
+        cache_metadata: parse_cache_metadata(row.message.as_deref()),
     })
 }
 
@@ -375,99 +506,6 @@ fn format_timestamp(ts: i64, ts_nanos: i64) -> String {
     DateTime::<Utc>::from_timestamp(ts, u32::try_from(ts_nanos).unwrap_or_default())
         .map(|value| value.to_rfc3339())
         .unwrap_or_else(|| format!("{ts}.{ts_nanos:09}Z"))
-}
-
-fn print_report(report: &Report, color: bool) {
-    println!(
-        "{}",
-        paint(
-            &format!("Shake stats since {}", report.since),
-            "1;36",
-            color
-        )
-    );
-    println!("  shakes: {}", report.totals.shakes);
-    println!(
-        "  tokens shaken out: {}",
-        paint(&report.totals.tokens_freed.to_string(), "1;32", color)
-    );
-    println!(
-        "  cache reads: {} tokens",
-        paint(&report.totals.cache_read_tokens.to_string(), "1;34", color)
-    );
-    println!(
-        "  cache rewrite burn proxy: {} tokens across {} observed following prompts",
-        paint(
-            &report.totals.cache_rewrite_burn_tokens.to_string(),
-            "1;31",
-            color
-        ),
-        report.totals.cache_rewrite_requests
-    );
-    println!(
-        "  observed quota usage: {} total tokens",
-        paint(&report.totals.quota_usage_tokens.to_string(), "1;35", color)
-    );
-    println!(
-        "  likely saved in following prompts: {} tokens across {} prompts",
-        paint(
-            &report.totals.likely_saved_tokens.to_string(),
-            "1;32",
-            color
-        ),
-        report.totals.following_prompts_observed
-    );
-    println!(
-        "  net estimated input impact: {} tokens",
-        paint(
-            &report.totals.net_estimated_tokens.to_string(),
-            "1;33",
-            color
-        )
-    );
-    println!("\n{}", paint("By model", "1;36", color));
-    for model in &report.models {
-        println!(
-            "  {:<20} shakes={:<3} freed={:<9} reads={:<9} rewrite={:<9} saved={:<9} net={}",
-            model.model,
-            model.shakes,
-            paint(&model.tokens_freed.to_string(), "32", color),
-            paint(&model.cache_read_tokens.to_string(), "34", color),
-            paint(&model.cache_rewrite_burn_tokens.to_string(), "31", color),
-            paint(&model.likely_saved_tokens.to_string(), "32", color),
-            paint(&model.net_estimated_tokens.to_string(), "33", color),
-        );
-    }
-    println!("\n{}", paint("Shakes by turn", "1;36", color));
-    for shake in &report.shakes {
-        println!(
-            "  {} {} {} turn={} freed={} rewrite={} saved={} net={}",
-            shake.timestamp,
-            paint(&shake.trigger, "33", color),
-            shake.model,
-            shake.turn_id.as_deref().unwrap_or("unknown"),
-            paint(&shake.tokens_freed.to_string(), "32", color),
-            paint(
-                &shake
-                    .cache_rewrite_burn_tokens
-                    .unwrap_or_default()
-                    .to_string(),
-                "31",
-                color,
-            ),
-            paint(&shake.likely_saved_tokens.to_string(), "32", color),
-            paint(&shake.net_estimated_tokens.to_string(), "33", color),
-        );
-    }
-    println!("\n  note: {}", report.estimate_note);
-}
-
-fn paint(value: &str, code: &str, enabled: bool) -> String {
-    if enabled {
-        format!("\x1b[{code}m{value}\x1b[0m")
-    } else {
-        value.to_string()
-    }
 }
 
 #[cfg(test)]
