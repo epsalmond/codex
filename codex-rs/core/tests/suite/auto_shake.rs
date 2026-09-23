@@ -7,10 +7,12 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::TurnInputRequest;
+use codex_features::Feature;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ShakeMode;
 use codex_protocol::user_input::UserInput;
+use codex_state::LogQuery;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
@@ -26,6 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 use tempfile::TempDir;
+use tracing_subscriber::prelude::*;
 
 /// Marker planted in the oversized tool output. Auto-shake must replace it with a
 /// recovery placeholder before the next sampling request.
@@ -560,11 +563,13 @@ const NEAR_ABSOLUTE_THRESHOLD_TOKENS: i64 = 170_000;
 /// 60% percent threshold (the old default shape) applied to the same window
 /// would not — demonstrating why gpt-5.6 defaults to an absolute count
 /// instead of a percent of a large window.
-#[test_case::test_case(true; "absolute default fires")]
-#[test_case::test_case(false; "sixty percent of the large window does not")]
+#[test_case::test_case(true, "openai"; "absolute default fires")]
+#[test_case::test_case(false, "openai"; "sixty percent of the large window does not")]
+#[test_case::test_case(true, "unknown-provider"; "unknown ttl keeps threshold firing")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn absolute_threshold_fires_at_170k_where_sixty_percent_of_a_large_window_would_not(
     use_absolute_default: bool,
+    provider_id: &'static str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -588,6 +593,7 @@ async fn absolute_threshold_fires_at_170k_where_sixty_percent_of_a_large_window_
         .with_model("gpt-5.6-luna")
         .with_config(move |config| {
             config.model_context_window = Some(LARGE_CONTEXT_WINDOW);
+            config.model_provider_id = provider_id.to_string();
             if !use_absolute_default {
                 // Override to the old percent-of-window shape, to show it
                 // would not have fired at the same token count.
@@ -659,6 +665,9 @@ enum ColdResumeCase {
     /// Built-in TTL (an hour for `openai`, five minutes otherwise). The two
     /// turns run back-to-back, so the cache is still warm and nothing fires.
     Warm,
+    /// An unrecognized provider has no built-in TTL, so cold-resume shaking is
+    /// skipped while the ordinary threshold path remains available.
+    UnknownTtl,
     /// `cold_resume = false` with an expired TTL: the operator turned off just
     /// this trigger, so nothing fires even though the cache is cold.
     Disabled,
@@ -680,8 +689,9 @@ enum ColdResumeCase {
 /// only the cold-resume trigger can explain a shake here.
 #[test_case::test_case(ColdResumeCase::Expired; "cache expired")]
 #[test_case::test_case(ColdResumeCase::Warm; "cache still warm")]
+#[test_case::test_case(ColdResumeCase::UnknownTtl; "unknown provider ttl")]
 #[test_case::test_case(ColdResumeCase::Disabled; "cold resume disabled")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCase) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -705,12 +715,19 @@ async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCa
         .with_model("gpt-5.6-luna")
         .with_config(move |config| {
             config.model_context_window = Some(TEST_CONTEXT_WINDOW);
+            config
+                .features
+                .enable(Feature::Sqlite)
+                .expect("test config should allow SQLite");
             match case {
                 ColdResumeCase::Expired => {
                     config.auto_shake.cache_ttl =
                         Some(codex_config::config_toml::AutoShakeDurationToml(0));
                 }
                 ColdResumeCase::Warm => {}
+                ColdResumeCase::UnknownTtl => {
+                    config.model_provider_id = "unknown-provider".to_string();
+                }
                 ColdResumeCase::Disabled => {
                     config.auto_shake.cache_ttl =
                         Some(codex_config::config_toml::AutoShakeDurationToml(0));
@@ -720,6 +737,11 @@ async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCa
         });
     let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
     Box::pin(fixture.codex.inject_response_items(oversized_history()?)).await?;
+
+    let state_db = fixture.codex.state_db().expect("SQLite state DB enabled");
+    let log_layer = codex_state::log_db::start(state_db.clone());
+    let subscriber = tracing_subscriber::registry().with(log_layer.clone());
+    let _default = tracing::subscriber::set_default(subscriber);
 
     for message in ["first prompt", "second prompt"] {
         Box::pin(
@@ -744,6 +766,88 @@ async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCa
             matches!(event, EventMsg::TurnComplete(_))
         }))
         .await;
+    }
+
+    log_layer.flush().await;
+    let rows = state_db
+        .query_logs(&LogQuery {
+            thread_ids: vec![fixture.session_configured.thread_id.to_string()],
+            descending: false,
+            ..LogQuery::default()
+        })
+        .await?;
+    drop(_default);
+
+    if matches!(case, ColdResumeCase::Expired) {
+        let sampling = rows
+            .iter()
+            .find(|row| {
+                row.target == "codex_core::sampling_request_started"
+                    && row
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("sampling request started"))
+            })
+            .expect("sampling-start metadata should be persisted");
+        let sampling_message = sampling.message.as_deref().unwrap_or_default();
+        for field in [
+            "thread_id=",
+            "turn_id=",
+            "model=gpt-5.6-luna",
+            "provider_id=openai",
+            "cache_ttl_secs=0",
+            "cache_ttl_source=\"global_override\"",
+        ] {
+            assert!(
+                sampling_message.contains(field),
+                "sampling metadata missing {field:?}: {sampling_message}"
+            );
+        }
+
+        let shake = rows
+            .iter()
+            .find(|row| {
+                row.target == "codex_core::shake"
+                    && row
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("[shake]"))
+            })
+            .expect("shake metadata should be persisted");
+        let shake_message = shake.message.as_deref().unwrap_or_default();
+        for field in [
+            "thread_id=",
+            "turn_id=",
+            "model=gpt-5.6-luna",
+            "provider_id=openai",
+            "cache_ttl_secs=0",
+            "cache_ttl_source=\"global_override\"",
+        ] {
+            assert!(
+                shake_message.contains(field),
+                "shake metadata missing {field:?}: {shake_message}"
+            );
+        }
+
+        let cold_resume_shakes = rows
+            .iter()
+            .filter(|row| {
+                row.target == "codex_core::shake"
+                    && row
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("automatic_cold_resume"))
+            })
+            .count();
+        assert_eq!(
+            cold_resume_shakes, 1,
+            "one idle window must produce one cold-resume shake event"
+        );
+    } else if matches!(case, ColdResumeCase::UnknownTtl) {
+        assert!(
+            rows.iter().all(|row| row.target != "codex_core::shake"),
+            "unknown provider TTL must skip cold-resume shaking"
+        );
     }
 
     let bodies: Vec<String> = request_log
@@ -780,7 +884,7 @@ async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCa
                 "exactly one cold-resume pass should have run, saving one artifact"
             );
         }
-        ColdResumeCase::Warm | ColdResumeCase::Disabled => {
+        ColdResumeCase::Warm | ColdResumeCase::UnknownTtl | ColdResumeCase::Disabled => {
             assert!(
                 bodies[1].contains(AUTO_SHAKE_MARKER),
                 "no cold-resume shake was due, so the tool output must survive"

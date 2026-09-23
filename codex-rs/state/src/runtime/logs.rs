@@ -508,6 +508,12 @@ fn push_log_filters(builder: &mut QueryBuilder<Sqlite>, query: &LogQuery) {
     if let Some(after_id) = query.after_id {
         builder.push(" AND id > ").push_bind(after_id);
     }
+    if let Some(before_id) = query.before_id {
+        builder.push(" AND id < ").push_bind(before_id);
+    }
+    if let Some(target) = query.target.as_ref() {
+        builder.push(" AND target = ").push_bind(target.as_str());
+    }
     if let Some(search) = query.search.as_ref() {
         builder.push(" AND INSTR(COALESCE(feedback_log_body, ''), ");
         builder.push_bind(search.as_str());
@@ -803,6 +809,80 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].message.as_deref(), Some("foo=2 alphabet"));
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn query_logs_can_seed_preceding_exact_target_with_same_second_ordering() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("initialize runtime");
+
+        runtime
+            .insert_logs(&[
+                LogEntry {
+                    ts: 1_700_000_001,
+                    ts_nanos: 100,
+                    level: "INFO".to_string(),
+                    target: "codex_core::sampling_request_started".to_string(),
+                    message: Some("sampling-older".to_string()),
+                    feedback_log_body: Some("sampling-older".to_string()),
+                    thread_id: Some("thread-1".to_string()),
+                    process_uuid: None,
+                    file: None,
+                    line: None,
+                    module_path: None,
+                },
+                LogEntry {
+                    ts: 1_700_000_001,
+                    ts_nanos: 200,
+                    level: "INFO".to_string(),
+                    target: "codex_core::sampling_request_started".to_string(),
+                    message: Some("sampling-newer".to_string()),
+                    feedback_log_body: Some("sampling-newer".to_string()),
+                    thread_id: Some("thread-1".to_string()),
+                    process_uuid: None,
+                    file: None,
+                    line: None,
+                    module_path: None,
+                },
+                LogEntry {
+                    ts: 1_700_000_001,
+                    ts_nanos: 300,
+                    level: "INFO".to_string(),
+                    target: "codex_core::shake".to_string(),
+                    message: Some("shake".to_string()),
+                    feedback_log_body: Some("shake".to_string()),
+                    thread_id: Some("thread-1".to_string()),
+                    process_uuid: None,
+                    file: None,
+                    line: None,
+                    module_path: None,
+                },
+            ])
+            .await
+            .expect("insert test logs");
+
+        let rows = runtime
+            .query_logs(&LogQuery {
+                thread_ids: vec!["thread-1".to_string()],
+                before_id: Some(3),
+                target: Some("codex_core::sampling_request_started".to_string()),
+                limit: Some(1),
+                descending: true,
+                ..Default::default()
+            })
+            .await
+            .expect("query preceding sampling log");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 2);
+        assert_eq!(rows[0].message.as_deref(), Some("sampling-newer"));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

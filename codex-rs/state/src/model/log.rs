@@ -52,6 +52,10 @@ pub struct LogQuery {
     pub search: Option<String>,
     pub include_threadless: bool,
     pub after_id: Option<i64>,
+    /// Restrict results to rows inserted before this id.
+    pub before_id: Option<i64>,
+    /// Restrict results to one exact tracing target.
+    pub target: Option<String>,
     pub limit: Option<usize>,
     pub descending: bool,
 }

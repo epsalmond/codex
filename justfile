@@ -200,6 +200,15 @@ argument-comment-lint-from-source *args:
 log *args:
     if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-cli --bin logs_client -- "$@"
 
+# Summarize observed Shake reductions and estimated following-prompt savings
+[unix]
+code-shake-stats *args:
+    if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-cli --bin code-shake-stats -- "$@"
+
 [windows]
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
+
+[windows]
+code-shake-stats *args:
+    $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin code-shake-stats -- @forwarded_args

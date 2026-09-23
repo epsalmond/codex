@@ -286,6 +286,8 @@ fn to_log_query(
         search: filter.search.clone(),
         include_threadless: filter.include_threadless,
         after_id,
+        before_id: None,
+        target: None,
         limit,
         descending,
     }

@@ -1,0 +1,26 @@
+---
+source: cli/src/bin/code_shake_stats_tests/mod.rs
+expression: "render_report(&report, false)"
+---
+Shake stats since 1970-01-01T00:00:00+00:00
+  shakes: 2
+  tokens shaken out: 150
+  cache reads: 30 tokens
+  cache rewrite burn proxy: 90 tokens across 2 observed following prompts
+  observed quota usage: 135 total tokens
+  likely saved in following prompts: 120 tokens across 2 prompts
+  net estimated input impact: 30 tokens
+  incremental rewrite estimate: 90 tokens
+  cache states: warm=1 likely_expired=0 unknown=1
+  provisional estimates: 1 (cache state unknown)
+
+By model
+  gpt-5.6-luna         shakes=2   freed=150       reads=30        rewrite=90        incremental=90        saved=120       net=30 states=1/0/1 provisional=1
+
+Shakes by turn
+  1970-01-01T00:01:40+00:00 automatic provider=openai gpt-5.6-luna turn=unknown freed=100 cache_state=warm idle_secs=100.000000000 ttl_secs=3600 ttl_source=builtin_openai evidence=historical_timestamp confidence=lower_than_runtime_clock rewrite=60 incremental=60 saved=80 net=20
+    previous sampling: 1970-01-01T00:00:00+00:00 (historical timestamp; lower confidence than runtime clock)
+  1970-01-01T00:03:20+00:00 automatic provider=unknown gpt-5.6-luna turn=unknown freed=50 cache_state=unknown idle_secs=unknown ttl_secs=unknown ttl_source=unknown evidence=unknown confidence=unknown rewrite=30 incremental=30 saved=40 net=10 (provisional)
+    unknown reason: missing_provider_id
+
+  note: Cache reads and total tokens are observed telemetry. Rewrite burn is a raw proxy for the first uncached follow-up input, not necessarily a provider cache-write charge. Incremental rewrite is zero when the cache is likely expired and otherwise uses that proxy; net is saved-input proxy minus incremental rewrite. Historical timestamp evidence has lower confidence than runtime clock evidence. Unknown-derived estimates are provisional, and no cache state guarantees a provider cache hit.

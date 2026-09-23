@@ -26,6 +26,14 @@ use std::path::Component;
 use std::path::Path;
 use std::time::Duration;
 
+mod cache_staleness;
+pub use cache_staleness::CacheStaleness;
+pub use cache_staleness::CacheTtlInputs;
+pub use cache_staleness::CacheTtlSource;
+pub use cache_staleness::ResolvedCacheTtl;
+pub use cache_staleness::classify_cache_staleness;
+pub use cache_staleness::resolve_cache_ttl;
+
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
