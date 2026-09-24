@@ -316,7 +316,7 @@ async fn shake_preview_measures_non_text_modes(mode: ShakeMode) -> Result<()> {
         }))?,
         serde_json::from_value(json!({
             "type":"reasoning", "summary":[],
-            "content":[{"type":"reasoning_text", "text":"reasoning text ".repeat(/*n*/ 1_000)}]
+            "encrypted_content":"A".repeat(/*n*/ 2_048)
         }))?,
     ];
     Box::pin(fixture.codex.inject_response_items(items)).await?;
