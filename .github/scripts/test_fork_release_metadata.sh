@@ -181,4 +181,27 @@ if bash "$metadata_script" \
   exit 1
 fi
 
+# Like upstream main, the branch may keep the workspace at 0.0.0; the release
+# version is then the newest exact stable tag merged into the release commit.
+unstamped_before=$(git -C "$fixture" rev-parse eric/local-features)
+git -C "$fixture" switch -q -c unstamped-workspace eric/local-features
+printf '[workspace.package]\nversion = "0.0.0"\n' > "$fixture/codex-rs/Cargo.toml"
+git -C "$fixture" commit -q -am 'Keep workspace version at 0.0.0'
+git -C "$fixture" switch -q eric/local-features
+git -C "$fixture" merge -q --no-ff --no-edit -m 'Merge unstamped workspace' unstamped-workspace
+unstamped_sha=$(git -C "$fixture" rev-parse HEAD)
+unstamped_output="$fixture/unstamped-output"
+bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name push \
+  --event-ref refs/heads/eric/local-features \
+  --event-sha "$unstamped_sha" \
+  --event-before "$unstamped_before" \
+  --upstream-url "$upstream_remote" \
+  --output "$unstamped_output"
+grep -Fxq "source_version=2.0.0" "$unstamped_output"
+grep -Fxq "stable_lineage=rust-v2.0.0" "$unstamped_output"
+unstamped_tag=$(sed -n 's/^release_tag=//p' "$unstamped_output")
+[[ "$unstamped_tag" =~ ^local-features-v2\.0\.0-main-r[0-9]{14}\.[0-9a-f]{28}$ ]]
+
 echo "fork-release metadata tests passed"

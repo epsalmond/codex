@@ -134,6 +134,34 @@ if [[ -n "$upstream_url" ]]; then
     die "public openai/main merge-base is empty"
 fi
 
+stable_lineage=$(
+  "${git_cmd[@]}" for-each-ref --merged "$release_sha" --format='%(refname)' refs/tags |
+    while IFS= read -r ref; do
+      case "$ref" in
+        refs/tags/fork-release-upstream/rust-v*) tag=${ref#refs/tags/fork-release-upstream/} ;;
+        refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
+        *) continue ;;
+      esac
+      if [[ "$tag" =~ ^rust-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        printf '%s\t%s\t%s\t%s\n' \
+          "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "$tag"
+      fi
+    done |
+  LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 |
+    tail -n 1 |
+    cut -f4-
+)
+stable_lineage=${stable_lineage:-none}
+
+# Like upstream main, eric/local-features keeps the workspace at 0.0.0; the
+# release version comes from the newest exact stable tag it has merged and is
+# stamped into Cargo.toml at build time.
+if [[ "$source_version" == 0.0.0 ]]; then
+  [[ "$stable_lineage" != none ]] ||
+    die "workspace version is 0.0.0 and no exact rust-vX.Y.Z tag is merged into $release_sha"
+  source_version=${stable_lineage#rust-v}
+fi
+
 if [[ "$source_kind" == branch-merge ]]; then
   short_sha=$("${git_cmd[@]}" rev-parse --short=12 "$release_sha")
   source_sequence=$("${git_cmd[@]}" rev-list --first-parent --count "$release_sha")
@@ -153,25 +181,6 @@ if existing_tag_sha=$("${git_cmd[@]}" rev-parse --verify "refs/tags/$release_tag
   [[ "$existing_tag_sha" == "$release_sha" ]] ||
     die "existing tag $release_tag resolves to $existing_tag_sha, expected $release_sha"
 fi
-
-stable_lineage=$(
-  "${git_cmd[@]}" for-each-ref --merged "$release_sha" --format='%(refname)' refs/tags |
-    while IFS= read -r ref; do
-      case "$ref" in
-        refs/tags/fork-release-upstream/rust-v*) tag=${ref#refs/tags/fork-release-upstream/} ;;
-        refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
-        *) continue ;;
-      esac
-      if [[ "$tag" =~ ^rust-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-        printf '%s\t%s\t%s\t%s\n' \
-          "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "$tag"
-      fi
-    done |
-  LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 |
-    tail -n 1 |
-    cut -f4-
-)
-stable_lineage=${stable_lineage:-none}
 
 {
   printf 'release_sha=%s\n' "$release_sha"

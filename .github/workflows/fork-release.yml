@@ -185,12 +185,49 @@ jobs:
       # The release profile keeps debug info (strip = false) so the symbols
       # can be archived before the shipped binaries are stripped. macOS needs
       # packed split debuginfo to get a .dSYM next to each binary.
+      # Like upstream main, the branch keeps the workspace at 0.0.0 so version
+      # snapshots stay stable; upstream stamps Cargo.toml only on its release
+      # tag commit. Stamp the prepared version here so `codex --version`,
+      # the updater, and the package metadata all agree.
+      - name: Stamp workspace version
+        shell: bash
+        env:
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          current=$(awk '
+            /^\[workspace\.package\]$/ { in_workspace = 1; next }
+            /^\[/ { in_workspace = 0 }
+            in_workspace && /^version = / { print; exit }
+          ' Cargo.toml | sed -n 's/^version = "\([^"]*\)".*/\1/p')
+          if [[ "$current" == 0.0.0 ]]; then
+            sed -i.bak "/^\[workspace\.package\]\$/,/^\[/ s/^version = \"0\.0\.0\"\$/version = \"$SOURCE_VERSION\"/" Cargo.toml
+            rm -f Cargo.toml.bak
+          elif [[ "$current" != "$SOURCE_VERSION" ]]; then
+            echo "Cargo.toml workspace version $current does not match $SOURCE_VERSION" >&2
+            exit 1
+          fi
+          grep -Fxq "version = \"$SOURCE_VERSION\"" Cargo.toml
+
       - name: Cargo build
         shell: bash
         env:
           CODEX_FORK_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
         run: cargo build --release --bin codex --bin codex-code-mode-host
+
+      - name: Verify binary version
+        shell: bash
+        env:
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          reported=$(target/release/codex --version)
+          [[ "$reported" == "codex-cli $SOURCE_VERSION" ]] || {
+            echo "codex --version reported '$reported', expected codex-cli $SOURCE_VERSION" >&2
+            exit 1
+          }
 
       # Archives the debug symbols as codex-symbols-<target>.tar.gz (attached
       # to the release) and strips the binaries in place, so the tarball, the
