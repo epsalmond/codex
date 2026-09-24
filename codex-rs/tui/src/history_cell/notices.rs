@@ -39,7 +39,9 @@ impl HistoryCell for UpdateAvailableHistoryCell {
                 Some(instructions) => line![instructions.to_string()],
                 None => line![
                     "See ",
-                    "https://github.com/openai/codex".cyan().underlined(),
+                    "https://github.com/openai/codex"
+                        .fg(accent_color())
+                        .underlined(),
                     " for installation options."
                 ],
             },
