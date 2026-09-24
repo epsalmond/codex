@@ -397,7 +397,7 @@ impl App {
             ThreadInteractiveRequest::Approval(request) => {
                 self.render_inactive_patch_preview(&request);
                 self.chat_widget.push_approval_request(request);
-                if self.startup_protected_input_boundary && !self.chat_widget.has_active_view() {
+                if self.startup_protected_input_boundary && !self.chat_widget.has_active_modal() {
                     self.startup_pending_protected_request = true;
                 }
             }
@@ -762,7 +762,14 @@ impl App {
                             )
                             .await
                         {
-                            Ok(_) => return Ok(true),
+                            Ok(_) => {
+                                if self.active_thread_id == Some(thread_id)
+                                    && self.chat_widget.thread_id() == Some(thread_id)
+                                {
+                                    crate::startup_recovery::acknowledged(client_user_message_id);
+                                }
+                                return Ok(true);
+                            }
                             Err(error) => {
                                 if let Some(turn_error) =
                                     active_turn_not_steerable_turn_error(&error)
@@ -882,6 +889,7 @@ impl App {
                     if self.active_thread_id == Some(thread_id)
                         && self.chat_widget.thread_id() == Some(thread_id)
                     {
+                        crate::startup_recovery::acknowledged(client_user_message_id);
                         self.chat_widget
                             .record_safety_buffering_turn(response.turn.id, op);
                     }
@@ -1059,9 +1067,7 @@ impl App {
             runtime_permission_profile_override.map(|profile| {
                 profile
                     .clone()
-                    .materialize_project_roots_with_workspace_roots(
-                        &config.effective_workspace_roots(),
-                    )
+                    .materialize_project_roots_with_path_uris(&config.effective_workspace_roots())
             });
         if runtime_permission_profile_override
             .as_ref()
@@ -1320,6 +1326,34 @@ impl App {
             notification = None;
         }
         if permission_change_confirmed {
+            if self.chat_widget.thread_id() == Some(thread_id)
+                && let Some(profile) = self
+                    .chat_widget
+                    .config_ref()
+                    .permissions
+                    .active_permission_profile()
+                && profile.id.starts_with(':')
+            {
+                let config = self.chat_widget.config_ref();
+                let network = config
+                    .network_proxy_spec_for_active_permission_profile(
+                        &profile,
+                        config.permissions.permission_profile(),
+                    )
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(%err, "failed to refresh local permission network settings");
+                        None
+                    });
+                self.chat_widget.set_permission_network(network);
+                self.config.permissions = self.chat_widget.config_ref().permissions.clone();
+                self.config.approvals_reviewer = self.chat_widget.config_ref().approvals_reviewer;
+                self.runtime_approval_policy_override =
+                    Some(RuntimeApprovalPolicyOverride::Explicit(
+                        self.config.permissions.approval_policy.value().into(),
+                    ));
+                self.runtime_permission_profile_override =
+                    Some(RuntimePermissionProfileOverride::from_config(&self.config));
+            }
             self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
         }
 
@@ -1402,6 +1436,9 @@ impl App {
     ) -> Option<ThreadSessionState> {
         let mut session = self.primary_session_configured.clone()?;
         session.thread_id = thread_id;
+        session.windows_sandbox_host = crate::windows_sandbox::host_from_environments(
+            notification.thread.environments.as_deref(),
+        );
         session.thread_name = notification.thread.name.clone();
         session.model_provider_id = notification.thread.model_provider.clone();
         session
@@ -1572,11 +1609,8 @@ impl App {
             self.chat_widget.set_token_info(/*info*/ None);
         }
         match presentation {
-            ThreadAttachPresentation::SessionLineage => {
+            ThreadAttachPresentation::Fresh | ThreadAttachPresentation::SessionLineage => {
                 self.chat_widget.handle_thread_session(session);
-            }
-            ThreadAttachPresentation::PromptEdit => {
-                self.chat_widget.handle_prompt_edit_thread_session(session);
             }
         }
         let should_buffer_initial_replay = !turns.is_empty();
@@ -1603,9 +1637,6 @@ impl App {
             &replayed_final_items,
             retained_assistant_captions,
         );
-        if matches!(presentation, ThreadAttachPresentation::PromptEdit) {
-            self.chat_widget.emit_prompt_edit_thread_event();
-        }
         let pending = std::mem::take(&mut self.pending_primary_events);
         for pending_event in pending {
             match pending_event {
@@ -1850,6 +1881,10 @@ impl App {
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ true);
+        let has_resumed_collaboration_mode = snapshot
+            .session
+            .as_ref()
+            .is_some_and(|session| session.collaboration_mode.is_some());
         if let Some(session) = snapshot.session {
             if session.reasoning_effort != Some(ReasoningEffortConfig::Ultra) {
                 self.chat_widget
@@ -1887,9 +1922,6 @@ impl App {
         }
         for (event, changes) in snapshot.events.into_iter().zip(request_changes) {
             reasoning_replay.before_event(&event, &mut self.chat_widget);
-            if suppress_replay_notices && replay_filter::event_is_notice(&event) {
-                continue;
-            }
             match (event, changes) {
                 (ThreadBufferedEvent::Request(request), Some(changes)) => {
                     self.handle_file_change_request(*request, changes)
@@ -1903,7 +1935,12 @@ impl App {
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
         }
         if recovered_input.is_some() {
+            let mode = has_resumed_collaboration_mode
+                .then(|| self.chat_widget.effective_collaboration_mode());
             self.chat_widget.restore_reconnected_input(recovered_input);
+            if let Some(mode) = mode {
+                self.chat_widget.set_effective_collaboration_mode(mode);
+            }
         }
         self.restore_realtime_replay_state_after_replay(
             &replayed_final_items,
@@ -2025,7 +2062,7 @@ impl App {
                         .handle_server_request(*request, /*replay_kind*/ None);
                     if may_open_protected_view
                         && self.startup_protected_input_boundary
-                        && !self.chat_widget.has_active_view()
+                        && !self.chat_widget.has_active_modal()
                     {
                         self.startup_pending_protected_request = true;
                     }
@@ -2055,7 +2092,7 @@ impl App {
                     .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot));
                 if may_open_protected_view
                     && self.startup_protected_input_boundary
-                    && !self.chat_widget.has_active_view()
+                    && !self.chat_widget.has_active_modal()
                 {
                     self.startup_pending_protected_request = true;
                 }
@@ -2151,7 +2188,7 @@ impl App {
         } else {
             None
         };
-        let had_active_view = self.chat_widget.has_active_view();
+        let had_active_modal = self.chat_widget.has_active_modal();
         self.handle_thread_event_now_recovering_file_changes(event)
             .await;
         if let Some(user_message) = automatic_title_user_message
@@ -2165,8 +2202,8 @@ impl App {
                 super::thread_title::thread_title_prompt(&user_message),
             );
         }
-        if !had_active_view
-            && self.chat_widget.has_active_view()
+        if !had_active_modal
+            && self.chat_widget.has_active_modal()
             && self.startup_protected_input_boundary
         {
             self.chat_widget.pre_draw_tick();

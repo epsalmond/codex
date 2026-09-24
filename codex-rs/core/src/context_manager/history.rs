@@ -1,5 +1,6 @@
 //! Parent model history and bounded host-owned context facts.
-//! Compaction replaces only the model window. Snapshots include retained facts atomically;
+//! Compaction replaces the model window and can activate thread-owned Guardian review.
+//! Snapshots include reviewer policy and retained facts atomically;
 //! checkpoint replay and source-call rollback share their live lifecycle.
 //! Token estimates charge item content rather than transport metadata.
 //! Oversized instructions keep an incomplete excerpt for bounded root review, including
@@ -33,8 +34,10 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::GuardianHistoryCheckpoint;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RetainedContext;
+use codex_history::RetainedContextEntry;
 use codex_history::RetainedContextEvent;
 use codex_history::RetainedInputSource;
+use codex_prompts::render_model_instructions;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
@@ -43,6 +46,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -73,15 +77,19 @@ pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector. Snapshots share the vector until a
     /// caller needs to mutate it, avoiding deep copies for read-only history consumers.
     items: Arc<Vec<ResponseItemEnvelope>>,
-    /// Legacy-only history, started at first compaction. Thread-owned mode reads parent context.
+    /// Legacy-only history preserved across compaction and resume. Thread-owned review uses parent context.
     review_history: Option<TranscriptHistory>,
     /// Host facts independent of the model window; snapshots share immutable state.
     retained_context: Arc<RetainedContext>,
-    /// Capture, replay, and snapshot selection share the immutable session mode.
+    /// Capture follows the session flag, including while an older checkpoint uses legacy review.
     guardian_context_mode: GuardianContextMode,
+    /// Reviewer policy travels with the history snapshot, independently of capture.
+    guardian_review_mode: GuardianContextMode,
     retain_inherited_user_messages: bool,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
+    /// Last destructive history replacement; ordinary input and compaction preserve it.
+    pub(crate) reset_version: u64,
     /// Monotonic user-input/reset revision, independent of compaction's history generation.
     user_message_revision: u64,
     token_info: Option<TokenUsageInfo>,
@@ -105,33 +113,30 @@ struct SharedConversationHistory {
     review_history: Option<TranscriptHistory>,
     retained_context: Arc<RetainedContext>,
     guardian_context_mode: GuardianContextMode,
+    guardian_review_mode: GuardianContextMode,
     history_version: u64,
     user_message_revision: u64,
 }
 
 pub(crate) enum HistoryReplacement {
-    Compaction,
+    Compaction {
+        reviewer_compaction_hash: Option<String>,
+    },
     Reset,
 }
 
 impl ConversationHistorySnapshot for SharedConversationHistory {
-    fn latest_compaction_model_hash(&self) -> Option<&str> {
-        self.items
-            .iter()
-            .rev()
-            .find(|envelope| {
-                matches!(
-                    envelope.item,
-                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-                )
-            })
-            .and_then(|envelope| envelope.metadata.as_ref())
-            .and_then(|metadata| metadata.compaction_model_hash.as_deref())
+    fn latest_compaction(&self) -> Option<codex_history::CompactionCheckpoint<'_>> {
+        codex_history::CompactionCheckpoint::latest(&self.items)
     }
 
     fn retained_context(&self) -> Option<&RetainedContext> {
         (self.guardian_context_mode == GuardianContextMode::ThreadOwned)
             .then_some(&self.retained_context)
+    }
+
+    fn uses_parent_context_for_review(&self) -> bool {
+        self.guardian_review_mode == GuardianContextMode::ThreadOwned
     }
 
     fn review_items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
@@ -178,8 +183,10 @@ impl ContextManager {
             review_history: None,
             retained_context: Arc::default(),
             guardian_context_mode: GuardianContextMode::Legacy,
+            guardian_review_mode: GuardianContextMode::Legacy,
             retain_inherited_user_messages: false,
             history_version: 0,
+            reset_version: 0,
             user_message_revision: 0,
             token_info: TokenUsageInfo::new_or_append(
                 &None, &None, /*model_context_window*/ None,
@@ -195,6 +202,7 @@ impl ContextManager {
             review_history: self.review_history.clone(),
             retained_context: Arc::clone(&self.retained_context),
             guardian_context_mode: self.guardian_context_mode,
+            guardian_review_mode: self.guardian_review_mode,
             history_version: self.history_version,
             user_message_revision: self.user_message_revision,
         })
@@ -210,6 +218,7 @@ impl ContextManager {
     ) -> Self {
         Self {
             guardian_context_mode,
+            guardian_review_mode: guardian_context_mode,
             retain_inherited_user_messages: guardian_context_mode
                 == GuardianContextMode::ThreadOwned
                 && !source.is_non_root_agent(),
@@ -230,7 +239,7 @@ impl ContextManager {
     }
 
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
-        if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
+        if self.guardian_review_mode == GuardianContextMode::ThreadOwned {
             return None;
         }
         self.review_history
@@ -242,7 +251,52 @@ impl ContextManager {
         &mut self,
         retained_context: Option<&RetainedContext>,
         checkpoint: Option<&GuardianHistoryCheckpoint>,
+        reviewer_compaction_hash: Option<&str>,
     ) {
+        // A previously promoted checkpoint may have discarded the only complete transcript.
+        // Keep requiring parent context in that case; a compatibility failure must not turn
+        // a partial model window into a legacy fallback. Migrating checkpoints keep a backup
+        // and can expose retained facts independently of which transcript review uses.
+        let requires_parent_context = checkpoint.is_none()
+            && retained_context.is_some_and(|context| {
+                !context.verified_answers_complete()
+                    || context.ordered_entries().any(|(_, entry)| match entry {
+                        RetainedContextEntry::VerifiedAnswer(_) => true,
+                        RetainedContextEntry::UserMessage(message) => {
+                            !self.raw_items().any(|item| {
+                                if item.id().map(codex_protocol::ResponseItemId::as_str)
+                                    != message.message_id.as_deref()
+                                    || item.turn_id().unwrap_or_default() != message.turn_id
+                                {
+                                    return false;
+                                }
+                                let ResponseItem::Message { role, content, .. } = item else {
+                                    return false;
+                                };
+                                if role != "user" || is_contextual_user_message_content(content) {
+                                    return false;
+                                }
+                                let text = content
+                                    .iter()
+                                    .filter_map(|content| match content {
+                                        ContentItem::InputText { text }
+                                        | ContentItem::OutputText { text } => Some(text.as_str()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0
+                                    == message.text
+                            })
+                        }
+                    })
+            });
+        self.guardian_review_mode = if requires_parent_context {
+            self.guardian_context_mode
+        } else {
+            self.guardian_context_mode
+                .for_checkpoint(&self.items, reviewer_compaction_hash)
+        };
         self.restore_retained_context(retained_context);
         if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
             // Older retained checkpoints cleared oversized instructions. Recover their
@@ -263,6 +317,10 @@ impl ContextManager {
                     guardian_truncate_text(&original.message(), GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                 )
             });
+        }
+        if self.guardian_review_mode == GuardianContextMode::ThreadOwned
+            || (self.guardian_context_mode == GuardianContextMode::Legacy && checkpoint.is_none())
+        {
             self.review_history = None;
             return;
         }
@@ -271,11 +329,17 @@ impl ContextManager {
             .as_ref()
             .map_or(self.history_version, TranscriptHistory::generation)
             .saturating_add(1);
-        self.review_history = checkpoint.map(|checkpoint| {
-            let mut history = TranscriptHistory::new(generation);
+        let mut history = TranscriptHistory::new(generation);
+        if let Some(checkpoint) = checkpoint {
             history.reset(checkpoint.0.iter());
-            history
-        });
+        } else {
+            // Retain the legacy window through replay, including answers captured in its suffix.
+            history.reset(self.raw_items().filter(|item| {
+                !matches!(item, ResponseItem::Message { role, content, .. }
+                    if role == "user" && is_contextual_user_message_content(content))
+            }));
+        }
+        self.review_history = Some(history);
     }
 
     pub(crate) fn token_info(&self) -> Option<TokenUsageInfo> {
@@ -315,6 +379,12 @@ impl ContextManager {
 
     pub(crate) fn set_world_state_baseline(&mut self, snapshot: WorldStateSnapshot) {
         self.world_state_baseline = Some(snapshot);
+    }
+
+    pub(crate) fn world_state_checkpoint(&self) -> Option<WorldStateItem> {
+        self.world_state_baseline
+            .clone()
+            .map(|snapshot| WorldStateItem::full(snapshot.into_object()))
     }
 
     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
@@ -381,6 +451,12 @@ impl ContextManager {
                 review_history.record(&processed.item);
             }
             Arc::make_mut(&mut self.items).push(processed);
+            if self.guardian_context_mode == GuardianContextMode::ThreadOwned
+                && let Some(metadata) = metadata
+                && Arc::make_mut(&mut self.retained_context).record_sender_user_messages(metadata)
+            {
+                self.user_message_revision = self.user_message_revision.saturating_add(1);
+            }
             self.record_user_authorization(
                 item,
                 metadata,
@@ -420,17 +496,14 @@ impl ContextManager {
         &self.items
     }
 
-    /// Returns raw items in the history and consumes the snapshot.
-    pub(crate) fn into_raw_items(self) -> Vec<ResponseItem> {
-        self.into_annotated_items()
-            .into_iter()
-            .map(ResponseItemEnvelope::into_item)
-            .collect()
-    }
-
     /// Returns annotated history items and consumes the snapshot.
     pub(crate) fn into_annotated_items(self) -> Vec<ResponseItemEnvelope> {
-        Arc::unwrap_or_clone(self.items)
+        Arc::unwrap_or_clone(self.into_shared_annotated_items())
+    }
+
+    /// Keeps shared response items while releasing the snapshot's unrelated metadata.
+    pub(crate) fn into_shared_annotated_items(self) -> Arc<Vec<ResponseItemEnvelope>> {
+        self.items
     }
 
     pub(crate) fn history_version(&self) -> u64 {
@@ -441,11 +514,8 @@ impl ContextManager {
     // This is a coarse lower bound, not a tokenizer-accurate count.
     pub(crate) fn estimate_token_count(&self, turn_context: &TurnContext) -> Option<i64> {
         let model_info = &turn_context.model_info();
-        let personality = turn_context
-            .personality()
-            .or(turn_context.config.personality);
         let base_instructions = BaseInstructions {
-            text: model_info.get_model_instructions(personality),
+            text: render_model_instructions(model_info),
             provenance: None,
         };
         self.estimate_token_count_with_base_instructions(&base_instructions)
@@ -497,13 +567,27 @@ impl ContextManager {
         }
         self.items = Arc::new(items);
         self.history_version = self.history_version.saturating_add(1);
+        self.reset_version = self.history_version;
         self.world_state_baseline = None;
     }
 
-    /// Compaction changes the model's history without changing the user's authorization.
-    pub(crate) fn replace_compacted(&mut self, items: Vec<ResponseItemEnvelope>) {
-        if self.guardian_context_mode == GuardianContextMode::Legacy
-            && self.review_history.is_none()
+    /// Returns whether compaction changed Guardian's evidence policy, invalidating older reviews.
+    pub(crate) fn replace_compacted(
+        &mut self,
+        items: Vec<ResponseItemEnvelope>,
+        reviewer_compaction_hash: Option<&str>,
+    ) -> bool {
+        let promoted = self.guardian_review_mode == GuardianContextMode::Legacy
+            && self
+                .guardian_context_mode
+                .for_checkpoint(&items, reviewer_compaction_hash)
+                == GuardianContextMode::ThreadOwned;
+        if promoted {
+            self.guardian_review_mode = GuardianContextMode::ThreadOwned;
+            self.review_history = None;
+            self.user_message_revision = self.user_message_revision.saturating_add(/*rhs*/ 1);
+        }
+        if self.guardian_review_mode == GuardianContextMode::Legacy && self.review_history.is_none()
         {
             let mut retained = TranscriptHistory::new(self.history_version.saturating_add(1));
             for item in self.raw_items().filter(|item| {
@@ -516,7 +600,11 @@ impl ContextManager {
         }
         self.items = Arc::new(items);
         self.history_version = self.history_version.saturating_add(1);
+        if promoted {
+            self.reset_version = self.history_version;
+        }
         self.world_state_baseline = None;
+        promoted
     }
 
     /// Drop the last `num_turns` instruction turns from this history.
@@ -811,6 +899,7 @@ fn estimate_encrypted_function_output_length(encoded_len: usize) -> usize {
 /// Returns the same coarse, model-visible token estimate used for full history estimates.
 ///
 /// Counts content directly, excluding transport IDs, metadata, and outer JSON escaping.
+/// Original-detail file images use the maximum patch count.
 pub(crate) fn estimate_item_token_count(item: &ResponseItem) -> i64 {
     let model_visible_bytes = estimate_response_item_model_visible_bytes(item);
     approx_tokens_from_byte_count_i64(model_visible_bytes)
@@ -846,8 +935,8 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
                 ContentItem::InputText { text } | ContentItem::OutputText { text } => {
                     text_bytes(text)
                 }
-                ContentItem::InputImage { image_url, detail } => {
-                    estimate_image_bytes(image_url, *detail)
+                ContentItem::InputImage { image, detail } => {
+                    estimate_image_reference_bytes(image, *detail)
                 }
                 ContentItem::InputAudio { audio_url } => estimate_audio_bytes(audio_url),
             })
@@ -1027,13 +1116,28 @@ fn estimate_original_image_bytes(image_url: &str) -> Option<i64> {
     })
 }
 
-/// Shared image estimate, excluding message framing.
-pub(crate) fn estimate_image_bytes(image_url: &str, detail: Option<ImageDetail>) -> i64 {
+/// Inline image estimate, excluding the data URL prefix and message framing.
+fn estimate_image_bytes(image_url: &str, detail: Option<ImageDetail>) -> i64 {
     match detail {
         Some(ImageDetail::Original) => {
             estimate_original_image_bytes(image_url).unwrap_or(RESIZED_IMAGE_BYTES_ESTIMATE)
         }
         _ => RESIZED_IMAGE_BYTES_ESTIMATE,
+    }
+}
+
+/// Image estimate for callers that only have the reference. Original-detail file images use the
+/// maximum patch count because their dimensions are not available from the reference.
+pub(crate) fn estimate_image_reference_bytes(
+    image: &ImageReference,
+    detail: Option<ImageDetail>,
+) -> i64 {
+    match image {
+        ImageReference::Inline { image_url } => estimate_image_bytes(image_url, detail),
+        ImageReference::File { .. } if detail == Some(ImageDetail::Original) => {
+            i64::try_from(approx_bytes_for_tokens(ORIGINAL_IMAGE_MAX_PATCHES)).unwrap_or(i64::MAX)
+        }
+        ImageReference::File { .. } => RESIZED_IMAGE_BYTES_ESTIMATE,
     }
 }
 
@@ -1051,8 +1155,8 @@ fn estimate_function_output_bytes(output: &FunctionCallOutputBody) -> i64 {
             .iter()
             .map(|part| match part {
                 FunctionCallOutputContentItem::InputText { text } => text_bytes(text),
-                FunctionCallOutputContentItem::InputImage { image_url, detail } => {
-                    estimate_image_bytes(image_url, *detail)
+                FunctionCallOutputContentItem::InputImage { image, detail } => {
+                    estimate_image_reference_bytes(image, *detail)
                 }
                 FunctionCallOutputContentItem::InputAudio { audio_url } => {
                     estimate_audio_bytes(audio_url)

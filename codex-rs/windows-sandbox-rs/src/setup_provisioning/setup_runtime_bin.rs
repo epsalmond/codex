@@ -4,8 +4,7 @@ use std::os::windows::fs::MetadataExt as _;
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::ensure_allow_mask_aces_with_inheritance;
-use crate::grant_read_execute_aces;
+use crate::acl::grant_read_execute_aces;
 use crate::path_mask_allows;
 use anyhow::Context;
 use anyhow::Result;
@@ -73,10 +72,9 @@ pub(super) fn ensure_codex_app_runtime_paths_readable(
             ),
         )?;
         let result = unsafe {
-            ensure_allow_mask_aces_with_inheritance(
+            grant_read_execute_aces(
                 &runtime_path,
                 &[sandbox_group_psid],
-                read_execute_mask,
                 OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
             )
         };

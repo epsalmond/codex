@@ -1678,13 +1678,18 @@ jobs:
           cp scripts/install/install.ps1 dist/install.ps1
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: ${{ steps.release_name.outputs.name }}
           tag_name: ${{ github.ref_name }}
           body_path: ${{ steps.release_notes.outputs.path }}
           files: dist/**
           overwrite_files: true
+          # Release asset uploads follow normal REST API behavior. GitHub recommends
+          # serial API requests to avoid secondary rate limits:
+          # https://docs.github.com/en/rest/releases/assets#upload-a-release-asset
+          # https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#avoid-concurrent-requests
+          preserve_order: true
           make_latest: ${{ steps.release_name.outputs.make_latest }}
           # Mark as prerelease only when the version has a suffix after x.y.z
           # (e.g. -alpha, -beta). Otherwise publish a normal release.
@@ -1693,6 +1698,7 @@ jobs:
   publish-r2-assets:
     name: publish-r2-assets
     needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     permissions:
       contents: read
     uses: ./.github/workflows/r2-release.yml
@@ -1706,6 +1712,13 @@ jobs:
   publish-r2:
     name: publish-r2
     needs: [release, publish-dotslash, publish-r2-assets]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.release.result == 'success' &&
+        needs.publish-dotslash.result == 'success' &&
+        needs.publish-r2-assets.result == 'success'
+      }}
     permissions:
       contents: read
     uses: ./.github/workflows/r2-release.yml
@@ -1719,6 +1732,7 @@ jobs:
   publish-dotslash:
     name: publish-dotslash
     needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1949,8 +1963,8 @@ jobs:
         needs.release.result == 'success' &&
         !contains(needs.release.outputs.version, '-')
       }}
-    # This job only invokes a GitHub Action to open/update the winget-pkgs PR;
-    # it does not execute Windows-only tooling, so Linux is sufficient.
+    # komac opens the winget-pkgs PR using the published Windows archives;
+    # it runs on Linux and does not execute the Windows binaries.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1959,15 +1973,45 @@ jobs:
       deployment: false
 
     steps:
-      - name: Publish to WinGet
-        uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5
+      # Adapted from the WinGet Releaser version previously used by this job:
+      # https://github.com/vedantmgoyal9/winget-releaser/blob/7bd472be23763def6e16bd06cc8b1cdfab0e2fd5/action.yml
+      # Keep dependencies explicit because its cargo-binstall@main reference
+      # violates the policy requiring full commit SHA action pins.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624 # v1.23.0
         with:
-          identifier: OpenAI.Codex
-          version: ${{ needs.release.outputs.version }}
-          release-tag: ${{ needs.release.outputs.tag }}
-          fork-user: openai-oss-forks
-          installers-regex: '^codex-(?:x86_64|aarch64)-pc-windows-msvc\.exe\.zip$'
-          token: ${{ secrets.WINGET_PUBLISH_PAT }}
+          version: "1.23.0"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Install komac
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo-binstall komac --version 2.16.0 --no-confirm
+
+      - name: Publish to WinGet
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.WINGET_PUBLISH_PAT }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          KOMAC_FORK_OWNER: openai-oss-forks
+          KOMAC_CREATED_WITH: Codex release workflow
+          KOMAC_CREATED_WITH_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          installer_urls="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[] | select(.name | test("^codex-(x86_64|aarch64)-pc-windows-msvc\\.exe\\.zip$")) | .url')"
+          mapfile -t urls <<< "$installer_urls"
+          if [[ ${#urls[@]} -ne 2 ]]; then
+            echo "::error::Expected x86_64 and aarch64 Windows archives for $RELEASE_TAG"
+            exit 1
+          fi
+          komac sync-fork
+          komac update OpenAI.Codex --version "$RELEASE_VERSION" --submit --urls "${urls[@]}"
+          komac cleanup --only-merged
 
   update-branch:
     name: Update latest-alpha-cli branch

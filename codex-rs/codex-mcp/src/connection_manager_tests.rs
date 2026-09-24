@@ -518,11 +518,13 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
         default_tools_approval_mode: None,
         tool_approval_modes: HashMap::new(),
     };
+    let client = Arc::new(create_test_managed_client(vec![tool.clone()]).await);
+    let catalog_snapshot = client.tool_catalog.read(Arc::new).await;
     let prepared = crate::PreparedMcpCall::new(
         manager,
-        Arc::new(create_test_managed_client(vec![tool.clone()]).await),
+        client,
         Arc::new(config),
-        /*catalog_revision*/ 0,
+        catalog_snapshot,
         tool,
         server_metadata,
         Some("docs@test".to_string()),
@@ -1991,6 +1993,74 @@ fn codex_apps_env_bearer_token_bypasses_shared_tools_cache() {
         CODEX_APPS_MCP_SERVER_NAME,
         /*uses_env_bearer_token*/ true,
     ));
+}
+
+#[tokio::test]
+async fn read_only_apps_discovery_never_uses_a_shared_writable_catalog() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let cache = ConnectorRuntimeManager::new_without_cache();
+    let cache_key = ConnectorRuntimeContextKey::personal(
+        /*account_id*/ None, /*chatgpt_user_id*/ None,
+    );
+    let cache_context = cache.context(codex_home.path().to_path_buf(), cache_key.clone());
+    store_current_tools(
+        &cache_context,
+        vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "write")],
+    );
+    let server_config: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "http://127.0.0.1:1/mcp",
+        "http_headers": {"authorization": "Bearer fixture"},
+    }))?;
+    for read_only in [false, true] {
+        let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+        config.requires_read_only_mcp_tools = read_only;
+        let mut catalog = crate::ResolvedMcpCatalog::builder();
+        catalog.register(crate::McpServerRegistration::from_hosted_apps(
+            "fixture",
+            /*contribution_order*/ 0,
+            server_config.clone(),
+        ));
+        config.mcp_server_catalog = catalog.build();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let manager = McpConnectionSet::new(
+            /*previous*/ None,
+            McpPublicationGate::already_published(),
+            McpRuntimeInput {
+                startup_policy: McpStartupPolicy::Eager,
+                config: Arc::new(config),
+                plugins_available: false,
+                ready_selected_capability_roots: Vec::new(),
+                mcp_servers: HashMap::from([(
+                    CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                    EffectiveMcpServer::configured(server_config.clone()),
+                )]),
+                submit_id: "test".to_string(),
+                tx_event: None,
+                startup_cancellation_token: cancellation,
+                runtime_context: reusable_server_runtime_context(),
+                codex_apps_tools_cache: cache.clone(),
+                tool_catalog_cache: McpToolCatalogCache::default(),
+                codex_apps_tools_cache_key: cache_key.clone(),
+                client_mcp_extensions: ClientMcpExtensions::default(),
+                auth: None,
+                auth_manager: None,
+                elicitation_reviewer: None,
+                elicitation_lifecycle: None,
+            },
+            ElicitationRequestRouter::default(),
+        )
+        .await;
+        let tools = manager.list_all_tools().await;
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.callable_name.as_str())
+                .collect::<Vec<_>>(),
+            if read_only { vec![] } else { vec!["write"] },
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -5115,6 +5185,35 @@ async fn reconcile_reusable_server_with_mcp_config(
 }
 
 #[tokio::test]
+async fn read_only_policy_does_not_reuse_a_writable_connection() {
+    let codex_home = tempdir().expect("tempdir");
+    let runtime_context = reusable_server_runtime_context();
+    let config = reusable_server_config("http://127.0.0.1:1");
+    let previous = manager_with_reusable_ready_server(
+        &config,
+        &runtime_context,
+        vec![create_test_tool("docs", "write")],
+    )
+    .await;
+    for read_only in [false, true] {
+        let mut mcp_config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+        mcp_config.requires_read_only_mcp_tools = read_only;
+        let reconciled = reconcile_reusable_server_with_mcp_config(
+            &previous,
+            "docs",
+            config.clone(),
+            runtime_context.clone(),
+            mcp_config,
+        )
+        .await;
+        assert_eq!(
+            previous.shares_test_connection_with(&reconciled, "docs"),
+            !read_only
+        );
+    }
+}
+
+#[tokio::test]
 async fn apps_catalog_broadcast_preserves_running_calls_and_rejects_stale_calls()
 -> anyhow::Result<()> {
     let codex_home = tempdir()?;
@@ -5126,7 +5225,9 @@ async fn apps_catalog_broadcast_preserves_running_calls_and_rejects_stale_calls(
     .with_live_scope("apps".to_string());
     let original = vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "original")];
     let updated = vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "updated")];
+    store_current_tools(&context, original.clone());
     let catalog = ClientToolCatalog::new(original.clone(), context.subscribe());
+    let snapshot = catalog.read(Arc::new).await;
 
     store_current_tools(&context, original.clone());
     assert_eq!(
@@ -5136,17 +5237,11 @@ async fn apps_catalog_broadcast_preserves_running_calls_and_rejects_stale_calls(
     );
 
     let (release, released) = tokio::sync::oneshot::channel::<()>();
-    let running = catalog.run_with_revision(
-        /*expected_revision*/ 0,
-        || async { released.await.unwrap() },
-    );
+    let running = catalog.run_with_snapshot(&snapshot, || async { released.await.unwrap() });
     tokio::pin!(running);
     assert!(futures::poll!(&mut running).is_pending());
     store_current_tools(&context, updated.clone());
-    let stale = catalog.run_with_revision(
-        /*expected_revision*/ 0,
-        || async { panic!("stale preparation") },
-    );
+    let stale = catalog.run_with_snapshot(&snapshot, || async { panic!("stale preparation") });
     tokio::pin!(stale);
     assert!(
         futures::poll!(&mut stale).is_pending(),
@@ -5157,15 +5252,94 @@ async fn apps_catalog_broadcast_preserves_running_calls_and_rejects_stale_calls(
     assert_eq!(stale.await, None::<()>);
     assert_eq!(
         catalog
-            .read(|catalog| (catalog.revision, catalog.tools.clone()))
+            .read(|catalog| (catalog.revision, catalog.tools.to_vec()))
             .await,
         (1, updated.clone())
     );
 
     // A client whose startup finishes late adopts the already-published result.
     let late = ClientToolCatalog::new(original, context.subscribe());
-    assert_eq!(late.read(|catalog| catalog.tools.clone()).await, updated);
+    assert_eq!(late.read(|catalog| catalog.tools.to_vec()).await, updated);
     Ok(())
+}
+
+#[tokio::test]
+async fn apps_catalog_broadcast_restores_equivalent_calls() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let context = create_codex_apps_tools_cache_context(
+        codex_home.path().to_path_buf(),
+        /*account_id*/ None,
+        /*chatgpt_user_id*/ None,
+    )
+    .with_live_scope("apps".to_string());
+    let original = vec![
+        create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "first"),
+        create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "second"),
+    ];
+    store_current_tools(&context, original.clone());
+    let catalog = ClientToolCatalog::new(original.clone(), context.subscribe());
+    let snapshot = catalog.read(Arc::new).await;
+
+    let mut changed = original.clone();
+    changed[0].tool.description = Some("Changed definition".into());
+    store_current_tools(&context, changed);
+    assert_eq!(
+        catalog
+            .run_with_snapshot(&snapshot, || async { panic!("changed preparation") })
+            .await,
+        None::<()>
+    );
+
+    let mut restored = original;
+    restored.reverse();
+    store_current_tools(&context, restored);
+    assert_eq!(
+        catalog
+            .run_with_snapshot(&snapshot, || async { "prepared" })
+            .await,
+        Some("prepared")
+    );
+    catalog
+        .refresh(
+            || async { Ok((snapshot.tools.to_vec(), ())) },
+            |tools, ()| store_current_tools(&context, tools.to_vec()),
+        )
+        .await?;
+    assert_eq!(
+        catalog
+            .run_with_snapshot(&snapshot, || async { panic!("refreshed preparation") })
+            .await,
+        None::<()>
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_apps_clients_do_not_retain_replaced_tools() {
+    let context = ConnectorRuntimeManager::<ToolInfo>::new_without_cache()
+        .context(
+            PathBuf::from("unused"),
+            ConnectorRuntimeContextKey::personal(
+                /*account_id*/ None, /*chatgpt_user_id*/ None,
+            ),
+        )
+        .with_live_scope("apps".into());
+    let tool = create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "original");
+    let schema = Arc::downgrade(&tool.tool.input_schema);
+    store_current_tools(&context, vec![tool]);
+    let clients = [
+        ClientToolCatalog::new(Vec::new(), context.subscribe()),
+        ClientToolCatalog::new(Vec::new(), context.subscribe()),
+    ];
+    store_current_tools(
+        &context,
+        vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "updated")],
+    );
+    assert!(
+        schema.upgrade().is_none(),
+        "idle clients must not own the old schema"
+    );
+    drop(clients);
 }
 
 #[tokio::test]
@@ -5177,11 +5351,12 @@ async fn apps_catalog_broadcast_survives_an_older_local_refresh() -> anyhow::Res
         /*chatgpt_user_id*/ None,
     )
     .with_live_scope("apps".to_string());
+    store_current_tools(&context, Vec::new());
     let catalog = ClientToolCatalog::new(Vec::new(), context.subscribe());
     let older_ticket = context.begin_fetch(ConnectorRuntimeFetchSource::HardRefresh);
     let newer = vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "newer")];
     store_current_tools(&context, newer.clone());
-    assert_eq!(catalog.read(|catalog| catalog.tools.clone()).await, newer);
+    assert_eq!(catalog.read(|catalog| catalog.tools.to_vec()).await, newer);
     catalog
         .refresh(
             || async { Ok((Vec::new(), older_ticket)) },
@@ -5194,7 +5369,7 @@ async fn apps_catalog_broadcast_survives_an_older_local_refresh() -> anyhow::Res
             },
         )
         .await?;
-    assert_eq!(catalog.read(|catalog| catalog.tools.clone()).await, newer);
+    assert_eq!(catalog.read(|catalog| catalog.tools.to_vec()).await, newer);
     Ok(())
 }
 
@@ -5824,42 +5999,101 @@ async fn reconciliation_reuses_legacy_stdio_server_when_modern_protocol_is_enabl
 async fn reconciliation_updates_elicitation_policy_without_restarting_ready_server() {
     let runtime_context = reusable_server_runtime_context();
     let config = reusable_server_config("http://127.0.0.1:1");
-    let previous = manager_with_reusable_ready_server(
+    let mut previous = manager_with_reusable_ready_server(
         &config,
         &runtime_context,
         vec![create_test_tool("docs", "search")],
     )
     .await;
-    {
-        let mut authority = previous
-            .elicitation_requests
-            .authority
-            .lock()
-            .expect("elicitation authority lock");
-        let config = Arc::make_mut(
-            &mut authority
-                .as_mut()
-                .expect("test manager should have permission authority")
-                .config,
-        );
-        config.approval_policy = Constrained::allow_any(AskForApproval::Never);
-        config.permission_profile = PermissionProfile::Disabled;
+    let router = ElicitationRequestRouter::default();
+    previous.elicitation_requests = ElicitationRequestManager::new(
+        test_elicitation_config("docs", AskForApproval::Never, PermissionProfile::Disabled),
+        /*reviewer*/ None,
+        /*lifecycle*/ None,
+        router.clone(),
+    );
+    let (tx_event, events) = async_channel::unbounded();
+    let sender = previous.elicitation_requests.make_sender(
+        "docs".to_string(),
+        Some(tx_event),
+        &ClientMcpExtensions::default(),
+    );
+    let elicitation =
+        codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: "What should I say?".to_string(),
+            requested_schema: requested_user_input_schema(),
+        });
+    let response = ElicitationResponse {
+        action: ElicitationAction::Accept,
+        content: Some(serde_json::json!({"message": "continue"})),
+        meta: None,
+    };
+
+    for approval_policy in [
+        AskForApproval::OnRequest,
+        AskForApproval::Never,
+        AskForApproval::OnRequest,
+    ] {
+        let mcp_config =
+            test_elicitation_config("docs", approval_policy, PermissionProfile::default());
+        let reconciled = reconcile_reusable_server_with_mcp_config(
+            &previous,
+            "docs",
+            config.clone(),
+            runtime_context.clone(),
+            mcp_config.as_ref().clone(),
+        )
+        .await;
+        assert!(previous.shares_test_connection_with(&reconciled, "docs"));
+        {
+            let authority = reconciled
+                .elicitation_requests
+                .authority
+                .lock()
+                .expect("elicitation authority lock");
+            let config = &authority.as_ref().expect("elicitation authority").config;
+            assert_eq!(config.approval_policy.value(), approval_policy);
+            assert_eq!(config.permission_profile, PermissionProfile::default());
+        }
+
+        // A sender captured before reconciliation must observe each policy update.
+        let mut pending = sender(NumberOrString::Number(7), elicitation.clone());
+        if approval_policy == AskForApproval::OnRequest {
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+            let EventMsg::ElicitationRequest(request) =
+                events.try_recv().expect("user-input event").msg
+            else {
+                panic!("expected MCP elicitation");
+            };
+            let codex_protocol::mcp::RequestId::String(request_id) = request.id else {
+                panic!("expected Codex-owned string request ID");
+            };
+            router
+                .resolve(
+                    "docs".to_string(),
+                    NumberOrString::String(request_id.into()),
+                    response.clone(),
+                )
+                .await
+                .expect("user response should resolve the retained sender");
+            assert_eq!(pending.await.expect("elicitation should resolve"), response);
+        } else {
+            assert_eq!(
+                pending
+                    .now_or_never()
+                    .expect("a policy denial must not wait for user input")
+                    .expect("elicitation should receive a response"),
+                ElicitationResponse {
+                    action: ElicitationAction::Decline,
+                    content: None,
+                    meta: None,
+                }
+            );
+        }
+        assert!(events.is_empty());
+        previous = reconciled;
     }
-
-    let reconciled = reconcile_reusable_server(&previous, config, runtime_context).await;
-
-    assert!(previous.shares_test_connection_with(&reconciled, "docs"));
-    let authority = reconciled
-        .elicitation_requests
-        .authority
-        .lock()
-        .expect("elicitation authority lock");
-    let config = &authority
-        .as_ref()
-        .expect("reconciled manager should have permission authority")
-        .config;
-    assert_eq!(config.approval_policy.value(), AskForApproval::OnRequest);
-    assert_eq!(config.permission_profile, PermissionProfile::default());
 }
 
 #[tokio::test]

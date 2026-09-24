@@ -19,7 +19,6 @@ use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
-use codex_app_server_protocol::GetAccountTokenUsageResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
@@ -52,6 +51,7 @@ use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
+use crate::chatwidget::AstraModelPickerAction;
 use crate::chatwidget::ConnectorScopeGeneration;
 use crate::chatwidget::ThreadUsageOutcome;
 use crate::chatwidget::UserMessage;
@@ -269,11 +269,18 @@ pub(crate) struct AgentsOverviewThreadRefresh {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
+    OpenDaemonMenu,
+    ConfirmDaemonUpdate(crate::update_action::DaemonUpdateSource),
+    RunDaemonUpdate(crate::update_action::DaemonUpdateSource),
     ReviewMisalignment(Arc<crate::chatwidget::MisalignmentReview>),
     ContinueMisalignment(Arc<crate::chatwidget::MisalignmentReview>),
     CloseMisalignmentReview,
-    /// Open the daemon-wide overview of recent and locally retained root sessions.
+    /// Open the live command center for recent and locally retained root sessions.
     OpenAgentsOverview,
+    /// Create an empty thread from the command center.
+    NewAgentsOverviewSession {
+        cwd: Option<AbsolutePathBuf>,
+    },
     /// Update the daemon-wide overview after a background thread listing finishes.
     AgentsOverviewThreadsLoaded {
         request_id: Uuid,
@@ -282,10 +289,6 @@ pub(crate) enum AppEvent {
     /// Switch to a root session selected from the shared dashboard.
     SelectAgentsOverviewThread {
         thread_id: ThreadId,
-    },
-    /// Open an empty session in the selected checkout.
-    NewAgentsOverviewSession {
-        cwd: Option<AbsolutePathBuf>,
     },
     /// Create an empty session in a worktree from the selected project's default branch.
     NewAgentsOverviewWorktree {
@@ -421,6 +424,10 @@ pub(crate) enum AppEvent {
 
     /// Open the filename prompt for an on-demand Markdown transcript export.
     OpenTranscriptExportFilePrompt,
+    /// Open retained warnings without changing the draft or transcript position.
+    OpenWarnings,
+    /// Copy a diagnostic and acknowledge in the footer, without appending history.
+    CopyWarning(String),
 
     /// Export all current-thread history to the selected destination.
     ExportTranscript {
@@ -511,9 +518,9 @@ pub(crate) enum AppEvent {
         result: color_eyre::Result<AppServerStartedThread>,
     },
 
-    /// Register a dynamically created background thread before its first turn starts.
+    /// Register a tool-created or resumed background thread and its overview metadata.
     DynamicToolThreadStarted {
-        thread_id: ThreadId,
+        thread: Thread,
         task_tools_available: bool,
         registered: tokio::sync::oneshot::Sender<()>,
     },
@@ -571,11 +578,15 @@ pub(crate) enum AppEvent {
         name: Option<String>,
     },
 
-    /// Branch before a selected prompt and reopen it in the new thread's composer.
-    ForkSessionForPromptEdit {
+    /// Revert before a selected prompt, retaining its identity across queued history pages.
+    RevertSessionForPromptEdit {
+        thread_id: ThreadId,
+        selected_cell: Arc<dyn HistoryCell>,
+        prompt: UserMessage,
+    },
+    FinishPromptRevert {
         thread_id: ThreadId,
         nth_user_message: usize,
-        prompt: UserMessage,
     },
 
     /// Request to exit the application.
@@ -602,6 +613,9 @@ pub(crate) enum AppEvent {
     /// Forward a command to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(AppCommand),
+
+    /// A blocking image-preparation worker has finished; payload stays with its widget.
+    ImagesPrepared(Uuid),
 
     /// Approve one retry of a recent auto-review denial selected in the TUI.
     ApproveRecentAutoReviewDenial {
@@ -675,8 +689,10 @@ pub(crate) enum AppEvent {
         result: Result<GetAccountRateLimitsResponse, String>,
     },
 
-    /// Open the default token-activity view selected from the `/usage` menu.
-    OpenTokenActivity,
+    /// Open the authenticated account analytics dashboard.
+    OpenAnalytics {
+        view: Option<crate::analytics::TokenActivityView>,
+    },
 
     /// Open the reset-credit flow selected from the `/usage` menu.
     OpenRateLimitResetCredits,
@@ -703,17 +719,6 @@ pub(crate) enum AppEvent {
         idempotency_key: String,
         credit_id: Option<String>,
         result: Result<ConsumeAccountRateLimitResetCreditResponse, String>,
-    },
-
-    /// Fetch account-wide token activity for a `/usage` history card.
-    RefreshTokenActivity {
-        request_id: u64,
-    },
-
-    /// Result of fetching account-wide token activity.
-    TokenActivityLoaded {
-        request_id: u64,
-        result: Result<GetAccountTokenUsageResponse, String>,
     },
 
     /// Fetch backend-estimated usage for the currently visible enterprise thread.
@@ -1068,6 +1073,10 @@ pub(crate) enum AppEvent {
     /// resize-reflow tail renderer.
     BeginThreadSwitchHistoryReplayBuffer,
 
+    /// Resume following the transcript after an explicit local command submission.
+    /// Background output and later refreshes must preserve the user's reading position.
+    FollowTranscript,
+
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     /// Move visible completed voice captions into history in one app event.
@@ -1118,6 +1127,14 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
+    /// Apply a final Astra picker action and offer the flourish only if it changed the model on
+    /// its original task. Automatic model updates do not use this event.
+    AstraSelectedFromModelPicker {
+        thread_id: ThreadId,
+        model: String,
+        action: AstraModelPickerAction,
+    },
+
     /// Result of creating a TUI-owned WebRTC offer for an active thread.
     RealtimeWebrtcOfferCreated {
         thread_id: ThreadId,
@@ -1144,6 +1161,12 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
+    /// Apply a model and effort only to the active session, preserving saved defaults.
+    SelectSessionModel {
         model: String,
         effort: Option<ReasoningEffort>,
     },
@@ -1218,6 +1241,12 @@ pub(crate) enum AppEvent {
     ApplyPermissionShortcut {
         thread_id: ThreadId,
         selection: PermissionProfileSelection,
+    },
+
+    /// Refresh server-owned Windows state after selecting a thread or project.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    RefreshWindowsSandbox {
+        thread_id: ThreadId,
     },
 
     /// Prompt to enable the Windows sandbox feature before using Agent mode.
@@ -1463,6 +1492,11 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the terminal-title setup UI without changing config.
     TerminalTitleSetupCancelled,
+
+    /// Save the transcript renderer preference for the next launch only.
+    FullscreenTranscriptSelected {
+        enabled: bool,
+    },
 
     /// Apply a user-confirmed syntax theme selection.
     SyntaxThemeSelected {

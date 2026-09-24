@@ -111,6 +111,7 @@ async fn check_for_update(
         fetch_latest_fork_release_tag(&client_pool).await?
     } else {
         match action {
+            Some(UpdateAction::Daemon(_)) => return Ok(()),
             Some(UpdateAction::BrewUpgrade) => {
                 let HomebrewCaskInfo { version } = client_pool
                     .get(HOMEBREW_CASK_API_URL)

@@ -124,7 +124,7 @@ impl App {
             && started.thread.ephemeral
             && matches!(
                 started.thread.thread_source.as_ref(),
-                Some(ThreadSource::Feature(feature)) if feature == "system"
+                Some(ThreadSource::Feature(feature)) if matches!(feature.as_str(), "system" | "thread_title")
             )
         {
             return;
@@ -235,6 +235,12 @@ impl App {
                 self.agents_overview.usage_disabled = false;
                 self.repaint_agents_overview();
                 self.chat_widget.cyber_policy_notice = Default::default();
+                if let Some(crate::pager_overlay::Overlay::Analytics(view)) = &mut self.overlay {
+                    view.refresh();
+                }
+                if let Some(view) = &mut self.retained_analytics {
+                    view.cancel_loads();
+                }
                 self.rate_limit_hard_stop_generation =
                     self.rate_limit_hard_stop_generation.wrapping_add(1);
                 self.rate_limit_refresh_state.invalidate_recovery();

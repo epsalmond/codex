@@ -5,11 +5,14 @@ use super::apply_requirement_constrained_value;
 use codex_config::ConstrainedWithSource;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_sandboxing::SandboxType;
 
 #[derive(Debug, PartialEq)]
 pub struct PreparedWindowsSandboxConfig {
     /// Explicit or requirement-constrained mode; excludes feature-only fallback.
     pub mode: Option<WindowsSandboxModeToml>,
+    /// Selected implementation, kept separate from the legacy setup level.
+    pub sandbox_type: SandboxType,
     /// Effective sandbox level after Windows requirements have been applied.
     pub level: WindowsSandboxLevel,
 }
@@ -25,7 +28,7 @@ pub fn prepare_windows_sandbox_config(
     let selected_mode = configured_mode.or(match feature_level {
         WindowsSandboxLevel::Elevated => Some(WindowsSandboxModeToml::Elevated),
         WindowsSandboxLevel::RestrictedToken => Some(WindowsSandboxModeToml::Unelevated),
-        WindowsSandboxLevel::Disabled | WindowsSandboxLevel::Mxc => None,
+        WindowsSandboxLevel::Disabled => None,
     });
     apply_requirement_constrained_value("windows.sandbox", selected_mode, constraint, warnings)?;
     let effective_mode = *constraint.get();
@@ -34,12 +37,25 @@ pub fn prepare_windows_sandbox_config(
     } else {
         configured_mode
     };
-    let level = match effective_mode {
-        Some(WindowsSandboxModeToml::Elevated) => WindowsSandboxLevel::Elevated,
-        Some(WindowsSandboxModeToml::Unelevated) => WindowsSandboxLevel::RestrictedToken,
-        None => WindowsSandboxLevel::Disabled,
+    let (sandbox_type, level) = match effective_mode {
+        Some(WindowsSandboxModeToml::Elevated) => (
+            SandboxType::WindowsRestrictedToken,
+            WindowsSandboxLevel::Elevated,
+        ),
+        Some(WindowsSandboxModeToml::Unelevated) => (
+            SandboxType::WindowsRestrictedToken,
+            WindowsSandboxLevel::RestrictedToken,
+        ),
+        Some(WindowsSandboxModeToml::Mxc) => {
+            (SandboxType::WindowsMxc, WindowsSandboxLevel::Disabled)
+        }
+        None => (SandboxType::None, WindowsSandboxLevel::Disabled),
     };
-    Ok(PreparedWindowsSandboxConfig { mode, level })
+    Ok(PreparedWindowsSandboxConfig {
+        mode,
+        sandbox_type,
+        level,
+    })
 }
 
 #[cfg(test)]

@@ -14,7 +14,10 @@ async fn agents_navigation_requires_local_daemon() -> Result<()> {
         AppServerTarget::Remote {
             endpoint: endpoint.clone(),
         },
-        AppServerTarget::LocalDaemon { endpoint },
+        AppServerTarget::LocalDaemon {
+            endpoint,
+            allow_embedded_fallback: true,
+        },
     ] {
         let enabled = matches!(target, AppServerTarget::LocalDaemon { .. });
         app.app_server_target = target;
@@ -51,6 +54,7 @@ async fn pending_windows_sandbox_setup_blocks_thread_replacement() -> Result<()>
     use crate::app_event::WindowsSandboxEnableMode;
 
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    app.chat_widget.windows_sandbox_local_server = true;
     while events.try_recv().is_ok() {}
     let mut app_server = start_config_write_test_app_server(&app).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;

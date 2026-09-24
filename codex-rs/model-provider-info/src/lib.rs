@@ -4,6 +4,9 @@
 //!   1. Built-in defaults compiled into the binary so Codex works out-of-the-box.
 //!   2. User-defined entries inside `~/.codex/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
+//!
+//! API provider construction applies the process-wide managed residency policy also
+//! used by default HTTP headers.
 
 use codex_api::Provider as ApiProvider;
 use codex_api::RetryConfig as ApiRetryConfig;
@@ -24,6 +27,8 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::path::Component;
 use std::path::Path;
+use std::sync::PoisonError;
+use std::sync::RwLock;
 use std::time::Duration;
 
 mod cache_staleness;
@@ -33,6 +38,35 @@ pub use cache_staleness::CacheTtlSource;
 pub use cache_staleness::ResolvedCacheTtl;
 pub use cache_staleness::classify_cache_staleness;
 pub use cache_staleness::resolve_cache_ttl;
+
+mod gateway_oauth;
+pub use gateway_oauth::GatewayOAuthConfig;
+pub use gateway_oauth::GatewayOAuthDelivery;
+
+pub const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residency";
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ResidencyRequirement {
+    Us,
+}
+
+static REQUIREMENTS_RESIDENCY: RwLock<Option<ResidencyRequirement>> = RwLock::new(None);
+
+/// Sets the process-wide residency requirement loaded from managed configuration.
+pub fn set_managed_residency_requirement(enforce_residency: Option<ResidencyRequirement>) {
+    // Recover the stored policy if the lock is poisoned rather than silently disabling it.
+    *REQUIREMENTS_RESIDENCY
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = enforce_residency;
+}
+
+/// Returns the current process-wide managed residency requirement.
+pub fn read_managed_residency_requirement() -> Option<ResidencyRequirement> {
+    *REQUIREMENTS_RESIDENCY
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
@@ -111,6 +145,9 @@ pub struct ModelProviderInfo {
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
     pub base_url: Option<String>,
+    /// Optional full URL for a Codex-native model catalog. When unset, OpenAI discovery
+    /// uses the Codex backend unless `base_url` overrides the inference endpoint.
+    pub model_catalog_url: Option<RedactedString>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
 
@@ -123,6 +160,8 @@ pub struct ModelProviderInfo {
     pub experimental_bearer_token: Option<RedactedString>,
     /// Command-backed bearer-token configuration for this provider.
     pub auth: Option<ModelProviderAuthInfo>,
+    /// Secondary OAuth credentials required by the provider's gateway.
+    pub gateway_oauth: Option<GatewayOAuthConfig>,
     /// AWS SigV4 auth configuration for this provider.
     pub aws: Option<ModelProviderAwsAuthInfo>,
     /// Which wire protocol this provider expects.
@@ -252,6 +291,9 @@ other non-default provider fields are not supported"
     }
 
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(gateway) = &self.gateway_oauth {
+            gateway.validate(self)?;
+        }
         if let Some(aws) = self.aws.as_ref() {
             if self.supports_websockets {
                 // TODO(celia-oai): Support AWS SigV4 signing for WebSocket
@@ -375,6 +417,7 @@ other non-default provider fields are not supported"
         Ok(headers)
     }
 
+    /// Builds an API provider with managed residency taking precedence over configured headers.
     pub fn to_api_provider(&self, auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
         let default_base_url = if matches!(
             auth_mode,
@@ -395,7 +438,13 @@ other non-default provider fields are not supported"
             .clone()
             .unwrap_or_else(|| default_base_url.to_string());
 
-        let headers = self.build_header_map()?;
+        let mut headers = self.build_header_map()?;
+        if let Some(requirement) = read_managed_residency_requirement() {
+            let value = match requirement {
+                ResidencyRequirement::Us => HeaderValue::from_static("us"),
+            };
+            headers.insert(RESIDENCY_HEADER_NAME, value);
+        }
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
@@ -472,10 +521,12 @@ other non-default provider fields are not supported"
         ModelProviderInfo {
             name: OPENAI_PROVIDER_NAME.into(),
             base_url,
+            model_catalog_url: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
+            gateway_oauth: None,
             aws: None,
             wire_api: WireApi::Responses,
             query_params: None,
@@ -515,10 +566,12 @@ other non-default provider fields are not supported"
             // this is unset. A configured value is therefore unambiguously an
             // endpoint override.
             base_url: None,
+            model_catalog_url: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
+            gateway_oauth: None,
             aws: Some(aws.unwrap_or(ModelProviderAwsAuthInfo {
                 profile: None,
                 region: None,
@@ -694,10 +747,12 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
     ModelProviderInfo {
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
+        model_catalog_url: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api,
         query_params: None,

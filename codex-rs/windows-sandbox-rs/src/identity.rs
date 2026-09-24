@@ -1,3 +1,7 @@
+use crate::SandboxRuntimeAccount;
+use crate::WindowsSandboxProvisioningOutcome;
+use crate::WindowsSandboxProvisioningSettings;
+use crate::WindowsSandboxProxyListeners;
 use crate::dpapi;
 use crate::logging::debug_log;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
@@ -20,13 +24,20 @@ use crate::winutil::local_user_flags;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::ensure;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use std::collections::HashMap;
 use std::fs;
+use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use std::path::PathBuf;
 use windows_sys::Win32::NetworkManagement::NetManagement::UF_ACCOUNTDISABLE;
+use windows_sys::Win32::NetworkManagement::NetManagement::UF_PASSWORD_EXPIRED;
+use windows_sys::Win32::Security::LOGON32_LOGON_INTERACTIVE;
+use windows_sys::Win32::Security::LOGON32_PROVIDER_DEFAULT;
+use windows_sys::Win32::Security::LogonUserW;
 
 #[cfg(test)]
 #[path = "identity_integration_tests.rs"]
@@ -52,6 +63,11 @@ pub struct SandboxCreds {
 pub fn sandbox_setup_is_complete(codex_home: &Path) -> bool {
     let marker_ok = matches!(load_marker(codex_home), Ok(Some(marker)) if marker.version_matches());
     if !marker_ok {
+        return false;
+    }
+    if crate::registered_core_requested()
+        && !crate::app_package::registered_setup_is_ready(codex_home).unwrap_or(false)
+    {
         return false;
     }
     matches!(load_users(codex_home), Ok(Some(users)) if users.version_matches())
@@ -147,6 +163,54 @@ fn decode_password(record: &SandboxUserRecord) -> Result<String> {
     Ok(pwd)
 }
 
+/// Opens a token for one existing managed account without provisioning or changing it.
+/// The caller must keep the authenticated credential directory pinned and verify
+/// the token's recorded SID, group membership, and non-administrator status.
+pub fn logon_existing_sandbox_account(
+    codex_home: &Path,
+    account: SandboxRuntimeAccount,
+) -> Result<OwnedHandle> {
+    // Unlike the ordinary app-side readers, this service recovery path must
+    // never create diagnostic files beneath an owner-controlled directory.
+    let marker: SetupMarker = serde_json::from_slice(
+        &fs::read(setup_marker_path(codex_home)).context("read sandbox setup marker")?,
+    )
+    .context("parse sandbox setup marker")?;
+    ensure!(
+        marker.version_matches(),
+        "sandbox setup marker is missing or incompatible"
+    );
+    let users: SandboxUsersFile = serde_json::from_slice(
+        &fs::read(sandbox_users_path(codex_home)).context("read sandbox accounts")?,
+    )
+    .context("parse sandbox accounts")?;
+    ensure!(users.version_matches(), "sandbox accounts are incompatible");
+    let record = match account {
+        SandboxRuntimeAccount::Offline => users.offline,
+        SandboxRuntimeAccount::Online => users.online,
+    };
+    ensure!(
+        record.username.eq_ignore_ascii_case(account.username()),
+        "sandbox account record does not match the managed account"
+    );
+    let password = crate::to_wide(decode_password(&record)?);
+    let mut token = 0;
+    if unsafe {
+        LogonUserW(
+            crate::to_wide(account.username()).as_ptr(),
+            crate::to_wide(".").as_ptr(),
+            password.as_ptr(),
+            LOGON32_LOGON_INTERACTIVE,
+            LOGON32_PROVIDER_DEFAULT,
+            &mut token,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error()).context("log on existing sandbox account");
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(token as _) })
+}
+
 fn select_identity(
     network_identity: SandboxNetworkIdentity,
     codex_home: &Path,
@@ -184,9 +248,12 @@ pub fn require_logon_sandbox_creds(
     proxy_enforced: bool,
     proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
 ) -> Result<SandboxCreds> {
+    let runtime = crate::setup::current_setup_runtime();
     let needed_read = read_roots_override
         .map(<[PathBuf]>::to_vec)
-        .unwrap_or_else(|| gather_read_roots(command_cwd, permissions, env_map, codex_home));
+        .unwrap_or_else(|| {
+            gather_read_roots(command_cwd, permissions, env_map, codex_home, runtime)
+        });
     let needed_write = write_roots_override
         .map(<[PathBuf]>::to_vec)
         .unwrap_or_else(|| gather_write_roots_for_permissions(permissions, command_cwd, env_map));
@@ -222,7 +289,7 @@ pub(crate) fn require_sandbox_account(
     require_sandbox_account_with_setup(
         request,
         proxy_settings_mode,
-        run_elevated_setup_with_proxy_settings,
+        run_automatic_setup,
         local_user_flags,
     )
 }
@@ -276,15 +343,19 @@ fn require_sandbox_account_with_setup(
 
     if identity.is_some() {
         // Cleanup may also have removed the group, so repair missing or disabled accounts before ACL
-        // refresh can fail, not only after a later logon reports ERROR_ACCOUNT_DISABLED.
+        // refresh can fail. Expired passwords also require full setup, since an ACL refresh
+        // cannot rotate the account passwords and update the stored DPAPI credentials.
         for username in [OFFLINE_USERNAME, ONLINE_USERNAME] {
             let needs_repair = match read_local_user_flags(username) {
-                Ok(Some(flags)) => flags & UF_ACCOUNTDISABLE != 0,
+                Ok(Some(flags)) => flags & (UF_ACCOUNTDISABLE | UF_PASSWORD_EXPIRED) != 0,
                 Ok(None) => true,
                 Err(_) => false,
             };
             if needs_repair {
-                setup_reason = Some("sandbox account is missing or disabled".to_string());
+                let reason = "sandbox account is missing, disabled, or password expired";
+                // Older services trust these credentials as proof of completed setup.
+                remove_sandbox_users_file(codex_home, reason)?;
+                setup_reason = Some(reason.to_string());
                 identity = None;
                 break;
             }
@@ -310,6 +381,14 @@ fn require_sandbox_account_with_setup(
             },
             &desired_offline_proxy_settings,
         )?;
+        for username in [OFFLINE_USERNAME, ONLINE_USERNAME] {
+            if let Ok(Some(flags)) = read_local_user_flags(username) {
+                anyhow::ensure!(
+                    flags & UF_PASSWORD_EXPIRED == 0,
+                    "Windows sandbox account password is still expired after setup"
+                );
+            }
+        }
         identity = select_identity(network_identity, codex_home)?;
     }
     let identity = identity.ok_or_else(|| {
@@ -324,6 +403,35 @@ fn require_sandbox_account_with_setup(
         },
         desired_offline_proxy_settings,
     ))
+}
+
+// Automatic setup prefers an installed service regardless of the onboarding feature gate.
+// Only an unavailable service may fall back to the UAC helper; service errors propagate.
+fn run_automatic_setup(
+    request: SandboxSetupRequest<'_>,
+    settings: &OfflineProxySettings,
+) -> Result<()> {
+    let mut listeners = WindowsSandboxProxyListeners::from_proxy_environment(request.env_map);
+    // Preserve-mode setup can use saved ports that differ from the current environment.
+    listeners
+        .http_ports
+        .retain(|port| settings.proxy_ports.contains(port));
+    listeners
+        .socks_ports
+        .retain(|port| settings.proxy_ports.contains(port));
+    match crate::provision_windows_sandbox_via_service(
+        request.codex_home,
+        WindowsSandboxProvisioningSettings {
+            proxy_ports: settings.proxy_ports.clone(),
+            allow_local_binding: settings.allow_local_binding,
+        },
+        listeners,
+    )? {
+        WindowsSandboxProvisioningOutcome::Provisioned => Ok(()),
+        WindowsSandboxProvisioningOutcome::Unavailable => {
+            run_elevated_setup_with_proxy_settings(request, settings)
+        }
+    }
 }
 
 fn desired_offline_proxy_settings(

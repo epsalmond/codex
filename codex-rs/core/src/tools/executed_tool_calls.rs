@@ -107,7 +107,6 @@ struct RetainedToolCalls {
 enum CellCompletion {
     #[default]
     Unobserved,
-    Started,
     Recording,
     Incomplete,
     Complete,
@@ -158,21 +157,34 @@ impl ExecutedToolCallRecorderState {
     }
 
     fn register_cell(&mut self, cell_id: &CellId, output_call_id: &str) {
-        if self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS && !self.cells.contains_key(cell_id)
+        if self.output_cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS {
+            // Ended empty cells can leave mappings without any records to attach.
+            // Reclaim those only under pressure, preserving late partial records otherwise.
+            self.output_cells
+                .retain(|_, cell_id| self.cells.contains_key(cell_id));
+        }
+        while (self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
+            && !self.cells.contains_key(cell_id))
+            || self.pending_nested_calls >= MAX_PENDING_EXECUTED_TOOL_CALLS
         {
             let output_cells = self.output_cells.values().collect::<HashSet<_>>();
             let finished_cell = self.cells.iter().find_map(|(id, cell)| {
-                // A finished cell can still have missing or truncated tool call records.
-                (matches!(
-                    cell.completion,
-                    CellCompletion::Complete | CellCompletion::Incomplete
-                ) && cell.pending_calls.is_empty()
+                // Preserve late records until pressure, and never discard the cell
+                // whose output is about to make those records attachable again.
+                (id != cell_id
+                    && matches!(
+                        cell.completion,
+                        CellCompletion::Complete | CellCompletion::Incomplete
+                    )
                     && !output_cells.contains(id))
-                .then(|| id.clone())
+                .then(|| (id.clone(), cell.pending_calls.len()))
             });
-            if let Some(id) = finished_cell {
-                self.cells.remove(&id);
-            }
+            let Some((id, pending_calls)) = finished_cell else {
+                break;
+            };
+            self.invalidate_cell(&id);
+            self.cells.remove(&id);
+            self.pending_nested_calls = self.pending_nested_calls.saturating_sub(pending_calls);
         }
         if (self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
             && !self.cells.contains_key(cell_id))
@@ -422,10 +434,8 @@ impl ExecutedToolCalls {
         } else {
             ExecutedToolCall::truncated(call.name, original_bytes, max_bytes)
         };
-        cell.completion = if matches!(
-            cell.completion,
-            CellCompletion::Started | CellCompletion::Recording
-        ) && !duplicate_call_id
+        cell.completion = if cell.completion == CellCompletion::Recording
+            && !duplicate_call_id
             && !matches!(
                 call.arguments(),
                 ExecutedToolCallArguments::Truncated { .. }
@@ -502,7 +512,7 @@ impl ExecutedToolCalls {
         if let Some(cell) = state.cells.get_mut(cell_id) {
             // Failed indexing must not make a known historical ID look fresh.
             cell.completion = if unique_cell && unique_origin && history_ids_indexed {
-                CellCompletion::Started
+                CellCompletion::Recording
             } else {
                 CellCompletion::Incomplete
             };
@@ -515,10 +525,18 @@ impl ExecutedToolCalls {
             return;
         };
         if let Some(cell) = state.cells.get_mut(cell_id) {
-            if cell.completion == CellCompletion::Recording {
-                cell.completion = CellCompletion::Complete;
-            } else if cell.completion != CellCompletion::Complete && cell.pending_calls.is_empty() {
-                state.cells.remove(cell_id);
+            match cell.completion {
+                CellCompletion::Recording => {
+                    // The closed dispatch gate makes this lossless inventory final, even if empty.
+                    cell.completion = CellCompletion::Complete;
+                }
+                CellCompletion::Unobserved | CellCompletion::Incomplete => {
+                    // Drop unverified cells only after emitting any partial records.
+                    if cell.pending_calls.is_empty() {
+                        state.cells.remove(cell_id);
+                    }
+                }
+                CellCompletion::Complete => {}
             }
         }
     }

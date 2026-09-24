@@ -104,6 +104,7 @@ pub struct ThreadStartParams {
     pub base_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
+    /// @deprecated `friendly` and `pragmatic` no longer select a style.
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     /// @deprecated Ignored. Use Ultra reasoning effort for proactive multi-agent behavior.
@@ -126,6 +127,12 @@ pub struct ThreadStartParams {
     #[experimental("thread/start.projectId")]
     #[ts(optional = nullable)]
     pub project_id: Option<String>,
+    /// Initial Daybreak choice for this persistent thread. Omitted or null
+    /// leaves it unset. This does not select a turn's `cyberAccessProgram`
+    /// or grant access. Not supported for ephemeral threads.
+    #[experimental("thread/start.daybreakEnabled")]
+    #[ts(optional = nullable)]
+    pub daybreak_enabled: Option<bool>,
     /// Optional sticky environments for this thread.
     ///
     /// Omitted selects the default environment when environment access is
@@ -280,7 +287,8 @@ pub struct ThreadSettingsUpdateParams {
     #[experimental("thread/settings/update.multiAgentMode")]
     #[ts(optional = nullable)]
     pub multi_agent_mode: Option<MultiAgentMode>,
-    /// Override the personality for subsequent turns.
+    /// @deprecated `friendly` and `pragmatic` no longer select a style.
+    /// Changing this does not rewrite the thread's existing instructions.
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
 }
@@ -312,6 +320,7 @@ pub struct ThreadSettings {
     #[experimental("thread/settings.multiAgentMode")]
     #[serde(default)]
     pub multi_agent_mode: MultiAgentMode,
+    /// @deprecated Reports the saved setting; `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
 }
 
@@ -403,6 +412,8 @@ pub struct ThreadResumeParams {
     pub base_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
+    /// @deprecated `friendly` and `pragmatic` no longer select a style.
+    /// Changing this does not rewrite the thread's existing instructions.
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     /// When true, return only thread metadata and live-resume state without
@@ -452,6 +463,8 @@ pub struct ThreadResumeResponse {
     #[serde(default)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Effective collaboration mode. Absent when resuming from an older server.
+    pub collaboration_mode: Option<CollaborationMode>,
     /// @deprecated Always `explicitRequestOnly`. Use `reasoningEffort` for Ultra behavior.
     #[experimental("thread/resume.multiAgentMode")]
     #[serde(default)]

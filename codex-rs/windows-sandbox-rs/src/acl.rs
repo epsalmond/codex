@@ -449,10 +449,19 @@ pub unsafe fn dacl_has_write_deny_for_sid(p_dacl: *mut ACL, psid: *mut c_void) -
 }
 
 pub unsafe fn dacl_has_read_deny_for_sid(p_dacl: *mut ACL, psid: *mut c_void) -> bool {
-    dacl_has_deny_mask_for_sid(p_dacl, psid, FILE_GENERIC_READ | GENERIC_READ_MASK)
+    dacl_has_deny_mask(
+        p_dacl,
+        DenyAceScope::EffectiveForSid(psid),
+        FILE_GENERIC_READ | GENERIC_READ_MASK,
+    )
 }
 
-unsafe fn dacl_has_deny_mask_for_sid(p_dacl: *mut ACL, psid: *mut c_void, deny_mask: u32) -> bool {
+enum DenyAceScope {
+    EffectiveForSid(*mut c_void),
+    Any,
+}
+
+unsafe fn dacl_has_deny_mask(p_dacl: *mut ACL, scope: DenyAceScope, deny_mask: u32) -> bool {
     if p_dacl.is_null() {
         return false;
     }
@@ -475,14 +484,14 @@ unsafe fn dacl_has_deny_mask_for_sid(p_dacl: *mut ACL, psid: *mut c_void, deny_m
         if hdr.AceType != ACCESS_DENIED_ACE_TYPE {
             continue; // ACCESS_DENIED_ACE_TYPE
         }
-        if (hdr.AceFlags & INHERIT_ONLY_ACE) != 0 {
+        let ace = &*(p_ace as *const ACCESS_DENIED_ACE);
+        if let DenyAceScope::EffectiveForSid(psid) = scope
+            && ((hdr.AceFlags & INHERIT_ONLY_ACE) != 0
+                || EqualSid(std::ptr::addr_of!(ace.SidStart) as *mut c_void, psid) == 0)
+        {
             continue;
         }
-        let ace = &*(p_ace as *const ACCESS_DENIED_ACE);
-        let base = p_ace as usize;
-        let sid_ptr =
-            (base + std::mem::size_of::<ACE_HEADER>() + std::mem::size_of::<u32>()) as *mut c_void;
-        if EqualSid(sid_ptr, psid) != 0 && (ace.Mask & deny_mask) != 0 {
+        if (ace.Mask & deny_mask) != 0 {
             return true;
         }
     }
@@ -536,12 +545,12 @@ unsafe fn ensure_allow_mask_aces_with_inheritance_impl(
     let (p_dacl, p_sd) = fetch_dacl_handle(path)?;
     let mut entries: Vec<EXPLICIT_ACCESS_W> = Vec::new();
     for sid in sids {
-        // An explicit allow can outrank an inherited deny. All file generic rights
-        // overlap read/execute through READ_CONTROL or SYNCHRONIZE.
+        // A new allow can outrank another trustee's inherited deny, including a
+        // file-only deny on children. Without the complete token, preserve every deny.
         if access_mode == GRANT_ACCESS
-            && dacl_has_deny_mask_for_sid(
+            && dacl_has_deny_mask(
                 p_dacl,
-                *sid,
+                DenyAceScope::Any,
                 allow_mask
                     | GENERIC_READ_MASK
                     | GENERIC_WRITE_MASK
@@ -639,7 +648,7 @@ pub unsafe fn ensure_allow_mask_aces_with_inheritance(
 ///
 /// # Safety
 /// Caller must pass valid SID pointers and an existing path.
-pub unsafe fn grant_read_execute_aces(
+pub(crate) unsafe fn grant_read_execute_aces(
     path: &Path,
     sids: &[*mut c_void],
     inheritance: u32,

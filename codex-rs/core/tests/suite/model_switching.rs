@@ -9,6 +9,7 @@ use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_prompts::render_model_instructions;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -18,6 +19,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructionsProvenance;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -124,6 +126,7 @@ fn test_model_info(
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
+        supports_reasoning_effort_updates: false,
         guardian: None,
         node_repl_auto_review_required: false,
         node_repl_disabled: false,
@@ -180,14 +183,8 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
     let server = MockServer::start().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
 
-    let mut builder = test_codex()
-        .with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture)
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Personality)
-                .expect("test config should allow feature update");
-        });
+    let mut builder =
+        test_codex().with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture);
     let test = builder.build_with_auto_env(&server).await?;
     let next_model = "gpt-5.5";
 
@@ -204,12 +201,12 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
     let request = resp_mock.single_request();
     assert_eq!(request.body_json()["model"], next_model);
     let developer_texts = request.message_input_texts("developer");
-    let expected_instructions = bundled_models_response()?
+    let expected_model = bundled_models_response()?
         .models
         .into_iter()
         .find(|model| model.slug == next_model)
-        .expect("expected target model in bundled catalog")
-        .get_model_instructions(personality.or(test.config.personality));
+        .expect("expected target model in bundled catalog");
+    let expected_instructions = render_model_instructions(&expected_model);
     assert!(
         developer_texts.iter().any(|text| {
             text.contains("<model_switch>") && text.contains(&expected_instructions)
@@ -400,12 +397,7 @@ async fn model_change_with_legacy_personality_override_only_appends_model_instru
     )
     .await;
 
-    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
-        config
-            .features
-            .enable(Feature::Personality)
-            .expect("test config should allow feature update");
-    });
+    let mut builder = test_codex().with_model("gpt-5.5");
     let test = builder.build(&server).await?;
     let next_model = "exp-codex-personality";
 
@@ -726,7 +718,7 @@ async fn unsupported_configured_service_tier_warns_at_session_start() -> Result<
     let mut builder = test_codex()
         .with_model(model_slug)
         .with_config(move |config| {
-            config.service_tier = Some(ServiceTier::Flex.request_value().to_string());
+            config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
             config.model_catalog = Some(ModelsResponse {
                 models: vec![model],
             });
@@ -746,7 +738,7 @@ async fn unsupported_configured_service_tier_warns_at_session_start() -> Result<
     };
     assert_eq!(
         warning.message,
-        "Configured service tier `flex` is not advertised as supported for model `test-no-tier-model` and will be omitted from requests."
+        "Configured service tier `priority` is not advertised as supported for model `test-no-tier-model` and will be omitted from requests."
     );
     Ok(())
 }
@@ -906,7 +898,9 @@ async fn model_change_projects_media_without_changing_live_or_replayed_history(
             &test,
             vec![
                 UserInput::Image {
-                    image_url: image_url.clone(),
+                    image: ImageReference::Inline {
+                        image_url: image_url.clone(),
+                    },
                     detail: None,
                 },
                 UserInput::Audio {
@@ -1260,6 +1254,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
+        supports_reasoning_effort_updates: false,
         guardian: None,
         node_repl_auto_review_required: false,
         node_repl_disabled: false,

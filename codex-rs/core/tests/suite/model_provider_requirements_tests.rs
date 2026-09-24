@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_config::LoaderOverrides;
 use codex_config::config_toml::ConfigToml;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_login::CodexAuth;
@@ -177,9 +178,18 @@ X-Managed = "required"
                 insta::assert_debug_snapshot!("provider_selection_override_warning", warnings);
             }
             assert_eq!(&overridden.model_provider, &test.config.model_provider);
-            let rebuilt = overridden
-                .rebuild_preserving_session_layers(&overridden)
-                .await?;
+            let rebuilt = Config::rebuild_with_session_layers(
+                &overridden.config_layer_stack,
+                overridden.cwd.to_path_buf(),
+                &overridden.config_layer_stack,
+                overridden.codex_home.clone(),
+                overridden
+                    .zsh_path
+                    .clone()
+                    .map(codex_utils_absolute_path::AbsolutePathBuf::try_from)
+                    .transpose()?,
+            )
+            .await?;
             assert_eq!(rebuilt.model_provider, test.config.model_provider);
         }
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::GuardianContextMode;
 
 use super::tests::build_world_state_from_turn_context;
 use super::tests::make_session_and_context;
@@ -17,6 +18,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_rollout::ModelContextScan;
@@ -28,6 +30,160 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use test_case::test_case;
 use uuid::Uuid;
+
+#[tokio::test]
+async fn recorded_questions_share_queued_input_order_across_resume() {
+    let (mut session, turn) = make_session_and_context().await;
+    session.guardian_context_mode = GuardianContextMode::ThreadOwned;
+    session.state.lock().await.history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &SessionSource::default(),
+    );
+    let question = |call_id: &str| {
+        serde_json::from_value::<ResponseItem>(json!({
+            "type": "function_call", "call_id": call_id,
+            "namespace": "mcp__codex_apps", "name": "user_messaging_send_message",
+            "arguments": "{\"text\":\"Continue?\"}"
+        }))
+        .unwrap()
+    };
+    session
+        .record_conversation_items(&turn, turn.model_info(), &[question("first")])
+        .await;
+    let reply_order = session.reserve_user_input_order().await;
+    session
+        .record_conversation_items(&turn, turn.model_info(), &[question("second")])
+        .await;
+    // The accepted reply is recorded after a newer question, and the first send's
+    // result arrives last. Neither delay should move the first question's position.
+    session
+        .record_annotated_conversation_items(
+            &turn,
+            turn.model_info(),
+            vec![
+                ResponseItemEnvelope {
+                    item: user_message("Yes."),
+                    metadata: Some(codex_history::CodexHarnessMetadata {
+                        user_input_order: reply_order,
+                        ..Default::default()
+                    }),
+                },
+                ResponseItemEnvelope {
+                    item: serde_json::from_value(json!({
+                        "type": "function_call_output", "call_id": "first", "output": "Sent."
+                    }))
+                    .unwrap(),
+                    metadata: Some(codex_history::CodexHarnessMetadata {
+                        delivered_assistant_message: Some("Continue?".to_owned()),
+                        ..Default::default()
+                    }),
+                },
+            ],
+        )
+        .await;
+    let saved = session
+        .clone_history()
+        .await
+        .into_annotated_items()
+        .into_iter()
+        .map(RolloutItem::ResponseItem)
+        .collect::<Vec<_>>();
+    let saved = serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: session.thread_id,
+            history: Arc::new(saved),
+            rollout_path: None,
+            last_activity_at: None,
+        }))
+        .await;
+    let history = session.clone_history().await;
+    assert_eq!(
+        history
+            .annotated_items()
+            .iter()
+            .map(|item| {
+                item.metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.user_input_order)
+            })
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(2), Some(1), None]
+    );
+    assert_eq!(session.reserve_user_input_order().await, Some(3));
+}
+
+#[tokio::test]
+async fn sender_context_follows_its_delivery_through_checkpoint_and_rollback() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    session.guardian_context_mode = GuardianContextMode::ThreadOwned;
+    let mut live = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &SessionSource::default(),
+    );
+    let mut items = Vec::new();
+    let mut snapshots = Vec::new();
+    for index in 0..2 {
+        // A and then B are accepted before either is consumed.
+        let acceptance_order = Some(live.reserve_input_order());
+        let steer_order = Some(live.reserve_input_order());
+        let snapshot = codex_history::SenderUserMessages {
+            receiver_turn_id: format!("turn-{index}"),
+            receiver_message_id: format!("delivery-{index}"),
+            text: format!("Sender context {index}"),
+        };
+        let input = [
+            ResponseItemEnvelope {
+                item: serde_json::from_value::<ResponseItem>(json!({
+                    "type": "function_call_output", "id": snapshot.receiver_message_id,
+                    "name": "send_message_to_thread", "namespace": "codex_app", "output": "Inspect."
+                }))
+                .unwrap(),
+                metadata: Some(codex_history::CodexHarnessMetadata {
+                    user_input_order: acceptance_order,
+                    sender_user_messages: Some(Box::new(snapshot.clone())),
+                    ..Default::default()
+                }),
+            },
+            ResponseItemEnvelope {
+                item: user_message("Later user steer B."),
+                metadata: Some(codex_history::CodexHarnessMetadata {
+                    user_input_order: steer_order,
+                    ..Default::default()
+                }),
+            },
+        ];
+        live.record_annotated_items(&input, turn_context.model_info().truncation_policy.into());
+        items.extend(input.into_iter().map(RolloutItem::ResponseItem));
+        snapshots.push(snapshot);
+    }
+    let mut checkpoint: CompactedItem =
+        serde_json::from_value(json!({"message": "compacted"})).unwrap();
+    checkpoint.replacement_history = Some(live.annotated_items().to_vec());
+    checkpoint.retained_context = Some(live.retained_context().clone());
+    let mut checkpointed = items.clone();
+    checkpointed.push(RolloutItem::Compacted(checkpoint));
+    for (num_turns, expected) in [(1, &snapshots[1]), (2, &snapshots[0])] {
+        let mut rolled_back = live.clone();
+        rolled_back.drop_last_n_user_turns(num_turns);
+        assert_eq!(
+            rolled_back.retained_context().sender_user_messages(),
+            Some(expected)
+        );
+        for history in [items.clone(), checkpointed.clone()] {
+            let mut history: Vec<RolloutItem> =
+                serde_json::from_value(serde_json::to_value(history).unwrap()).unwrap();
+            history.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+                ThreadRolledBackEvent { num_turns },
+            )));
+            let replayed = session
+                .reconstruct_history_from_rollout(&turn_context, &history)
+                .await;
+            assert_eq!(replayed.retained_context, *rolled_back.retained_context());
+            assert_eq!(replayed.history, rolled_back.annotated_items());
+        }
+    }
+}
 
 macro_rules! object {
     ($value:tt) => {

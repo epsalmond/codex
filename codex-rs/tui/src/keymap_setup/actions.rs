@@ -86,6 +86,10 @@ impl KeymapActionDescriptor {
 pub(super) const KEYMAP_ACTIONS: &[KeymapActionDescriptor] = &[
     action("global", "Global", "open_agents", "Open the shared agent-session overview."),
     action("global", "Global", "open_transcript", "Open the transcript overlay."),
+    action("global", "Global", "find_transcript", "Find text in the full transcript."),
+    // Keep the new warnings action out of shared-config writes until older strict readers
+    // accept it. Its built-in shortcuts remain available.
+    action("global", "Global", "focus_activity", "Focus transcript activity groups to expand or collapse their details."),
     action("global", "Global", "open_external_editor", "Open the current draft in an external editor."),
     action("global", "Global", "copy", "Copy the last agent response to the clipboard."),
     action("global", "Global", "clear_terminal", "Clear the terminal UI."),
@@ -101,6 +105,7 @@ pub(super) const KEYMAP_ACTIONS: &[KeymapActionDescriptor] = &[
     action("chat", "Chat", "edit_queued_message", "Move up through questions, then edit the last queued message."),
     action("chat", "Chat", "prompt_stack_back", "Move back through questions toward the composer."),
     action("chat", "Chat", "skip_question", "Skip the focused question."),
+    action("chat", "Chat", "toggle_voice", "Start or stop a voice conversation."),
     action("chat", "Chat", "toggle_voice_mute", "Mute or unmute the voice microphone."),
     action("composer", "Composer", "submit", "Submit the current composer draft."),
     action("composer", "Composer", "queue", "Queue the draft while a task is running."),
@@ -203,6 +208,7 @@ pub(super) const KEYMAP_ACTIONS: &[KeymapActionDescriptor] = &[
     action("pager", "Pager", "jump_bottom", "Jump to the end."),
     action("pager", "Pager", "close", "Close the pager overlay."),
     action("pager", "Pager", "close_transcript", "Close the transcript overlay."),
+    action("pager", "Pager", "find", "Find text in a transcript pager."),
     action("list", "List", "move_up", "Move list selection up."),
     action("list", "List", "move_down", "Move list selection down."),
     action("list", "List", "move_left", "Move horizontally left in list pickers."),
@@ -267,6 +273,8 @@ pub(super) fn binding_slot<'a>(
     match (context, action) {
         ("global", "open_agents") => Some(&mut keymap.global.open_agents),
         ("global", "open_transcript") => Some(&mut keymap.global.open_transcript),
+        ("global", "find_transcript") => Some(&mut keymap.global.find_transcript),
+        ("global", "focus_activity") => Some(&mut keymap.global.focus_activity),
         ("global", "open_external_editor") => Some(&mut keymap.global.open_external_editor),
         ("global", "copy") => Some(&mut keymap.global.copy),
         ("global", "clear_terminal") => Some(&mut keymap.global.clear_terminal),
@@ -282,6 +290,7 @@ pub(super) fn binding_slot<'a>(
         ("chat", "edit_queued_message") => Some(&mut keymap.chat.edit_queued_message),
         ("chat", "prompt_stack_back") => Some(&mut keymap.chat.prompt_stack_back),
         ("chat", "skip_question") => Some(&mut keymap.chat.skip_question),
+        ("chat", "toggle_voice") => Some(&mut keymap.chat.toggle_voice),
         ("chat", "toggle_voice_mute") => Some(&mut keymap.chat.toggle_voice_mute),
         ("composer", "submit") => Some(&mut keymap.composer.submit),
         ("composer", "queue") => Some(&mut keymap.composer.queue),
@@ -384,6 +393,7 @@ pub(super) fn binding_slot<'a>(
         ("pager", "jump_bottom") => Some(&mut keymap.pager.jump_bottom),
         ("pager", "close") => Some(&mut keymap.pager.close),
         ("pager", "close_transcript") => Some(&mut keymap.pager.close_transcript),
+        ("pager", "find") => Some(&mut keymap.pager.find),
         ("list", "move_up") => Some(&mut keymap.list.move_up),
         ("list", "move_down") => Some(&mut keymap.list.move_down),
         ("list", "move_left") => Some(&mut keymap.list.move_left),

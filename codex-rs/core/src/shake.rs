@@ -27,6 +27,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::approx_token_count;
@@ -187,7 +188,10 @@ fn item_model_visible_bytes(item: &ResponseItem) -> usize {
                     ContentItem::InputText { text } | ContentItem::OutputText { text } => {
                         text.len()
                     }
-                    ContentItem::InputImage { image_url, .. } => image_url.len(),
+                    ContentItem::InputImage { image, .. } => match image {
+                        ImageReference::Inline { image_url } => image_url.len(),
+                        ImageReference::File { file_id } => file_id.len(),
+                    },
                     ContentItem::InputAudio { audio_url } => audio_url.len(),
                 };
             }
@@ -254,7 +258,10 @@ fn payload_text_bytes(output: &FunctionCallOutputPayload) -> usize {
             .iter()
             .map(|item| match item {
                 FunctionCallOutputContentItem::InputText { text } => text.len(),
-                FunctionCallOutputContentItem::InputImage { image_url, .. } => image_url.len(),
+                FunctionCallOutputContentItem::InputImage { image, .. } => match image {
+                    ImageReference::Inline { image_url } => image_url.len(),
+                    ImageReference::File { file_id } => file_id.len(),
+                },
                 FunctionCallOutputContentItem::InputAudio { audio_url } => audio_url.len(),
                 FunctionCallOutputContentItem::EncryptedContent { encrypted_content } => {
                     encrypted_content.len()
@@ -932,7 +939,9 @@ mod tests {
                         text: "see image".to_string(),
                     },
                     FunctionCallOutputContentItem::InputImage {
-                        image_url: "data:image/png;base64,AAA".to_string(),
+                        image: ImageReference::Inline {
+                            image_url: "data:image/png;base64,AAA".to_string(),
+                        },
                         detail: None,
                     },
                 ]),
@@ -946,7 +955,9 @@ mod tests {
                         text: "look".to_string(),
                     },
                     ContentItem::InputImage {
-                        image_url: "data:image/png;base64,BBB".to_string(),
+                        image: ImageReference::Inline {
+                            image_url: "data:image/png;base64,BBB".to_string(),
+                        },
                         detail: None,
                     },
                 ],

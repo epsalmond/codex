@@ -6,13 +6,10 @@ use crate::config::ManagedFeatures;
 use crate::config::NetworkProxySpec;
 use crate::config::PermissionProfileSnapshot;
 use crate::config::test_config;
+use crate::context::ContextualUserFragment;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::guardian::approval_request::guardian_request_target_item_id;
-use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY;
-use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
-use crate::guardian::prompt::guardian_policy_prompt_with_config_and_template;
 use crate::guardian::review::guardian_review_session_config;
-use crate::guardian::review::routes_approval_to_guardian_with_reviewer;
 use crate::session::session::Session;
 use crate::session::tests::update_turn_settings_for_test;
 use crate::session::turn_context::TurnContext;
@@ -31,6 +28,7 @@ use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
 use codex_guardian_context::ConversationTranscriptEntry;
 use codex_guardian_context::ConversationTranscriptEntryKind;
+use codex_guardian_reviewer::guardian_output_contract_prompt;
 use codex_history::RolloutItem;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_4_MODEL_ID;
@@ -39,13 +37,13 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_network_proxy::NetworkProxyConfig;
+use codex_prompts::GuardianPolicyInstructions;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::NetworkApprovalProtocol;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SandboxPermissions;
@@ -59,7 +57,6 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -178,6 +175,7 @@ async fn guardian_test_session_turn_and_rx(
         .expect("session should be uniquely owned")
         .services
         .models_manager = models_manager;
+    crate::guardian::test_host::install(&session, &config);
     let turn_mut = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
     turn_mut.config = Arc::clone(&config);
     turn_mut.provider =
@@ -240,6 +238,7 @@ async fn guardian_test_session_and_turn_with_base_url(
         config.model_provider.clone(),
     );
     session.services.models_manager = models_manager;
+    crate::guardian::test_host::install(&session, &config);
     turn.config = Arc::clone(&config);
     turn.provider = create_model_provider(config.model_provider.clone(), turn.auth_manager.clone());
 
@@ -294,13 +293,6 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
             ],
         )
         .await;
-}
-
-fn rollout_item_contains_message_text(item: &RolloutItem, needle: &str) -> bool {
-    let RolloutItem::ResponseItem(response_item) = item else {
-        return false;
-    };
-    response_item_contains_message_text(response_item, needle)
 }
 
 fn response_item_contains_message_text(item: &ResponseItem, needle: &str) -> bool {
@@ -395,72 +387,6 @@ fn last_user_message_text_from_body(body: &serde_json::Value) -> String {
         .filter(|span| span.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
         .filter_map(|span| span.get("text").and_then(serde_json::Value::as_str))
         .collect::<String>()
-}
-
-#[test]
-fn build_guardian_transcript_keeps_original_numbering() {
-    let entries = [
-        ConversationTranscriptEntry {
-            kind: ConversationTranscriptEntryKind::User,
-            text: "first".to_string(),
-            original_bytes: "first".len(),
-        },
-        ConversationTranscriptEntry {
-            kind: ConversationTranscriptEntryKind::Assistant,
-            text: "second".to_string(),
-            original_bytes: "second".len(),
-        },
-        ConversationTranscriptEntry {
-            kind: ConversationTranscriptEntryKind::ProtectedAssistant,
-            text: "third".to_string(),
-            original_bytes: "third".len(),
-        },
-    ];
-
-    let (transcript, omission) = render_guardian_transcript_entries(&entries[..2]);
-
-    assert_eq!(
-        transcript,
-        vec![
-            "[1] user: first".to_string(),
-            "[2] assistant: second".to_string()
-        ]
-    );
-    assert!(omission.is_none());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn build_guardian_prompt_full_mode_preserves_initial_review_format() -> anyhow::Result<()> {
-    let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
-    seed_guardian_parent_history(&session, &turn).await;
-
-    let prompt = build_guardian_prompt_items(
-        session.as_ref(),
-        Some("Sandbox denied outbound git push to github.com.".to_string()),
-        GuardianApprovalRequest::ExecCommand {
-            id: "shell-1".to_string(),
-            environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
-            command: vec!["git".to_string(), "push".to_string()],
-            cwd: test_path_buf("/repo/codex-rs/core").abs().into(),
-            guardian_cwd: native_guardian_cwd("/repo/codex-rs/core"),
-            sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
-            additional_permissions: None,
-            justification: Some("Need to push the reviewed docs fix.".to_string()),
-            tty: false,
-        },
-        GuardianPromptMode::Full,
-    )
-    .await?;
-
-    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
-    assert!(text.contains("whose request action you are assessing"));
-    assert!(text.contains(">>> TRANSCRIPT START\n"));
-    assert!(text.contains(">>> TRANSCRIPT END\n"));
-    assert!(text.contains("The Codex agent has requested the following action:\n"));
-    assert!(!text.contains("TRANSCRIPT DELTA"));
-    assert_eq!(prompt.transcript_cursor.transcript_entry_count, 4);
-
-    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -591,7 +517,8 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
         ]),
         NetworkSandboxPolicy::Restricted,
     );
-    let TurnEnvironmentState::Ready(environment) = &mut turn.environments.environments[0] else {
+    let TurnEnvironmentState::Ready(environment) = &mut turn.initial_environments.environments[0]
+    else {
         panic!("parent environment should be ready");
     };
     environment.config_mut().permission_profile =
@@ -636,6 +563,179 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
     assert!(text.contains(second_denied_root.to_string_lossy().as_ref()));
     assert!(text.contains(&format!("glob `{denied_glob}`")));
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_approval_permissions_use_the_owning_environment() -> anyhow::Result<()> {
+    let (session, mut turn) = crate::session::tests::make_session_and_context().await;
+    let mut secondary = turn.initial_environments.primary().unwrap().clone();
+    let cwd = test_path_buf("/guardian-secondary").abs();
+    let denied = cwd.join("private");
+    secondary.selection.environment_id = "secondary".to_string();
+    secondary.selection.cwd = PathUri::from_abs_path(&cwd);
+    secondary.config_mut().permission_profile =
+        PermissionProfileSnapshot::legacy(PermissionProfile::from_runtime_permissions(
+            &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: PathUri::from_abs_path(&denied),
+                },
+                access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
+            }]),
+            NetworkSandboxPolicy::Restricted,
+        ));
+    let mut windows = secondary.clone();
+    let windows_cwd = PathUri::parse("file:///C:/guardian-secondary")?;
+    windows.environment = Arc::new(codex_exec_server::Environment::create_for_tests(Some(
+        "ws://127.0.0.1:1".into(),
+    ))?);
+    windows.selection.environment_id = "windows".into();
+    windows.selection.cwd = windows_cwd.clone();
+    windows.config_mut().workspace_roots = vec![windows_cwd.clone()];
+    windows.config_mut().permission_profile =
+        PermissionProfileSnapshot::legacy(PermissionProfile::from_runtime_permissions(
+            &FileSystemSandboxPolicy::restricted(vec![
+                FileSystemSandboxEntry::new(
+                    windows_cwd.join("private")?.into(),
+                    FileSystemAccessMode::Deny,
+                ),
+                FileSystemSandboxEntry::new(
+                    FileSystemPath::GlobPattern {
+                        pattern: "*.secret".into(),
+                    },
+                    FileSystemAccessMode::Deny,
+                ),
+            ]),
+            NetworkSandboxPolicy::Restricted,
+        ));
+    turn.initial_environments.environments.extend([
+        TurnEnvironmentState::Ready(secondary),
+        TurnEnvironmentState::Ready(windows),
+    ]);
+    let turn = Arc::new(turn);
+    let context = GuardianReviewContext::from(&turn);
+    let network_request = |environment_id: &str| GuardianApprovalRequest::NetworkAccess {
+        id: "network".to_string(),
+        turn_id: turn.sub_id.clone(),
+        environment_id: environment_id.to_string(),
+        target: "https://example.com:443".to_string(),
+        host: "example.com".to_string(),
+        protocol: NetworkApprovalProtocol::Https,
+        port: 443,
+        trigger: None,
+    };
+    let requests = [
+        network_request("secondary"),
+        network_request("windows"),
+        #[cfg(unix)]
+        GuardianApprovalRequest::Execve {
+            id: "shell".to_string(),
+            environment_id: "secondary".to_string(),
+            source: codex_protocol::approvals::GuardianCommandSource::UnifiedExec,
+            program: "cat".to_string(),
+            argv: Vec::new(),
+            cwd,
+            additional_permissions: None,
+        },
+    ];
+    for request in requests {
+        let is_windows = request.background_environment_id() == Some("windows");
+        let prompt = build_guardian_prompt_items_with_parent_turn(
+            &session,
+            session.conversation_history_snapshot().await.as_ref(),
+            Some(&context),
+            ApprovalRequestReasons::default(),
+            request,
+            GuardianPromptMode::Full,
+            /*reviewed_node_repl_evidence_sequence*/ 0,
+        )
+        .await?;
+        let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
+        if is_windows {
+            assert!(
+                text.contains(r"path `C:\guardian-secondary\private`"),
+                "{text}"
+            );
+            assert!(
+                text.contains(r"glob `C:\guardian-secondary\*.secret`"),
+                "{text}"
+            );
+        } else {
+            assert!(text.contains(denied.to_string_lossy().as_ref()));
+        }
+    }
+    assert!(
+        runtime::ReviewAction::from(network_request("missing"))
+            .validate(&context)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn guardian_uses_thread_permissions_for_an_unavailable_captured_environment()
+-> anyhow::Result<()> {
+    let (session, mut turn) = crate::session::tests::make_session_and_context().await;
+    let original_root = test_path_buf("/original-workspace").abs();
+    let captured_root = test_path_buf("/captured-workspace").abs();
+    let thread_profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry::new(
+                FileSystemPath::Special {
+                    value: codex_protocol::permissions::FileSystemSpecialPath::Root,
+                },
+                FileSystemAccessMode::Read,
+            ),
+            FileSystemSandboxEntry::new(
+                FileSystemPath::Special {
+                    value: codex_protocol::permissions::FileSystemSpecialPath::project_roots(Some(
+                        "private".into(),
+                    )),
+                },
+                FileSystemAccessMode::Deny,
+            ),
+        ]),
+        NetworkSandboxPolicy::Restricted,
+    );
+    let permissions = &mut Arc::make_mut(&mut turn.config).permissions;
+    permissions.set_permission_profile(thread_profile)?;
+    permissions.set_workspace_roots(vec![original_root.clone()]);
+    let TurnEnvironmentState::Ready(original) = &mut turn.initial_environments.environments[0]
+    else {
+        panic!("initial environment should be ready");
+    };
+    original.config_mut().permission_profile =
+        PermissionProfileSnapshot::legacy(PermissionProfile::Disabled);
+    let mut selection = original.selection();
+    selection.cwd = PathUri::from_abs_path(&captured_root);
+    selection.workspace_roots = vec![selection.cwd.clone()];
+    selection.config = codex_protocol::protocol::EnvironmentConfigState::Failed("offline".into());
+    let captured = crate::environment_selection::TurnEnvironmentSnapshot {
+        environments: vec![TurnEnvironmentState::Failed {
+            selection,
+            error: "offline".into(),
+        }],
+    };
+    let turn = Arc::new(turn);
+    let context = GuardianReviewContext::from_resolved_settings(
+        Arc::clone(&turn),
+        &turn.initial_settings,
+        &captured,
+    );
+    let prompt = build_guardian_prompt_items_with_parent_turn(
+        &session,
+        session.conversation_history_snapshot().await.as_ref(),
+        Some(&context),
+        ApprovalRequestReasons::default(),
+        guardian_exec_command_request("shell"),
+        GuardianPromptMode::Full,
+        /*reviewed_node_repl_evidence_sequence*/ 0,
+    )
+    .await?;
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
+    assert!(text.contains(captured_root.join("private").to_string_lossy().as_ref()));
+    assert!(!text.contains(original_root.join("private").to_string_lossy().as_ref()));
     Ok(())
 }
 
@@ -928,43 +1028,6 @@ fn collect_guardian_transcript_entries_skips_contextual_user_messages() {
 }
 
 #[test]
-fn collect_guardian_transcript_entries_keeps_manual_approval_developer_message() {
-    let approval_text =
-        format!("{AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX}\n\nApproved action:\n{{}}");
-    let items = vec![
-        ResponseItem::Message {
-            id: None,
-            role: "developer".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "ordinary developer context".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::Message {
-            id: None,
-            role: "developer".to_string(),
-            content: vec![ContentItem::InputText {
-                text: approval_text.clone(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
-    ];
-
-    let entries = collect_guardian_transcript_entries(&items, GUARDIAN_MAX_TOOL_ENTRY_TOKENS);
-
-    assert_eq!(
-        entries,
-        vec![ConversationTranscriptEntry {
-            kind: ConversationTranscriptEntryKind::Developer,
-            original_bytes: approval_text.len(),
-            text: approval_text,
-        }]
-    );
-}
-
-#[test]
 fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
     let mut items = vec![
         ResponseItem::Message {
@@ -1067,84 +1130,6 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
             )
         );
     }
-}
-
-#[test]
-fn collect_guardian_transcript_entries_preserves_named_unpaired_tool_sources() {
-    let mut items = vec![ResponseItem::FunctionCallOutput {
-        id: None,
-        call_id: None,
-        name: Some("notifications".to_string()),
-        namespace: Some("slack".to_string()),
-        output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-            "new message".to_string(),
-        ),
-        internal_chat_message_metadata_passthrough: None,
-    }];
-    items.extend(
-        [
-            (None, "anonymous output"),
-            (Some("missing-call"), "orphaned function output"),
-        ]
-        .map(|(call_id, text)| ResponseItem::FunctionCallOutput {
-            id: None,
-            call_id: call_id.map(str::to_string),
-            name: None,
-            namespace: None,
-            output: codex_protocol::models::FunctionCallOutputPayload::from_text(text.to_string()),
-            internal_chat_message_metadata_passthrough: None,
-        }),
-    );
-    items.push(ResponseItem::CustomToolCallOutput {
-        id: None,
-        call_id: "missing-custom-call".to_string(),
-        name: None,
-        output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-            "orphaned custom output".to_string(),
-        ),
-        internal_chat_message_metadata_passthrough: None,
-    });
-
-    let mut expected = vec![ConversationTranscriptEntry {
-        kind: ConversationTranscriptEntryKind::ToolOutput(
-            "tool slack.notifications result".to_string(),
-        ),
-        text: "new message".to_string(),
-        original_bytes: "new message".len(),
-    }];
-    expected.extend(
-        ["orphaned function output", "orphaned custom output"].map(|text| {
-            ConversationTranscriptEntry {
-                kind: ConversationTranscriptEntryKind::ToolOutput("tool result".to_string()),
-                text: text.to_string(),
-                original_bytes: text.len(),
-            }
-        }),
-    );
-    assert_eq!(
-        collect_guardian_transcript_entries(&items, GUARDIAN_MAX_TOOL_ENTRY_TOKENS),
-        expected,
-    );
-
-    if let ResponseItem::FunctionCallOutput { output, .. } = &mut items[0] {
-        *output = codex_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
-            FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,image".to_string(),
-                detail: None,
-            },
-        ]);
-    }
-    expected[0] = ConversationTranscriptEntry {
-        kind: ConversationTranscriptEntryKind::ToolOutput(
-            "tool slack.notifications result".to_string(),
-        ),
-        text: "[non-text output]".to_string(),
-        original_bytes: "[non-text output]".len(),
-    };
-    assert_eq!(
-        collect_guardian_transcript_entries(&items, GUARDIAN_MAX_TOOL_ENTRY_TOKENS),
-        expected,
-    );
 }
 
 #[test]
@@ -1321,6 +1306,7 @@ fn guardian_approval_request_to_json_renders_network_access_trigger() -> serde_j
     let action = GuardianApprovalRequest::NetworkAccess {
         id: "network-1".to_string(),
         turn_id: "turn-1".to_string(),
+        environment_id: "local".to_string(),
         target: "https://example.com:443".to_string(),
         host: "example.com".to_string(),
         protocol: NetworkApprovalProtocol::Https,
@@ -1371,6 +1357,7 @@ async fn build_guardian_prompt_items_explains_network_access_review_scope() -> a
         GuardianApprovalRequest::NetworkAccess {
             id: "network-1".to_string(),
             turn_id: "turn-1".to_string(),
+            environment_id: "local".to_string(),
             target: "https://example.com:443".to_string(),
             host: "example.com".to_string(),
             protocol: NetworkApprovalProtocol::Https,
@@ -1569,6 +1556,7 @@ fn guardian_request_turn_id_prefers_network_access_owner_turn() {
     let network_access = GuardianApprovalRequest::NetworkAccess {
         id: "network-1".to_string(),
         turn_id: "owner-turn".to_string(),
+        environment_id: "local".to_string(),
         target: "https://example.com:443".to_string(),
         host: "example.com".to_string(),
         protocol: NetworkApprovalProtocol::Https,
@@ -1598,6 +1586,7 @@ fn guardian_request_target_item_id_omits_network_access_trigger_call_id() {
     let network_access = GuardianApprovalRequest::NetworkAccess {
         id: "network-1".to_string(),
         turn_id: "owner-turn".to_string(),
+        environment_id: "local".to_string(),
         target: "https://example.com:443".to_string(),
         host: "example.com".to_string(),
         protocol: NetworkApprovalProtocol::Https,
@@ -1617,11 +1606,45 @@ fn guardian_request_target_item_id_omits_network_access_trigger_call_id() {
     assert_eq!(guardian_request_target_item_id(&network_access), None);
 }
 
+#[derive(Clone, Copy)]
+enum ApprovalCancellation {
+    BeforeRouting,
+    BeforeCachedResult,
+}
+
+#[test_case::test_case(ApprovalCancellation::BeforeRouting; "before_routing")]
+#[test_case::test_case(ApprovalCancellation::BeforeCachedResult; "before_cached_result")]
 #[tokio::test]
-async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
-    let (session, turn, rx) = crate::session::tests::make_session_and_context_with_rx().await;
+async fn cancelled_guardian_review_emits_terminal_abort_without_warning(
+    moment: ApprovalCancellation,
+) {
+    let (mut session, turn, rx) = crate::session::tests::make_session_and_context_with_rx().await;
     let cancel_token = CancellationToken::new();
-    cancel_token.cancel();
+    match moment {
+        ApprovalCancellation::BeforeRouting => cancel_token.cancel(),
+        ApprovalCancellation::BeforeCachedResult => {
+            struct CancelWhileApproving(CancellationToken);
+            impl codex_extension_api::ApprovalReviewContributor for CancelWhileApproving {
+                fn decide<'a>(
+                    &'a self,
+                    _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+                ) -> codex_extension_api::ExtensionFuture<
+                    'a,
+                    Option<codex_extension_api::ApprovalDecision>,
+                > {
+                    self.0.cancel();
+                    Box::pin(async { Some(codex_extension_api::ApprovalDecision::Allow) })
+                }
+            }
+            let mut extensions = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
+            extensions
+                .approval_review_contributor(Arc::new(CancelWhileApproving(cancel_token.clone())));
+            Arc::get_mut(&mut session)
+                .expect("unique test session")
+                .services
+                .extensions = Arc::new(extensions.build());
+        }
+    }
 
     let decision = super::decide_approval(
         Arc::clone(&session),
@@ -1662,88 +1685,15 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
 
     assert_eq!(
         guardian_statuses,
-        vec![
-            GuardianAssessmentStatus::InProgress,
-            GuardianAssessmentStatus::Aborted,
-        ]
+        match moment {
+            ApprovalCancellation::BeforeRouting => vec![
+                GuardianAssessmentStatus::InProgress,
+                GuardianAssessmentStatus::Aborted
+            ],
+            ApprovalCancellation::BeforeCachedResult => vec![],
+        }
     );
     assert!(warnings.is_empty());
-}
-
-#[test]
-fn guardian_timeout_message_distinguishes_timeout_from_policy_denial() {
-    let mut model = codex_models_manager::model_info::model_info_from_slug("acting-model");
-    model.model_messages = None;
-    let message = guardian_timeout_message(&model);
-    assert!(message.contains("did not finish before its deadline"));
-    assert!(message.contains("retry once"));
-    assert!(!message.contains("unacceptable risk"));
-
-    for timeout_instructions in [None, Some("Catalog timeout instructions."), Some("")] {
-        model.model_messages = Some(
-            serde_json::from_value(serde_json::json!({
-                "auto_review": {
-                    "policy": "review policy",
-                    "timeout_instructions": timeout_instructions,
-                },
-            }))
-            .expect("model messages should deserialize"),
-        );
-        assert_eq!(
-            guardian_timeout_message(&model),
-            timeout_instructions.unwrap_or(&message),
-        );
-    }
-}
-
-#[tokio::test]
-async fn routes_approval_to_guardian_requires_guardian_reviewer() {
-    let (_session, mut turn) = crate::session::tests::make_session_and_context().await;
-    let mut config = (*turn.config).clone();
-    config.approvals_reviewer = ApprovalsReviewer::User;
-    turn.config = Arc::new(config.clone());
-
-    assert!(!routes_approval_to_guardian(&turn));
-
-    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    turn.config = Arc::new(config);
-
-    assert!(routes_approval_to_guardian(&turn));
-}
-
-#[tokio::test]
-async fn routes_approval_to_guardian_can_use_app_reviewer_override() {
-    let (_session, turn) = crate::session::tests::make_session_and_context().await;
-
-    assert!(!routes_approval_to_guardian_with_reviewer(
-        &turn,
-        ApprovalsReviewer::User
-    ));
-    assert!(routes_approval_to_guardian_with_reviewer(
-        &turn,
-        ApprovalsReviewer::AutoReview
-    ));
-}
-
-#[tokio::test]
-async fn routes_approval_to_guardian_allows_granular_review_policy() {
-    let (_session, mut turn) = crate::session::tests::make_session_and_context().await;
-    let mut config = (*turn.config).clone();
-    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    turn.config = Arc::new(config);
-    Arc::make_mut(&mut turn.config)
-        .permissions
-        .approval_policy
-        .set(AskForApproval::Granular(GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: true,
-        }))
-        .expect("test setup should allow updating approval policy");
-
-    assert!(routes_approval_to_guardian(&turn));
 }
 
 #[test]
@@ -1949,22 +1899,17 @@ async fn guardian_reuse_respects_effective_policy_and_personality(
     }
     let requests = responses.requests();
     assert_eq!(requests.len(), 3);
-    let initial_policy = configured_policy.unwrap_or("captured policy");
-    assert_eq!(
-        requests[0].instructions_text(),
-        guardian_policy_prompt_with_config_and_template(
-            initial_policy,
-            "captured template: {{ tenant_policy_config }}"
-        )
-    );
-    let changed_policy = configured_policy.unwrap_or("changed action policy");
-    assert_eq!(
-        requests[1].instructions_text(),
-        guardian_policy_prompt_with_config_and_template(
-            changed_policy,
-            "captured template: {{ tenant_policy_config }}"
-        )
-    );
+    let contract = guardian_output_contract_prompt();
+    for (request, policy) in requests
+        .iter()
+        .zip(["captured policy", "changed action policy"])
+    {
+        let policy = configured_policy.unwrap_or(policy);
+        assert_eq!(
+            request.instructions_text(),
+            format!("captured template: {policy}\n\n{contract}\n")
+        );
+    }
     let thread_ids = requests
         .iter()
         .map(|request| request.body_json()["client_metadata"]["thread_id"].clone())
@@ -2014,6 +1959,7 @@ async fn guardian_request_model_for_auto_review(
                 .expect("session should be unique")
                 .services
                 .models_manager = Arc::new(models_manager);
+            crate::guardian::test_host::install(&session, &turn.config);
         }
     }
     update_turn_settings_for_test(
@@ -2229,6 +2175,7 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
         config.model_provider.clone(),
     );
     session.services.models_manager = models_manager;
+    crate::guardian::test_host::install(&session, &config);
     let memory_extension = Arc::new(GuardianMemoryContextProbe);
     let mut extensions = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
     extensions.thread_lifecycle_contributor(memory_extension.clone());
@@ -2365,9 +2312,12 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
         guardian_nested_tool_names,
         vec!["exec_command", "view_image", "write_stdin"]
     );
-    let guardian_user_text = request.message_input_texts("user").join("\n");
+    // Check exact separators before the snapshot normalizes trailing whitespace.
+    let guardian_user_text = request.message_input_texts("user").concat();
+    assert!(guardian_user_text.contains(">>> TRANSCRIPT START\n"));
+    assert!(guardian_user_text.contains("The Codex agent has requested the following action:\n"));
     assert!(guardian_user_text.contains(&format!(
-        "Reviewed Codex session id: {}",
+        ">>> TRANSCRIPT END\nReviewed Codex session id: {}\n",
         fixed_guardian_parent_session_id()
     )));
     assert!(
@@ -2446,48 +2396,6 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     Ok(())
 }
 
-#[tokio::test]
-async fn build_guardian_prompt_items_includes_parent_session_id() -> anyhow::Result<()> {
-    let (session, _) = crate::session::tests::make_session_and_context().await;
-    let prompt = build_guardian_prompt_items(
-        &session,
-        /*retry_reason*/ None,
-        GuardianApprovalRequest::ExecCommand {
-            id: "shell-1".to_string(),
-            environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
-            command: vec!["git".to_string(), "status".to_string()],
-            cwd: test_path_buf("/repo").abs().into(),
-            guardian_cwd: native_guardian_cwd("/repo"),
-            sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
-            additional_permissions: None,
-            justification: None,
-            tty: false,
-        },
-        GuardianPromptMode::Full,
-    )
-    .await?;
-    let prompt_text = prompt
-        .context
-        .into_user_inputs()?
-        .into_iter()
-        .map(|item| match item {
-            codex_protocol::user_input::UserInput::Text { text, .. } => text,
-            codex_protocol::user_input::UserInput::Image { .. } => String::new(),
-            _ => String::new(),
-        })
-        .collect::<String>();
-
-    assert!(
-        prompt_text.contains(&format!(
-            ">>> TRANSCRIPT END\nReviewed Codex session id: {}\n",
-            session.thread_id
-        )),
-        "guardian prompt should expose the parent session id immediately after the transcript end"
-    );
-
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
@@ -2536,17 +2444,11 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     .await;
 
     let (session, mut turn) = guardian_test_session_and_turn(&server).await;
-    let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::GuardianReuseParentCompaction)
-        .expect("Guardian parent-compaction reuse should be configurable");
     let turn_mut = Arc::get_mut(&mut turn).expect("turn should be unique");
     update_turn_settings_for_test(turn_mut, |settings| {
         Arc::make_mut(&mut settings.model_info).auto_review_model_override =
             Some("codex-auto-review".to_string());
     });
-    turn_mut.config = Arc::new(config);
     seed_guardian_parent_history(&session, &turn).await;
 
     let first_request = GuardianApprovalRequest::ExecCommand {
@@ -2629,6 +2531,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     .await;
     let committed_rollout_items = session
         .guardian_review_session()
+        .expect("Guardian pool installed")
         .trunk()
         .await
         .expect("reviewer")
@@ -2638,7 +2541,15 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     assert_eq!(
         committed_rollout_items
             .iter()
-            .filter(|item| rollout_item_contains_message_text(
+            .flat_map(|item| match item {
+                RolloutItem::ResponseItem(item) => std::slice::from_ref(item),
+                RolloutItem::Compacted(checkpoint) => checkpoint
+                    .replacement_history
+                    .as_deref()
+                    .unwrap_or_default(),
+                _ => &[],
+            })
+            .filter(|item| response_item_contains_message_text(
                 item,
                 "Use prior reviews as context, not binding precedent."
             ))
@@ -2759,7 +2670,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     ));
     assert!(matches!(
         fourth_metadata.guardian_session_kind,
-        Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
+        Some(codex_analytics::GuardianReviewSessionKind::TrunkNew)
     ));
     ThreadId::from_string(
         first_metadata
@@ -2785,7 +2696,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     assert_eq!(first_metadata.had_prior_review_context, Some(false));
     assert_eq!(second_metadata.had_prior_review_context, Some(true));
     assert_eq!(third_metadata.had_prior_review_context, Some(false));
-    assert_eq!(fourth_metadata.had_prior_review_context, Some(true));
+    assert_eq!(fourth_metadata.had_prior_review_context, Some(false));
     assert_eq!(
         first_metadata.guardian_thread_id,
         second_metadata.guardian_thread_id
@@ -2794,7 +2705,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
         second_metadata.guardian_thread_id,
         third_metadata.guardian_thread_id
     );
-    assert_eq!(
+    assert_ne!(
         third_metadata.guardian_thread_id,
         fourth_metadata.guardian_thread_id
     );
@@ -2837,7 +2748,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
         third_body["prompt_cache_key"],
         fourth_body["prompt_cache_key"]
     );
-    assert!(fourth_body.to_string().contains("third guardian rationale"));
+    assert!(!fourth_body.to_string().contains("third guardian rationale"));
     assert!(
         second_body.to_string().contains(concat!(
             "Use prior reviews as context, not binding precedent. ",
@@ -2964,6 +2875,7 @@ async fn guardian_reused_trunk_ignores_stale_prior_turn_completion() -> anyhow::
 
     session
         .guardian_review_session()
+        .expect("Guardian pool installed")
         .trunk()
         .await
         .expect("reviewer")
@@ -3059,6 +2971,7 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
         .expect("session should be uniquely owned")
         .services
         .models_manager = models_manager;
+    crate::guardian::test_host::install(&session, &config);
     let turn_mut = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
     turn_mut.config = Arc::clone(&config);
     turn_mut.provider =
@@ -3855,13 +3768,13 @@ async fn guardian_review_session_config_preserves_parent_network_proxy() {
     parent_config.permissions.network = Some(network.clone());
 
     let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
+        crate::guardian::test_host::build_reviewer_config(&parent_config).expect("reviewer config"),
         /*live_network_config*/ None,
         "parent-active-model",
         Some(codex_protocol::openai_models::ReasoningEffort::Low),
         ReasoningSummary::default(),
         /*personality*/ None,
-        /*model_messages*/ None,
+        ResolvedModelMessages::bundled(),
     )
     .expect("guardian config");
 
@@ -3950,55 +3863,6 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
 }
 
 #[tokio::test]
-async fn guardian_review_session_config_clears_parent_developer_instructions() {
-    let mut parent_config = test_config().await;
-    parent_config.developer_instructions =
-        Some("parent or managed config should not replace guardian policy".to_string());
-
-    let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
-        /*live_network_config*/ None,
-        "active-model",
-        /*reasoning_effort*/ None,
-        ReasoningSummary::default(),
-        /*personality*/ None,
-        /*model_messages*/ None,
-    )
-    .expect("guardian config");
-
-    assert_eq!(guardian_config.developer_instructions, None);
-    assert_eq!(
-        guardian_config.base_instructions,
-        Some(guardian_policy_prompt_with_config_and_template(
-            BUNDLED_GUARDIAN_POLICY,
-            BUNDLED_GUARDIAN_POLICY_TEMPLATE,
-        ))
-    );
-}
-
-#[tokio::test]
-async fn guardian_review_session_config_clears_legacy_notify() {
-    let mut parent_config = test_config().await;
-    parent_config.notify = Some(vec![
-        "/path/to/notify".to_string(),
-        "turn-ended".to_string(),
-    ]);
-
-    let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
-        /*live_network_config*/ None,
-        "active-model",
-        /*reasoning_effort*/ None,
-        ReasoningSummary::default(),
-        /*personality*/ None,
-        /*model_messages*/ None,
-    )
-    .expect("guardian config");
-
-    assert_eq!(guardian_config.notify, None);
-}
-
-#[tokio::test]
 async fn guardian_review_session_config_uses_live_network_proxy_state() {
     let mut parent_config = test_config().await;
     let mut parent_network = NetworkProxyConfig {
@@ -4022,13 +3886,13 @@ async fn guardian_review_session_config_uses_live_network_proxy_state() {
     live_network.set_allowed_domains(vec!["github.com".to_string()]);
 
     let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
+        crate::guardian::test_host::build_reviewer_config(&parent_config).expect("reviewer config"),
         Some(live_network.clone()),
         "active-model",
         /*reasoning_effort*/ None,
         ReasoningSummary::default(),
         /*personality*/ None,
-        /*model_messages*/ None,
+        ResolvedModelMessages::bundled(),
     )
     .expect("guardian config");
 
@@ -4046,7 +3910,8 @@ async fn guardian_review_session_config_uses_live_network_proxy_state() {
 }
 
 #[tokio::test]
-async fn guardian_review_session_config_disables_mcp_apps_plugins_memories_and_guardian_v2() {
+async fn guardian_review_session_config_isolates_parent_customizations() {
+    let defaults = ResolvedModelMessages::bundled().auto_review();
     let mut parent_config = test_config().await;
     let server: McpServerConfig =
         toml::from_str("command = \"docs-server\"").expect("deserialize MCP server");
@@ -4054,40 +3919,64 @@ async fn guardian_review_session_config_disables_mcp_apps_plugins_memories_and_g
         .mcp_servers
         .set(HashMap::from([("docs".to_string(), server)]))
         .expect("parent MCP servers are configurable");
-    parent_config
-        .features
-        .enable(Feature::Apps)
-        .expect("apps feature is configurable");
-    parent_config
-        .features
-        .enable(Feature::Plugins)
-        .expect("plugins feature is configurable");
-    parent_config
-        .features
-        .enable(Feature::GuardianV2)
-        .expect("guardian v2 feature is configurable");
+    let disabled_features = [
+        Feature::Apps,
+        Feature::Plugins,
+        Feature::GuardianV2,
+        Feature::CodexHooks,
+    ];
+    for feature in disabled_features {
+        parent_config
+            .features
+            .enable(feature)
+            .expect("enable feature on parent config");
+    }
     parent_config.include_apps_instructions = true;
+    parent_config.include_skill_instructions = true;
     parent_config.memories.use_memories = true;
     parent_config.memories.dedicated_tools = true;
+    parent_config.developer_instructions =
+        Some("parent or managed config should not replace guardian policy".to_string());
+    parent_config.notify = Some(vec![
+        "/path/to/notify".to_string(),
+        "turn-ended".to_string(),
+    ]);
 
     let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
+        crate::guardian::test_host::build_reviewer_config(&parent_config).expect("reviewer config"),
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
         ReasoningSummary::default(),
         /*personality*/ None,
-        /*model_messages*/ None,
+        ResolvedModelMessages::bundled(),
     )
     .expect("guardian config");
 
     assert!(guardian_config.mcp_servers.get().is_empty());
-    assert!(!guardian_config.features.enabled(Feature::Apps));
-    assert!(!guardian_config.features.enabled(Feature::Plugins));
-    assert!(!guardian_config.features.enabled(Feature::GuardianV2));
+    for feature in disabled_features {
+        assert!(
+            !guardian_config.features.enabled(feature),
+            "{feature:?} should be disabled in the reviewer"
+        );
+    }
     assert!(!guardian_config.include_apps_instructions);
+    assert!(!guardian_config.include_skill_instructions);
     assert!(!guardian_config.memories.use_memories);
     assert!(!guardian_config.memories.dedicated_tools);
+    assert_eq!(guardian_config.notify, None);
+    assert_eq!(guardian_config.developer_instructions, None);
+    assert_eq!(
+        guardian_config.base_instructions,
+        Some(
+            GuardianPolicyInstructions::new(
+                defaults.policy,
+                defaults.policy_template,
+                guardian_output_contract_prompt(),
+            )
+            .render()
+        )
+    );
 }
 
 #[tokio::test]
@@ -4105,38 +3994,19 @@ async fn guardian_review_session_config_allows_pinned_disabled_feature() {
     .expect("managed features");
 
     let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
+        crate::guardian::test_host::build_reviewer_config(&parent_config).expect("reviewer config"),
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
         ReasoningSummary::default(),
         /*personality*/ None,
-        /*model_messages*/ None,
+        ResolvedModelMessages::bundled(),
     )
     .expect("guardian config should continue when a disabled feature is pinned on");
 
     assert!(guardian_config.features.enabled(Feature::Collab));
     assert!(guardian_config.mcp_servers.get().is_empty());
     assert!(!guardian_config.include_apps_instructions);
-}
-
-#[tokio::test]
-async fn guardian_review_session_config_uses_parent_active_model_instead_of_hardcoded_slug() {
-    let mut parent_config = test_config().await;
-    parent_config.model = Some("configured-model".to_string());
-
-    let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
-        /*live_network_config*/ None,
-        "active-model",
-        /*reasoning_effort*/ None,
-        ReasoningSummary::default(),
-        /*personality*/ None,
-        /*model_messages*/ None,
-    )
-    .expect("guardian config");
-
-    assert_eq!(guardian_config.model, Some("active-model".to_string()));
 }
 
 #[tokio::test]
@@ -4147,13 +4017,13 @@ async fn guardian_review_session_config_keeps_bedrock_provider_for_bedrock_gpt_5
         ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
 
     let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
+        crate::guardian::test_host::build_reviewer_config(&parent_config).expect("reviewer config"),
         /*live_network_config*/ None,
         AMAZON_BEDROCK_GPT_5_4_MODEL_ID,
         Some(ReasoningEffort::Low),
         ReasoningSummary::default(),
         /*personality*/ None,
-        /*model_messages*/ None,
+        ResolvedModelMessages::bundled(),
     )
     .expect("guardian config");
 
@@ -4204,65 +4074,29 @@ async fn guardian_review_session_config_uses_requirements_guardian_policy_config
     .expect("load config");
 
     let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
+        crate::guardian::test_host::build_reviewer_config(&parent_config).expect("reviewer config"),
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
         ReasoningSummary::default(),
         /*personality*/ None,
-        /*model_messages*/ None,
+        ResolvedModelMessages::bundled(),
     )
     .expect("guardian config");
 
     assert_eq!(guardian_config.developer_instructions, None);
     assert_eq!(
         guardian_config.base_instructions,
-        Some(guardian_policy_prompt_with_config_and_template(
-            "Use the workspace-managed guardian policy.",
-            BUNDLED_GUARDIAN_POLICY_TEMPLATE,
-        ))
-    );
-}
-
-#[tokio::test]
-async fn guardian_review_session_config_uses_default_guardian_policy_without_requirements_override()
-{
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    let workspace = tempfile::tempdir().expect("create temp dir");
-    let config_layer_stack =
-        ConfigLayerStack::new(Vec::new(), Default::default(), Default::default())
-            .expect("config layer stack");
-    let parent_config = Config::load_config_with_layer_stack(
-        LOCAL_FS.as_ref(),
-        ConfigToml::default(),
-        ConfigOverrides {
-            cwd: Some(workspace.path().to_path_buf()),
-            ..Default::default()
-        },
-        codex_home.abs(),
-        config_layer_stack,
-    )
-    .await
-    .expect("load config");
-
-    let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
-        /*live_network_config*/ None,
-        "active-model",
-        /*reasoning_effort*/ None,
-        ReasoningSummary::default(),
-        /*personality*/ None,
-        /*model_messages*/ None,
-    )
-    .expect("guardian config");
-
-    assert_eq!(guardian_config.developer_instructions, None);
-    assert_eq!(
-        guardian_config.base_instructions,
-        Some(guardian_policy_prompt_with_config_and_template(
-            BUNDLED_GUARDIAN_POLICY,
-            BUNDLED_GUARDIAN_POLICY_TEMPLATE,
-        ))
+        Some(
+            GuardianPolicyInstructions::new(
+                "Use the workspace-managed guardian policy.",
+                ResolvedModelMessages::bundled()
+                    .auto_review()
+                    .policy_template,
+                guardian_output_contract_prompt(),
+            )
+            .render()
+        )
     );
 }
 

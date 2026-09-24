@@ -91,9 +91,11 @@ impl Stage {
 /// Unique features toggled via configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Preview consumer five-hour and weekly allowance history.
+    AnalyticsPlanHistory,
     /// Discover model catalogs for OpenAI API-key authentication.
     ApiKeyModelDiscovery,
-    /// Enable the interactive transcript composer and turn-selection UI.
+    /// Deprecated no-op; use `tui.fullscreen_transcript` instead.
     TranscriptV2,
     // Stable.
     /// Enable the default shell tool.
@@ -108,6 +110,8 @@ pub enum Feature {
     SecretAuthStorage,
 
     // Experimental
+    /// Automatically start the shared local daemon for eligible interactive launches.
+    DaemonAutoStart,
     /// Send per-content-entry classifications in internal Responses metadata.
     ContentItemKinds,
     /// Record model-attempted tool calls in internal Responses metadata.
@@ -195,10 +199,14 @@ pub enum Feature {
     Worktrees,
     /// Respect host system proxy settings for Codex-owned network clients.
     RespectSystemProxy,
+    /// Retry eligible bootstrap requests through the system proxy after normal routing fails.
+    SystemProxyFallback,
     /// Enable collab tools.
     Collab,
     /// Enable task-path-based multi-agent routing.
     MultiAgentV2,
+    /// Enable shared discussion tools for an agent tree.
+    AgentMessageBoard,
     /// Removed compatibility flag retained as a no-op.
     MultiAgentMode,
     /// Removed compatibility flag for the deleted agent-job tools.
@@ -322,7 +330,7 @@ pub enum Feature {
     GuardianNodeReplTranscriptImages,
     /// Enable Guardian V2 automatic approval reviews.
     GuardianV2,
-    /// Enable the extension-owned synchronous Guardian reviewer.
+    /// Removed compatibility flag for the unused Guardian extension prototype.
     GuardianExt,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
@@ -336,13 +344,15 @@ pub enum Feature {
     ReasoningEffortOverride,
     /// Add current-time reminders to model-visible context.
     CurrentTimeReminder,
+    /// Report failed clock reads to the model without failing the turn.
+    NonfatalClockReadErrors,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
     ToolCallMcpElicitation,
     /// Prompt Codex Apps connector auth failures through MCP URL elicitations.
     AuthElicitation,
     /// Offer Amazon Bedrock setup during TUI sign-in onboarding.
     BedrockSetupWizard,
-    /// Enable personality selection in the TUI.
+    /// Removed compatibility flag retained as a no-op.
     Personality,
     /// Enable native artifact tools.
     Artifact,
@@ -584,6 +594,10 @@ impl Features {
                         Feature::WebSearchCached,
                     );
                 }
+                "transcript_v2" => {
+                    self.record_legacy_usage_force("features.transcript_v2", Feature::TranscriptV2);
+                    continue;
+                }
                 "tui_app_server" => {
                     continue;
                 }
@@ -608,7 +622,7 @@ impl Features {
                 "image_detail_original" | "resize_all_images" | "item_ids" => {
                     continue;
                 }
-                "plugin_hooks" => {
+                "personality" | "plugin_hooks" => {
                     continue;
                 }
                 "skill_env_var_dependency_prompt" => {
@@ -688,6 +702,10 @@ impl Features {
 fn legacy_usage_notice(alias: &str, feature: Feature) -> (String, Option<String>) {
     let canonical = feature.key();
     match feature {
+        Feature::TranscriptV2 => (
+            "`[features].transcript_v2` is deprecated and ignored.".to_string(),
+            Some("Use `[tui].fullscreen_transcript` in config.toml instead.".to_string()),
+        ),
         Feature::WebSearchRequest | Feature::WebSearchCached => {
             let label = match alias {
                 "web_search" => "[features].web_search",
@@ -907,9 +925,29 @@ pub struct FeatureSpec {
 
 pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
+        id: Feature::AnalyticsPlanHistory,
+        key: "analytics_plan_history",
+        stage: Stage::Experimental {
+            name: "Analytics plan history",
+            menu_description: "Preview five-hour and weekly allowance history for consumer accounts in /analytics.",
+            announcement: "",
+        },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::DaemonAutoStart,
+        key: "daemon_auto_start",
+        stage: Stage::Experimental {
+            name: "Automatically start the background server",
+            menu_description: "Use the shared local server for new, resumed, and forked sessions. Takes effect next launch.",
+            announcement: "Automatic background server startup can now be enabled from /experimental.",
+        },
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::TranscriptV2,
         key: "transcript_v2",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Deprecated,
         default_enabled: false,
     },
     // Stable features.
@@ -1266,6 +1304,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::SystemProxyFallback,
+        key: "system_proxy_fallback",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::Collab,
         key: "multi_agent",
         stage: Stage::Stable,
@@ -1275,6 +1319,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::MultiAgentV2,
         key: "multi_agent_v2",
         stage: Stage::Stable,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AgentMessageBoard,
+        key: "agent_message_board",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1586,8 +1636,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianReuseParentCompaction,
         key: "guardian_reuse_parent_compaction",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::GuardianEnhancedNodeReplTranscripts,
@@ -1610,7 +1660,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianExt,
         key: "guardian_ext",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1650,6 +1700,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::NonfatalClockReadErrors,
+        key: "nonfatal_clock_read_errors",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
         stage: Stage::Removed,
@@ -1676,8 +1732,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Personality,
         key: "personality",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Artifact,

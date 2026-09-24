@@ -1,13 +1,12 @@
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::context::world_state::validate_managed_developer_instructions;
-use crate::guardian::BUNDLED_GUARDIAN_POLICY;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use crate::windows_sandbox::resolve_windows_sandbox_mode;
-use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
+use crate::windows_sandbox::windows_sandbox_level_for_legacy_checks;
 use codex_agent_roles::load_agent_roles;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerSource;
@@ -96,6 +95,7 @@ use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -114,8 +114,8 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::PermissionProfile;
 pub use codex_protocol::models::PermissionProfileSnapshot;
+use codex_protocol::models::ProfileWorkspaceRoot;
 use codex_protocol::models::SandboxEnforcement;
-use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::DenyReadValidator;
@@ -128,6 +128,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_rmcp_client::McpOAuthRefreshMode;
+use codex_sandboxing::SandboxType;
 pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -345,8 +346,8 @@ pub struct Permissions {
     /// Effective Windows sandbox mode derived from `[windows].sandbox` or
     /// legacy feature keys.
     pub windows_sandbox_mode: Option<WindowsSandboxModeToml>,
-    /// Whether the final Windows sandboxed child should run on a private desktop.
-    pub windows_sandbox_private_desktop: bool,
+    /// Selected Windows sandbox implementation, separate from the legacy setup level.
+    pub windows_sandbox_type: SandboxType,
 }
 
 impl Permissions {
@@ -367,7 +368,7 @@ impl Permissions {
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
-            windows_sandbox_private_desktop: true,
+            windows_sandbox_type: SandboxType::None,
         })
     }
 
@@ -438,7 +439,7 @@ impl Permissions {
         &self.workspace_roots
     }
 
-    pub fn profile_workspace_roots(&self) -> &[AbsolutePathBuf] {
+    pub fn profile_workspace_roots(&self) -> &[ProfileWorkspaceRoot] {
         self.permission_profile_state.profile_workspace_roots()
     }
 
@@ -635,13 +636,17 @@ pub struct Config {
     /// the context is elidable. See `codex-rs/docs/shake.md`.
     pub auto_shake: AutoShakeConfig,
 
+    /// Percentage of the usable context window that triggers turn-end compaction.
+    /// Zero disables turn-end compaction.
+    pub model_post_turn_compact_threshold_percent: u8,
+
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
 
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
 
-    /// Optionally specify the personality of the model
+    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
 
     /// Effective permission configuration for shell tool execution.
@@ -687,6 +692,11 @@ pub struct Config {
     /// `# Policy Configuration` section rather than replacing the whole
     /// guardian developer prompt.
     pub guardian_policy_config: Option<String>,
+
+    /// Guardian prompt template override from config.toml.
+    /// The resolved policy config replaces its `{{ tenant_policy_config }}`
+    /// placeholder when a review session is built.
+    pub guardian_policy_template: Option<String>,
 
     /// Whether to inject the `<permissions instructions>` developer block.
     pub include_permissions_instructions: bool,
@@ -743,8 +753,11 @@ pub struct Config {
     /// Enable ASCII animations and shimmer effects in the TUI.
     pub animations: bool,
 
-    /// Enable decorative TUI effects such as Astra composer stars.
-    pub tui_whimsy: bool,
+    /// Individual TUI effects, subordinate to the animation master switch.
+    pub tui_effects: codex_config::types::TuiEffects,
+
+    /// Rich content rendering preferences, independent of animations.
+    pub tui_rendering: codex_config::types::TuiRendering,
 
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
@@ -764,6 +777,9 @@ pub struct Config {
 
     /// Start the TUI in raw scrollback mode for copy-friendly transcript output.
     pub tui_raw_output_mode: bool,
+
+    /// Own the fullscreen transcript when the alternate screen is enabled.
+    pub tui_fullscreen_transcript: bool,
 
     /// Start the TUI in the specified collaboration mode (plan/default).
 
@@ -839,6 +855,9 @@ pub struct Config {
 
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
+
+    /// Trusted IdP shared by all permitted EMA MCP registrations.
+    pub mcp_enterprise_managed_auth: Option<McpEnterpriseManagedAuthConfig>,
 
     /// When present, only these MCP servers omit the legacy `mcp__` namespace prefix.
     pub non_prefixed_mcp_tool_servers: Option<Vec<String>>,
@@ -1119,6 +1138,10 @@ const DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS: u64 = 30_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CodeModeConfig {
     pub default_exec_yield_time_ms: u64,
+    /// Show handler duration, code-mode host duration, and harness overhead
+    /// in each code-mode cell response.
+    /// Experimental: this option and the response format may change or be removed.
+    pub experimental_show_cell_overhead: bool,
     pub excluded_tool_namespaces: Vec<String>,
     pub direct_only_tool_namespaces: Vec<String>,
     /// Keep code mode fail-closed when the standalone host is unavailable.
@@ -1129,6 +1152,7 @@ impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
             default_exec_yield_time_ms: DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS,
+            experimental_show_cell_overhead: false,
             excluded_tool_namespaces: Vec::new(),
             direct_only_tool_namespaces: Vec::new(),
             disable_in_process_fallback: false,
@@ -1136,10 +1160,6 @@ impl Default for CodeModeConfig {
     }
 }
 
-pub(crate) const DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE: &str = concat!(
-    "Your context window is nearly exhausted (only {n_remaining} tokens remaining) and will be automatically reset for you soon. ",
-    "Once reset, message items in current context window will be cleared in the new window, but notes and history items will be persistent across windows."
-);
 const TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES: usize = 2000;
 const TOKEN_BUDGET_GUIDANCE_MESSAGE_MAX_BYTES: usize = 2000;
 const AUTO_COMPACT_FALLBACK_PROMPT_MAX_BYTES: usize = 2000;
@@ -1241,7 +1261,9 @@ impl Default for TokenBudgetConfig {
         Self {
             use_history_notes_extension: false,
             reminder_threshold_tokens: None,
-            reminder_message_template: DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE.to_string(),
+            reminder_message_template: ResolvedModelMessages::bundled()
+                .token_budget_reminder_template()
+                .to_owned(),
             guidance_message: None,
             auto_compact_fallback_prompt: None,
             auto_compact_fallback_buffer_tokens: None,
@@ -1565,30 +1587,14 @@ impl Config {
         &self.sqlite
     }
 
-    /// Whether Guardian may use the unmetered Codex inference endpoints.
-    pub fn free_guardian_enabled(&self) -> bool {
-        self.config_layer_stack
-            .effective_config()
-            .get("features")
-            .and_then(|features| features.get("guardianv2"))
-            .and_then(|guardian| guardian.get("free_guardian"))
-            .and_then(toml::Value::as_bool)
-            .unwrap_or(false)
-    }
-
     /// Resolves the configured, reviewer-catalog, or bundled Guardian policy.
     pub fn resolve_guardian_policy<'a>(
         &'a self,
-        model_messages: Option<&'a ModelMessages>,
+        model_messages: ResolvedModelMessages<'a>,
     ) -> &'a str {
         self.guardian_policy_config
             .as_deref()
-            .or_else(|| {
-                model_messages
-                    .and_then(|messages| messages.auto_review.as_ref())
-                    .and_then(|messages| messages.policy.as_deref())
-            })
-            .unwrap_or(BUNDLED_GUARDIAN_POLICY)
+            .unwrap_or(model_messages.auto_review().policy)
     }
 
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
@@ -1654,10 +1660,22 @@ impl Config {
         Ok(())
     }
 
-    pub fn effective_workspace_roots(&self) -> Vec<AbsolutePathBuf> {
-        let mut workspace_roots = self.workspace_roots.clone();
-        workspace_roots.extend(self.permissions.profile_workspace_roots().iter().cloned());
-        dedupe_absolute_paths(&mut workspace_roots);
+    /// Combine runtime and profile roots without interpreting them on the current host.
+    pub fn effective_workspace_roots(&self) -> Vec<PathUri> {
+        let mut workspace_roots = self
+            .workspace_roots
+            .iter()
+            .map(PathUri::from_abs_path)
+            .collect::<Vec<_>>();
+        workspace_roots.extend(
+            self.permissions
+                .profile_workspace_roots()
+                .iter()
+                .map(|root| root.as_uri().clone()),
+        );
+        // Preserve spelling changes even when Windows path comparison folds case.
+        let mut seen = HashSet::new();
+        workspace_roots.retain(|root| seen.insert(root.to_string()));
         workspace_roots
     }
 
@@ -1672,7 +1690,6 @@ impl Config {
                     Some(BaseInstructionsProvenance::Model { .. })
                 )
             }),
-            personality_enabled: self.features.enabled(Feature::Personality),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
         }
@@ -1690,7 +1707,10 @@ impl Config {
         } else {
             OutboundProxyPolicy::ReqwestDefault
         };
-        let factory = HttpClientFactory::new(outbound_proxy_policy);
+        let mut factory = HttpClientFactory::new(outbound_proxy_policy);
+        if !self.respect_system_proxy && self.features.enabled(Feature::SystemProxyFallback) {
+            factory = factory.with_system_proxy_fallback();
+        }
         if self.features.enabled(Feature::Psp) {
             factory.with_chatgpt_cookies([HeaderValue::from_static("oai-chat-psp=true")])
         } else {
@@ -1757,6 +1777,11 @@ impl Config {
         additional_plugin_registrations: impl IntoIterator<Item = McpServerRegistration>,
     ) -> McpConfig {
         let mut catalog = ResolvedMcpCatalog::builder();
+        if self.features.enabled(Feature::UseXaa)
+            && let Some(auth) = &self.mcp_enterprise_managed_auth
+        {
+            catalog.enable_ema(auth.idp.clone());
+        }
         for (plugin_order, plugin) in loaded_plugins
             .plugins()
             .iter()
@@ -1799,7 +1824,11 @@ impl Config {
         McpConfig {
             chatgpt_base_url: self.chatgpt_base_url.clone(),
             apps_mcp_product_sku: self.apps_mcp_product_sku.clone(),
+            requires_read_only_mcp_tools: false,
             codex_home: self.codex_home.to_path_buf(),
+            mcp_enterprise_managed_auth: self.mcp_enterprise_managed_auth.clone(),
+            xaa_enabled: self.features.enabled(Feature::UseXaa)
+                && self.mcp_enterprise_managed_auth.is_some(),
             mcp_oauth_credentials_store_mode: self.mcp_oauth_credentials_store_mode,
             oauth_refresh_mode: if self.features.enabled(Feature::McpOAuthRefreshCoordination) {
                 McpOAuthRefreshMode::Coordinated
@@ -1869,59 +1898,66 @@ impl Config {
         }
     }
 
-    pub async fn rebuild_preserving_session_layers(
-        &self,
-        refreshed_config: &Config,
+    pub fn workspace_routing_context(&self) -> codex_model_provider::WorkspaceRoutingContext {
+        codex_model_provider::WorkspaceRoutingContext::new(self.chatgpt_base_url.clone())
+            .with_session(codex_login::WorkspaceRoutingSession {
+                cwd: self.cwd.to_path_buf(),
+                config_layer_stack: self.config_layer_stack.clone(),
+            })
+    }
+
+    pub async fn rebuild_with_session_layers(
+        session_layers: &ConfigLayerStack,
+        cwd: PathBuf,
+        refreshed_layers: &ConfigLayerStack,
+        codex_home: AbsolutePathBuf,
+        default_zsh_path: Option<AbsolutePathBuf>,
     ) -> std::io::Result<Self> {
-        let mut layers = refreshed_config
-            .config_layer_stack
+        let config_layer_stack =
+            Self::layer_stack_preserving_session(session_layers, refreshed_layers)?;
+        let cfg: ConfigToml = config_layer_stack
+            .effective_config()
+            .try_into()
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        Self::load_config_with_layer_stack(
+            LOCAL_FS.as_ref(),
+            cfg,
+            ConfigOverrides {
+                cwd: Some(cwd),
+                default_zsh_path,
+                ..Default::default()
+            },
+            codex_home,
+            config_layer_stack,
+        )
+        .await
+    }
+
+    fn layer_stack_preserving_session(
+        session_layers: &ConfigLayerStack,
+        refreshed_layers: &ConfigLayerStack,
+    ) -> std::io::Result<ConfigLayerStack> {
+        let mut layers = refreshed_layers
             .all_layers_low_to_high()
             .filter(|layer| !is_session_layer(&layer.name))
             .cloned()
             .collect::<Vec<_>>();
         layers.extend(
-            self.config_layer_stack
+            session_layers
                 .all_layers_low_to_high()
                 .filter(|layer| is_session_layer(&layer.name))
                 .cloned(),
         );
         layers.sort_by_key(|layer| layer.name.precedence());
 
-        let config_layer_stack = ConfigLayerStack::new(
+        Ok(ConfigLayerStack::new(
             layers,
-            refreshed_config.config_layer_stack.requirements().clone(),
-            refreshed_config
-                .config_layer_stack
-                .requirements_toml()
-                .clone(),
+            refreshed_layers.requirements().clone(),
+            refreshed_layers.requirements_toml().clone(),
         )?
         .with_user_and_project_exec_policy_rules_ignored(
-            refreshed_config
-                .config_layer_stack
-                .ignore_user_and_project_exec_policy_rules(),
-        );
-        let cfg: ConfigToml = config_layer_stack
-            .effective_config()
-            .try_into()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        let default_zsh_path = refreshed_config
-            .zsh_path
-            .clone()
-            .map(AbsolutePathBuf::try_from)
-            .transpose()?;
-
-        Self::load_config_with_layer_stack(
-            LOCAL_FS.as_ref(),
-            cfg,
-            ConfigOverrides {
-                cwd: Some(self.cwd.to_path_buf()),
-                default_zsh_path,
-                ..Default::default()
-            },
-            refreshed_config.codex_home.clone(),
-            config_layer_stack,
-        )
-        .await
+            refreshed_layers.ignore_user_and_project_exec_policy_rules(),
+        ))
     }
 
     /// This is the preferred way to create an instance of [Config].
@@ -2615,6 +2651,7 @@ pub struct ConfigOverrides {
     pub default_zsh_path: Option<AbsolutePathBuf>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
+    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
     pub compact_prompt: Option<String>,
     pub show_raw_agent_reasoning: Option<bool>,
@@ -2707,6 +2744,9 @@ fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
         default_exec_yield_time_ms: base
             .and_then(|config| config.default_exec_yield_time_ms)
             .unwrap_or(DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS),
+        experimental_show_cell_overhead: base
+            .and_then(|config| config.experimental_show_cell_overhead)
+            .unwrap_or_default(),
         excluded_tool_namespaces: base
             .and_then(|config| config.excluded_tool_namespaces.as_ref())
             .cloned()
@@ -2812,7 +2852,11 @@ pub(crate) fn resolve_token_budget_config(
         token_budget_config.and_then(|config| config.reminder_threshold_tokens);
     let reminder_message_template = token_budget_config
         .and_then(|config| config.reminder_message_template.clone())
-        .unwrap_or_else(|| DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE.to_string());
+        .unwrap_or_else(|| {
+            ResolvedModelMessages::bundled()
+                .token_budget_reminder_template()
+                .to_owned()
+        });
     let guidance_message = token_budget_config
         .and_then(|config| config.guidance_message.clone())
         .filter(|message| !message.trim().is_empty());
@@ -2992,17 +3036,8 @@ pub fn resolve_bootstrap_respect_system_proxy(
     cfg: &ConfigToml,
     feature_requirements: Option<&Sourced<FeatureRequirementsToml>>,
 ) -> std::io::Result<bool> {
-    let configured_features = Features::from_sources(
-        FeatureConfigSource {
-            features: cfg.features.as_ref(),
-            experimental_use_unified_exec_tool: cfg.experimental_use_unified_exec_tool,
-        },
-        FeatureConfigSource::default(),
-        FeatureOverrides::default(),
-    );
-    let features =
-        ManagedFeatures::from_configured(configured_features, feature_requirements.cloned())?;
-    Ok(features.get().enabled(Feature::RespectSystemProxy))
+    resolve_bootstrap_http_client_factory(cfg, feature_requirements)
+        .map(|factory| factory.outbound_proxy_policy() == OutboundProxyPolicy::RespectSystemProxy)
 }
 
 /// Resolves auth route settings for the initial cloud-config bootstrap.
@@ -3019,14 +3054,28 @@ pub fn resolve_bootstrap_http_client_factory(
     cfg: &ConfigToml,
     feature_requirements: Option<&Sourced<FeatureRequirementsToml>>,
 ) -> std::io::Result<HttpClientFactory> {
-    resolve_bootstrap_respect_system_proxy(cfg, feature_requirements).map(|respect_system_proxy| {
-        let outbound_proxy_policy = if respect_system_proxy {
-            OutboundProxyPolicy::RespectSystemProxy
-        } else {
-            OutboundProxyPolicy::ReqwestDefault
-        };
-        HttpClientFactory::new(outbound_proxy_policy)
-    })
+    let configured_features = Features::from_sources(
+        FeatureConfigSource {
+            features: cfg.features.as_ref(),
+            experimental_use_unified_exec_tool: cfg.experimental_use_unified_exec_tool,
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+    let features =
+        ManagedFeatures::from_configured(configured_features, feature_requirements.cloned())?;
+    let outbound_proxy_policy = if features.enabled(Feature::RespectSystemProxy) {
+        OutboundProxyPolicy::RespectSystemProxy
+    } else {
+        OutboundProxyPolicy::ReqwestDefault
+    };
+    let mut factory = HttpClientFactory::new(outbound_proxy_policy);
+    if outbound_proxy_policy == OutboundProxyPolicy::ReqwestDefault
+        && features.enabled(Feature::SystemProxyFallback)
+    {
+        factory = factory.with_system_proxy_fallback();
+    }
+    Ok(factory)
 }
 
 pub(crate) fn resolve_web_search_mode_for_turn(
@@ -3192,6 +3241,12 @@ impl Config {
 
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        if cfg.model_post_turn_compact_threshold_percent.is_some_and(|percent| percent > 100) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "model_post_turn_compact_threshold_percent must be between 0 and 100",
+            ));
+        }
         if let Some(responses_api_metadata) = cfg.responses_api_metadata.as_ref() {
             validate_extra_metadata(responses_api_metadata.iter()).map_err(|message| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
@@ -3238,7 +3293,6 @@ impl Config {
             auto_review_required_models: _,
             permission_profile: mut constrained_permission_profile,
             windows_sandbox_mode: mut constrained_windows_sandbox_mode,
-            windows_sandbox_private_desktop: _,
             web_search_mode: mut constrained_web_search_mode,
             allow_managed_hooks_only: _,
             allow_appshots: _,
@@ -3342,7 +3396,7 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
-        let _ = McpEnterpriseManagedAuthConfig::resolve(
+        let mcp_enterprise_managed_auth = McpEnterpriseManagedAuthConfig::resolve(
             &config_layer_stack,
             cfg.mcp_enterprise_managed_auth.as_ref(),
             &cfg.mcp_servers,
@@ -3363,6 +3417,7 @@ impl Config {
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let PreparedWindowsSandboxConfig {
             mode: windows_sandbox_mode,
+            sandbox_type: windows_sandbox_type,
             level: windows_sandbox_level,
         } = prepare_windows_sandbox_config(
             resolve_windows_sandbox_mode(&cfg),
@@ -3370,7 +3425,10 @@ impl Config {
             &mut constrained_windows_sandbox_mode,
             &mut startup_warnings,
         )?;
-        let windows_sandbox_private_desktop = resolve_windows_sandbox_private_desktop(&cfg);
+        let legacy_windows_sandbox_level = windows_sandbox_level_for_legacy_checks(
+            windows_sandbox_type,
+            windows_sandbox_level,
+        );
         let resolved_cwd = AbsolutePathBuf::try_from(normalize_for_native_workdir({
             use std::env;
 
@@ -3520,7 +3578,7 @@ impl Config {
                         .unwrap_or_else(|| {
                             default_builtin_permission_profile_name(
                                 &active_project,
-                                windows_sandbox_level,
+                                legacy_windows_sandbox_level,
                             )
                         });
                     network_proxy_config_for_profile_selection(
@@ -3541,7 +3599,10 @@ impl Config {
             let default_permissions = effective_permission_selection
                 .selected_profile_id
                 .unwrap_or_else(|| {
-                    default_builtin_permission_profile_name(&active_project, windows_sandbox_level)
+                    default_builtin_permission_profile_name(
+                        &active_project,
+                        legacy_windows_sandbox_level,
+                    )
                 });
             let builtin_workspace_write_settings = if using_implicit_builtin_profile {
                 cfg.sandbox_workspace_write.as_ref().map(|settings| WorkspaceWriteSettings {
@@ -3568,10 +3629,6 @@ impl Config {
                 &mut startup_warnings,
             )?;
             let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
-            let configured_workspace_roots = configured_workspace_roots
-                .iter()
-                .map(PathUri::to_abs_path)
-                .collect::<std::io::Result<Vec<_>>>()?;
             let active_permission_profile = if using_implicit_builtin_profile
                 && default_permissions == BUILT_IN_WORKSPACE_PROFILE
                 && cfg.sandbox_workspace_write.is_some()
@@ -3610,7 +3667,7 @@ impl Config {
             let mut permission_profile = cfg
                 .derive_permission_profile(
                     sandbox_mode,
-                    windows_sandbox_level,
+                    legacy_windows_sandbox_level,
                     Some(&active_project),
                     Some(&constrained_permission_profile),
                 )
@@ -3948,6 +4005,14 @@ impl Config {
                             auto_review.policy.as_deref(),
                         ))
                 });
+        let guardian_policy_template = cfg
+            .auto_review
+            .as_ref()
+            .and_then(|auto_review| {
+                normalize_guardian_policy_config(
+                    auto_review.experimental_policy_template.as_deref(),
+                )
+            });
         let personality = personality.or(cfg.personality);
 
         let experimental_compact_prompt_path = cfg.experimental_compact_prompt_file.as_ref();
@@ -4177,6 +4242,10 @@ impl Config {
                 .unwrap_or_default(),
             auto_shake: AutoShakeConfig::from_toml(cfg.auto_shake.as_ref())
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?,
+
+            model_post_turn_compact_threshold_percent: cfg
+                .model_post_turn_compact_threshold_percent
+                .unwrap_or_default(),
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -4192,7 +4261,7 @@ impl Config {
                 allow_login_shell,
                 shell_environment_policy,
                 windows_sandbox_mode,
-                windows_sandbox_private_desktop,
+                windows_sandbox_type,
             },
             explicit_permission_profile_mode,
             custom_permission_profiles,
@@ -4223,6 +4292,7 @@ impl Config {
             },
             mcp_servers,
             non_prefixed_mcp_tool_servers,
+            mcp_enterprise_managed_auth,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
             mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
@@ -4292,6 +4362,7 @@ impl Config {
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
             guardian_policy_config,
+            guardian_policy_template,
             model_reasoning_effort: cfg.model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,
@@ -4371,7 +4442,8 @@ impl Config {
                 .map(|t| t.notification_settings.clone())
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
-            tui_whimsy: cfg.tui.as_ref().map(|t| t.whimsy).unwrap_or(true),
+            tui_effects: cfg.tui.as_ref().map(|t| t.effects).unwrap_or_default(),
+            tui_rendering: cfg.tui.as_ref().map(|t| t.rendering).unwrap_or_default(),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
             tui_show_server_version_notice: cfg
                 .tui
@@ -4395,6 +4467,10 @@ impl Config {
                 .as_ref()
                 .map(|t| t.raw_output_mode)
                 .unwrap_or(false),
+            tui_fullscreen_transcript: cfg
+                .tui
+                .as_ref()
+                .is_some_and(|tui| tui.fullscreen_transcript),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()

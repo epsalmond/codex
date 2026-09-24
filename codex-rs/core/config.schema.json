@@ -155,6 +155,13 @@
           ],
           "description": "Per-account approval settings keyed by link ID."
         },
+        "omit_tools_from": {
+          "description": "Model-facing surfaces from which this connector's tools must be omitted, in addition to any server-level omissions. `None` leaves lower-priority configuration unchanged; an empty list clears connector-level omissions.",
+          "items": {
+            "$ref": "#/definitions/ToolExposureSurface"
+          },
+          "type": "array"
+        },
         "open_world_enabled": {
           "description": "Whether tools with `open_world_hint = true` are allowed for this app.",
           "type": "boolean"
@@ -383,6 +390,10 @@
     },
     "AutoReviewToml": {
       "properties": {
+        "experimental_policy_template": {
+          "description": "Experimental full Guardian prompt template containing the tenant policy placeholder.",
+          "type": "string"
+        },
         "policy": {
           "description": "Additional policy instructions inserted into the guardian prompt.",
           "type": "string"
@@ -620,6 +631,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "experimental_show_cell_overhead": {
+          "description": "Show handler duration, code-mode host duration, and harness overhead in each code-mode cell response. Experimental: this option and the response format may change or be removed.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -732,6 +747,12 @@
           "default": null,
           "description": "Optional feature toggles scoped to this profile.",
           "properties": {
+            "agent_message_board": {
+              "type": "boolean"
+            },
+            "analytics_plan_history": {
+              "type": "boolean"
+            },
             "api_key_model_discovery": {
               "type": "boolean"
             },
@@ -842,6 +863,9 @@
               "$ref": "#/definitions/FeatureToml_for_CurrentTimeReminderConfigToml"
             },
             "cwd_relative_turn_diffs": {
+              "type": "boolean"
+            },
+            "daemon_auto_start": {
               "type": "boolean"
             },
             "default_mode_request_user_input": {
@@ -988,6 +1012,9 @@
             "non_prefixed_mcp_tool_names": {
               "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
             },
+            "nonfatal_clock_read_errors": {
+              "type": "boolean"
+            },
             "omit_app_server_notification_media": {
               "type": "boolean"
             },
@@ -1112,6 +1139,9 @@
               "type": "boolean"
             },
             "step_model_switching": {
+              "type": "boolean"
+            },
+            "system_proxy_fallback": {
               "type": "boolean"
             },
             "telepathy": {
@@ -1258,7 +1288,12 @@
           "type": "string"
         },
         "personality": {
-          "$ref": "#/definitions/Personality"
+          "allOf": [
+            {
+              "$ref": "#/definitions/Personality"
+            }
+          ],
+          "description": "Deprecated: `friendly` and `pragmatic` no longer select a style."
         },
         "plan_mode_reasoning_effort": {
           "$ref": "#/definitions/ReasoningEffort"
@@ -1639,6 +1674,91 @@
       ],
       "type": "string"
     },
+    "GatewayOAuthConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "delivery": {
+          "$ref": "#/definitions/GatewayOAuthDelivery"
+        },
+        "redirect_port": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorization_url",
+        "client_id",
+        "delivery",
+        "token_url"
+      ],
+      "type": "object"
+    },
+    "GatewayOAuthDelivery": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "header"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "scheme": {
+              "default": "Bearer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "cookie"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "GhostSnapshotToml": {
       "additionalProperties": false,
       "properties": {
@@ -1714,7 +1834,7 @@
           "type": "boolean"
         },
         "free_guardian": {
-          "description": "Route Guardian review and classification through the unmetered Codex endpoints.",
+          "description": "Legacy setting retained for config compatibility; the backend now controls Guardian billing.",
           "type": "boolean"
         },
         "max_action_tokens": {
@@ -2521,12 +2641,24 @@
           "description": "Value to use with `Authorization: Bearer <token>` header. Use of this config is discouraged in favor of `env_key` for security reasons, but this may be necessary when using this programmatically.",
           "type": "string"
         },
+        "gateway_oauth": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GatewayOAuthConfig"
+            }
+          ],
+          "description": "Secondary OAuth credentials required by the provider's gateway."
+        },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "description": "Additional HTTP headers to include in requests to this provider where the (key, value) pairs are the header name and value.",
           "type": "object"
+        },
+        "model_catalog_url": {
+          "description": "Optional full URL for a Codex-native model catalog. When unset, OpenAI discovery uses the Codex backend unless `base_url` overrides the inference endpoint.",
+          "type": "string"
         },
         "name": {
           "default": "",
@@ -2796,6 +2928,7 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
+          "description": "Permits local servers and direct host-loopback connections and skips the proxy's additional private-network destination checks. Proxy domain rules still apply. Defaults to true for MXC, which cannot enforce false; otherwise defaults to false.",
           "type": "boolean"
         },
         "allow_upstream_proxy": {
@@ -2874,6 +3007,7 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
+          "description": "Permits local servers and direct host-loopback connections and skips the proxy's additional private-network destination checks. Proxy domain rules still apply. Defaults to true for MXC, which cannot enforce false; otherwise defaults to false.",
           "type": "boolean"
         },
         "allow_upstream_proxy": {
@@ -3294,6 +3428,7 @@
       "type": "object"
     },
     "Personality": {
+      "description": "Deprecated: `friendly` and `pragmatic` no longer select a style.",
       "enum": [
         "none",
         "friendly",
@@ -4179,6 +4314,27 @@
           "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts. Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.",
           "type": "boolean"
         },
+        "effects": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiEffects"
+            }
+          ],
+          "default": {
+            "effort": true,
+            "progress": true,
+            "shimmer": true,
+            "starfield": true,
+            "title": true,
+            "welcome": true
+          },
+          "description": "Individual visual effects. Each also requires animations to be enabled."
+        },
+        "fullscreen_transcript": {
+          "default": false,
+          "description": "Own the fullscreen transcript, including scrolling, selection, and search. Defaults to `false`; alternate-screen restrictions take precedence.",
+          "type": "boolean"
+        },
         "keymap": {
           "allOf": [
             {
@@ -4217,6 +4373,7 @@
               "previous_permission_mode": null,
               "prompt_stack_back": null,
               "skip_question": null,
+              "toggle_voice": null,
               "toggle_voice_mute": null
             },
             "composer": {
@@ -4248,6 +4405,8 @@
             "global": {
               "clear_terminal": null,
               "copy": null,
+              "find_transcript": null,
+              "focus_activity": null,
               "open_agents": null,
               "open_external_editor": null,
               "open_transcript": null,
@@ -4274,6 +4433,7 @@
             "pager": {
               "close": null,
               "close_transcript": null,
+              "find": null,
               "half_page_down": null,
               "half_page_up": null,
               "jump_bottom": null,
@@ -4423,6 +4583,19 @@
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
         },
+        "rendering": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiRendering"
+            }
+          ],
+          "default": {
+            "math": true,
+            "mermaid": true,
+            "tables": true
+          },
+          "description": "Rich content rendering. Independent of animations and visual effects."
+        },
         "resume_cwd": {
           "allOf": [
             {
@@ -4431,6 +4604,10 @@
           ],
           "default": null,
           "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ."
+        },
+        "screen_reader_detection_done": {
+          "description": "Records the one-time screen-reader detection attempt. Either value skips detection.",
+          "type": "boolean"
         },
         "session_picker_view": {
           "allOf": [
@@ -4443,7 +4620,7 @@
         },
         "show_server_version_notice": {
           "default": true,
-          "description": "Show an informational notice when the connected app server is an older stable release. Defaults to `true`; this does not control compatibility errors or version status.",
+          "description": "Show informational notices about connected app server version differences. Defaults to `true`; this does not control compatibility errors or version status.",
           "type": "boolean"
         },
         "show_tooltips": {
@@ -4487,11 +4664,6 @@
         "vim_mode_default": {
           "default": false,
           "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
-          "type": "boolean"
-        },
-        "whimsy": {
-          "default": true,
-          "description": "Enable decorative effects such as Astra composer stars. Also requires animations. Defaults to `true`.",
           "type": "boolean"
         }
       },
@@ -4723,6 +4895,14 @@
           ],
           "description": "Skip the focused question."
         },
+        "toggle_voice": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Start or stop a voice conversation."
+        },
         "toggle_voice_mute": {
           "allOf": [
             {
@@ -4924,6 +5104,43 @@
       },
       "type": "object"
     },
+    "TuiEffects": {
+      "additionalProperties": false,
+      "description": "Optional visual effects. Disabling an effect preserves its underlying activity.",
+      "properties": {
+        "effort": {
+          "default": true,
+          "description": "Animate reasoning-effort changes in the composer and footer.",
+          "type": "boolean"
+        },
+        "progress": {
+          "default": true,
+          "description": "Animate activity bullets and loading spinners.",
+          "type": "boolean"
+        },
+        "shimmer": {
+          "default": true,
+          "description": "Shimmer status and loading text.",
+          "type": "boolean"
+        },
+        "starfield": {
+          "default": true,
+          "description": "Animate the composer starfield.",
+          "type": "boolean"
+        },
+        "title": {
+          "default": true,
+          "description": "Blink the terminal-title indicator when user action is required.",
+          "type": "boolean"
+        },
+        "welcome": {
+          "default": true,
+          "description": "Animate the welcome artwork.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "TuiGlobalKeymap": {
       "additionalProperties": false,
       "description": "Global keybindings. These are used when a context does not define an override.",
@@ -4943,6 +5160,22 @@
             }
           ],
           "description": "Copy the last agent response to the clipboard."
+        },
+        "find_transcript": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Find text in the full transcript."
+        },
+        "focus_activity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Focus activity groups in the owned transcript to inspect their details."
         },
         "open_agents": {
           "allOf": [
@@ -5082,6 +5315,7 @@
             "previous_permission_mode": null,
             "prompt_stack_back": null,
             "skip_question": null,
+            "toggle_voice": null,
             "toggle_voice_mute": null
           }
         },
@@ -5134,6 +5368,8 @@
           "default": {
             "clear_terminal": null,
             "copy": null,
+            "find_transcript": null,
+            "focus_activity": null,
             "open_agents": null,
             "open_external_editor": null,
             "open_transcript": null,
@@ -5174,6 +5410,7 @@
           "default": {
             "close": null,
             "close_transcript": null,
+            "find": null,
             "half_page_down": null,
             "half_page_up": null,
             "jump_bottom": null,
@@ -5399,6 +5636,14 @@
           ],
           "description": "Close the transcript overlay via its dedicated toggle key."
         },
+        "find": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Find text in a transcript pager."
+        },
         "half_page_down": {
           "allOf": [
             {
@@ -5483,6 +5728,28 @@
           "type": "string"
         }
       ]
+    },
+    "TuiRendering": {
+      "additionalProperties": false,
+      "description": "Optional rich renderers. Disabled renderers preserve the original source.",
+      "properties": {
+        "math": {
+          "default": true,
+          "description": "Render math expressions using Unicode notation.",
+          "type": "boolean"
+        },
+        "mermaid": {
+          "default": true,
+          "description": "Render Mermaid code blocks as diagrams.",
+          "type": "boolean"
+        },
+        "tables": {
+          "default": true,
+          "description": "Render pipe tables, including tables inside Markdown fences.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     },
     "TuiVimNormalKeymap": {
       "additionalProperties": false,
@@ -6159,7 +6426,8 @@
     "WindowsSandboxModeToml": {
       "enum": [
         "elevated",
-        "unelevated"
+        "unelevated",
+        "mxc"
       ],
       "type": "string"
     },
@@ -6168,10 +6436,6 @@
       "properties": {
         "sandbox": {
           "$ref": "#/definitions/WindowsSandboxModeToml"
-        },
-        "sandbox_private_desktop": {
-          "description": "Defaults to `true`. Set to `false` to launch the final sandboxed child process on `Winsta0\\\\Default` instead of a private desktop.",
-          "type": "boolean"
         }
       },
       "type": "object"
@@ -6369,6 +6633,12 @@
       "default": null,
       "description": "Centralized feature flags (new). Prefer this over individual toggles.",
       "properties": {
+        "agent_message_board": {
+          "type": "boolean"
+        },
+        "analytics_plan_history": {
+          "type": "boolean"
+        },
         "api_key_model_discovery": {
           "type": "boolean"
         },
@@ -6479,6 +6749,9 @@
           "$ref": "#/definitions/FeatureToml_for_CurrentTimeReminderConfigToml"
         },
         "cwd_relative_turn_diffs": {
+          "type": "boolean"
+        },
+        "daemon_auto_start": {
           "type": "boolean"
         },
         "default_mode_request_user_input": {
@@ -6625,6 +6898,9 @@
         "non_prefixed_mcp_tool_names": {
           "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
         },
+        "nonfatal_clock_read_errors": {
+          "type": "boolean"
+        },
         "omit_app_server_notification_media": {
           "type": "boolean"
         },
@@ -6749,6 +7025,9 @@
           "type": "boolean"
         },
         "step_model_switching": {
+          "type": "boolean"
+        },
+        "system_proxy_fallback": {
           "type": "boolean"
         },
         "telepathy": {
@@ -7047,6 +7326,13 @@
       ],
       "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codex will likely degrade model performance."
     },
+    "model_post_turn_compact_threshold_percent": {
+      "description": "Percentage of the usable context window that triggers compaction after a final response. Existing auto-compaction limits still apply. Omitted or zero disables turn-end compaction; valid values are 0–100.",
+      "format": "uint8",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",
       "type": "string"
@@ -7128,7 +7414,7 @@
           "$ref": "#/definitions/Personality"
         }
       ],
-      "description": "Optionally specify a personality for the model"
+      "description": "Deprecated: `friendly` and `pragmatic` no longer select a style."
     },
     "plan_mode_reasoning_effort": {
       "$ref": "#/definitions/ReasoningEffort"

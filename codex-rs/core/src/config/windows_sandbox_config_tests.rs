@@ -11,6 +11,7 @@ fn configured_mode_takes_priority_without_persisting_feature_fallback() -> std::
             None,
             PreparedWindowsSandboxConfig {
                 mode: None,
+                sandbox_type: SandboxType::WindowsRestrictedToken,
                 level: WindowsSandboxLevel::Elevated,
             },
         ),
@@ -18,7 +19,16 @@ fn configured_mode_takes_priority_without_persisting_feature_fallback() -> std::
             Some(WindowsSandboxModeToml::Unelevated),
             PreparedWindowsSandboxConfig {
                 mode: Some(WindowsSandboxModeToml::Unelevated),
+                sandbox_type: SandboxType::WindowsRestrictedToken,
                 level: WindowsSandboxLevel::RestrictedToken,
+            },
+        ),
+        (
+            Some(WindowsSandboxModeToml::Mxc),
+            PreparedWindowsSandboxConfig {
+                mode: Some(WindowsSandboxModeToml::Mxc),
+                sandbox_type: SandboxType::WindowsMxc,
+                level: WindowsSandboxLevel::Disabled,
             },
         ),
     ] {

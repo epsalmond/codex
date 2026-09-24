@@ -56,14 +56,14 @@ impl ChatWidget {
     }
 
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    pub(crate) fn set_windows_sandbox_mode(&mut self, mode: Option<WindowsSandboxModeToml>) {
-        self.config.permissions.windows_sandbox_mode = mode;
+    pub(crate) fn set_windows_sandbox_mode(&mut self, mode: Option<WindowsSandboxSetupMode>) {
+        self.windows_sandbox_config.mode = mode;
         #[cfg(target_os = "windows")]
-        self.bottom_pane
-            .set_windows_degraded_sandbox_active(matches!(
-                crate::windows_sandbox::level_from_config(&self.config),
-                WindowsSandboxLevel::RestrictedToken
-            ));
+        {
+            let enabled = self.builtin_command_flags().allow_elevate_sandbox;
+            self.bottom_pane
+                .set_windows_degraded_sandbox_active(enabled);
+        }
     }
 
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -117,17 +117,6 @@ impl ChatWidget {
         }
         if feature == Feature::PreventIdleSleep {
             self.turn_lifecycle.set_prevent_idle_sleep(enabled);
-        }
-        #[cfg(target_os = "windows")]
-        if matches!(
-            feature,
-            Feature::WindowsSandbox | Feature::WindowsSandboxElevated
-        ) {
-            self.bottom_pane
-                .set_windows_degraded_sandbox_active(matches!(
-                    crate::windows_sandbox::level_from_config(&self.config),
-                    WindowsSandboxLevel::RestrictedToken
-                ));
         }
         enabled
     }
@@ -213,7 +202,6 @@ impl ChatWidget {
         self.model_popup_request_id = None;
         self.invalidate_permission_discovery();
         self.invalidate_connector_scope();
-        self.clear_pending_token_activity_refreshes();
         self.clear_pending_rate_limit_reset_requests();
         self.clear_backend_banner();
         self.luna_reserve_notice_account_id = None;
@@ -223,6 +211,7 @@ impl ChatWidget {
         self.codex_rate_limit_reached_type = None;
         self.codex_spend_control_reached = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
+        self.usage_notice_state = usage_notice::UsageNoticeState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
         self.bottom_pane
             .dismiss_view_by_id(RATE_LIMIT_SWITCH_PROMPT_VIEW_ID);
@@ -427,6 +416,8 @@ impl ChatWidget {
 
     pub(super) fn refresh_model_display(&mut self) {
         let effective = self.effective_collaboration_mode();
+        self.bottom_pane
+            .stop_ineligible_sparkle(effective.model(), &self.local_settings.tui);
         self.session_header.set_model(effective.model());
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
@@ -495,6 +486,15 @@ impl ChatWidget {
         self.refresh_status_surfaces();
         self.sync_service_tier_commands();
         if cwd_changed {
+            #[cfg(target_os = "windows")]
+            if self.windows_sandbox_local_server
+                && let Some(thread_id) = self.thread_id
+            {
+                self.windows_sandbox_config = Default::default();
+                self.set_windows_sandbox_mode(/*mode*/ None);
+                self.app_event_tx
+                    .send(AppEvent::RefreshWindowsSandbox { thread_id });
+            }
             self.invalidate_connector_scope();
             self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             self.refresh_connector_mentions(/*force_refresh*/ false);
@@ -524,7 +524,7 @@ impl ChatWidget {
             .set_workspace_roots(self.config.workspace_roots.clone());
     }
 
-    pub(super) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {
+    pub(crate) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {
         let mode_kind = mode.mode;
         let settings = mode.settings;
         if mode_kind == ModeKind::Default {
@@ -544,12 +544,12 @@ impl ChatWidget {
         self.refresh_model_dependent_surfaces();
     }
 
-    pub(super) fn model_display_name(&self) -> &str {
+    pub(crate) fn model_display_name(&self) -> &str {
         let model = self.current_model();
         if model.is_empty() {
             DEFAULT_MODEL_DISPLAY_NAME
         } else {
-            crate::model_catalog::model_display_name(model)
+            self.model_catalog.display_name(model)
         }
     }
 
@@ -700,7 +700,6 @@ impl ChatWidget {
                 /*approvals_reviewer*/ None,
                 /*permission_profile*/ None,
                 /*active_permission_profile*/ None,
-                /*windows_sandbox_level*/ None,
                 /*model*/ None,
                 /*effort*/ None,
                 /*summary*/ None,

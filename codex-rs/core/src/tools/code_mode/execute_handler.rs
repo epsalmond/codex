@@ -1,5 +1,4 @@
 use crate::function_tool::FunctionCallError;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -13,6 +12,7 @@ use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::handle_runtime_response;
 use super::is_exec_tool_name;
+use super::output::CodeModeToolOutput;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
 
@@ -36,10 +36,10 @@ impl CodeModeExecuteHandler {
         session: std::sync::Arc<crate::session::session::Session>,
         step_context: Arc<crate::session::step_context::StepContext>,
         call_id: String,
-        originating_item_id: Option<codex_protocol::ResponseItemId>,
+        originating_call: Option<crate::tools::context::ToolCallOrigin>,
         code: String,
         telemetry: &mut CodeModeToolCallGuard,
-    ) -> Result<FunctionToolOutput, FunctionCallError> {
+    ) -> Result<CodeModeToolOutput, FunctionCallError> {
         let args =
             codex_code_mode::parse_exec_source(&code).map_err(FunctionCallError::RespondToModel)?;
         let exec = ExecContext {
@@ -113,7 +113,7 @@ impl CodeModeExecuteHandler {
         exec.session
             .services
             .code_mode_service
-            .mark_cell_ready_for_dispatch(&cell_id, originating_item_id);
+            .mark_cell_ready_for_dispatch(&cell_id, originating_call);
         let response = started_cell
             .initial_response()
             .await
@@ -146,14 +146,13 @@ impl CodeModeExecuteHandler {
         let wall_time = response
             .code_mode_host_duration()
             .unwrap_or_else(|| started_at.elapsed());
-        handle_runtime_response(
+        Ok(handle_runtime_response(
             &step_context.settings.model_info,
             response,
             args.max_output_tokens,
             wall_time,
-        )
-        .await
-        .map_err(FunctionCallError::RespondToModel)
+            exec.turn.config.code_mode.experimental_show_cell_overhead,
+        ))
     }
 }
 
@@ -194,7 +193,7 @@ impl CodeModeExecuteHandler {
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let handler_span = tracing::Span::current();
-        let originating_item_id = invocation.originating_item_id().await;
+        let originating_call = invocation.originating_call().await;
         let ToolInvocation {
             session,
             turn,
@@ -220,7 +219,7 @@ impl CodeModeExecuteHandler {
                     session,
                     step_context,
                     call_id,
-                    originating_item_id,
+                    originating_call,
                     input,
                     &mut telemetry,
                 )

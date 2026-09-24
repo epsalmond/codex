@@ -55,6 +55,14 @@ mod acl;
 #[cfg(target_os = "windows")]
 mod allow;
 #[cfg(target_os = "windows")]
+mod app_package;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use app_package::registered_core_needs_refresh;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use app_package::registered_core_requested;
+#[cfg(target_os = "windows")]
 mod audit;
 #[cfg(target_os = "windows")]
 mod cap;
@@ -85,6 +93,8 @@ mod logging;
 #[cfg(target_os = "windows")]
 mod no_reparse_dir;
 #[cfg(target_os = "windows")]
+mod package_identity;
+#[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
 mod process;
@@ -93,9 +103,39 @@ mod provisioning_client;
 #[cfg(target_os = "windows")]
 mod provisioning_protocol;
 #[cfg(target_os = "windows")]
+mod runtime_ownership;
+#[cfg(target_os = "windows")]
+mod service_identity;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::CORE_INSTALLATION_KEY;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::INSTALLATION_KEY;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::INSTALLATION_VALUE;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::RuntimeAccountRegistration;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::RuntimeRegistration;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::load_installation;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::remove_installation;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use runtime_ownership::save_installation;
+#[cfg(target_os = "windows")]
 mod resolved_permissions;
 #[cfg(target_os = "windows")]
 mod token;
+#[cfg(target_os = "windows")]
+mod token_user;
 #[cfg(target_os = "windows")]
 mod wfp;
 #[cfg(target_os = "windows")]
@@ -142,6 +182,8 @@ mod setup_provisioning;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use setup_provisioning::main as setup_helper_main;
+#[cfg(target_os = "windows")]
+pub use setup_provisioning::provision_sandbox_in_process;
 
 #[cfg(target_os = "windows")]
 mod spawn_prep;
@@ -167,12 +209,6 @@ pub(crate) use elevated::runner_pipe;
 pub use installation_record::DesktopInstallation;
 #[cfg(target_os = "windows")]
 pub use installation_record::InstallationRecord;
-#[cfg(target_os = "windows")]
-pub use installation_record::load as load_sandbox_installation;
-#[cfg(target_os = "windows")]
-pub use installation_record::remove as remove_sandbox_installation;
-#[cfg(target_os = "windows")]
-pub use installation_record::save as save_sandbox_installation;
 
 #[cfg(target_os = "windows")]
 pub use acl::add_deny_read_ace;
@@ -189,8 +225,6 @@ pub use acl::ensure_allow_mask_aces_with_inheritance;
 pub use acl::ensure_allow_write_aces;
 #[cfg(target_os = "windows")]
 pub use acl::fetch_dacl_handle;
-#[cfg(target_os = "windows")]
-pub use acl::grant_read_execute_aces;
 #[cfg(target_os = "windows")]
 pub use acl::path_has_standard_user_mutation_allow;
 #[cfg(target_os = "windows")]
@@ -239,13 +273,13 @@ pub use elevated_impl::run_windows_sandbox_capture_for_permission_profile as run
 #[cfg(target_os = "windows")]
 pub use file_write::write_file_atomically;
 #[cfg(target_os = "windows")]
-pub use helper_materialization::resolve_current_exe_for_launch;
-#[cfg(target_os = "windows")]
 pub use helper_materialization::resolve_exe_for_launch;
 #[cfg(target_os = "windows")]
 pub use hide_users::hide_current_user_profile_dir;
 #[cfg(target_os = "windows")]
 pub use hide_users::hide_newly_created_users;
+#[cfg(target_os = "windows")]
+pub use identity::logon_existing_sandbox_account;
 #[cfg(target_os = "windows")]
 pub use identity::require_logon_sandbox_creds;
 #[cfg(target_os = "windows")]
@@ -303,6 +337,8 @@ pub use no_reparse_dir::open_directory_no_reparse;
 #[cfg(target_os = "windows")]
 pub use no_reparse_dir::validate_local_directory_path;
 #[cfg(target_os = "windows")]
+pub use package_identity::process_package_family;
+#[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
 pub use process::ConsoleMode;
@@ -323,6 +359,9 @@ pub use provisioning_client::WindowsSandboxProvisioningOutcome;
 #[cfg(target_os = "windows")]
 pub use provisioning_client::provision_windows_sandbox_via_service;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use provisioning_client::refresh_registered_core_via_service;
+#[cfg(target_os = "windows")]
 pub use provisioning_client::register_desktop_installation;
 #[cfg(target_os = "windows")]
 pub use provisioning_protocol::FramedProvisioningMessage;
@@ -330,6 +369,8 @@ pub use provisioning_protocol::FramedProvisioningMessage;
 pub use provisioning_protocol::PROVISIONING_PROTOCOL_VERSION;
 #[cfg(target_os = "windows")]
 pub use provisioning_protocol::ProvisioningMessage;
+#[cfg(target_os = "windows")]
+pub use provisioning_protocol::SANDBOX_GROUP_CHANGED;
 #[cfg(target_os = "windows")]
 pub use provisioning_protocol::SANDBOX_PROVISIONING_PIPE_NAME;
 #[cfg(target_os = "windows")]
@@ -349,6 +390,15 @@ pub use resolved_permissions::WindowsSandboxTokenMode;
 #[cfg(target_os = "windows")]
 pub use resolved_permissions::token_mode_for_permission_profile;
 #[cfg(target_os = "windows")]
+pub use runtime_ownership::APP_CORE_RUNNER_ALIAS;
+#[cfg(target_os = "windows")]
+pub use runtime_ownership::SandboxRuntimeAccount;
+
+#[cfg(target_os = "windows")]
+pub use service_identity::windows_sandbox_service_name;
+#[cfg(target_os = "windows")]
+pub use service_identity::windows_sandbox_service_pipe_name;
+#[cfg(target_os = "windows")]
 pub use setup::OFFLINE_USERNAME;
 #[cfg(target_os = "windows")]
 pub use setup::ONLINE_USERNAME;
@@ -358,6 +408,8 @@ pub use setup::SETUP_VERSION;
 pub use setup::SandboxSetupRequest;
 #[cfg(target_os = "windows")]
 pub use setup::SetupRootOverrides;
+#[cfg(target_os = "windows")]
+pub use setup::SetupRuntime;
 #[cfg(target_os = "windows")]
 pub use setup::run_elevated_provisioning_setup;
 #[cfg(target_os = "windows")]
@@ -398,6 +450,8 @@ pub use stdio_bridge::forward_sandbox_session_stdio;
 #[doc(hidden)]
 pub use token::LocalSid;
 #[cfg(target_os = "windows")]
+pub use token::TokenGroup;
+#[cfg(target_os = "windows")]
 pub use token::convert_string_sid_to_sid;
 #[cfg(target_os = "windows")]
 pub use token::create_readonly_token_with_cap_from;
@@ -411,6 +465,10 @@ pub use token::create_workspace_write_token_with_caps_and_user_from;
 pub use token::create_workspace_write_token_with_caps_from;
 #[cfg(target_os = "windows")]
 pub use token::get_current_token_for_restriction;
+#[cfg(target_os = "windows")]
+pub use token::token_groups;
+#[cfg(target_os = "windows")]
+pub use token_user::get_user_sid_bytes;
 #[cfg(target_os = "windows")]
 pub use unified_exec::WindowsSandboxSessionRequest;
 #[cfg(target_os = "windows")]
@@ -426,6 +484,8 @@ pub use uninstall_windows::clean_up_packaged_windows_sandbox;
 #[cfg(target_os = "windows")]
 pub use uninstall_windows::prepare_packaged_windows_sandbox_cleanup;
 #[cfg(target_os = "windows")]
+pub use uninstall_windows::prepare_packaged_windows_sandbox_cleanup_with_retained_tokens;
+#[cfg(target_os = "windows")]
 pub use wfp::install_wfp_filters_for_account;
 #[cfg(target_os = "windows")]
 pub use wfp_setup::install_wfp_filters;
@@ -439,6 +499,8 @@ pub use windows_impl::run_windows_sandbox_capture_with_filesystem_overrides;
 pub use windows_impl::run_windows_sandbox_legacy_preflight;
 #[cfg(target_os = "windows")]
 pub use winutil::SANDBOX_USERS_GROUP;
+#[cfg(target_os = "windows")]
+pub use winutil::account_name_from_sid;
 #[cfg(target_os = "windows")]
 pub use winutil::ensure_sandbox_users_group;
 #[cfg(target_os = "windows")]
@@ -597,7 +659,6 @@ mod windows_impl {
         env_map: HashMap<String, String>,
         timeout_ms: Option<u64>,
         cancellation: Option<WindowsSandboxCancellationToken>,
-        use_private_desktop: bool,
     ) -> Result<CaptureResult> {
         run_windows_sandbox_capture_with_filesystem_overrides(
             permission_profile,
@@ -610,7 +671,6 @@ mod windows_impl {
             cancellation,
             &[],
             &[],
-            use_private_desktop,
         )
     }
 
@@ -626,7 +686,6 @@ mod windows_impl {
         cancellation: Option<WindowsSandboxCancellationToken>,
         additional_deny_read_paths: &[AbsolutePathBuf],
         additional_deny_write_paths: &[AbsolutePathBuf],
-        use_private_desktop: bool,
     ) -> Result<CaptureResult> {
         let additional_deny_read_paths = additional_deny_read_paths
             .iter()
@@ -687,7 +746,6 @@ mod windows_impl {
         let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
         let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (stdin_pair, stdout_pair, stderr_pair);
         let spawn_res = crate::LaunchDesktop::prepare_legacy(
-            use_private_desktop,
             &permissions,
             &current_dir,
             &env_map,
@@ -979,7 +1037,6 @@ mod stub {
         _env_map: HashMap<String, String>,
         _timeout_ms: Option<u64>,
         _cancellation: Option<WindowsSandboxCancellationToken>,
-        _use_private_desktop: bool,
     ) -> Result<CaptureResult> {
         bail!("Windows sandbox is only available on Windows")
     }

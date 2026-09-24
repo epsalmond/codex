@@ -30,6 +30,7 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -44,6 +45,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::MultiAgentMessages;
 use codex_protocol::openai_models::MultiAgentModeMessages;
 use codex_protocol::openai_models::MultiAgentRoleMessages;
+use codex_protocol::openai_models::MultiAgentToolMessages;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::ToolMessage;
@@ -56,6 +58,7 @@ use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SafetyBufferingEvent;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnSettingsUpdate;
 use codex_protocol::protocol::TurnSettingsUpdateOutcome;
@@ -63,6 +66,7 @@ use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputEvent;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
+use codex_tools::ConversationHistory;
 use codex_tools::JsonToolOutput;
 use codex_tools::ToolCall;
 use codex_tools::ToolExecutor;
@@ -86,6 +90,7 @@ use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_response_sequence;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
 use core_test_support::responses::sse_response;
@@ -104,12 +109,16 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use test_case::test_case;
 
 use super::rmcp_client::remote_aware_environment_id;
 use super::rmcp_client::remote_aware_stdio_server_bin;
 
+#[path = "step_settings/agent_spawn_tests.rs"]
+mod agent_spawn;
 mod code_mode_notifications;
+mod environment_selection;
 
 const MODEL_A: &str = "step-settings-a";
 const MODEL_B: &str = "step-settings-b";
@@ -2222,9 +2231,29 @@ async fn model_activation_uses_destination_metadata_defaults(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn request_user_input_async_description_follows_mid_turn_model_changes() -> Result<()> {
+async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    const MULTI_AGENT_TOOLS: [&str; 6] = [
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "interrupt_agent",
+        "list_agents",
+    ];
+
+    let parameters = |model: &str| {
+        json!({
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": format!("Agent on {model}.")},
+                "message": {"type": "string", "encrypted": true},
+            },
+            "required": ["target"],
+            "additionalProperties": false,
+        })
+    };
     let server = start_mock_server().await;
     let response_mock = mount_sse_sequence(
         &server,
@@ -2235,7 +2264,12 @@ async fn request_user_input_async_description_follows_mid_turn_model_changes() -
     )
     .await;
     let test = step_settings_test()
-        .with_config(|config| {
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.multi_agent_v2.expose_spawn_agent_model_overrides = false;
             for model in &mut config
                 .model_catalog
                 .as_mut()
@@ -2245,6 +2279,12 @@ async fn request_user_input_async_description_follows_mid_turn_model_changes() -
                 model
                     .experimental_supported_tools
                     .push("send_user_message_async".to_string());
+                let tool_message = |name| {
+                    Some(ToolMessage {
+                        description: Some(format!("{name} description for {}.", model.slug)),
+                        parameters: Some(parameters(&model.slug).to_string()),
+                    })
+                };
                 model
                     .model_messages
                     .as_mut()
@@ -2252,6 +2292,15 @@ async fn request_user_input_async_description_follows_mid_turn_model_changes() -
                     .tools = Some(ToolMessages {
                     send_user_message_async: Some(ToolMessage {
                         description: Some(format!("Async message description for {}.", model.slug)),
+                        ..Default::default()
+                    }),
+                    multi_agent: Some(MultiAgentToolMessages {
+                        spawn_agent: tool_message("spawn_agent"),
+                        send_message: tool_message("send_message"),
+                        followup_task: tool_message("followup_task"),
+                        wait_agent: tool_message("wait_agent"),
+                        interrupt_agent: tool_message("interrupt_agent"),
+                        list_agents: tool_message("list_agents"),
                     }),
                 });
             }
@@ -2288,13 +2337,31 @@ async fn request_user_input_async_description_follows_mid_turn_model_changes() -
                     .iter()
                     .find(|tool| tool["name"] == "request_user_input_async")
                     .expect("async message tool");
-                json!({"model": body["model"], "description": tool["description"]})
+                let multi_agent_messages = MULTI_AGENT_TOOLS.map(|name| {
+                    let tool = namespace_child_tool(&body, "collaboration", name).expect(name);
+                    (name.to_string(), json!({
+                        "description": tool["description"].as_str().expect("tool description").trim(),
+                        "parameters": tool["parameters"],
+                    }))
+                }).into_iter().collect::<serde_json::Map<String, Value>>();
+                json!({
+                    "model": body["model"],
+                    "async_description": tool["description"],
+                    "multi_agent_messages": multi_agent_messages,
+                })
             })
             .collect::<Vec<_>>(),
         [MODEL_A, MODEL_B]
             .map(|model| json!({
                 "model": model,
-                "description": format!("Async message description for {model}."),
+                "async_description": format!("Async message description for {model}."),
+                "multi_agent_messages": MULTI_AGENT_TOOLS
+                    .map(|name| (name.to_string(), json!({
+                        "description": format!("{name} description for {model}."),
+                        "parameters": parameters(model),
+                    })))
+                    .into_iter()
+                    .collect::<serde_json::Map<String, Value>>(),
             }))
             .to_vec(),
     );
@@ -2835,7 +2902,8 @@ async fn captured_step_controls_mcp_output_limit(supports_images: bool) -> Resul
     Ok(())
 }
 
-struct SettingsEcho;
+#[derive(Clone)]
+struct SettingsEcho(Arc<Mutex<Option<ConversationHistory>>>);
 
 impl ToolContributor for SettingsEcho {
     fn tools(
@@ -2843,7 +2911,7 @@ impl ToolContributor for SettingsEcho {
         _session_store: &ExtensionData,
         _thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
-        vec![Arc::new(Self)]
+        vec![Arc::new(self.clone())]
     }
 }
 
@@ -2868,6 +2936,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for SettingsEcho {
         'call: 'a,
     {
         Box::pin(async move {
+            *self.0.lock().expect("history lock") = Some(call.conversation_history);
             let metadata: Value = serde_json::from_str(
                 call.codex_turn_metadata
                     .as_deref()
@@ -2884,8 +2953,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for SettingsEcho {
     }
 }
 
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn captured_step_settings_reach_extension_executor() -> Result<()> {
+async fn captured_step_settings_and_history_reach_extension_executor(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let responses = mount_sse_sequence(
@@ -2898,12 +2971,15 @@ async fn captured_step_settings_reach_extension_executor() -> Result<()> {
                 ev_completed("resp-b"),
             ]),
             sse_completed("resp-result"),
+            sse_completed("resp-later"),
         ],
     )
     .await;
+    let history = Arc::default();
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
-    extensions.tool_contributor(Arc::new(SettingsEcho));
+    extensions.tool_contributor(Arc::new(SettingsEcho(Arc::clone(&history))));
     let test = direct_tool_settings_test()
+        .with_history_mode(history_mode)
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             for model in &mut config.model_catalog.as_mut().expect("models").models {
@@ -2941,6 +3017,28 @@ async fn captured_step_settings_reach_extension_executor() -> Result<()> {
             "output_bytes": 512,
         })
     );
+    test.submit_text_turn("later turn").await?;
+    // First read after a later turn: the extension must retain its invocation-time snapshot.
+    let history = history
+        .lock()
+        .expect("history lock")
+        .take()
+        .expect("captured history");
+    let user_texts = history
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|item| match item {
+            ContentItem::InputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(user_texts.contains(&"pause before continuing"));
+    assert!(!user_texts.contains(&"later turn"));
     Ok(())
 }
 

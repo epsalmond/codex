@@ -18,8 +18,6 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_exec_server::LOCAL_FS;
 use codex_git_utils::resolve_root_git_project_for_trust;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -39,6 +37,7 @@ use crate::config_update::RemoteProjectTrust;
 use crate::config_update::format_config_error;
 use crate::config_update::replace_config_value;
 use crate::config_update::write_trusted_project;
+use crate::empty_state_animation::Presentation;
 use crate::key_hint::KeyBindingListExt;
 use crate::legacy_core::config::Config;
 use crate::onboarding::auth::AuthModeWidget;
@@ -137,8 +136,24 @@ impl OnboardingScreen {
         steps.push(Step::Welcome(WelcomeWidget::new(
             !matches!(login_status, LoginStatus::NotAuthenticated),
             tui.frame_requester(),
-            local_settings.tui.animations,
+            local_settings.tui.animations && local_settings.tui.effects.welcome,
         )));
+        #[cfg(target_os = "windows")]
+        let show_windows_create_sandbox_hint = if show_trust_screen
+            && remote_project_trust.is_none()
+            && let Some(handle) = &app_server_request_handle
+        {
+            crate::windows_sandbox::WindowsSandboxConfig::read(
+                handle.clone(),
+                config.cwd.display().to_string(),
+            )
+            .await
+            .is_ok_and(|state| !state.is_enabled())
+        } else {
+            false
+        };
+        #[cfg(not(target_os = "windows"))]
+        let show_windows_create_sandbox_hint = false;
         if show_login_screen {
             let highlighted_mode =
                 if auth_config.is_login_method_allowed(ForcedLoginMethod::Chatgpt) {
@@ -156,18 +171,14 @@ impl OnboardingScreen {
                     app_server_request_handle,
                     auth_config,
                     bedrock_setup_enabled,
-                    animations_enabled: local_settings.tui.animations,
+                    animations_enabled: local_settings.tui.animations
+                        && local_settings.tui.effects.shimmer,
                     animations_suppressed: std::cell::Cell::new(false),
                 }));
             } else {
                 tracing::warn!("skipping onboarding login step without app-server request handle");
             }
         }
-        #[cfg(target_os = "windows")]
-        let show_windows_create_sandbox_hint = remote_project_trust.is_none()
-            && crate::windows_sandbox::level_from_config(&config) == WindowsSandboxLevel::Disabled;
-        #[cfg(not(target_os = "windows"))]
-        let show_windows_create_sandbox_hint = false;
         let highlighted = TrustDirectorySelection::Trust;
         if show_trust_screen {
             let (cwd, trust_target) = match remote_project_trust {
@@ -395,9 +406,16 @@ fn suppress_quit_while_typing(key_event: KeyEvent, text_entry_context: TextEntry
 impl WidgetRef for &OnboardingScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let suppress_animations = self.should_suppress_animations();
+        let logo_presentation = if suppress_animations {
+            Presentation::Hidden
+        } else if self.text_entry_context().active {
+            Presentation::Faded
+        } else {
+            Presentation::Animated
+        };
         for step in self.current_steps() {
             match step {
-                Step::Welcome(widget) => widget.set_animations_suppressed(suppress_animations),
+                Step::Welcome(widget) => widget.set_presentation(logo_presentation),
                 Step::Auth(widget) => widget.set_animations_suppressed(suppress_animations),
                 Step::TrustDirectory(_) => {}
             }
@@ -563,7 +581,16 @@ async fn run_onboarding_screen(
                         TuiEvent::Draw
                         | TuiEvent::Resume
                         | TuiEvent::Resize(_)
-                        | TuiEvent::FocusGained => {
+                        | TuiEvent::FocusGained
+                        | TuiEvent::FocusLost => {
+                            for step in &onboarding_screen.steps {
+                                if let Step::Welcome(widget) = step {
+                                    if matches!(&event, TuiEvent::Resume) {
+                                        widget.set_presentation(crate::empty_state_animation::Presentation::Hidden);
+                                    }
+                                    widget.set_focused(tui.is_terminal_focused());
+                                }
+                            }
                             if !did_full_clear_after_success
                                 && onboarding_screen.steps.iter().any(|step| {
                                     if let Step::Auth(w) = step {
@@ -598,7 +625,7 @@ async fn run_onboarding_screen(
                                 frame.render_widget_ref(&onboarding_screen, frame.area());
                             });
                         }
-                        TuiEvent::FocusLost => {}
+                        TuiEvent::Mouse(_) => {}
                     }
                 }
             }

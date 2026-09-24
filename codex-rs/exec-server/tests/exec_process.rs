@@ -27,6 +27,8 @@ use codex_exec_server::ShellInfo;
 #[cfg(unix)]
 use codex_exec_server::ShellSnapshotRequest;
 use codex_exec_server::StartedExecProcess;
+#[cfg(any(unix, windows))]
+use codex_exec_server::WindowsSandboxSelection;
 use codex_exec_server::WriteStatus;
 #[cfg(unix)]
 use codex_network_proxy::NetworkProxyConfig;
@@ -36,7 +38,6 @@ use codex_network_proxy::RemoteNetworkProxyConfig;
 use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
 #[cfg(unix)]
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
-use codex_protocol::config_types::WindowsSandboxLevel;
 #[cfg(unix)]
 use codex_protocol::models::PermissionProfile;
 #[cfg(unix)]
@@ -104,10 +105,6 @@ async fn create_process_context(use_remote: bool) -> Result<ProcessContext> {
     }
 }
 
-fn selected_windows_sandbox_available(windows_sandbox_level: WindowsSandboxLevel) -> bool {
-    windows_sandbox_level != WindowsSandboxLevel::Mxc || codex_sandboxing::windows_mxc_available()
-}
-
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn codex_home_symlink_opt_out_respects_host_config_and_scope() -> Result<()> {
@@ -143,7 +140,7 @@ async fn codex_home_symlink_opt_out_respects_host_config_and_scope() -> Result<(
                 PathUri::from_host_native_path(root)?.into(),
                 FileSystemAccessMode::Write,
             ));
-            let sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+            let sandbox = FileSystemSandboxContext::from_permission_profile(
                 PermissionProfile::from_runtime_permissions(
                     &policy,
                     NetworkSandboxPolicy::Restricted,
@@ -348,7 +345,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 pipe_stdin: false,
                 arg0: (shell_name == "bash-sh").then(|| "sh".to_string()),
                 sandbox: (use_sandbox && attempt == 0).then(|| {
-                    FileSystemSandboxContext::from_permission_profile_with_cwd(
+                    FileSystemSandboxContext::from_permission_profile(
                         PermissionProfile::read_only(),
                         cwd.clone(),
                     )
@@ -525,7 +522,7 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
         pipe_stdin: false,
         arg0: None,
         sandbox: use_remote.then(|| {
-            FileSystemSandboxContext::from_permission_profile_with_cwd(
+            FileSystemSandboxContext::from_permission_profile(
                 PermissionProfile::workspace_write(),
                 cwd,
             )
@@ -606,7 +603,7 @@ async fn remote_sandboxed_process_preserves_custom_arg0() -> Result<()> {
             missing_path_behavior: None,
         },
     ]);
-    let sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+    let sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted),
         cwd.clone(),
     );
@@ -709,7 +706,7 @@ async fn remote_process_keeps_sandbox_helper_visible_with_restricted_reads() -> 
             missing_path_behavior: None,
         },
     ]);
-    let sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+    let sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted),
         cwd.clone(),
     );
@@ -780,7 +777,7 @@ async fn remote_tty_process_uses_configured_sandbox_helper_with_hostile_path() -
             missing_path_behavior: None,
         },
     ]);
-    let sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+    let sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted),
         cwd.clone(),
     );
@@ -836,7 +833,7 @@ async fn remote_process_preserves_empty_workspace_roots() -> Result<()> {
         access: FileSystemAccessMode::Read,
         missing_path_behavior: None,
     }]);
-    let mut sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+    let mut sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted),
         cwd.clone(),
     );
@@ -1295,12 +1292,11 @@ async fn assert_exec_process_write_then_read_without_tty(use_remote: bool) -> Re
 }
 
 async fn assert_remote_windows_sandbox_process_write(
-    windows_sandbox_level: WindowsSandboxLevel,
     expected_sandbox_type: codex_sandboxing::SandboxType,
+    tty: bool,
 ) -> Result<()> {
-    if !selected_windows_sandbox_available(windows_sandbox_level) {
-        eprintln!("skipping MXC enforcement test: native MXC is unavailable on this host");
-        return Ok(());
+    if expected_sandbox_type == codex_sandboxing::SandboxType::WindowsMxc {
+        crate::skip_if_mxc_unavailable!(Ok(()));
     }
     let context = create_process_context(/*use_remote*/ true).await?;
     let workspace = TempDir::new()?;
@@ -1310,7 +1306,19 @@ async fn assert_remote_windows_sandbox_process_write(
         SandboxPolicy::new_read_only_policy(),
         cwd.clone(),
     )?;
-    sandbox.windows_sandbox_level = windows_sandbox_level;
+    match expected_sandbox_type {
+        codex_sandboxing::SandboxType::WindowsRestrictedToken => {
+            sandbox.windows_sandbox_selection = WindowsSandboxSelection::RestrictedToken;
+        }
+        codex_sandboxing::SandboxType::WindowsMxc => {
+            sandbox.windows_sandbox_selection = WindowsSandboxSelection::Mxc;
+        }
+        codex_sandboxing::SandboxType::None
+        | codex_sandboxing::SandboxType::MacosSeatbelt
+        | codex_sandboxing::SandboxType::LinuxSeccomp => {
+            anyhow::bail!("expected a Windows sandbox type")
+        }
+    }
 
     let session = match context
         .backend
@@ -1332,8 +1340,8 @@ async fn assert_remote_windows_sandbox_process_write(
             shell_snapshot: None,
             env_policy: /*env_policy*/ None,
             env: Default::default(),
-            tty: false,
-            pipe_stdin: true,
+            tty,
+            pipe_stdin: !tty,
             arg0: None,
             sandbox: Some(sandbox),
             enforce_managed_network: false,
@@ -1347,7 +1355,8 @@ async fn assert_remote_windows_sandbox_process_write(
     };
     assert_eq!(session.sandbox_type, Some(expected_sandbox_type));
 
-    let write_response = session.process.write(b"hello\n".to_vec()).await?;
+    let input = if tty { b"hello\r" } else { b"hello\n" };
+    let write_response = session.process.write(input.to_vec()).await?;
     assert_eq!(write_response.status, WriteStatus::Accepted);
     let StartedExecProcess { process, .. } = session;
     let wake_rx = process.subscribe_wake();
@@ -1765,23 +1774,28 @@ async fn exec_process_write_then_read_without_tty(use_remote: bool) -> Result<()
 }
 
 #[test_case(
-    WindowsSandboxLevel::RestrictedToken,
-    codex_sandboxing::SandboxType::WindowsRestrictedToken;
+    codex_sandboxing::SandboxType::WindowsRestrictedToken,
+    false;
     "restricted_token"
 )]
 #[test_case(
-    WindowsSandboxLevel::Mxc,
-    codex_sandboxing::SandboxType::WindowsMxc;
-    "mxc"
+    codex_sandboxing::SandboxType::WindowsMxc,
+    false;
+    "mxc_pipe"
+)]
+#[test_case(
+    codex_sandboxing::SandboxType::WindowsMxc,
+    true;
+    "mxc_conpty"
 )]
 #[cfg_attr(not(windows), ignore = "Windows-only exec-server sandbox process test")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(remote_exec_server)]
 async fn remote_windows_sandbox_process_accepts_process_write(
-    windows_sandbox_level: WindowsSandboxLevel,
     expected_sandbox_type: codex_sandboxing::SandboxType,
+    tty: bool,
 ) -> Result<()> {
-    assert_remote_windows_sandbox_process_write(windows_sandbox_level, expected_sandbox_type).await
+    assert_remote_windows_sandbox_process_write(expected_sandbox_type, tty).await
 }
 
 #[test_case(false ; "local")]

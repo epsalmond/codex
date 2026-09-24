@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Weak;
 
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -164,8 +165,17 @@ impl TurnItemEmitter for CoreTurnItemEmitter {
 }
 
 async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall<'_> {
-    let conversation_history =
-        ConversationHistory::new(invocation.session.clone_history().await.into_raw_items());
+    let history = invocation
+        .session
+        .clone_history()
+        .await
+        .into_shared_annotated_items();
+    let conversation_history = ConversationHistory::new_deferred(move || {
+        Arc::unwrap_or_clone(history)
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect()
+    });
     let settings = &invocation.step_context.settings;
     let codex_turn_metadata = invocation
         .turn
@@ -299,7 +309,7 @@ mod tests {
 
     struct CapturingExtensionExecutor {
         captured_call: Arc<Mutex<Option<codex_tools::ToolCall<'static>>>>,
-        captured_sandbox_cwds: Arc<Mutex<Vec<Option<PathUri>>>>,
+        captured_sandbox_cwds: Arc<Mutex<Vec<PathUri>>>,
     }
 
     impl<'call> codex_extension_api::ToolExecutor<codex_tools::ToolCall<'call>>
@@ -430,9 +440,9 @@ mod tests {
         let model = turn.model_info().slug.clone();
         let truncation_policy = turn.model_info().truncation_policy.into();
         let expected_sandbox_cwds = turn
-            .environments
+            .initial_environments
             .turn_environments()
-            .map(|environment| Some(environment.cwd().clone()))
+            .map(|environment| environment.cwd().clone())
             .collect::<Vec<_>>();
         let history_item = ResponseItem::Message {
             id: None,

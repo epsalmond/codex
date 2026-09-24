@@ -32,6 +32,7 @@ use codex_api::ApiError;
 use codex_api::ResponsesWebsocketClient;
 use codex_api::is_azure_responses_provider;
 use codex_arg0::Arg0DispatchPaths;
+use codex_config::ConfigLoadError;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::config::Config;
@@ -74,6 +75,7 @@ use supports_color::Stream;
 mod background;
 mod desktop;
 mod disk;
+mod filesystem_paths;
 mod git;
 mod network;
 mod output;
@@ -155,6 +157,10 @@ const NARROW_TERMINAL_ROWS: u16 = 24;
 /// detailed diagnostics by default; --summary keeps the terminal output compact.
 #[derive(Debug, Parser)]
 pub struct DoctorCommand {
+    /// Internal isolated filesystem probe; exits before loading configuration.
+    #[arg(long, hide = true)]
+    probe_filesystem_path: Option<PathBuf>,
+
     /// Emit a redacted machine-readable report.
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -320,6 +326,9 @@ pub async fn run_doctor(
     interactive: &TuiCli,
     arg0_paths: &Arg0DispatchPaths,
 ) -> anyhow::Result<()> {
+    if let Some(path) = &command.probe_filesystem_path {
+        std::process::exit(filesystem_paths::probe_exit_code(path));
+    }
     let report = build_report(&command, root_config_overrides, interactive, arg0_paths).await;
 
     if command.json {
@@ -380,6 +389,14 @@ async fn build_report(
     }));
     match &config_result {
         Ok(config) => {
+            // Other checks below do synchronous work inside join!. Keep the
+            // probe deadlines independent of those checks' scheduler delays.
+            let filesystem_paths_check = run_async_check(
+                "filesystem paths",
+                progress.clone(),
+                filesystem_paths::check(config),
+            )
+            .await;
             let auth_manager_result =
                 AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await;
             let auth_manager = auth_manager_result.as_ref().ok().cloned();
@@ -487,6 +504,7 @@ async fn build_report(
                 websocket_check,
                 mcp_check,
                 sandbox_check,
+                filesystem_paths_check,
                 terminal_check,
                 git_check,
                 terminal_title_check,
@@ -508,14 +526,38 @@ async fn build_report(
             ) = tokio::join!(
                 async {
                     run_sync_check("config", progress.clone(), || {
-                        DoctorCheck::new(
+                        let check = DoctorCheck::new(
                             "config.load",
                             "config",
                             CheckStatus::Fail,
                             "config could not be loaded",
                         )
-                        .detail(err.to_string())
-                        .remediation("Fix the reported config error, then rerun codex doctor.")
+                        .remediation("Fix the reported config error, then rerun codex doctor.");
+                        // Error messages can echo config values. Report only typed metadata,
+                        // including errors wrapped by io::Error, whose source skips the wrapper.
+                        let config_error = err.chain().find_map(|cause| {
+                            cause.downcast_ref::<ConfigLoadError>().or_else(|| {
+                                cause
+                                    .downcast_ref::<std::io::Error>()?
+                                    .get_ref()?
+                                    .downcast_ref::<ConfigLoadError>()
+                            })
+                        });
+                        if let Some(error) = config_error {
+                            let error = error.config_error();
+                            return check
+                                .detail("error: invalid configuration")
+                                .detail(format!("file: {}", error.path.display()))
+                                .detail(format!("line: {}", error.range.start.line))
+                                .detail(format!("column: {}", error.range.start.column));
+                        }
+                        let io_error = err
+                            .chain()
+                            .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+                        match io_error {
+                            Some(error) => check.detail(format!("error: {}", error.kind())),
+                            None => check.detail("error: configuration load failed"),
+                        }
                     })
                 },
                 async {
@@ -2384,6 +2426,7 @@ fn websocket_error_detail(err: &ApiError) -> String {
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
         | ApiError::CyberPolicy { .. }
+        | ApiError::BioPolicy { .. }
         | ApiError::MisalignmentPolicyViolation { .. }
         | ApiError::ServerOverloaded => format!("handshake error: {err}"),
     }

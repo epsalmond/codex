@@ -161,7 +161,10 @@ impl McpServerContributor<Config> for AppsMcpServerContributor {
                     .expect("test Apps MCP server config should be valid"),
             );
             let contribution = if self.id == "hosted_plugin_runtime" {
-                McpServerContribution::HostedApps { config }
+                McpServerContribution::HostedApps {
+                    config,
+                    protocol_mode: None,
+                }
             } else {
                 McpServerContribution::Set {
                     name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
@@ -494,10 +497,7 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
                 ),
                 shell_environment_policy: Default::default(),
                 windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
-                windows_sandbox_private_desktop: test
-                    .config
-                    .permissions
-                    .windows_sandbox_private_desktop,
+                windows_sandbox_type: test.config.permissions.windows_sandbox_type,
                 use_legacy_landlock: test.config.features.use_legacy_landlock(),
                 exec_policy: None,
                 mcp_policy: None,
