@@ -1,6 +1,5 @@
 use crate::ResponseItemEnvelope;
 use crate::RolloutItem;
-use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
@@ -54,54 +53,14 @@ pub struct ModelContextScan {
     saw_completed_turn_context: bool,
     must_scan_to_start: bool,
     active_segment: ActiveTurnSegment,
-    owner_thread_id: Option<ThreadId>,
-    latest_owned_settings: Option<RolloutItem>,
-    bounded_item_count: Option<usize>,
 }
 
 impl ModelContextScan {
-    /// Creates a bounded scan that also retains the owner's latest thread settings.
-    pub fn for_thread(owner_thread_id: ThreadId) -> Self {
-        Self {
-            owner_thread_id: Some(owner_thread_id),
-            ..Self::default()
-        }
-    }
-
     /// Adds the next newest-to-oldest rollout item and reports whether the reader can stop.
     pub fn push(&mut self, item: RolloutItem) -> ModelContextScanProgress {
-        if let Some(owner_thread_id) = self.owner_thread_id
-            && self.latest_owned_settings.is_none()
-            && let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &item
-            && event.thread_id == Some(owner_thread_id)
-        {
-            self.latest_owned_settings = Some(item.clone());
-        }
-
-        // Once the bounded suffix is proven, older records are only useful when this scan is
-        // also looking for the owner's latest settings checkpoint. Do not retain that older
-        // prefix while searching for it; `finish` keeps the checkpoint separately.
-        if self.bounded_item_count.is_some() {
-            return if self.owner_thread_id.is_some() && self.latest_owned_settings.is_none() {
-                ModelContextScanProgress::Continue
-            } else {
-                ModelContextScanProgress::Complete
-            };
-        }
-
         let progress = self.observe(&item);
         self.items_newest_first.push(item);
-        if progress == ModelContextScanProgress::Complete && self.bounded_item_count.is_none() {
-            self.bounded_item_count = Some(self.items_newest_first.len());
-        }
-        if self.owner_thread_id.is_some()
-            && self.bounded_item_count.is_some()
-            && self.latest_owned_settings.is_none()
-        {
-            ModelContextScanProgress::Continue
-        } else {
-            progress
-        }
+        progress
     }
 
     /// Returns the collected items in chronological order with canonical head metadata.
@@ -111,43 +70,13 @@ impl ModelContextScan {
     pub fn finish(mut self, session_meta: SessionMetaLine) -> Vec<RolloutItem> {
         self.items_newest_first.reverse();
         if self.has_bounded_cutoff() {
-            if let Some(bounded_item_count) = self.bounded_item_count {
-                let first_context_item = self
-                    .items_newest_first
-                    .len()
-                    .saturating_sub(bounded_item_count);
-                self.items_newest_first.drain(..first_context_item);
-            }
             // A bounded scan stops before reaching the head. Prepend the separately loaded head
             // SessionMeta, which remains canonical when copied fork history contains later
             // metadata.
             self.items_newest_first
                 .insert(0, RolloutItem::SessionMeta(session_meta));
-            if let Some(settings) = self.latest_owned_settings
-                && !self.items_newest_first.iter().any(|item| {
-                    matches!(
-                        item,
-                        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
-                            if self
-                                .owner_thread_id
-                                .is_some_and(|owner| event.thread_id == Some(owner))
-                    )
-                })
-            {
-                self.items_newest_first.push(settings);
-            }
         }
         self.items_newest_first
-    }
-
-    /// Returns a bounded replay only when the collected suffix proves that the model context is
-    /// safe to resume from. A caller reaching EOF can use this to distinguish a bounded suffix
-    /// from a scan that must fall back to complete replay.
-    pub fn finish_bounded(self, session_meta: SessionMetaLine) -> Option<Vec<RolloutItem>> {
-        if !self.has_bounded_cutoff() {
-            return None;
-        }
-        Some(self.finish(session_meta))
     }
 
     fn observe(&mut self, item: &RolloutItem) -> ModelContextScanProgress {

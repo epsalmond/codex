@@ -61,7 +61,6 @@ impl Handler {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| agent.thread_id.to_string()),
                 agent_status: agent.status,
-                context_reduction: agent.context_reduction.map(|snapshot| *snapshot),
             })
             .collect();
         Ok(boxed_tool_output(ListAgentsResult { agents }))
@@ -84,7 +83,6 @@ struct ListAgentsArgs {
 struct ListedAgent {
     agent_name: String,
     agent_status: AgentStatus,
-    context_reduction: Option<crate::agent::types::AgentContextReductionTelemetry>,
 }
 
 #[derive(Debug, Serialize)]

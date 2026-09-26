@@ -504,7 +504,7 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     assert_eq!(
         output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
             ["required"],
-        json!(["agent_name", "agent_status", "context_reduction"])
+        json!(["agent_name", "agent_status"])
     );
 }
 

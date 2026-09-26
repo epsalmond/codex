@@ -43,7 +43,6 @@ fn settings_item(
                 reasoning_effort: None,
                 reasoning_summary: None,
                 personality: None,
-                subagent_context_reduction_policy: None,
                 collaboration_mode: CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

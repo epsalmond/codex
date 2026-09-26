@@ -45,7 +45,6 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ExecutedToolCall;
-use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -575,13 +574,6 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
             true,
         ),
         (
-            "rewritten_result",
-            "https://api.openai.com/v1",
-            Some("first"),
-            Some("first"),
-            false,
-        ),
-        (
             "changed_result",
             "https://api.openai.com/v1",
             Some("first"),
@@ -621,14 +613,6 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
                 output.set_tool_call_cell_id("exec-call");
                 output
             });
-        if scenario == "rewritten_result" {
-            let ResponseItem::CustomToolCallOutput { output, .. } = &mut current_output else {
-                panic!("expected a custom-tool output before simulated shake");
-            };
-            output.body = FunctionCallOutputBody::Text(
-                "[shaken ~8192 tokens from tool output. original: /tmp/answer.log]".to_string(),
-            );
-        }
         previous_output.set_turn_id_if_missing("previous-turn");
         current_output.set_turn_id_if_missing("current-turn");
         let mut previous = client.build_responses_request(

@@ -1,7 +1,6 @@
 use super::residency::is_v2_resident_session_source;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
-use crate::agent::context_policy;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
@@ -639,27 +638,6 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
         let state = self.upgrade()?;
-        let context_policy_state = match session_source.as_ref() {
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            })) => {
-                let overrides = options.context_reduction_policy.clone().unwrap_or_default();
-                context_policy::validate_overrides(&overrides).map_err(CodexErr::InvalidRequest)?;
-                let parent_policy = state
-                    .get_thread(*parent_thread_id)
-                    .await?
-                    .session
-                    .subagent_context_reduction_policy()
-                    .await
-                    .unwrap_or_default();
-                Some(context_policy::for_child(
-                    &parent_policy,
-                    overrides,
-                    options.context_policy_inherit_to_children.unwrap_or(true),
-                ))
-            }
-            _ => None,
-        };
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -764,25 +742,6 @@ impl LocalAgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
-        if let Some(context_policy_state) = context_policy_state
-            && let Err(error) = new_thread
-                .thread
-                .session
-                .install_subagent_context_reduction_policy(context_policy_state)
-                .await
-        {
-            if let Err(shutdown_error) = new_thread.thread.shutdown_and_wait().await {
-                tracing::warn!(
-                    %shutdown_error,
-                    child_thread_id = %new_thread.thread_id,
-                    "failed to stop child after context policy initialization failed"
-                );
-            }
-            let _ = state.remove_thread(&new_thread.thread_id).await;
-            return Err(CodexErr::InvalidRequest(format!(
-                "failed to initialize subagent context policy: {error}"
-            )));
-        }
         agent_metadata.agent_id = Some(new_thread.thread_id);
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
@@ -875,7 +834,6 @@ impl LocalAgentControl {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
             status: self.get_status(new_thread.thread_id).await,
-            context_reduction: None,
         })
     }
 
