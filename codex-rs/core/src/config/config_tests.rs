@@ -856,6 +856,42 @@ async fn load_config_rejects_non_positive_auto_compact_fallback_buffer() -> std:
 }
 
 #[tokio::test]
+async fn load_config_resolves_subagent_context_reduction() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config = Config::load_from_base_config_with_overrides(
+        toml::from_str(
+            "[subagent_context_reduction]\nenabled = false\nthreshold_tokens = 150000\n",
+        )
+        .expect("TOML should deserialize"),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        config.subagent_context_reduction,
+        SubagentContextReductionConfig {
+            enabled: false,
+            threshold_tokens: 150_000,
+        }
+    );
+
+    let codex_home = tempdir()?;
+    let error = Config::load_from_base_config_with_overrides(
+        toml::from_str("[subagent_context_reduction]\nthreshold_tokens = 0\n")
+            .expect("TOML should deserialize"),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("zero threshold should be rejected");
+    assert_eq!(
+        error.to_string(),
+        "subagent_context_reduction.threshold_tokens must be positive"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_rejects_missing_auto_compact_fallback_buffer() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml = toml::from_str(

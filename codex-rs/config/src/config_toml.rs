@@ -178,6 +178,11 @@ pub struct ConfigToml {
     #[serde(default)]
     pub auto_shake: Option<AutoShakeToml>,
 
+    /// Lower the context-reduction limits of spawned and resumed subagents so
+    /// they shake and compact earlier than the root agent.
+    #[serde(default)]
+    pub subagent_context_reduction: Option<SubagentContextReductionToml>,
+
     /// Percentage of the usable context window that triggers compaction after a final
     /// response. Existing auto-compaction limits still apply. Omitted or zero disables
     /// turn-end compaction; valid values are 0–100.
@@ -567,6 +572,23 @@ pub struct AutoReviewToml {
     pub policy: Option<String>,
     /// Experimental full Guardian prompt template containing the tenant policy placeholder.
     pub experimental_policy_template: Option<String>,
+}
+
+/// `[subagent_context_reduction]`: caps the auto-compaction limit and the
+/// auto-shake threshold of subagents. The root agent is unaffected.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SubagentContextReductionToml {
+    /// Apply the subagent cap. Defaults to `true`.
+    pub enabled: Option<bool>,
+
+    /// Token count at which subagents shake and then compact, when lower
+    /// than the limits they would otherwise inherit. Defaults to 272000.
+    /// Under `model_auto_compact_token_limit_scope = "body_after_prefix"` the
+    /// compaction cap applies to body tokens while the shake cap applies to
+    /// total tokens.
+    #[schemars(range(min = 1))]
+    pub threshold_tokens: Option<u64>,
 }
 
 /// Automatic surgical context reduction ("auto-shake") settings.

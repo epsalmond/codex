@@ -473,9 +473,18 @@ fn list_agents_output_schema() -> Value {
                         "agent_status": {
                             "description": "Last known status of the agent.",
                             "allOf": [agent_status_output_schema()]
+                        },
+                        "context": {
+                            "type": ["object", "null"],
+                            "description": "Active context tokens. basis \"usage\": last model-reported usage plus estimated newer items; \"estimate\": no usage reported since the last history rewrite. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient}) or null. Null when unavailable.",
+                            "properties": {
+                                "active_tokens": { "type": "integer" },
+                                "basis": { "type": "string", "enum": ["usage", "estimate"] },
+                                "last_reduction": { "type": ["object", "null"] }
+                            }
                         }
                     },
-                    "required": ["agent_name", "agent_status"],
+                    "required": ["agent_name", "agent_status", "context"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."

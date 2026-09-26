@@ -105,4 +105,4 @@ Settings:
     Check which agents are working under /root before delegating more work.
 -- request 2 (turn) --
 07:function_call/collaboration.list_agents:{"path_prefix":"/root"}
-08:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running"}]}
+08:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running","context":{"active_tokens":0,"basis":"usage","last_reduction":null}}]}

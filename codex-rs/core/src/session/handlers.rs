@@ -68,7 +68,7 @@ pub async fn interrupt(sess: &Arc<Session>) {
 /// `Automatic`.
 ///
 /// `AutomaticEscalated` is the second, more aggressive pre-sampling pass that
-/// `maybe_run_pre_sampling_auto_shake` runs when the first automatic pass
+/// `maybe_run_auto_shake` runs when the first automatic pass
 /// (whether it applied or was skipped for freeing too little) left the thread
 /// still above the auto-shake threshold. At most one escalated pass runs per
 /// pre-sampling point, and only compaction follows it.
@@ -121,7 +121,7 @@ pub async fn shake(
     // Auto-shake does not go through here: it runs *inside* run_turn at the
     // pre-sampling point, where `active_turn` is already `Some` but no step
     // context has captured history yet. See
-    // `session::turn::maybe_run_pre_sampling_auto_shake`, which calls
+    // `session::turn::maybe_run_auto_shake`, which calls
     // `apply_shake` directly with the turn's own context.
     let has_active_turn = { sess.active_turn.lock().await.is_some() };
     if has_active_turn {
@@ -154,8 +154,11 @@ pub async fn shake(
 ///
 /// SAFETY / ORDERING: the caller must guarantee that no in-flight step context
 /// holds a snapshot of the history being rewritten. `shake` guarantees this by
-/// refusing when a turn is active; auto-shake guarantees it by running at the
-/// pre-sampling point, before `capture_step_context`.
+/// refusing when a turn is active; auto-shake guarantees it by running only at
+/// the pre-sampling point, before `capture_step_context`, or at a subagent's
+/// mid-turn roll-over point, where the live step context holds settings, tools,
+/// and MCP bindings but no history snapshot, and the next one is captured only
+/// after the rewrite.
 pub(crate) async fn apply_shake(
     sess: &Arc<Session>,
     turn_context: &TurnContext,

@@ -31,7 +31,7 @@ Implementation:
 | Auto-shake decision layer (pure, unit-tested) | `codex-rs/core/src/shake/auto.rs` |
 | Artifact store (`save`, the savable-in size cap) | `codex-rs/core/src/artifacts.rs` |
 | Orchestration (persist, re-account, announce) | `codex-rs/core/src/session/handlers.rs` (`shake`, `apply_shake`) |
-| Auto-shake trigger | `codex-rs/core/src/session/turn.rs` (`maybe_run_pre_sampling_auto_shake`) |
+| Auto-shake trigger | `codex-rs/core/src/session/turn.rs` (`maybe_run_auto_shake`) |
 | Idle clock behind the cold-resume trigger | `codex-rs/core/src/session/prompt_cache_clock.rs` |
 
 ## Modes
@@ -219,7 +219,7 @@ A single elide pass is not always enough: `AUTO_PROTECT_TOKENS`'s large
 protected tail (16,000 tokens) can leave the thread above the auto-shake
 threshold even after removing everything eligible. When that happens —
 whether the first pass applied, or was skipped at step 6 or 7 above
-(`below_min_elidable_share` or `below_min_savings`) — `maybe_run_pre_sampling_auto_shake`
+(`below_min_elidable_share` or `below_min_savings`) — `maybe_run_auto_shake`
 runs one more pass with oh-my-pi's aggressive settings before falling through
 to compaction:
 
@@ -249,7 +249,7 @@ provider's prompt-cache TTL, that rebuild is already owed — the next request
 re-sends the whole prompt uncached whether or not anything was shaken. A shake
 there is free relative to not shaking, and makes every later request cheaper.
 
-So when neither threshold fires, `maybe_run_pre_sampling_auto_shake` consults
+So when neither threshold fires, `maybe_run_auto_shake` consults
 one more trigger: has this thread been idle longer than its provider's
 prompt-cache TTL? If so it runs a single pass with
 `ShakeTrigger::AutomaticColdResume` — the same large `AUTO_PROTECT_TOKENS`

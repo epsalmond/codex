@@ -4,7 +4,7 @@
 //! `[auto_shake]` settings for a model and answers "should this thread shake
 //! instead of compacting?". It performs no I/O and touches no session state, so
 //! every rule below is unit-testable. The orchestration lives in
-//! `session::turn::maybe_run_pre_sampling_auto_shake`.
+//! `session::turn::maybe_run_auto_shake`.
 
 use std::time::Duration;
 
@@ -198,6 +198,7 @@ impl AutoShakeConfig {
                     )
                 })
                 .collect(),
+            max_threshold_tokens: None,
         })
     }
 
@@ -383,24 +384,25 @@ impl AutoShakeConfig {
         }
         let context_window = context_window.filter(|window| *window > 0);
         let threshold = match settings.threshold {
+            // A percent threshold has nothing to compare against without a
+            // resolved window.
             AutoShakeThresholdKind::Percent(percent) => {
-                // A percent threshold has nothing to compare against without a
-                // resolved window.
-                let Some(context_window) = context_window else {
-                    return AutoShakeDecision::Skip(AutoShakeSkip::NoContextWindow);
-                };
-                context_window.saturating_mul(percent) / 100
+                context_window.map(|context_window| context_window.saturating_mul(percent) / 100)
             }
+            // An absolute threshold works without a window. When the window is
+            // known, cap the threshold at it so a misconfigured absolute value
+            // above the window still fires rather than silently never triggering.
             AutoShakeThresholdKind::Tokens(tokens) => {
-                // An absolute threshold works without a window. When the
-                // window is known, cap the threshold at it so a misconfigured
-                // absolute value above the window still fires rather than
-                // silently never triggering.
-                match context_window {
-                    Some(context_window) => tokens.min(context_window),
-                    None => tokens,
-                }
+                Some(context_window.map_or(tokens, |context_window| tokens.min(context_window)))
             }
+        };
+        // The internal cap applies on its own when a percent threshold has no window.
+        let Some(threshold) = [threshold, self.max_threshold_tokens]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
+            return AutoShakeDecision::Skip(AutoShakeSkip::NoContextWindow);
         };
         if active_context_tokens < threshold {
             return AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold);
@@ -722,6 +724,43 @@ min_elidable_percent = 90
                 min_elidable_percent: 30,
                 min_savings_tokens: 4_000,
             }
+        );
+    }
+
+    #[test]
+    fn max_threshold_tokens_caps_a_percent_threshold() {
+        // Astra defaults to 40% of 1_000_000 = 400_000; the cap lowers it.
+        let config = AutoShakeConfig {
+            max_threshold_tokens: Some(272_000),
+            ..AutoShakeConfig::default()
+        };
+        assert_eq!(
+            config.decide(ASTRA, 271_999, Some(1_000_000), true),
+            AutoShakeDecision::Skip(AutoShakeSkip::BelowThreshold)
+        );
+        assert_eq!(
+            config.decide(ASTRA, 272_000, Some(1_000_000), true),
+            AutoShakeDecision::Preview {
+                min_elidable_percent: 30,
+                min_savings_tokens: 4_000,
+            }
+        );
+        // Without a resolved window the percent threshold falls back to the cap.
+        assert_eq!(
+            config.decide(ASTRA, 272_000, None, true),
+            AutoShakeDecision::Preview {
+                min_elidable_percent: 30,
+                min_savings_tokens: 4_000,
+            }
+        );
+        // The cap never re-enables a family that is `"off"`.
+        let config = AutoShakeConfig {
+            max_threshold_tokens: Some(272_000),
+            ..toml("[models.\"gpt-6-astra\"]\nthreshold = \"off\"\n")
+        };
+        assert_eq!(
+            config.decide(ASTRA, 900_000, None, true),
+            AutoShakeDecision::Skip(AutoShakeSkip::Disabled)
         );
     }
 
