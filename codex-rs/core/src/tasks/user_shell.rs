@@ -81,6 +81,10 @@ impl SessionTask for UserShellCommandTask {
         "session_task.user_shell"
     }
 
+    fn reads_pending_input(&self) -> bool {
+        false
+    }
+
     async fn run(
         self: Arc<Self>,
         session: Arc<Session>,

@@ -8,6 +8,7 @@ use codex_protocol::models::ContentItemKind;
 const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
+const SUBAGENT_BLOCKED_USAGE_HINT_TEXT: &str = "If you are blocked, end your turn with your question; your parent will reply with a follow-up.";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
 All agents share the same directory. In detail:
@@ -29,6 +30,9 @@ pub enum MultiAgentRoleInstructions {
         max_concurrency: usize,
         wait_agent_enabled: bool,
         expose_model_overrides: bool,
+        /// True for the root's role text, false for a subagent's. The root loses `wait_agent`
+        /// in wake mode (`wait_agent_enabled: false`); subagents always keep it.
+        is_root: bool,
     },
 }
 
@@ -65,6 +69,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 max_concurrency,
                 wait_agent_enabled,
                 expose_model_overrides,
+                is_root,
                 ..
             } => {
                 let base = if *omit_update_plan_instructions {
@@ -72,14 +77,35 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 } else {
                     base.clone()
                 };
-                let wait_agent_guidance = if *wait_agent_enabled {
-                    format!("{DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT}\n\n")
+                // Subagents always keep `wait_agent`; only the root loses it in wake mode.
+                let wait_agent_guidance =
+                    format!("{DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT}\n\n");
+                let (shared, role_guidance): (String, String) = if *is_root {
+                    if *wait_agent_enabled {
+                        (
+                            DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string(),
+                            wait_agent_guidance,
+                        )
+                    } else {
+                        (
+                            DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT
+                                .replace("`wait_agent`, ", ""),
+                            String::new(),
+                        )
+                    }
+                } else if *wait_agent_enabled {
+                    (
+                        DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string(),
+                        wait_agent_guidance,
+                    )
                 } else {
-                    String::new()
+                    (
+                        DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string(),
+                        format!("{wait_agent_guidance}{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\n"),
+                    )
                 };
-                let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
                 let mut text = format!(
-                    "{base}\n{shared}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
+                    "{base}\n{shared}\n{role_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
                 );
                 if *expose_model_overrides {
                     text.push_str("\n\n");

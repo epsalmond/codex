@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Child agent results held by an interrupted thread until its next user message.",
+  "properties": {
+    "paused": {
+      "description": "Whether automatic wakeups from child results are paused until the next user message.",
+      "type": "boolean"
+    },
+    "queuedResults": {
+      "description": "Child results that the next user turn will carry.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "paused",
+    "queuedResults",
+    "threadId"
+  ],
+  "title": "ThreadWakeupsUpdatedNotification",
+  "type": "object"
+}

@@ -24,6 +24,8 @@ pub(crate) struct PendingInputPreview {
     pub pending_steers: Vec<String>,
     pub rejected_steers: Vec<String>,
     pub queued_messages: Vec<String>,
+    /// Child agent results held while automatic wakeups are paused.
+    pub queued_agent_results: u32,
     /// Key combination rendered in the hint line.  Defaults to Alt+Up but may
     /// be overridden for terminals where that chord is unavailable.
     pub(super) edit_binding: Option<key_hint::ShortcutHint>,
@@ -44,6 +46,7 @@ impl PendingInputPreview {
             pending_steers: Vec::new(),
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
+            queued_agent_results: 0,
             edit_binding: Some(key_hint::alt(KeyCode::Up).into()),
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
         }
@@ -86,6 +89,7 @@ impl PendingInputPreview {
         if (self.pending_steers.is_empty()
             && self.rejected_steers.is_empty()
             && self.queued_messages.is_empty()
+            && self.queued_agent_results == 0
             && !has_questions)
             || width < 4
         {
@@ -175,6 +179,26 @@ impl PendingInputPreview {
             lines.push(hint);
         }
 
+        let queued_agent_results = self.queued_agent_results;
+        if queued_agent_results > 0 {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            let noun = if queued_agent_results == 1 {
+                "result"
+            } else {
+                "results"
+            };
+            Self::push_section_header(
+                &mut lines,
+                width,
+                Line::from(vec![
+                    format!("{queued_agent_results} child {noun} queued").cyan(),
+                    " — delivered with your next message".dim(),
+                ]),
+            );
+        }
+
         Paragraph::new(lines).into()
     }
 }
@@ -240,6 +264,32 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         queue.render(Rect::new(0, 0, width, height), &mut buf);
         assert_snapshot!("render_one_message", format!("{buf:?}"));
+    }
+
+    #[test]
+    fn render_queued_agent_results_below_queued_messages() {
+        let mut queue = PendingInputPreview::new();
+        queue.queued_messages.push("Hello, world!".to_string());
+        queue.queued_agent_results = 2;
+        let width = 60;
+        let height = queue.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        queue.render(Rect::new(0, 0, width, height), &mut buf);
+        assert_snapshot!(
+            "render_queued_agent_results_below_queued_messages",
+            format!("{buf:?}")
+        );
+    }
+
+    #[test]
+    fn render_one_queued_agent_result_alone() {
+        let mut queue = PendingInputPreview::new();
+        queue.queued_agent_results = 1;
+        let width = 60;
+        let height = queue.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        queue.render(Rect::new(0, 0, width, height), &mut buf);
+        assert_snapshot!("render_one_queued_agent_result_alone", format!("{buf:?}"));
     }
 
     #[test]

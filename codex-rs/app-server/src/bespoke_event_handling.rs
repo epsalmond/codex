@@ -68,6 +68,7 @@ use codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
+use codex_app_server_protocol::ThreadWakeupsUpdatedNotification;
 use codex_app_server_protocol::ToolRequestUserInputOption;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
@@ -1231,6 +1232,17 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::ThreadRolledBack(_) | EventMsg::ThreadQueueChanged(_) => {}
+        EventMsg::AgentWakeupsUpdated(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadWakeupsUpdated(
+                    ThreadWakeupsUpdatedNotification {
+                        thread_id: conversation_id.to_string(),
+                        paused: event.paused,
+                        queued_results: event.queued_results,
+                    },
+                ))
+                .await;
+        }
         EventMsg::ThreadSettingsApplied(_) => {
             let thread_settings =
                 thread_settings_from_config_snapshot(&conversation.config_snapshot().await);

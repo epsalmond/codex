@@ -37,6 +37,7 @@ use codex_protocol::protocol::NonSteerableTurnKind;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::turn_input::NotSubmittedReason;
 use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
 use codex_protocol::turn_input::TurnInputMode;
@@ -354,13 +355,32 @@ async fn start_or_steer(
             if let SubmittedTurnInput::UserInput { content, .. } = &input {
                 turn_context.session_telemetry.user_prompt(content);
             }
+            let resumes_wakeups = has_explicit_input
+                && matches!(&input, SubmittedTurnInput::UserInput { .. })
+                && session.input_queue.wakeups_paused();
             let mut task_input = merge_additional_context_input(session, additional_context).await;
             if has_explicit_input {
                 task_input.push(pending_turn_input(session, input, &turn_context.sub_id).await);
             }
-            session
-                .spawn_task(turn_context, task_input, RegularTask::new())
-                .await;
+            if resumes_wakeups {
+                // Reserve the turn before clearing the pause, as `start_if_idle` does, so the
+                // previous turn's completion cannot start a wake turn on the held mail.
+                session.abort_all_tasks(TurnAbortReason::Replaced).await;
+                session.clear_connector_selection().await;
+                session
+                    .active_turn
+                    .lock()
+                    .await
+                    .get_or_insert_with(ActiveTurn::default);
+                session.resume_paused_wakeups().await;
+                session
+                    .start_task(turn_context, task_input, RegularTask::new())
+                    .await;
+            } else {
+                session
+                    .spawn_task(turn_context, task_input, RegularTask::new())
+                    .await;
+            }
             Ok(TurnInputSubmission::Started {
                 turn_id: submission_id,
             })
@@ -489,6 +509,7 @@ async fn start_if_idle(
             if let SubmittedTurnInput::UserInput { content, .. } = &input {
                 turn_context.session_telemetry.user_prompt(content);
             }
+            session.resume_paused_wakeups().await;
             task_input.push(pending_turn_input(session, input, &turn_context.sub_id).await);
         }
         TurnStartKind::Automatic | TurnStartKind::Recovery => {
@@ -674,6 +695,7 @@ impl Session {
             return Err(NotSubmittedReason::ActiveTurnOutputSchemaMismatch);
         }
         let mut pending_input = merge_additional_context_input(self, additional_context).await;
+        let is_user_input = matches!(input, SubmittedTurnInput::UserInput { .. });
 
         if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
             active_task
@@ -697,13 +719,21 @@ impl Session {
             input => pending_turn_input(self, input.clone(), active_turn_id).await,
         };
         pending_input.push(input);
+        // A user message clears an Esc pause. Clearing it while this turn cannot take input yet
+        // lets the turn drain the held results together with the message.
+        let resumed_wakeups = is_user_input && self.input_queue.resume_wakeups();
         self.input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 active_turn.turn_state.as_ref(),
                 pending_input,
             )
             .await;
-        Ok(active_turn_id.clone())
+        let active_turn_id = active_turn_id.clone();
+        drop(active);
+        if resumed_wakeups {
+            self.emit_agent_wakeups_updated().await;
+        }
+        Ok(active_turn_id)
     }
 }
 

@@ -1425,7 +1425,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         })
         .await;
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -1538,7 +1538,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_role: None,
     });
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -1600,7 +1600,7 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
         .await
         .expect("close_agent should succeed");
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -1671,7 +1671,7 @@ async fn multi_agent_v2_list_agents_keeps_interrupted_resident_agents() {
         .expect("interrupt_agent should succeed");
     let _ = expect_text_output(interrupt_output);
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -1947,7 +1947,9 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                                 if communication.author == worker_path
                                     && communication.recipient == AgentPath::root()
                                     && communication.other_recipients.is_empty()
-                                    && !communication.trigger_turn =>
+                                    // Completions to the root are marked as wakes; the root
+                                    // decides on receipt.
+                                    && communication.trigger_turn =>
                             {
                                 Some(communication.content)
                             }
@@ -3955,7 +3957,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
         .expect("closed children should load");
     assert_eq!(closed_children, Vec::<ThreadId>::new());
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session.clone(),
             turn.clone(),

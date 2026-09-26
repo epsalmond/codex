@@ -1,10 +1,14 @@
 use super::analytics::ToolCallAnalytics;
 use super::*;
 use crate::agent::types::AgentContextUsage;
+use crate::session::multi_agents::ChildReportMode;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    pub(crate) child_report_mode: ChildReportMode,
+}
 
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
@@ -12,7 +16,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_list_agents_tool()
+        create_list_agents_tool(self.child_report_mode)
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>

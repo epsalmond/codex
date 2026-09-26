@@ -22,6 +22,7 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
             max_concurrency: 2,
             wait_agent_enabled: true,
             expose_model_overrides: true,
+            is_root: true,
         };
         let expected_text = if marked {
             format!("<multi_agent_role>{expected_body}</multi_agent_role>")

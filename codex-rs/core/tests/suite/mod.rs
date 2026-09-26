@@ -37,6 +37,7 @@ pub static CODEX_ALIASES_TEMP_DIR: Option<TestBinaryDispatchGuard> = {
 mod abort_tasks;
 mod additional_context;
 mod agent_execution;
+mod agent_wake;
 mod agent_websocket;
 mod agents_md;
 mod app_tool_exposure;

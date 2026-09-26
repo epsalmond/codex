@@ -1,14 +1,19 @@
 use super::SessionTask;
 use super::SessionTaskResult;
 use super::TASK_COMPACT_METRIC;
+use super::UserShellCommandTask;
 use super::emit_compact_metric;
 use super::emit_turn_memory_metric;
 use super::emit_turn_network_proxy_metric;
 use crate::session::TurnInput;
+use crate::session::multi_agents::ChildReportMode;
 use crate::session::session::Session;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
+use codex_features::Feature;
+use codex_login::CodexAuth;
 use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
 use codex_otel::SessionTelemetry;
@@ -17,8 +22,11 @@ use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_otel::TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use opentelemetry::KeyValue;
@@ -477,5 +485,127 @@ fn emit_compact_metric_records_auto_local() {
             ("manual".to_string(), "false".to_string()),
             ("type".to_string(), "local".to_string()),
         ])
+    );
+}
+
+/// Compaction, review and user shell commands never read the input that `start_task` hands them.
+/// In wake mode they return its agent mail, in order, for a wake turn to deliver. A regular turn
+/// records unread mail instead, so a turn that ended before reading it cannot restart on the same
+/// mail. Outside wake mode every task records it, as upstream does.
+#[tokio::test]
+async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
+    struct UnreadInputTask(TaskKind);
+
+    impl SessionTask for UnreadInputTask {
+        fn kind(&self) -> TaskKind {
+            self.0
+        }
+
+        fn span_name(&self) -> &'static str {
+            "session_task.unread_input"
+        }
+
+        async fn run(
+            self: Arc<Self>,
+            _session: Arc<Session>,
+            _ctx: Arc<TurnContext>,
+            _input: Vec<TurnInput>,
+            _cancellation_token: CancellationToken,
+        ) -> SessionTaskResult {
+            Ok(None)
+        }
+    }
+
+    const UNREAD: [(&str, bool); 2] = [("unread progress", false), ("unread report", true)];
+    let unread = || {
+        UNREAD.map(|(content, trigger_turn)| {
+            InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                AgentPath::root(),
+                Vec::new(),
+                content.to_string(),
+                trigger_turn,
+            )
+        })
+    };
+    /// Returns the mail left in the mailbox and how many unread items history recorded.
+    async fn finish_with_unread_mail(
+        task: impl SessionTask,
+        mode: ChildReportMode,
+        unread: [InterAgentCommunication; 2],
+    ) -> (Vec<TurnInput>, usize) {
+        let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                config
+                    .features
+                    .enable(Feature::MultiAgentV2)
+                    .expect("test config should allow feature update");
+                config.multi_agent_v2.wait_agent_enabled = mode == ChildReportMode::WaitAgent;
+            },
+        )
+        .await;
+        for communication in unread {
+            session
+                .input_queue
+                .enqueue_mailbox_communication(communication, Default::default())
+                .await;
+        }
+        session.spawn_task(turn_context, Vec::new(), task).await;
+        // Holds returned mail so no real wake turn starts. `start_task` has already handed the
+        // mail to the task, which has not run yet on this single-threaded runtime.
+        session.input_queue.pause_wakeups();
+        while !matches!(
+            rx.recv().await.expect("event").msg,
+            EventMsg::TurnComplete(_)
+        ) {}
+        session.input_queue.resume_wakeups();
+        let history = session.clone_history().await;
+        let recorded = history
+            .raw_items()
+            .filter(|item| {
+                serde_json::to_string(item)
+                    .expect("serialize history item")
+                    .contains("unread ")
+            })
+            .count();
+        (
+            session.input_queue.drain_mailbox_input_items().await.0,
+            recorded,
+        )
+    }
+
+    let mut outcomes = Vec::new();
+    for (kind, mode) in [
+        (TaskKind::Regular, ChildReportMode::WakeOnReport),
+        (TaskKind::Compact, ChildReportMode::WakeOnReport),
+        (TaskKind::Review, ChildReportMode::WakeOnReport),
+        (TaskKind::Compact, ChildReportMode::WaitAgent),
+        (TaskKind::Review, ChildReportMode::WaitAgent),
+    ] {
+        outcomes.push(finish_with_unread_mail(UnreadInputTask(kind), mode, unread()).await);
+    }
+    for mode in [ChildReportMode::WakeOnReport, ChildReportMode::WaitAgent] {
+        let shell = UserShellCommandTask::new("echo shell".to_string(), /*timeout_ms*/ None);
+        outcomes.push(finish_with_unread_mail(shell, mode, unread()).await);
+    }
+
+    let returned = unread()
+        .into_iter()
+        .map(TurnInput::InterAgentCommunication)
+        .collect::<Vec<_>>();
+    let recorded = (Vec::new(), 2);
+    assert_eq!(
+        outcomes,
+        vec![
+            recorded.clone(),
+            (returned.clone(), 0),
+            (returned.clone(), 0),
+            recorded.clone(),
+            recorded.clone(),
+            (returned, 0),
+            recorded,
+        ]
     );
 }

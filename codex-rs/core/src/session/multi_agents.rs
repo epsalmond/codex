@@ -11,6 +11,46 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
+const SPAWN_AGENT_WAKE_ON_REPORT_TEXT: &str = "Delegation is asynchronous. While children work, continue with any independent work. When you have nothing left to do until a child reports back, end your turn with a short status. A new turn starts for you when a child finishes or asks a question, and that turn's input carries the child's message. Results also arrive mid-turn while you are still working.";
+const LIST_AGENTS_DESCRIPTION: &str =
+    "List live agents in the current root thread tree. Optionally filter by task-path prefix.";
+const LIST_AGENTS_WAKE_ON_REPORT_DESCRIPTION: &str = "Look up the names and task paths of live agents in the current root thread tree, to address them with `send_message` or `followup_task`. Optionally filter by task-path prefix.";
+
+/// How a MultiAgentV2 thread learns that a child agent has reported back.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ChildReportMode {
+    /// The thread calls `wait_agent` to block until a child's mailbox update arrives.
+    #[default]
+    WaitAgent,
+    /// The thread ends its turn while children work, and a child's final answer starts its
+    /// next turn. Only the root thread uses this mode, when `wait_agent` is disabled.
+    WakeOnReport,
+}
+
+impl ChildReportMode {
+    pub(crate) fn for_thread(config: &MultiAgentV2Config, session_source: &SessionSource) -> Self {
+        if config.wait_agent_enabled || session_source.is_non_root_agent() {
+            Self::WaitAgent
+        } else {
+            Self::WakeOnReport
+        }
+    }
+
+    pub(crate) fn spawn_agent_guidance(self) -> Option<&'static str> {
+        match self {
+            Self::WaitAgent => None,
+            Self::WakeOnReport => Some(SPAWN_AGENT_WAKE_ON_REPORT_TEXT),
+        }
+    }
+
+    pub(crate) fn list_agents_description(self) -> &'static str {
+        match self {
+            Self::WaitAgent => LIST_AGENTS_DESCRIPTION,
+            Self::WakeOnReport => LIST_AGENTS_WAKE_ON_REPORT_DESCRIPTION,
+        }
+    }
+}
+
 pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRoleInstructions> {
     let turn_context = step_context.turn.as_ref();
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {
@@ -41,7 +81,7 @@ pub(crate) fn resolve_usage_hints(
     multi_agent_messages: ResolvedMultiAgentMessages<'_>,
     omit_update_plan_instructions: bool,
 ) -> ResolvedMultiAgentV2UsageHints {
-    let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>| {
+    let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>, is_root: bool| {
         // Configured roles take precedence; empty configured or catalog roles suppress fallback.
         if let Some(configured) = configured {
             return (!configured.is_empty())
@@ -59,6 +99,7 @@ pub(crate) fn resolve_usage_hints(
             max_concurrency: config.max_concurrent_threads_per_session,
             wait_agent_enabled: config.wait_agent_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
+            is_root,
         })
     };
 
@@ -66,10 +107,12 @@ pub(crate) fn resolve_usage_hints(
         root: resolve_role(
             config.root_agent_usage_hint_text.as_deref(),
             multi_agent_messages.root,
+            /*is_root*/ true,
         ),
         subagent: resolve_role(
             config.subagent_usage_hint_text.as_deref(),
             multi_agent_messages.subagent,
+            /*is_root*/ false,
         ),
     }
 }

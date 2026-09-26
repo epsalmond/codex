@@ -36,14 +36,14 @@ use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
+use crate::session::daemon_recovery::RecordedTurnInput;
 use crate::session::handlers;
 use crate::session::handlers::ShakeTrigger;
 use crate::session::mid_turn_reduction::MidTurnReduction;
 use crate::session::mid_turn_reduction::RollOverTrigger;
 use crate::session::mid_turn_reduction::record_reduction;
 use crate::session::mid_turn_reduction::reduce_mid_turn;
-
-use crate::session::daemon_recovery::RecordedTurnInput;
+use crate::session::multi_agents::ChildReportMode;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -376,15 +376,38 @@ pub(crate) async fn run_turn(
         .await?;
     }
     let mut can_drain_pending_input = input.is_empty();
-    if run_hooks_and_record_inputs(
+    let blocked = run_hooks_and_record_inputs(
         &sess,
         &turn_context,
         &first_step_context.settings.model_info,
         &input,
         PersistContext::TurnStart,
     )
-    .await
+    .await;
+    // In wake mode, child results queued for this turn reach the model with its input. Until
+    // this point they stay in pending input, where a replacing task finds them. A blocked prompt
+    // returns them to the mailbox, so this task's next request delivers them.
+    if !can_drain_pending_input
+        && sess.child_report_mode().await == Some(ChildReportMode::WakeOnReport)
     {
+        let mut mail = sess
+            .input_queue
+            .take_pending_agent_mail(&sess.active_turn)
+            .await;
+        if blocked {
+            sess.input_queue.return_to_mailbox(&mut mail).await;
+        } else {
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &first_step_context.settings.model_info,
+                &mail,
+                PersistContext::TurnStart,
+            )
+            .await;
+        }
+    }
+    if blocked {
         return Ok(None);
     }
 
@@ -2387,6 +2410,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::EnvironmentDisconnected(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadQueueChanged(_)
+        | EventMsg::AgentWakeupsUpdated(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
         | EventMsg::McpToolCallBegin(_)
