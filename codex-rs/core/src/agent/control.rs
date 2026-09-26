@@ -6,6 +6,9 @@ use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
+use crate::agent::types::AgentContextReductionPolicy;
+use crate::agent::types::AgentContextReductionPolicyProvenance;
+use crate::agent::types::AgentContextReductionTelemetry;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
@@ -560,6 +563,7 @@ impl LocalAgentControl {
                     ..Default::default()
                 },
                 status: root_thread.agent_status().await,
+                context_reduction: None,
             });
         }
 
@@ -581,6 +585,9 @@ impl LocalAgentControl {
                 thread_id,
                 metadata,
                 status: thread.agent_status().await,
+                context_reduction: context_reduction_telemetry(&thread.session)
+                    .await
+                    .map(Box::new),
             });
         }
 
@@ -891,6 +898,51 @@ impl LocalAgentControl {
 
         Ok(descendants)
     }
+}
+
+async fn context_reduction_telemetry(
+    session: &crate::session::session::Session,
+) -> Option<AgentContextReductionTelemetry> {
+    let (policy, desired_revision, applied_revision, last_reduction) =
+        session.context_reduction_policy_status().await?;
+    let usage = session.context_policy_usage_observation().await;
+    Some(AgentContextReductionTelemetry {
+        active_context_tokens: usage.active_context_tokens,
+        observed_at: usage.observed_at,
+        active_context_token_basis: usage.active_context_token_basis,
+        desired_policy: AgentContextReductionPolicy {
+            enabled: policy.enabled,
+            threshold_tokens: policy.threshold_tokens,
+            effective_threshold_tokens: usage.effective_threshold_tokens,
+            model_context_window_tokens: usage.model_context_window_tokens,
+            auto_compact_scope: usage.auto_compact_scope,
+            auto_compact_scope_limit_tokens: usage.auto_compact_scope_limit_tokens,
+            check_after_tools: policy.check_after_tools,
+            shake: match policy.shake {
+                codex_config::config_toml::SubagentContextReductionShake::Inherit => "inherit",
+                codex_config::config_toml::SubagentContextReductionShake::On => "on",
+                codex_config::config_toml::SubagentContextReductionShake::Off => "off",
+            }
+            .to_string(),
+            on_failure: match policy.on_failure {
+                codex_config::config_toml::SubagentContextReductionOnFailure::Stop => "stop",
+                codex_config::config_toml::SubagentContextReductionOnFailure::Continue => {
+                    "continue"
+                }
+            }
+            .to_string(),
+            provenance: AgentContextReductionPolicyProvenance {
+                enabled: policy.enabled_from.as_str().to_string(),
+                threshold_tokens: policy.threshold_tokens_from.as_str().to_string(),
+                check_after_tools: policy.check_after_tools_from.as_str().to_string(),
+                shake: policy.shake_from.as_str().to_string(),
+                on_failure: policy.on_failure_from.as_str().to_string(),
+            },
+        },
+        desired_revision,
+        applied_revision,
+        last_reduction,
+    })
 }
 
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {

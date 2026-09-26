@@ -314,6 +314,71 @@ pub fn create_list_agents_tool() -> ToolSpec {
     })
 }
 
+pub fn create_set_agent_context_policy_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::string(Some(
+                "Agent id or canonical task name of a descendant agent.".to_string(),
+            )),
+        ),
+        (
+            "context_policy".to_string(),
+            subagent_context_policy_schema(),
+        ),
+        (
+            "inherit_to_children".to_string(),
+            JsonSchema::boolean(Some(
+                "Whether updated fields should pass to newly spawned descendants. Defaults to true."
+                    .to_string(),
+            )),
+        ),
+        (
+            "reset".to_string(),
+            JsonSchema::boolean(Some(
+                "Clear the target's explicit policy overrides, restoring inherited or configured values."
+                    .to_string(),
+            )),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_agent_context_policy".to_string(),
+        description: "Update or reset a descendant agent's context-reduction policy. Changes are persisted before acknowledgement when the child has a durable thread store; ephemeral children return persisted=false. Changes take effect at the next safe context boundary.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["target".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: Some(
+            json!({
+                "type": "object",
+                "properties": {
+                    "desired_revision": { "type": "integer" },
+                    "applied_revision": { "type": ["integer", "null"] },
+                    "persisted": { "type": "boolean" }
+                },
+                "required": ["desired_revision", "applied_revision", "persisted"],
+                "additionalProperties": false
+            })
+            .into(),
+        ),
+    })
+}
+
+pub fn create_set_agent_context_policy_tool_v1() -> ToolSpec {
+    let ToolSpec::Function(function) = create_set_agent_context_policy_tool() else {
+        unreachable!("context policy builder returns a function tool")
+    };
+    ToolSpec::Namespace(ResponsesApiNamespace {
+        name: MULTI_AGENT_V1_NAMESPACE.to_string(),
+        description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
+        tools: vec![ResponsesApiNamespaceTool::Function(function)],
+    })
+}
+
 pub fn create_close_agent_tool_v1() -> ToolSpec {
     let properties = BTreeMap::from([(
         "target".to_string(),
@@ -473,9 +538,80 @@ fn list_agents_output_schema() -> Value {
                         "agent_status": {
                             "description": "Last known status of the agent.",
                             "allOf": [agent_status_output_schema()]
+                        },
+                        "context_reduction": {
+                            "type": ["object", "null"],
+                            "description": "Context-reduction policy and the latest runtime observations. Values not yet observed are null.",
+                            "properties": {
+                                "active_context_tokens": { "type": ["integer", "null"] },
+                                "observed_at": { "type": ["string", "null"] },
+                                "active_context_token_basis": { "type": ["string", "null"] },
+                                "desired_policy": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": { "type": "boolean" },
+                                        "threshold_tokens": { "type": "integer" },
+                                        "effective_threshold_tokens": { "type": ["integer", "null"] },
+                                        "model_context_window_tokens": { "type": ["integer", "null"] },
+                                        "auto_compact_scope": { "type": ["string", "null"] },
+                                        "auto_compact_scope_limit_tokens": { "type": ["integer", "null"] },
+                                        "check_after_tools": { "type": "boolean" },
+                                        "shake": { "type": "string" },
+                                        "on_failure": { "type": "string" },
+                                        "provenance": {
+                                            "type": "object",
+                                            "properties": {
+                                                "enabled": { "type": "string" },
+                                                "threshold_tokens": { "type": "string" },
+                                                "check_after_tools": { "type": "string" },
+                                                "shake": { "type": "string" },
+                                                "on_failure": { "type": "string" }
+                                            },
+                                            "required": ["enabled", "threshold_tokens", "check_after_tools", "shake", "on_failure"],
+                                            "additionalProperties": false
+                                        }
+                                    },
+                                    "required": ["enabled", "threshold_tokens", "effective_threshold_tokens", "model_context_window_tokens", "auto_compact_scope", "auto_compact_scope_limit_tokens", "check_after_tools", "shake", "on_failure", "provenance"],
+                                    "additionalProperties": false
+                                },
+                                "desired_revision": { "type": "integer" },
+                                "applied_revision": { "type": ["integer", "null"] },
+                                "last_reduction": {
+                                    "type": ["object", "null"],
+                                    "properties": {
+                                        "at": { "type": "string" },
+                                        "reason": { "type": "string" },
+                                        "before_tokens": { "type": "integer" },
+                                        "after_tokens": { "type": "integer" },
+                                        "shake": {
+                                            "type": ["object", "null"],
+                                            "properties": {
+                                                "outcome": { "type": "string" },
+                                                "reason": { "type": ["string", "null"] }
+                                            },
+                                            "required": ["outcome", "reason"],
+                                            "additionalProperties": false
+                                        },
+                                        "compact": {
+                                            "type": ["object", "null"],
+                                            "properties": {
+                                                "outcome": { "type": "string" },
+                                                "reason": { "type": ["string", "null"] }
+                                            },
+                                            "required": ["outcome", "reason"],
+                                            "additionalProperties": false
+                                        },
+                                        "outcome": { "type": "string" }
+                                    },
+                                    "required": ["at", "reason", "before_tokens", "after_tokens", "shake", "compact", "outcome"],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "required": ["active_context_tokens", "observed_at", "active_context_token_basis", "desired_policy", "desired_revision", "applied_revision", "last_reduction"],
+                            "additionalProperties": false
                         }
                     },
-                    "required": ["agent_name", "agent_status"],
+                    "required": ["agent_name", "agent_status", "context_reduction"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -624,6 +760,17 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
+        (
+            "context_policy".to_string(),
+            subagent_context_policy_schema(),
+        ),
+        (
+            "inherit_to_children".to_string(),
+            JsonSchema::boolean(Some(
+                "Whether context policy values set here should pass to newly spawned descendants. Defaults to true."
+                    .to_string(),
+            )),
+        ),
     ])
 }
 
@@ -662,7 +809,66 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
+        (
+            "context_policy".to_string(),
+            subagent_context_policy_schema(),
+        ),
+        (
+            "inherit_to_children".to_string(),
+            JsonSchema::boolean(Some(
+                "Whether context policy values set here should pass to newly spawned descendants. Defaults to true."
+                    .to_string(),
+            )),
+        ),
     ])
+}
+
+fn subagent_context_policy_schema() -> JsonSchema {
+    JsonSchema::object(
+        BTreeMap::from([
+            (
+                "enabled".to_string(),
+                JsonSchema::boolean(Some(
+                    "Enable the configured context threshold for this child.".to_string(),
+                )),
+            ),
+            (
+                "threshold_tokens".to_string(),
+                JsonSchema::integer(Some(
+                    "Positive active-context threshold in tokens.".to_string(),
+                )),
+            ),
+            (
+                "check_after_tools".to_string(),
+                JsonSchema::boolean(Some(
+                    "Check accumulated context after tool results before the next model request."
+                        .to_string(),
+                )),
+            ),
+            (
+                "shake".to_string(),
+                JsonSchema::string_enum(
+                    vec![json!("inherit"), json!("on"), json!("off")],
+                    Some(
+                        "Use configured auto-shake behavior, force shake, or skip shake."
+                            .to_string(),
+                    ),
+                ),
+            ),
+            (
+                "on_failure".to_string(),
+                JsonSchema::string_enum(
+                    vec![json!("stop"), json!("continue")],
+                    Some(
+                        "Stop the child when reduction fails, or continue with bounded retries."
+                            .to_string(),
+                    ),
+                ),
+            ),
+        ]),
+        /*required*/ None,
+        Some(false.into()),
+    )
 }
 
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {

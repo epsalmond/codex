@@ -1,5 +1,5 @@
 //! Applies captured Multi-Agent V2 catalog overrides and namespaces to tool specifications.
-//! Parameter schemas retain harness-owned encryption annotations; execution is unchanged.
+//! Parameter schemas retain harness-owned encryption and spawn policy fields; execution is unchanged.
 
 use crate::session::session::Session;
 use crate::tools::context::ToolInvocation;
@@ -33,11 +33,30 @@ pub(super) fn multi_agent_v2_handler(
         }
         let mut parameters: JsonSchema = serde_json::from_value(parameters)
             .map_err(|_| "schema uses unsupported JSON Schema structures")?;
-        if let ToolSpec::Function(tool) = handler.spec()
-            && let Some(properties) = tool.parameters.properties
-        {
+        if let ToolSpec::Function(tool) = handler.spec() {
+            let bundled_parameters = tool.parameters;
+            if handler.tool_name().name == "spawn_agent" {
+                for name in ["context_policy", "inherit_to_children"] {
+                    if let Some(schema) = bundled_parameters
+                        .properties
+                        .as_ref()
+                        .and_then(|properties| properties.get(name))
+                    {
+                        parameters
+                            .properties
+                            .get_or_insert_with(Default::default)
+                            .insert(name.to_string(), schema.clone());
+                    }
+                    // These are harness-owned optional controls, even if a stale catalog
+                    // incorrectly lists one as required.
+                    if let Some(required) = &mut parameters.required {
+                        required.retain(|required_name| required_name != name);
+                    }
+                }
+            }
+
             // Argument transport requires these markers even without server encryption config.
-            for (name, schema) in properties {
+            for (name, schema) in bundled_parameters.properties.unwrap_or_default() {
                 if schema.encrypted == Some(true) {
                     let property = parameters
                         .properties

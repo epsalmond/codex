@@ -2244,6 +2244,58 @@ pub struct ThreadSettingsAppliedEvent {
     pub thread_settings: ThreadSettingsSnapshot,
 }
 
+/// Partial context-reduction policy values stored with an agent's thread settings.
+/// `None` leaves that policy field to the inherited value or configured default.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SubagentContextReductionOverrides {
+    pub enabled: Option<bool>,
+    #[ts(type = "number | undefined")]
+    pub threshold_tokens: Option<i64>,
+    pub check_after_tools: Option<bool>,
+    pub shake: Option<SubagentContextShakePolicy>,
+    pub on_failure: Option<SubagentContextFailurePolicy>,
+}
+
+/// Shake behavior used by persisted subagent context-reduction overrides.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubagentContextShakePolicy {
+    Inherit,
+    On,
+    Off,
+}
+
+/// Failure behavior used by persisted subagent context-reduction overrides.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubagentContextFailurePolicy {
+    Stop,
+    Continue,
+}
+
+/// Desired per-thread policy and inheritance layers.
+///
+/// The inherited layer came from an ancestor. The local layer only affects this thread.
+/// The inheritable layer is the subset of this thread's settings passed to new descendants.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SubagentContextReductionPolicyState {
+    #[serde(default)]
+    pub inherited: SubagentContextReductionOverrides,
+    #[serde(default)]
+    pub local: SubagentContextReductionOverrides,
+    #[serde(default)]
+    pub inheritable: SubagentContextReductionOverrides,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub desired_revision: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct ThreadSettingsSnapshot {
     pub model: String,
@@ -2273,6 +2325,10 @@ pub struct ThreadSettingsSnapshot {
     /// Thread-owned plugin selection, retained even when a plugin is unavailable.
     #[serde(default)]
     pub disabled_plugin_ids: Vec<String>,
+    /// Persisted subagent context-reduction policy and inheritance layers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub subagent_context_reduction_policy: Option<SubagentContextReductionPolicyState>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]

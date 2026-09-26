@@ -4,12 +4,15 @@
 use super::session::Session;
 use super::session::SessionSettingsUpdate;
 use super::step_settings::StepSettingsUpdate;
+use crate::agent::context_policy;
 use crate::config::ConstraintResult;
 use codex_history::RolloutItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::SubagentContextReductionOverrides;
+use codex_protocol::protocol::SubagentContextReductionPolicyState;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
@@ -29,6 +32,123 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// Updates and durably checkpoints a child policy before the caller acknowledges it.
+pub(super) async fn update_subagent_context_reduction_policy(
+    session: &Session,
+    patch: SubagentContextReductionOverrides,
+    inherit_to_children: bool,
+    reset: bool,
+) -> ThreadStoreResult<(u64, Option<u64>, bool)> {
+    context_policy::validate_overrides(&patch)
+        .map_err(|message| codex_thread_store::ThreadStoreError::InvalidRequest { message })?;
+    let _settings_guard = acquire_persistence_lock(session).await;
+    let mut policy = session
+        .subagent_context_reduction_policy()
+        .await
+        .unwrap_or_default();
+    if reset {
+        context_policy::reset_local(&mut policy);
+    } else {
+        context_policy::update_local(&mut policy, patch, inherit_to_children);
+    }
+    let updates = SessionSettingsUpdate {
+        subagent_context_reduction_policy: Some(policy.clone()),
+        ..Default::default()
+    };
+    if session.live_thread().is_none() {
+        if !session.is_ephemeral().await {
+            return Err(codex_thread_store::ThreadStoreError::Unsupported {
+                operation: "persistent_thread_settings",
+            });
+        }
+        session.update_settings(updates).await.map_err(|error| {
+            codex_thread_store::ThreadStoreError::InvalidRequest {
+                message: error.to_string(),
+            }
+        })?;
+        return Ok((
+            policy.desired_revision,
+            session.applied_context_policy_revision().await,
+            false,
+        ));
+    }
+    let snapshot = session
+        .preview_thread_settings_snapshot(&updates)
+        .await
+        .map_err(
+            |error| codex_thread_store::ThreadStoreError::InvalidRequest {
+                message: error.to_string(),
+            },
+        )?;
+    persist_settings_snapshot(session, snapshot).await?;
+    session.update_settings(updates).await.map_err(|error| {
+        codex_thread_store::ThreadStoreError::InvalidRequest {
+            message: error.to_string(),
+        }
+    })?;
+    Ok((
+        policy.desired_revision,
+        session.applied_context_policy_revision().await,
+        true,
+    ))
+}
+
+/// Installs inherited and spawn-time policy layers before a child receives its first input.
+pub(super) async fn install_subagent_context_reduction_policy(
+    session: &Session,
+    policy: SubagentContextReductionPolicyState,
+) -> ThreadStoreResult<()> {
+    context_policy::validate_state(&policy)
+        .map_err(|message| codex_thread_store::ThreadStoreError::InvalidRequest { message })?;
+    let _settings_guard = acquire_persistence_lock(session).await;
+    let updates = SessionSettingsUpdate {
+        subagent_context_reduction_policy: Some(policy),
+        ..Default::default()
+    };
+    if session.live_thread().is_some() {
+        let snapshot = session
+            .preview_thread_settings_snapshot(&updates)
+            .await
+            .map_err(
+                |error| codex_thread_store::ThreadStoreError::InvalidRequest {
+                    message: error.to_string(),
+                },
+            )?;
+        persist_settings_snapshot(session, snapshot).await?;
+    } else if !session.is_ephemeral().await {
+        return Err(codex_thread_store::ThreadStoreError::Unsupported {
+            operation: "persistent_thread_settings",
+        });
+    }
+    session.update_settings(updates).await.map_err(|error| {
+        codex_thread_store::ThreadStoreError::InvalidRequest {
+            message: error.to_string(),
+        }
+    })?;
+    Ok(())
+}
+
+async fn persist_settings_snapshot(
+    session: &Session,
+    snapshot: ThreadSettingsSnapshot,
+) -> ThreadStoreResult<()> {
+    let live_thread =
+        session
+            .live_thread()
+            .ok_or(codex_thread_store::ThreadStoreError::Unsupported {
+                operation: "persistent_thread_settings",
+            })?;
+    live_thread
+        .append_items(&[RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_id: Some(session.thread_id),
+                thread_settings: snapshot,
+            },
+        ))])
+        .await?;
+    live_thread.flush().await
 }
 
 /// Applies standalone thread settings and reports invalid overrides through the

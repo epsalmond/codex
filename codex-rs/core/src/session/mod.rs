@@ -14,6 +14,7 @@ use crate::agent::AgentStatus;
 use crate::agent::LocalAgentControl;
 use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentTurnOutcome;
+use crate::agent::context_policy;
 use crate::agent::status::is_final;
 use crate::agents_md_manager::SessionInstructions;
 use crate::artifacts::ArtifactStore;
@@ -95,6 +96,7 @@ use codex_otel::current_span_trace_id;
 use codex_otel::current_span_w3c_trace_context;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_prompts::render_model_instructions;
+use codex_protocol::AgentPath;
 use codex_protocol::ResponseUsageMetadata;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -254,6 +256,7 @@ pub(crate) mod session;
 mod step_activation;
 pub(crate) mod step_context;
 pub(crate) mod step_settings;
+mod subagent_context_reduction;
 mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
@@ -381,6 +384,8 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionNetworkProxyRuntime;
 use codex_protocol::protocol::StreamErrorEvent;
+use codex_protocol::protocol::SubagentContextReductionOverrides;
+use codex_protocol::protocol::SubagentContextReductionPolicyState;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TokenCountEvent;
@@ -778,6 +783,23 @@ impl Session {
                 .map(<[String]>::to_vec)
                 .unwrap_or_default()
         });
+        let subagent_context_reduction_policy = match &conversation_history {
+            InitialHistory::Resumed(resumed) => {
+                resumed.history.iter().rev().find_map(|item| match item {
+                    RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                        if event.thread_id == Some(resumed.conversation_id) =>
+                    {
+                        event
+                            .thread_settings
+                            .subagent_context_reduction_policy
+                            .clone()
+                    }
+                    _ => None,
+                })
+            }
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        }
+        .filter(|policy| context_policy::validate_state(policy).is_ok());
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let persisted_collaboration_mode = match &conversation_history {
@@ -872,6 +894,7 @@ impl Session {
             originator,
             dynamic_tools,
             user_shell_override,
+            subagent_context_reduction_policy,
         };
         session_configuration
             .validate(&environment_selections)
@@ -1954,6 +1977,11 @@ impl Session {
             if mcp_inputs_changed {
                 self.mark_mcp_runtime_dirty();
             }
+            if updates.subagent_context_reduction_policy.is_some() {
+                state.applied_context_policy_revision = None;
+                state.suppressed_context_reduction = None;
+                state.context_reduction_failure_episode = None;
+            }
             if state.session_configuration.inferred_environment_config() != environment_config {
                 self.services
                     .turn_environments
@@ -2005,6 +2033,15 @@ impl Session {
         Ok(configuration.thread_config_snapshot(configuration.environments.clone()))
     }
 
+    pub(crate) async fn preview_thread_settings_snapshot(
+        &self,
+        updates: &SessionSettingsUpdate,
+    ) -> ConstraintResult<ThreadSettingsSnapshot> {
+        let state = self.state.lock().await;
+        let configuration = self.apply_session_settings(&state.session_configuration, updates)?;
+        Ok(configuration.thread_settings_snapshot(&configuration.environments))
+    }
+
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         let state = self.state.lock().await;
         state
@@ -2022,6 +2059,214 @@ impl Session {
         state
             .session_configuration
             .thread_settings_snapshot(&state.session_configuration.environments)
+    }
+
+    pub(crate) async fn subagent_context_reduction_policy(
+        &self,
+    ) -> Option<SubagentContextReductionPolicyState> {
+        self.state
+            .lock()
+            .await
+            .session_configuration
+            .subagent_context_reduction_policy
+            .clone()
+    }
+
+    pub(crate) async fn context_reduction_policy_status(
+        &self,
+    ) -> Option<(
+        crate::agent::context_policy::ResolvedSubagentContextPolicy,
+        u64,
+        Option<u64>,
+        Option<crate::agent::types::AgentContextReductionAttempt>,
+    )> {
+        let state = self.state.lock().await;
+        if !matches!(
+            state.session_configuration.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            return None;
+        }
+        let policy_state = state
+            .session_configuration
+            .subagent_context_reduction_policy
+            .clone()
+            .unwrap_or_default();
+        Some((
+            context_policy::resolve(
+                &policy_state,
+                &state.session_configuration.original_config_do_not_use,
+            ),
+            policy_state.desired_revision,
+            state.applied_context_policy_revision,
+            state.last_context_reduction.clone(),
+        ))
+    }
+
+    pub(crate) async fn install_subagent_context_reduction_policy(
+        &self,
+        policy: SubagentContextReductionPolicyState,
+    ) -> codex_thread_store::ThreadStoreResult<()> {
+        thread_settings::install_subagent_context_reduction_policy(self, policy).await
+    }
+
+    pub(crate) async fn update_subagent_context_reduction_policy(
+        &self,
+        patch: SubagentContextReductionOverrides,
+        inherit_to_children: bool,
+        reset: bool,
+    ) -> codex_thread_store::ThreadStoreResult<(u64, Option<u64>, bool)> {
+        thread_settings::update_subagent_context_reduction_policy(
+            self,
+            patch,
+            inherit_to_children,
+            reset,
+        )
+        .await
+    }
+
+    pub(crate) async fn is_ephemeral(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .session_configuration
+            .original_config_do_not_use
+            .ephemeral
+    }
+
+    pub(crate) async fn applied_context_policy_revision(&self) -> Option<u64> {
+        self.state.lock().await.applied_context_policy_revision
+    }
+
+    pub(crate) async fn mark_context_policy_applied(&self, revision: u64) {
+        self.state.lock().await.applied_context_policy_revision = Some(revision);
+    }
+
+    pub(crate) async fn record_context_policy_usage(
+        &self,
+        active_tokens: i64,
+        token_basis: &str,
+        child_threshold_tokens: i64,
+        full_context_window_limit: Option<i64>,
+        auto_compact_scope: &str,
+        auto_compact_scope_limit_tokens: Option<i64>,
+    ) {
+        let mut state = self.state.lock().await;
+        state.context_policy_observed_active_tokens = Some(active_tokens);
+        state.context_policy_observed_at = Some(Utc::now());
+        state.context_policy_active_token_basis = Some(token_basis.to_string());
+        state.context_policy_effective_threshold_tokens = Some(
+            full_context_window_limit.map_or(child_threshold_tokens, |window| {
+                child_threshold_tokens.min(window)
+            }),
+        );
+        state.context_policy_model_window_tokens = full_context_window_limit;
+        state.context_policy_auto_compact_scope = Some(auto_compact_scope.to_string());
+        state.context_policy_auto_compact_scope_limit_tokens = auto_compact_scope_limit_tokens;
+    }
+
+    pub(crate) async fn context_policy_usage_observation(
+        &self,
+    ) -> crate::agent::types::AgentContextReductionUsageSnapshot {
+        let state = self.state.lock().await;
+        crate::agent::types::AgentContextReductionUsageSnapshot {
+            active_context_tokens: state.context_policy_observed_active_tokens,
+            observed_at: state.context_policy_observed_at,
+            active_context_token_basis: state.context_policy_active_token_basis.clone(),
+            effective_threshold_tokens: state.context_policy_effective_threshold_tokens,
+            model_context_window_tokens: state.context_policy_model_window_tokens,
+            auto_compact_scope: state.context_policy_auto_compact_scope.clone(),
+            auto_compact_scope_limit_tokens: state.context_policy_auto_compact_scope_limit_tokens,
+        }
+    }
+
+    pub(crate) async fn context_reduction_observations(
+        &self,
+    ) -> (
+        Option<crate::agent::types::AgentContextReductionAttempt>,
+        Option<crate::state::SuppressedContextReduction>,
+    ) {
+        let state = self.state.lock().await;
+        (
+            state.last_context_reduction.clone(),
+            state.suppressed_context_reduction.clone(),
+        )
+    }
+
+    pub(crate) async fn record_context_reduction_attempt(
+        &self,
+        attempt: crate::agent::types::AgentContextReductionAttempt,
+        suppression: Option<crate::state::SuppressedContextReduction>,
+    ) {
+        let mut state = self.state.lock().await;
+        if matches!(attempt.outcome.as_str(), "shaken" | "compacted") {
+            state.context_reduction_failure_episode = None;
+        }
+        state.last_context_reduction = Some(attempt);
+        state.suppressed_context_reduction = suppression;
+    }
+
+    pub(crate) async fn clear_suppressed_context_reduction(&self) {
+        self.state.lock().await.suppressed_context_reduction = None;
+    }
+
+    pub(crate) async fn clear_context_reduction_failure_episode(&self) {
+        self.state.lock().await.context_reduction_failure_episode = None;
+    }
+
+    pub(crate) async fn clear_context_reduction_recovery_latches(&self) {
+        let mut state = self.state.lock().await;
+        state.suppressed_context_reduction = None;
+        state.context_reduction_failure_episode = None;
+    }
+
+    pub(crate) async fn notify_parent_of_context_reduction_failure_once(
+        &self,
+        revision: u64,
+        message: String,
+    ) {
+        let (parent_thread_id, child_path, parent_path) = {
+            let mut state = self.state.lock().await;
+            let (parent_thread_id, child_path) =
+                match state.session_configuration.session_source.clone() {
+                    codex_protocol::protocol::SessionSource::SubAgent(
+                        codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                            parent_thread_id,
+                            agent_path,
+                            ..
+                        },
+                    ) => (parent_thread_id, agent_path),
+                    _ => return,
+                };
+            let parent_path = child_path.as_ref().and_then(|child_path| {
+                child_path
+                    .as_str()
+                    .rsplit_once('/')
+                    .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
+            });
+            if !context_policy::should_report_failure_episode(
+                state.context_reduction_failure_episode,
+                revision,
+            ) {
+                return;
+            }
+            state.context_reduction_failure_episode = Some(revision);
+            (parent_thread_id, child_path, parent_path)
+        };
+        if let Err(error) = self
+            .services
+            .agent_control
+            .notify_context_reduction_failure(
+                parent_thread_id,
+                self.thread_id,
+                child_path,
+                parent_path,
+                message,
+            )
+            .await
+        {
+            warn!(%error, parent_thread_id = %parent_thread_id, "failed to notify parent about subagent context reduction");
+        }
     }
 
     pub(crate) async fn restorable_thread_settings(&self) -> CodexThreadSettingsOverrides {

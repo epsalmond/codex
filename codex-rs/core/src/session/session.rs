@@ -39,6 +39,7 @@ use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SubagentContextReductionPolicyState;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
@@ -141,6 +142,8 @@ pub(crate) struct SessionConfiguration {
     pub(super) thread_name: Option<String>,
     /// Thread-owned plugin selection inherited by future turns.
     pub(super) disabled_plugin_ids: Vec<String>,
+    /// Desired child context-reduction policy, persisted with thread settings.
+    pub(super) subagent_context_reduction_policy: Option<SubagentContextReductionPolicyState>,
 
     // TODO(pakrym): Remove config from here
     pub(super) original_config_do_not_use: Arc<Config>,
@@ -329,6 +332,7 @@ impl SessionConfiguration {
             personality: self.step_settings.personality,
             collaboration_mode: self.step_settings.collaboration_mode.clone(),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
+            subagent_context_reduction_policy: self.subagent_context_reduction_policy.clone(),
         }
     }
 
@@ -400,6 +404,9 @@ impl SessionConfiguration {
         let mut next_configuration = self.clone();
         if let Some(disabled_plugin_ids) = &updates.disabled_plugin_ids {
             next_configuration.disabled_plugin_ids = disabled_plugin_ids.clone();
+        }
+        if let Some(policy) = &updates.subagent_context_reduction_policy {
+            next_configuration.subagent_context_reduction_policy = Some(policy.clone());
         }
         let current_file_system_sandbox_policy =
             self.file_system_sandbox_policy(current_environments);
@@ -606,6 +613,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) app_server_client_version: Option<String>,
     pub(crate) disabled_plugin_ids: Option<Vec<String>>,
+    pub(crate) subagent_context_reduction_policy: Option<SubagentContextReductionPolicyState>,
 }
 
 pub(crate) struct AppServerClientMetadata {

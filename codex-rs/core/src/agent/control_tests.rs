@@ -744,6 +744,108 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
 }
 
 #[tokio::test]
+async fn v1_context_reduction_warning_is_available_in_followup_prompt_without_waking_parent() {
+    const MESSAGE: &str = "child remains above its context threshold";
+
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let child_thread = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            thread_source: Some(codex_protocol::protocol::ThreadSource::Subagent),
+            ..StartThreadOptions::new(harness.config.clone())
+        })
+        .await;
+    let child_thread = child_thread.expect("anonymous child thread should start");
+    let child_thread_id = child_thread.thread_id;
+    let parent_ops_before = harness
+        .manager
+        .captured_ops()
+        .iter()
+        .filter(|(thread_id, _)| *thread_id == parent_thread_id)
+        .count();
+    assert!(parent_thread.session.active_turn.lock().await.is_none());
+
+    child_thread
+        .thread
+        .session
+        .notify_parent_of_context_reduction_failure_once(7, MESSAGE.to_string())
+        .await;
+    child_thread
+        .thread
+        .session
+        .notify_parent_of_context_reduction_failure_once(7, MESSAGE.to_string())
+        .await;
+
+    let warning_marker = "<subagent_context_reduction_warning>";
+    let history = parent_thread.session.clone_history().await;
+    let warning_fragments = history
+        .raw_items()
+        .filter_map(|item| match item {
+            ResponseItem::Message { content, .. } => content.iter().find_map(|item| match item {
+                ContentItem::InputText { text } | ContentItem::OutputText { text }
+                    if text.contains(warning_marker) =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(warning_fragments.len(), 1, "{warning_fragments:?}");
+    assert!(warning_fragments[0].contains(MESSAGE));
+    assert!(warning_fragments[0].contains(&child_thread_id.to_string()));
+    assert!(parent_thread.session.active_turn.lock().await.is_none());
+    assert!(
+        !parent_thread
+            .session
+            .input_queue
+            .has_pending_input(&parent_thread.session.active_turn)
+            .await,
+        "the V1 warning should not start or queue a parent turn"
+    );
+    let parent_ops_after = harness
+        .manager
+        .captured_ops()
+        .iter()
+        .filter(|(thread_id, _)| *thread_id == parent_thread_id)
+        .count();
+    assert_eq!(parent_ops_after, parent_ops_before);
+
+    parent_thread
+        .session
+        .flush_rollout()
+        .await
+        .expect("warning should be flushed before the follow-up");
+    let followup_turn = parent_thread.session.new_default_turn().await;
+    parent_thread
+        .session
+        .record_conversation_items(
+            &followup_turn,
+            followup_turn.model_info().as_ref(),
+            &[user_message("follow up on the child")],
+        )
+        .await;
+    let next_prompt = parent_thread
+        .session
+        .clone_history()
+        .await
+        .for_prompt(&followup_turn.model_info().input_modalities);
+    let next_prompt_json =
+        serde_json::to_string(&next_prompt).expect("next prompt should serialize");
+    assert_eq!(next_prompt_json.matches(warning_marker).count(), 1);
+    assert!(next_prompt_json.contains(MESSAGE));
+}
+
+#[tokio::test]
 async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     check_v2_agent_reload(V2ReloadRoute::Sender).await;
 }
@@ -1637,6 +1739,7 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
                         reasoning_effort: None,
                         reasoning_summary: None,
                         personality: None,
+                        subagent_context_reduction_policy: None,
                         collaboration_mode: CollaborationMode {
                             mode: ModeKind::Default,
                             settings: Settings {
