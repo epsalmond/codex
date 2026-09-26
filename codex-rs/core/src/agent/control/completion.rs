@@ -8,10 +8,8 @@ use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
-use crate::context::SubagentContextReductionWarning;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
-use codex_protocol::ThreadId;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -23,48 +21,6 @@ use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
 
 impl LocalAgentControl {
-    /// Notifies a parent without waking it; V2 uses mailbox communication and V1 a queue-only fragment.
-    pub(crate) async fn notify_context_reduction_failure(
-        &self,
-        parent_thread_id: ThreadId,
-        child_thread_id: ThreadId,
-        child_agent_path: Option<AgentPath>,
-        parent_agent_path: Option<AgentPath>,
-        message: String,
-    ) -> codex_protocol::error::Result<()> {
-        if let (Some(child_agent_path), Some(parent_agent_path)) =
-            (child_agent_path, parent_agent_path)
-        {
-            let communication = InterAgentCommunication::new(
-                child_agent_path,
-                parent_agent_path,
-                Vec::new(),
-                message,
-                /*trigger_turn*/ false,
-            );
-            let context =
-                AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
-            self.send_inter_agent_communication(
-                parent_thread_id,
-                communication,
-                context,
-                TurnStartOptions::default(),
-            )
-            .await?;
-            return Ok(());
-        }
-
-        let state = self.upgrade()?;
-        let parent = state.get_thread(parent_thread_id).await?;
-        parent
-            .inject_fragment_without_turn(SubagentContextReductionWarning::new(
-                child_thread_id.to_string(),
-                message,
-            ))
-            .await;
-        Ok(())
-    }
-
     /// Routes a captured terminal outcome without retaining the child's live turn context.
     pub(crate) async fn notify_parent_of_terminal_turn(
         &self,

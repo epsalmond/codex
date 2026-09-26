@@ -59,7 +59,7 @@ pub async fn interrupt(sess: &Arc<Session>) {
 }
 
 /// Whether a shake was requested by the operator (`/shake`) or decided
-/// automatically at safe pre-sampling boundaries.
+/// automatically at the pre-sampling point.
 ///
 /// `AutomaticColdResume` is the prompt-cache-expiry trigger: the thread sat
 /// idle longer than the provider's prompt-cache TTL, so the next request pays
@@ -67,11 +67,11 @@ pub async fn interrupt(sess: &Arc<Session>) {
 /// shaking. It runs with the same (large) automatic protect window as
 /// `Automatic`.
 ///
-/// `AutomaticEscalated` is the second, more aggressive safe-boundary pass that
+/// `AutomaticEscalated` is the second, more aggressive pre-sampling pass that
 /// `maybe_run_pre_sampling_auto_shake` runs when the first automatic pass
 /// (whether it applied or was skipped for freeing too little) left the thread
 /// still above the auto-shake threshold. At most one escalated pass runs per
-/// boundary, and only compaction follows it.
+/// pre-sampling point, and only compaction follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShakeTrigger {
     Manual,
@@ -118,9 +118,9 @@ pub async fn shake(
     // Rewriting history mid-turn is unsafe (the running task holds a history
     // snapshot); refuse while a turn is active, matching the legacy rollback safety rule.
     //
-    // Auto-shake does not go through here: it runs *inside* run_turn at a safe
-    // pre-sampling boundary, after the previous request and tools have finished
-    // and before a fresh step context captures history. See
+    // Auto-shake does not go through here: it runs *inside* run_turn at the
+    // pre-sampling point, where `active_turn` is already `Some` but no step
+    // context has captured history yet. See
     // `session::turn::maybe_run_pre_sampling_auto_shake`, which calls
     // `apply_shake` directly with the turn's own context.
     let has_active_turn = { sess.active_turn.lock().await.is_some() };
@@ -185,8 +185,7 @@ pub(crate) async fn apply_shake(
         .await;
         return crate::shake::ShakeResult::default();
     }
-    let mut artifact_save_failures = 0;
-    let mut result = match mode {
+    let result = match mode {
         codex_protocol::protocol::ShakeMode::Images => crate::shake::shake_images(&mut envelopes),
         codex_protocol::protocol::ShakeMode::Thinking => {
             crate::shake::shake_thinking(&mut envelopes)
@@ -202,19 +201,10 @@ pub(crate) async fn apply_shake(
                         // the same `label`) to compute the exact path it just
                         // wrote to, so the placeholder can name it for
                         // shell-tool search without a second filesystem call.
-                        match uri.strip_prefix("artifact://") {
-                            Some(id) => {
-                                Some(store.destination_path(id, label).display().to_string())
-                            }
-                            None => {
-                                artifact_save_failures += 1;
-                                warn!(%uri, "shake artifact returned an invalid recovery URI; preserving original region");
-                                None
-                            }
-                        }
+                        uri.strip_prefix("artifact://")
+                            .map(|id| store.destination_path(id, label).display().to_string())
                     }
                     Err(err) => {
-                        artifact_save_failures += 1;
                         warn!(%err, "failed to save shake artifact; preserving original region");
                         None
                     }
@@ -238,7 +228,6 @@ pub(crate) async fn apply_shake(
             }
         }
     };
-    result.artifact_save_failures = artifact_save_failures;
 
     // Always surface the operator summary, even on a no-op. Prefix the message
     // with the well-known marker so the TUI can identify the completion notice

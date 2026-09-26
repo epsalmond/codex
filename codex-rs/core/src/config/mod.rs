@@ -636,9 +636,6 @@ pub struct Config {
     /// the context is elidable. See `codex-rs/docs/shake.md`.
     pub auto_shake: AutoShakeConfig,
 
-    /// Resolved settings for reducing the context inherited by spawned subagents.
-    pub subagent_context_reduction: SubagentContextReductionConfig,
-
     /// Percentage of the usable context window that triggers turn-end compaction.
     /// Zero disables turn-end compaction.
     pub model_post_turn_compact_threshold_percent: u8,
@@ -1346,51 +1343,6 @@ pub struct AutoShakeModelConfig {
     /// falls back to the built-in family default.
     pub threshold: Option<codex_config::config_toml::AutoShakeThresholdToml>,
     pub min_elidable_percent: Option<i64>,
-}
-
-/// Resolved configuration for reducing the context inherited by spawned subagents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct SubagentContextReductionConfig {
-    pub enabled: bool,
-    pub threshold_tokens: i64,
-    pub check_after_tools: bool,
-    pub shake: codex_config::config_toml::SubagentContextReductionShake,
-    pub on_failure: codex_config::config_toml::SubagentContextReductionOnFailure,
-}
-
-impl SubagentContextReductionConfig {
-    pub fn from_toml(
-        toml: Option<&codex_config::config_toml::SubagentContextReductionToml>,
-    ) -> Result<Self, String> {
-        let Some(toml) = toml else {
-            return Ok(Self::default());
-        };
-
-        let threshold_tokens = toml.threshold_tokens.unwrap_or(272_000);
-        if threshold_tokens <= 0 {
-            return Err("subagent_context_reduction.threshold_tokens must be positive".to_string());
-        }
-
-        Ok(Self {
-            enabled: toml.enabled.unwrap_or(true),
-            threshold_tokens,
-            check_after_tools: toml.check_after_tools.unwrap_or(true),
-            shake: toml.shake.unwrap_or_default(),
-            on_failure: toml.on_failure.unwrap_or_default(),
-        })
-    }
-}
-
-impl Default for SubagentContextReductionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            threshold_tokens: 272_000,
-            check_after_tools: true,
-            shake: codex_config::config_toml::SubagentContextReductionShake::default(),
-            on_failure: codex_config::config_toml::SubagentContextReductionOnFailure::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4290,10 +4242,6 @@ impl Config {
                 .unwrap_or_default(),
             auto_shake: AutoShakeConfig::from_toml(cfg.auto_shake.as_ref())
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?,
-            subagent_context_reduction: SubagentContextReductionConfig::from_toml(
-                cfg.subagent_context_reduction.as_ref(),
-            )
-            .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?,
 
             model_post_turn_compact_threshold_percent: cfg
                 .model_post_turn_compact_threshold_percent

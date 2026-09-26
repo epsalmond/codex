@@ -4088,88 +4088,6 @@
         }
       ]
     },
-    "SubagentContextReductionOnFailure": {
-      "description": "Failure policy for subagent context reduction.",
-      "oneOf": [
-        {
-          "description": "Stop when context reduction fails.",
-          "enum": [
-            "stop"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Continue without reduced context when reduction fails.",
-          "enum": [
-            "continue"
-          ],
-          "type": "string"
-        }
-      ]
-    },
-    "SubagentContextReductionShake": {
-      "description": "Shake policy for subagent context reduction.",
-      "oneOf": [
-        {
-          "description": "Defer to the effective shake configuration.",
-          "enum": [
-            "inherit"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Enable shake for subagent context reduction.",
-          "enum": [
-            "on"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Disable shake for subagent context reduction.",
-          "enum": [
-            "off"
-          ],
-          "type": "string"
-        }
-      ]
-    },
-    "SubagentContextReductionToml": {
-      "additionalProperties": false,
-      "description": "Settings for reducing the context inherited by spawned subagents.",
-      "properties": {
-        "check_after_tools": {
-          "description": "Whether to re-check after tool results. Defaults to `true`.",
-          "type": "boolean"
-        },
-        "enabled": {
-          "description": "Whether to reduce subagent context. Defaults to `true`.",
-          "type": "boolean"
-        },
-        "on_failure": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SubagentContextReductionOnFailure"
-            }
-          ],
-          "description": "What to do when context reduction fails: `stop` or `continue`. Defaults to `stop`."
-        },
-        "shake": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SubagentContextReductionShake"
-            }
-          ],
-          "description": "Context shake policy: `inherit`, `on`, or `off`. Defaults to `inherit`."
-        },
-        "threshold_tokens": {
-          "description": "Context size threshold, in tokens. Must be positive; defaults to 272000.",
-          "format": "int64",
-          "minimum": 1.0,
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -7625,15 +7543,6 @@
         }
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
-    },
-    "subagent_context_reduction": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/SubagentContextReductionToml"
-        }
-      ],
-      "default": null,
-      "description": "Controls context reduction for spawned subagents."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

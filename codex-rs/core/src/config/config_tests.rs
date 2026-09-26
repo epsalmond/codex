@@ -27,9 +27,6 @@ use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
-use codex_config::config_toml::SubagentContextReductionOnFailure;
-use codex_config::config_toml::SubagentContextReductionShake;
-use codex_config::config_toml::SubagentContextReductionToml;
 use codex_config::config_toml::ToolsToml;
 use codex_config::loader::project_trust_key;
 use codex_config::permissions_toml::FilesystemPermissionToml;
@@ -781,85 +778,6 @@ async fn load_config_rejects_overlong_auto_compact_fallback_prompt() -> std::io:
     .expect_err("overlong fallback prompt should be rejected");
 
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    Ok(())
-}
-
-#[tokio::test]
-async fn load_config_resolves_subagent_context_reduction() -> std::io::Result<()> {
-    let codex_home = tempdir()?;
-    let config_toml = toml::from_str(
-        r#"
-[subagent_context_reduction]
-enabled = false
-threshold_tokens = 12345
-check_after_tools = false
-shake = "on"
-on_failure = "continue"
-"#,
-    )
-    .expect("TOML should deserialize");
-    let config = Config::load_from_base_config_with_overrides(
-        config_toml,
-        ConfigOverrides::default(),
-        codex_home.abs(),
-    )
-    .await?;
-
-    assert_eq!(
-        config.subagent_context_reduction,
-        SubagentContextReductionConfig {
-            enabled: false,
-            threshold_tokens: 12_345,
-            check_after_tools: false,
-            shake: SubagentContextReductionShake::On,
-            on_failure: SubagentContextReductionOnFailure::Continue,
-        }
-    );
-    Ok(())
-}
-
-#[test]
-fn subagent_context_reduction_config_uses_defaults() {
-    assert_eq!(
-        SubagentContextReductionConfig::from_toml(None).expect("default config should be valid"),
-        SubagentContextReductionConfig {
-            enabled: true,
-            threshold_tokens: 272_000,
-            check_after_tools: true,
-            shake: SubagentContextReductionShake::Inherit,
-            on_failure: SubagentContextReductionOnFailure::Stop,
-        }
-    );
-
-    assert_eq!(
-        SubagentContextReductionConfig::from_toml(Some(&SubagentContextReductionToml::default()))
-            .expect("empty table should use defaults"),
-        SubagentContextReductionConfig::default()
-    );
-}
-
-#[tokio::test]
-async fn load_config_rejects_non_positive_subagent_context_threshold() -> std::io::Result<()> {
-    for threshold_tokens in [-1, 0] {
-        let codex_home = tempdir()?;
-        let config_toml = toml::from_str(&format!(
-            "[subagent_context_reduction]\nthreshold_tokens = {threshold_tokens}\n"
-        ))
-        .expect("TOML should deserialize");
-        let error = Config::load_from_base_config_with_overrides(
-            config_toml,
-            ConfigOverrides::default(),
-            codex_home.abs(),
-        )
-        .await
-        .expect_err("non-positive threshold should be rejected");
-
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert_eq!(
-            error.to_string(),
-            "subagent_context_reduction.threshold_tokens must be positive"
-        );
-    }
     Ok(())
 }
 

@@ -1,7 +1,5 @@
 //! Session-wide mutable state.
 
-use chrono::DateTime;
-use chrono::Utc;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ResponseItem;
@@ -15,7 +13,6 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
-use crate::agent::types::AgentContextReductionAttempt;
 use crate::context_manager::ContextManager;
 use crate::context_manager::HistoryReplacement;
 use crate::session::PreviousTurnSettings;
@@ -43,13 +40,6 @@ pub(crate) enum ReasoningEffortPin {
         model: String,
         effort: ReasoningEffort,
     },
-}
-
-/// Suppresses a repeated continue-mode reduction attempt until the child has made progress.
-#[derive(Clone)]
-pub(crate) struct SuppressedContextReduction {
-    pub(crate) after_tokens: i64,
-    pub(crate) policy_revision: u64,
 }
 
 impl ReasoningEffortPin {
@@ -80,22 +70,6 @@ pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     /// Plugin selection of the last admitted task; settings updates take effect on the next task.
     pub(crate) active_disabled_plugin_ids: Vec<String>,
-    /// Runtime-only acknowledgement; unknown again after process restart.
-    pub(crate) applied_context_policy_revision: Option<u64>,
-    /// Most recent active-context estimate, intentionally runtime-only.
-    pub(crate) context_policy_observed_active_tokens: Option<i64>,
-    pub(crate) context_policy_observed_at: Option<DateTime<Utc>>,
-    pub(crate) context_policy_active_token_basis: Option<String>,
-    pub(crate) context_policy_effective_threshold_tokens: Option<i64>,
-    pub(crate) context_policy_model_window_tokens: Option<i64>,
-    pub(crate) context_policy_auto_compact_scope: Option<String>,
-    pub(crate) context_policy_auto_compact_scope_limit_tokens: Option<i64>,
-    /// Runtime-only reduction details for parent polling.
-    pub(crate) last_context_reduction: Option<AgentContextReductionAttempt>,
-    /// Backoff state for continue-mode threshold failures.
-    pub(crate) suppressed_context_reduction: Option<SuppressedContextReduction>,
-    /// Key of the unresolved reduction failure already reported to the immediate parent.
-    pub(crate) context_reduction_failure_episode: Option<u64>,
     /// Persisted origin of the session base instructions, when known.
     pub(crate) base_instructions_provenance: Option<BaseInstructionsProvenance>,
     pub(crate) history: ContextManager,
@@ -146,17 +120,6 @@ impl SessionState {
     ) -> Self {
         Self {
             active_disabled_plugin_ids: Vec::new(),
-            applied_context_policy_revision: None,
-            context_policy_observed_active_tokens: None,
-            context_policy_observed_at: None,
-            context_policy_active_token_basis: None,
-            context_policy_effective_threshold_tokens: None,
-            context_policy_model_window_tokens: None,
-            context_policy_auto_compact_scope: None,
-            context_policy_auto_compact_scope_limit_tokens: None,
-            last_context_reduction: None,
-            suppressed_context_reduction: None,
-            context_reduction_failure_episode: None,
             session_configuration,
             base_instructions_provenance: None,
             history,

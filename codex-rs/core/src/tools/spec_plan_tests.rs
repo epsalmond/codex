@@ -2757,7 +2757,6 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
             "close_agent".to_string(),
             "resume_agent".to_string(),
             "send_input".to_string(),
-            "set_agent_context_policy".to_string(),
             "spawn_agent".to_string(),
             "wait_agent".to_string(),
         ]
@@ -2816,7 +2815,6 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "wait_agent",
         "interrupt_agent",
         "list_agents",
-        "set_agent_context_policy",
     ] {
         assert!(
             v2.namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
@@ -2911,72 +2909,6 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_catalog_override_keeps_context_policy_fields() {
-    let plan = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_turn_settings_for_test(turn, |settings| {
-            Arc::make_mut(&mut settings.model_info).model_messages = Some(
-                serde_json::from_value(json!({
-                    "tools": {
-                        "multi_agent": {
-                            "spawn_agent": {
-                                "parameters": json!({
-                                    "type": "object",
-                                    "properties": {
-                                        "message": { "type": "string" },
-                                        "context_policy": { "type": "string" },
-                                        "inherit_to_children": { "type": "string" }
-                                    },
-                                    "required": [
-                                        "message",
-                                        "context_policy",
-                                        "inherit_to_children"
-                                    ]
-                                }).to_string()
-                            }
-                        }
-                    }
-                }))
-                .expect("catalog tool parameters should deserialize"),
-            );
-        });
-    })
-    .await;
-
-    let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
-        panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
-    };
-    let Some(ResponsesApiNamespaceTool::Function(spawn_agent)) = namespace.tools.iter().find(
-        |tool| matches!(tool, ResponsesApiNamespaceTool::Function(tool) if tool.name == "spawn_agent"),
-    ) else {
-        panic!("expected spawn_agent in {MULTI_AGENT_V2_NAMESPACE} namespace");
-    };
-    let parameters = &spawn_agent.parameters;
-    let properties = parameters
-        .properties
-        .as_ref()
-        .expect("spawn_agent should use object params");
-    let context_policy = serde_json::to_value(&properties["context_policy"])
-        .expect("context policy schema should serialize");
-    let inherit_to_children = serde_json::to_value(&properties["inherit_to_children"])
-        .expect("inherit-to-children schema should serialize");
-    assert_eq!(context_policy["type"], "object");
-    assert_eq!(
-        context_policy["properties"]["threshold_tokens"]["type"],
-        "integer"
-    );
-    assert_eq!(inherit_to_children["type"], "boolean");
-    for property in ["context_policy", "inherit_to_children"] {
-        assert!(
-            !parameters
-                .required
-                .as_ref()
-                .is_some_and(|required| required.iter().any(|name| name == property))
-        );
-    }
-}
-
-#[tokio::test]
 async fn multi_agent_v2_can_disable_wait_agent() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
@@ -2993,7 +2925,6 @@ async fn multi_agent_v2_can_disable_wait_agent() {
             "interrupt_agent".to_string(),
             "list_agents".to_string(),
             "send_message".to_string(),
-            "set_agent_context_policy".to_string(),
             "spawn_agent".to_string(),
         ]
     );

@@ -3,15 +3,11 @@ use super::turn_context::TurnContext;
 use crate::config::Config;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 
 #[derive(Debug)]
 pub(crate) struct ContextWindowTokenStatus {
     // Full active context usage, independent of the configured auto-compact scope.
     pub(crate) active_context_tokens: i64,
-    /// How the active count was assembled for parent-visible policy telemetry.
-    pub(crate) active_context_token_basis: &'static str,
     // Usage counted against `model_auto_compact_token_limit` for the current scope.
     pub(crate) auto_compact_scope_tokens: i64,
     pub(crate) auto_compact_scope_limit: Option<i64>,
@@ -35,7 +31,6 @@ pub(crate) async fn context_window_token_status(
         sess,
         turn_context.config.as_ref(),
         turn_context.model_info().as_ref(),
-        Some(turn_context),
     )
     .await
 }
@@ -52,48 +47,15 @@ pub(crate) async fn context_window_token_status_for_model(
         turn_context.use_model_token_budget_defaults,
         model_info,
     );
-    context_window_token_status_with_config(sess, &config, model_info, Some(turn_context)).await
+    context_window_token_status_with_config(sess, &config, model_info).await
 }
 
 async fn context_window_token_status_with_config(
     sess: &Session,
     config: &Config,
     model_info: &ModelInfo,
-    turn_context: Option<&TurnContext>,
 ) -> ContextWindowTokenStatus {
-    let child_thread = turn_context.is_some_and(|turn_context| {
-        matches!(
-            &turn_context.session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        )
-    });
-    let has_token_usage = if child_thread {
-        sess.token_usage_info().await.is_some()
-    } else {
-        true
-    };
-    let (active_context_tokens, active_context_token_basis) = if let Some(turn_context) =
-        turn_context
-        && matches!(
-            &turn_context.session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        )
-        && !has_token_usage
-    {
-        match sess.get_estimated_token_count(turn_context).await {
-            Some(tokens) => (tokens, "full_history_estimate"),
-            None => (sess.get_total_token_usage().await, "partial_usage_fallback"),
-        }
-    } else {
-        (
-            sess.get_total_token_usage().await,
-            if child_thread {
-                "provider_usage_plus_local_estimate"
-            } else {
-                "not_reported"
-            },
-        )
-    };
+    let active_context_tokens = sess.get_total_token_usage().await;
 
     // Count either the full active context or only the tokens added after the initial prefix.
     let (auto_compact_scope_tokens, auto_compact_scope_limit, auto_compact_window_prefill_tokens) =
@@ -156,7 +118,6 @@ async fn context_window_token_status_with_config(
 
     ContextWindowTokenStatus {
         active_context_tokens,
-        active_context_token_basis,
         auto_compact_scope_tokens,
         auto_compact_scope_limit,
         full_context_window_limit,

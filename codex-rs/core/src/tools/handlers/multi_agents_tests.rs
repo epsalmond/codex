@@ -309,11 +309,6 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .expect("approval policy should be set");
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
     turn.config = Arc::new(config);
-    let root = manager
-        .start_thread(StartThreadOptions::new((*turn.config).clone()))
-        .await
-        .expect("root thread should start");
-    session.thread_id = root.thread_id;
 
     let invocation = invocation(
         Arc::new(session),
@@ -872,11 +867,6 @@ async fn spawn_agent_returns_agent_id_without_task_name() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
-    let root = manager
-        .start_thread(StartThreadOptions::new((*turn.config).clone()))
-        .await
-        .expect("root thread should start");
-    session.thread_id = root.thread_id;
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
@@ -2350,14 +2340,9 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
 
     let mut config = (*turn.config).clone();
     config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 1;
-    turn.config = Arc::new(config.clone());
-    let root = manager
-        .start_thread(StartThreadOptions::new(config))
-        .await
-        .expect("parent thread should start");
-    session.thread_id = root.thread_id;
+    turn.config = Arc::new(config);
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: root.thread_id,
+        parent_thread_id: session.thread_id,
         depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_path: None,
         agent_nickname: None,

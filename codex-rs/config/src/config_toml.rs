@@ -178,10 +178,6 @@ pub struct ConfigToml {
     #[serde(default)]
     pub auto_shake: Option<AutoShakeToml>,
 
-    /// Controls context reduction for spawned subagents.
-    #[serde(default)]
-    pub subagent_context_reduction: Option<SubagentContextReductionToml>,
-
     /// Percentage of the usable context window that triggers compaction after a final
     /// response. Existing auto-compaction limits still apply. Omitted or zero disables
     /// turn-end compaction; valid values are 0–100.
@@ -571,48 +567,6 @@ pub struct AutoReviewToml {
     pub policy: Option<String>,
     /// Experimental full Guardian prompt template containing the tenant policy placeholder.
     pub experimental_policy_template: Option<String>,
-}
-
-/// Settings for reducing the context inherited by spawned subagents.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct SubagentContextReductionToml {
-    /// Whether to reduce subagent context. Defaults to `true`.
-    pub enabled: Option<bool>,
-    /// Context size threshold, in tokens. Must be positive; defaults to 272000.
-    #[schemars(range(min = 1))]
-    pub threshold_tokens: Option<i64>,
-    /// Whether to re-check after tool results. Defaults to `true`.
-    pub check_after_tools: Option<bool>,
-    /// Context shake policy: `inherit`, `on`, or `off`. Defaults to `inherit`.
-    pub shake: Option<SubagentContextReductionShake>,
-    /// What to do when context reduction fails: `stop` or `continue`.
-    /// Defaults to `stop`.
-    pub on_failure: Option<SubagentContextReductionOnFailure>,
-}
-
-/// Shake policy for subagent context reduction.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SubagentContextReductionShake {
-    /// Defer to the effective shake configuration.
-    #[default]
-    Inherit,
-    /// Enable shake for subagent context reduction.
-    On,
-    /// Disable shake for subagent context reduction.
-    Off,
-}
-
-/// Failure policy for subagent context reduction.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SubagentContextReductionOnFailure {
-    /// Stop when context reduction fails.
-    #[default]
-    Stop,
-    /// Continue without reduced context when reduction fails.
-    Continue,
 }
 
 /// Automatic surgical context reduction ("auto-shake") settings.
@@ -1479,69 +1433,6 @@ command = "   "
                 "model_providers.amazon-bedrock: provider auth.command must not be empty"
             )
         );
-    }
-
-    #[test]
-    fn subagent_context_reduction_deserializes_config_fields_and_enums() {
-        let config: ConfigToml = toml::from_str(
-            r#"
-[subagent_context_reduction]
-enabled = false
-threshold_tokens = 12345
-check_after_tools = false
-shake = "on"
-on_failure = "continue"
-"#,
-        )
-        .expect("subagent context reduction config should deserialize");
-
-        assert_eq!(
-            config.subagent_context_reduction,
-            Some(SubagentContextReductionToml {
-                enabled: Some(false),
-                threshold_tokens: Some(12_345),
-                check_after_tools: Some(false),
-                shake: Some(SubagentContextReductionShake::On),
-                on_failure: Some(SubagentContextReductionOnFailure::Continue),
-            })
-        );
-    }
-
-    #[test]
-    fn subagent_context_reduction_enums_accept_all_documented_values() {
-        for (raw, expected) in [
-            ("inherit", SubagentContextReductionShake::Inherit),
-            ("on", SubagentContextReductionShake::On),
-            ("off", SubagentContextReductionShake::Off),
-        ] {
-            let config: ConfigToml =
-                toml::from_str(&format!("[subagent_context_reduction]\nshake = {raw:?}\n"))
-                    .expect("shake value should deserialize");
-            assert_eq!(
-                config
-                    .subagent_context_reduction
-                    .expect("table should deserialize")
-                    .shake,
-                Some(expected)
-            );
-        }
-
-        for (raw, expected) in [
-            ("stop", SubagentContextReductionOnFailure::Stop),
-            ("continue", SubagentContextReductionOnFailure::Continue),
-        ] {
-            let config: ConfigToml = toml::from_str(&format!(
-                "[subagent_context_reduction]\non_failure = {raw:?}\n"
-            ))
-            .expect("on_failure value should deserialize");
-            assert_eq!(
-                config
-                    .subagent_context_reduction
-                    .expect("table should deserialize")
-                    .on_failure,
-                Some(expected)
-            );
-        }
     }
 
     #[test]
