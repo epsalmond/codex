@@ -636,6 +636,10 @@ pub struct Config {
     /// the context is elidable. See `codex-rs/docs/shake.md`.
     pub auto_shake: AutoShakeConfig,
 
+    /// Resolved `[subagent_context_reduction]` settings, applied only when
+    /// building a subagent's config.
+    pub subagent_context_reduction: SubagentContextReductionConfig,
+
     /// Percentage of the usable context window that triggers turn-end compaction.
     /// Zero disables turn-end compaction.
     pub model_post_turn_compact_threshold_percent: u8,
@@ -1299,6 +1303,15 @@ impl Default for CurrentTimeReminderConfig {
     }
 }
 
+pub const DEFAULT_SUBAGENT_CONTEXT_REDUCTION_THRESHOLD_TOKENS: u64 = 272_000;
+
+/// Resolved `[subagent_context_reduction]` configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct SubagentContextReductionConfig {
+    pub enabled: bool,
+    pub threshold_tokens: u64,
+}
+
 /// Resolved `[auto_shake]` configuration carried on [`crate::config::Config`].
 ///
 /// Fields stay `Option` on purpose: `None` means "not overridden", which is
@@ -1327,6 +1340,10 @@ pub struct AutoShakeConfig {
     pub cache_ttl: Option<codex_config::config_toml::AutoShakeDurationToml>,
     /// Per-provider overrides keyed by `model_providers` id (e.g. `openai`).
     pub providers: BTreeMap<String, AutoShakeProviderConfig>,
+    /// Internal cap on the resolved threshold, in tokens; not user-configurable.
+    /// Set on subagent configs from `[subagent_context_reduction]`.
+    #[serde(skip)]
+    pub max_threshold_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -4231,6 +4248,19 @@ impl Config {
         )
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
+        let subagent_context_reduction_toml = cfg.subagent_context_reduction.unwrap_or_default();
+        let subagent_context_reduction = SubagentContextReductionConfig {
+            enabled: subagent_context_reduction_toml.enabled.unwrap_or(true),
+            threshold_tokens: subagent_context_reduction_toml
+                .threshold_tokens
+                .unwrap_or(DEFAULT_SUBAGENT_CONTEXT_REDUCTION_THRESHOLD_TOKENS),
+        };
+        if subagent_context_reduction.threshold_tokens == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "subagent_context_reduction.threshold_tokens must be positive",
+            ));
+        }
         let config = Self {
             model,
             service_tier,
@@ -4242,6 +4272,7 @@ impl Config {
                 .unwrap_or_default(),
             auto_shake: AutoShakeConfig::from_toml(cfg.auto_shake.as_ref())
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?,
+            subagent_context_reduction,
 
             model_post_turn_compact_threshold_percent: cfg
                 .model_post_turn_compact_threshold_percent

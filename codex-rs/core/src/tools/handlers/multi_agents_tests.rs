@@ -4,6 +4,8 @@ use crate::ThreadManager;
 use crate::agent::child_config::apply_spawn_agent_service_tier;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::child_config::build_agent_spawn_config;
+use crate::agent::types::ContextReductionOutcome;
+use crate::agent::types::ContextReductionRecord;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::PermissionProfileSnapshot;
@@ -216,6 +218,7 @@ struct ListAgentsResult {
 struct ListedAgentResult {
     agent_name: String,
     agent_status: serde_json::Value,
+    context: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1412,6 +1415,15 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
             }),
         )
         .await;
+    child_thread
+        .session
+        .record_context_reduction(ContextReductionRecord {
+            at: 1_700_000_000,
+            before_tokens: 300_000,
+            after_tokens: Some(40_000),
+            outcome: ContextReductionOutcome::Shaken,
+        })
+        .await;
 
     let output = ListAgentsHandlerV2
         .handle(invocation(
@@ -1438,6 +1450,26 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .find(|agent| agent.agent_name == "/root/worker")
         .expect("worker agent should be listed");
     assert_eq!(worker.agent_status, json!({"completed": "done"}));
+    // The child's token count depends on its startup history, so only its type is pinned.
+    let mut context = worker.context.clone();
+    let active_tokens = context
+        .as_object_mut()
+        .and_then(|context| context.remove("active_tokens"));
+    assert_eq!(
+        (active_tokens.is_some_and(|tokens| tokens.is_i64()), context),
+        (
+            true,
+            json!({
+                "basis": "estimate",
+                "last_reduction": {
+                    "at": 1_700_000_000,
+                    "before_tokens": 300_000,
+                    "after_tokens": 40_000,
+                    "outcome": "shaken"
+                }
+            })
+        ),
+    );
     assert_eq!(success, Some(true));
 }
 
@@ -4532,6 +4564,8 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = Some(ReasoningEffort::High);
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+    expected.model_auto_compact_token_limit = Some(272_000);
+    expected.auto_shake.max_threshold_tokens = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {
@@ -4576,8 +4610,10 @@ async fn build_agent_spawn_config_inherits_auto_shake() {
                 cache_ttl: Some(codex_config::config_toml::AutoShakeDurationToml(120)),
             },
         )]),
+        max_threshold_tokens: None,
     };
-    let expected = parent.auto_shake.clone();
+    let mut expected = parent.auto_shake.clone();
+    expected.max_threshold_tokens = Some(272_000);
     let base_instructions = BaseInstructions {
         text: "base".to_string(),
         provenance: None,
@@ -4630,6 +4666,8 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort().cloned();
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
+    expected.model_auto_compact_token_limit = Some(272_000);
+    expected.auto_shake.max_threshold_tokens = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {

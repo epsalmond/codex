@@ -13,6 +13,7 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
+use crate::agent::types::ContextReductionRecord;
 use crate::context_manager::ContextManager;
 use crate::context_manager::HistoryReplacement;
 use crate::session::PreviousTurnSettings;
@@ -77,6 +78,11 @@ pub(crate) struct SessionState {
     pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
+    /// Most recent automatic context reduction, reported by `list_agents`. Runtime-only.
+    pub(crate) last_context_reduction: Option<ContextReductionRecord>,
+    /// True while `token_info` holds a local estimate from `recompute_token_usage`
+    /// rather than model-reported usage.
+    pub(crate) token_usage_estimated: bool,
     pub(crate) server_reasoning_included: bool,
     pub(crate) mcp_dependency_prompted: HashSet<String>,
     pub(crate) additional_context: AdditionalContextStore,
@@ -126,6 +132,8 @@ impl SessionState {
             history_reset: CancellationToken::new(),
             latest_rate_limits: None,
             latest_token_usage_record: None,
+            last_context_reduction: None,
+            token_usage_estimated: false,
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
             additional_context: AdditionalContextStore::default(),
@@ -271,6 +279,7 @@ impl SessionState {
         model_context_window: Option<i64>,
     ) {
         self.history.update_token_info(usage, model_context_window);
+        self.token_usage_estimated = false;
     }
 
     pub(crate) fn ensure_auto_compact_window_server_prefill_from_usage(

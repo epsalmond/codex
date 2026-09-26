@@ -151,6 +151,23 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     {
         config.developer_instructions = Some(developer_instructions);
     }
+    // Subagents reuse the root's shake-then-compact path at a lower limit. Taking the
+    // min keeps nested children idempotent and never raises a user-configured limit.
+    if config.subagent_context_reduction.enabled {
+        let threshold_tokens =
+            i64::try_from(config.subagent_context_reduction.threshold_tokens).unwrap_or(i64::MAX);
+        config.model_auto_compact_token_limit = Some(
+            config
+                .model_auto_compact_token_limit
+                .map_or(threshold_tokens, |limit| limit.min(threshold_tokens)),
+        );
+        config.auto_shake.max_threshold_tokens = Some(
+            config
+                .auto_shake
+                .max_threshold_tokens
+                .map_or(threshold_tokens, |cap| cap.min(threshold_tokens)),
+        );
+    }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
