@@ -35,3 +35,19 @@ measurement.
 - Headline numbers: [RESULTS.md](codex-rs/docs/shake-bench/RESULTS.md)
 - Docs and config: [shake.md](codex-rs/docs/shake.md)
 - Benchmark scripts and full reports: [shake-bench](codex-rs/docs/shake-bench/README.md)
+
+**Subagent context reduction caps how large a spawned or resumed child's
+context can grow.** By default, children shake and then compact once active
+context reaches 272,000 tokens or the limit they would otherwise inherit from
+the parent, whichever is lower; the root session is unaffected. Nested
+children inherit the same cap.
+
+Tune or disable it with `[subagent_context_reduction]` in
+`~/.codex/config.toml`: `enabled` (default `true`) and `threshold_tokens`
+(default `272000`, must be positive). If a subagent is still over the limit
+after shaking and compacting, its turn ends with a context-window-exceeded
+error instead of looping, and the parent sees this as a failed child turn.
+`list_agents` exposes a `context` field per agent (`active_tokens`, `basis`,
+`last_reduction`) so a parent can inspect a child's context state directly.
+
+See [shake.md](codex-rs/docs/shake.md#subagents) for the full behavior.
