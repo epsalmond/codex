@@ -170,6 +170,8 @@ still fires when auto-shake is disabled, impossible, or would not free enough.
      resolved context window)` when a window is known — so a misconfigured
      absolute value above the window still fires rather than silently never
      triggering.
+   For subagents, the result is then capped by `[subagent_context_reduction]`
+   (see "Subagents" below).
    If active context tokens `<` the effective threshold, stop.
 6. Run the read-only preview. If it would free `<` `min_elidable_percent`% of the
    measured context, stop. This is the anti-thrash guard: a shake that frees
@@ -355,12 +357,55 @@ window.
 ### Subagents
 
 Spawned subagent threads inherit `auto_shake` automatically:
-`build_agent_shared_config` (`codex-rs/core/src/tools/handlers/multi_agents_common.rs`)
-clones the parent `Config` wholesale and then refreshes only runtime-owned
-fields, and subagent turns run through the same `run_turn` →
-`run_pre_sampling_compact` path. Note that the effective *model* may differ from
-the parent's, so a subagent on a family with auto-shake off will not shake even
-when its parent does — which is the intended per-model behavior.
+`build_agent_shared_config` (`codex-rs/core/src/agent/child_config.rs`) clones
+the parent `Config` wholesale and then refreshes only runtime-owned fields,
+and subagent turns run through the same `run_turn` → `run_pre_sampling_compact`
+path. Note that the effective *model* may differ from the parent's, so a
+subagent on a family with auto-shake off will not shake even when its parent
+does — which is the intended per-model behavior.
+
+On top of that inheritance, `[subagent_context_reduction]` (see
+"Configuration" below) caps how high a child's limits can go. When enabled,
+`build_agent_shared_config` takes the lower of the inherited value and the
+configured `threshold_tokens` for both `model_auto_compact_token_limit` and
+`auto_shake.max_threshold_tokens`, so a child's auto-compact limit and its
+auto-shake threshold are both bounded by the cap, never raised by it. Nested
+children (a subagent spawning its own subagent) apply the same `min()` again
+against their own parent's already-capped config, so the cap only ever
+tightens further down the tree. The root session's config is never touched by
+`[subagent_context_reduction]`.
+
+The mid-turn roll-over order also differs for subagents (see
+`codex-rs/core/src/session/mid_turn_reduction.rs`). At the point where a
+sampling follow-up would exceed the context limit:
+
+- a **subagent** first tries auto-shake; if that brings it back under the
+  limit, sampling continues without compacting. If auto-shake is skipped or
+  insufficient, compaction runs next; if the thread is still at or over the
+  limit after compaction, the turn ends with a context-window-exceeded error
+  instead of sampling and compacting in a loop. The parent observes this as a
+  failed child turn.
+- a **root** session skips straight to compaction and keeps sampling
+  regardless of the post-compaction size, matching the pre-existing behavior.
+- an explicit new-context-window request always compacts directly, for both
+  roots and subagents, skipping the shake-first step entirely.
+
+Ephemeral children never shake: auto-shake requires a persistent thread (step
+3 of the decision sequence above) because `elide` needs artifact recovery, so
+an ephemeral child falls straight through to compaction like any other
+ephemeral thread.
+
+A parent can inspect a child's context state without waiting for a failure:
+`list_agents` reports a `context` field per agent
+(`codex-rs/core/src/agent/types.rs` `AgentContextUsage`,
+`codex-rs/core/src/tools/handlers/multi_agents_spec.rs` for the tool-output
+description) with `active_tokens` (the current active-context token count),
+`basis` (`usage` when it derives from the last model-reported usage plus a
+local estimate of items recorded since, `estimate` when no usage has been
+reported since the thread started or history was last rewritten), and
+`last_reduction`, the most recent automatic reduction, or `null`, as `{at,
+before_tokens, after_tokens (nullable), outcome}` where `outcome` is one of
+`shaken`, `compacted`, or `insufficient`.
 
 ### Observability
 
@@ -425,6 +470,20 @@ A percent value accepts either an integer 1–100 (`40`) or a percent string
 **Disambiguating a bare integer** (no `%` or `k` suffix): `1..=100` is a
 percent, anything above `100` is an absolute token count. `0` and negative
 values are rejected for every numeric form with a config error.
+
+### `[subagent_context_reduction]`
+
+This table caps subagent limits rather than configuring auto-shake itself;
+see "Subagents" above for how the cap is applied.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `subagent_context_reduction.enabled` | bool | `true` | Apply the cap to spawned and resumed children. |
+| `subagent_context_reduction.threshold_tokens` | int > 0 | `272000` | Token count at which subagents shake and then compact, when lower than the limits they would otherwise inherit. `0` is rejected with a config error. |
+
+Under `model_auto_compact_token_limit_scope = "body_after_prefix"` the
+compaction cap applies to body tokens while the shake cap applies to total
+tokens.
 
 ### Precedence
 
@@ -533,6 +592,19 @@ Disable auto-shake entirely:
 ```toml
 [auto_shake]
 threshold = "off"
+```
+
+Lower the subagent cap so children shake and compact earlier than the
+272,000-token default, or turn the cap off entirely:
+
+```toml
+[subagent_context_reduction]
+threshold_tokens = 120000
+```
+
+```toml
+[subagent_context_reduction]
+enabled = false
 ```
 
 ## Maintenance

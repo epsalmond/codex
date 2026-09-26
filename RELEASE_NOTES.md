@@ -1,37 +1,39 @@
-<!-- This file is the notes section of every GitHub release for this branch.
-     codex-fork-release adds the install block before it and the base tag and
-     commit list after it. Plain markdown. -->
+<!-- This file is the "What this fork adds" section of every GitHub release for
+     this branch. codex-fork-release adds the changelog before it and the
+     install block, provenance, and commit list after it. Plain markdown. -->
 
-**Codex Shake keeps long coding sessions smaller by removing older tool output
-from active context. In our replay benchmark, shaken runs used 2.3–2.7× fewer
-Codex credits.**
+**Shake keeps long coding sessions smaller by removing older tool output from
+active context.** In one real-session replay benchmark, shaken runs used
+2.3–2.7× fewer standard Codex credits than the same session run in full.
+Surviving conversation content stays byte-identical, and removed content
+remains available in local artifact files; auto-shake runs by default and
+`/shake` previews or triggers it manually. Full benchmark table and
+methodology: [RESULTS.md](codex-rs/docs/shake-bench/RESULTS.md). Config and
+internals: [shake.md](codex-rs/docs/shake.md). Benchmark scripts and reports:
+[shake-bench](codex-rs/docs/shake-bench/README.md).
 
-Surviving conversation content stays byte-identical, and removed content remains
-available in local artifact files. Auto-shake runs by default; `/shake` lets you
-preview and trigger it yourself.
+**Subagent context reduction** caps how large a spawned or resumed child's
+context can grow: by default, a child shakes and then compacts once active
+context reaches 272,000 tokens or the limit it would otherwise inherit from
+the parent, whichever is lower, via the `[subagent_context_reduction]` config
+table. See [shake.md](codex-rs/docs/shake.md#subagents) for the full behavior.
 
-The published replay reduced active history from 536k to 176k tokens. Its
-measured results were:
+**Statusline items** add two TUI-only `/statusline` entries: `weekly-reset`
+(compact local wall-clock time the weekly usage window resets) and
+`last-response-clock` (local time of the most recently completed live
+response in the session).
 
-| arm | active history | standard Codex credits | end state |
-|---|---:|---:|---|
-| full history, cold cache | 536k | 840 | 12/12 |
-| shaken, cold cache | 176k | 312 | 11/12 |
-| full history, warm cache | 536k | 809 | 12/12 |
-| shaken, warm cache | 176k | 358 | 12/12 |
+**Self-update and packaging** installs this branch's snapshots as
+`codex-shake`, beside the official `codex`, via `curl | sh`
+([install.sh](install.sh)), Homebrew
+(`brew install epsalmond/codex-shake/codex-shake`), or a `.deb` for
+Debian/Ubuntu x86_64 attached to each release. `codex-shake-update` checks and
+reinstalls the latest tag; `codex-shake-estimate` runs the offline savings
+estimator against local rollouts.
 
-This was n=1 per cell, with builds stubbed; the one cold shaken run missed one
-structural check. An earlier replay projected 4.8x lower API cost using the API
-rate card ($59.46/$12.37); it used 2.42× fewer Codex credits.
-
-No artifact recovery reads were observed in the nine runs covered by the
-recovery report. Cache behavior and savings vary by workload; see the
-benchmark methodology.
-
-The weekly projection estimated 2.04B fewer input tokens out of 12.37B across
-182 historical threads. It is a projection from rollouts, not a plan-quota
-measurement.
-
-- Headline numbers: [RESULTS.md](codex-rs/docs/shake-bench/RESULTS.md)
-- Docs and config: [shake.md](codex-rs/docs/shake.md)
-- Benchmark scripts and full reports: [shake-bench](codex-rs/docs/shake-bench/README.md)
+**Release automation** builds, validates, and publishes a prerelease whenever
+a merge lands on `eric/local-features` (a fast-forward push whose new tip is a
+two-parent merge commit) or a canonical `local-features-v*` tag is pushed as a
+manual recovery path: two-platform binaries with attached debug symbols, a
+`.deb`, and a Homebrew tap update, gated on the fork's own test suite. See
+[fork-release.yml](.github/workflows/fork-release.yml).
