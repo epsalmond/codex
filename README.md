@@ -84,6 +84,27 @@ Debian/Ubuntu x86_64 attached to each release. See the release notes on
 [epsalmond/codex releases](https://github.com/epsalmond/codex/releases) for
 the exact commands.
 
+### Wake mode for multi-agent orchestrators
+
+In wake mode, a MultiAgentV2 root sleeps until a child subagent reports back,
+instead of polling `wait_agent` in a loop. Turn it on with:
+
+```toml
+[features.multi_agent_v2]
+wait_agent_enabled = false
+```
+
+or for a single run, `codex -c features.multi_agent_v2.wait_agent_enabled=false`.
+
+Esc pauses wakeups and holds any child results that arrive; the TUI shows "N
+child results queued — delivered with your next message", and they are
+delivered together with the next user message. Subagents keep `wait_agent`
+regardless of this setting, and a nested parent (a subagent with its own
+children) does not wake yet; that is a later stage.
+
+This is off by default. With it off, behavior matches upstream. See the
+[release notes](releases/2026-09-26-wake-mode.md) for details and measurements.
+
 ### Using Codex with your ChatGPT plan
 
 Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
