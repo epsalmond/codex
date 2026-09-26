@@ -19,6 +19,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
+use tracing::warn;
 
 impl LocalAgentControl {
     /// Routes a captured terminal outcome without retaining the child's live turn context.
@@ -95,12 +96,16 @@ impl LocalAgentControl {
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());
+        // Mark completions to the root as wakes; the root decides on receipt whether it is in
+        // wake mode. The root is exempt from the capacity check a triggered send adds.
+        // Non-root parents keep `wait_agent`.
+        let trigger_turn = parent_agent_path.is_root();
         let communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
             Vec::new(),
             message,
-            /*trigger_turn*/ false,
+            trigger_turn,
         );
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
@@ -113,7 +118,7 @@ impl LocalAgentControl {
             )
             .await
         {
-            debug!("failed to notify parent thread {parent_thread_id}: {err}");
+            warn!("failed to notify parent thread {parent_thread_id}: {err}");
             return;
         }
         if let Some(message) = trace_message {

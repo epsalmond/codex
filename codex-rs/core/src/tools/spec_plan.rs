@@ -2,6 +2,7 @@ use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::unified_image_budget_enabled;
+use crate::session::multi_agents::ChildReportMode;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
@@ -684,11 +685,19 @@ fn required_child_management_tool_names(
         .iter()
         .map(|name| ToolName::new(namespace.map(str::to_owned), (*name).to_owned()))
         .collect::<Vec<_>>();
-    if multi_agent_v2_enabled(turn_context) && turn_context.config.multi_agent_v2.wait_agent_enabled
+    if multi_agent_v2_enabled(turn_context)
+        && child_report_mode(turn_context) == ChildReportMode::WaitAgent
     {
         tools.push(ToolName::new(namespace.map(str::to_owned), "wait_agent"));
     }
     tools
+}
+
+fn child_report_mode(turn_context: &TurnContext) -> ChildReportMode {
+    ChildReportMode::for_thread(
+        &turn_context.config.multi_agent_v2,
+        &turn_context.session_source,
+    )
 }
 
 fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
@@ -1257,6 +1266,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 agent_type_description(turn_context, context.default_agent_type_description);
             let hide_spawn_agent_metadata =
                 turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
+            let child_report_mode = child_report_mode(turn_context);
             registry.register_trusted_with_exposure(
                 multi_agent_v2_handler(
                     SpawnAgentHandlerV2::new(
@@ -1275,6 +1285,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                                 .multi_agent_v2
                                 .usage_hint_text
                                 .clone(),
+                            child_report_mode,
                         },
                         spawn_agent_description.map(str::to_owned),
                     ),
@@ -1304,7 +1315,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 ),
                 exposure,
             );
-            if turn_context.config.multi_agent_v2.wait_agent_enabled {
+            if child_report_mode == ChildReportMode::WaitAgent {
                 registry.register_trusted_with_exposure(
                     multi_agent_v2_handler(
                         WaitAgentHandlerV2::new(context.wait_agent_timeouts),
@@ -1326,7 +1337,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             );
             registry.register_trusted_with_exposure(
                 multi_agent_v2_handler(
-                    ListAgentsHandlerV2,
+                    ListAgentsHandlerV2 { child_report_mode },
                     tool_namespace,
                     model_messages.multi_agent_tool_description_override("list_agents"),
                     model_messages.multi_agent_tool_parameters_override("list_agents"),
@@ -1350,6 +1361,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                    child_report_mode: ChildReportMode::WaitAgent,
                 }),
                 exposure,
             );

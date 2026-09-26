@@ -6223,6 +6223,27 @@ class ThreadUsageBreakdownGroup(BaseModel):
     total_tokens: Annotated[int | None, Field(alias="totalTokens")] = None
 
 
+class ThreadWakeupsUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    paused: Annotated[
+        bool,
+        Field(
+            description="Whether automatic wakeups from child results are paused until the next user message."
+        ),
+    ]
+    queued_results: Annotated[
+        int,
+        Field(
+            alias="queuedResults",
+            description="Child results that the next user turn will carry.",
+            ge=0,
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class TokenUsageBreakdown(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9136,6 +9157,23 @@ class ThreadQueueChangedServerNotification(BaseModel):
         Literal["thread/queue/changed"], Field(title="Thread/queue/changedNotificationMethod")
     ]
     params: ThreadQueueChangedNotification
+
+
+class ThreadWakeupsUpdatedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/wakeups/updated"], Field(title="Thread/wakeups/updatedNotificationMethod")
+    ]
+    params: ThreadWakeupsUpdatedNotification
 
 
 class ThreadProjectUpdatedServerNotification(BaseModel):
@@ -12742,6 +12780,7 @@ class ServerNotification(
         | ThreadGoalUpdatedServerNotification
         | ThreadGoalClearedServerNotification
         | ThreadQueueChangedServerNotification
+        | ThreadWakeupsUpdatedServerNotification
         | ProjectChangedServerNotification
         | ThreadProjectUpdatedServerNotification
         | ThreadEnvironmentConnectedServerNotification
@@ -12830,6 +12869,7 @@ class ServerNotification(
         | ThreadGoalUpdatedServerNotification
         | ThreadGoalClearedServerNotification
         | ThreadQueueChangedServerNotification
+        | ThreadWakeupsUpdatedServerNotification
         | ProjectChangedServerNotification
         | ThreadProjectUpdatedServerNotification
         | ThreadEnvironmentConnectedServerNotification

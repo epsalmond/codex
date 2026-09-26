@@ -263,6 +263,7 @@ pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
 mod turn_suspension;
+mod wakeups;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 #[cfg(test)]
@@ -4913,6 +4914,8 @@ impl Session {
 
     pub async fn interrupt_task(self: &Arc<Self>) {
         info!("interrupt received: abort current task, if any");
+        // Pause before aborting so the post-abort restart sees held mail.
+        self.pause_wakeups_for_interrupt().await;
         let had_active_turn = self.active_turn.lock().await.is_some();
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
         if !had_active_turn {

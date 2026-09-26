@@ -1601,6 +1601,14 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Update the count of child results held for the next user message.
+    pub(crate) fn set_queued_agent_results(&mut self, count: u32) {
+        if self.pending_input_preview.queued_agent_results != count {
+            self.pending_input_preview.queued_agent_results = count;
+            self.request_redraw();
+        }
+    }
+
     /// Update the inactive-thread approval list shown above the composer.
     pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) {
         if self.pending_thread_approvals.set_threads(threads) {
@@ -2161,7 +2169,8 @@ impl BottomPane {
             let has_pending_input = has_questions
                 || !self.pending_input_preview.queued_messages.is_empty()
                 || !self.pending_input_preview.pending_steers.is_empty()
-                || !self.pending_input_preview.rejected_steers.is_empty();
+                || !self.pending_input_preview.rejected_steers.is_empty()
+                || self.pending_input_preview.queued_agent_results > 0;
             let has_status_or_footer = self.status_widget().is_some()
                 || self.hook_status_message.is_some()
                 || !self.unified_exec_footer.is_empty();

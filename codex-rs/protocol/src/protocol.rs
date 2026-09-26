@@ -1495,6 +1495,9 @@ pub enum EventMsg {
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
 
+    /// Automatic wakeups from child agent results were paused or resumed, or held results changed.
+    AgentWakeupsUpdated(AgentWakeupsUpdatedEvent),
+
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
 
@@ -4181,6 +4184,15 @@ pub struct ThreadGoalUpdatedEvent {
 #[ts(export_to = "protocol/")]
 pub struct ThreadQueueChangedEvent {
     pub thread_id: ThreadId,
+}
+
+/// Child agent results held by an interrupted root thread until the next user message.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentWakeupsUpdatedEvent {
+    /// Whether automatic wakeups are paused until the next user message.
+    pub paused: bool,
+    /// Child agent results that the next user turn will carry.
+    pub queued_results: u32,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

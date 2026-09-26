@@ -31,6 +31,13 @@ Debian/Ubuntu x86_64 attached to each release. `codex-shake-update` checks and
 reinstalls the latest tag; `codex-shake-estimate` runs the offline savings
 estimator against local rollouts.
 
+**Wake mode for multi-agent orchestrators** lets a MultiAgentV2 root sleep
+until a subagent reports back instead of polling `wait_agent`; it is opt-in
+via the `[features.multi_agent_v2] wait_agent_enabled = false` config key,
+and with it off, behavior matches upstream. See
+[README.md](README.md#wake-mode-for-multi-agent-orchestrators) and
+[releases/2026-09-26-wake-mode.md](releases/2026-09-26-wake-mode.md).
+
 **Release automation** builds, validates, and publishes a prerelease whenever
 a merge lands on `eric/local-features` (a fast-forward push whose new tip is a
 two-parent merge commit) or a canonical `local-features-v*` tag is pushed as a

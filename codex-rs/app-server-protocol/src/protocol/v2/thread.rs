@@ -2052,6 +2052,18 @@ pub struct ThreadQueueChangedNotification {
     pub thread_id: String,
 }
 
+/// Child agent results held by an interrupted thread until its next user message.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWakeupsUpdatedNotification {
+    pub thread_id: String,
+    /// Whether automatic wakeups from child results are paused until the next user message.
+    pub paused: bool,
+    /// Child results that the next user turn will carry.
+    pub queued_results: u32,
+}
+
 /// Deprecated: Use `ContextCompaction` item type instead.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

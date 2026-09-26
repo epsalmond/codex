@@ -592,6 +592,7 @@ export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
 export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
 export type { ThreadUsage } from "./ThreadUsage";
 export type { ThreadUsageBreakdownGroup } from "./ThreadUsageBreakdownGroup";
+export type { ThreadWakeupsUpdatedNotification } from "./ThreadWakeupsUpdatedNotification";
 export type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
 export type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";
 export type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";

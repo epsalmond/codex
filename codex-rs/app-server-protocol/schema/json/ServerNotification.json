@@ -6189,6 +6189,30 @@
       ],
       "type": "object"
     },
+    "ThreadWakeupsUpdatedNotification": {
+      "description": "Child agent results held by an interrupted thread until its next user message.",
+      "properties": {
+        "paused": {
+          "description": "Whether automatic wakeups from child results are paused until the next user message.",
+          "type": "boolean"
+        },
+        "queuedResults": {
+          "description": "Child results that the next user turn will carry.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "paused",
+        "queuedResults",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "TokenUsageBreakdown": {
       "properties": {
         "cacheWriteInputTokens": {
@@ -7144,6 +7168,26 @@
         "params"
       ],
       "title": "Thread/queue/changedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/wakeups/updated"
+          ],
+          "title": "Thread/wakeups/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadWakeupsUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/wakeups/updatedNotification",
       "type": "object"
     },
     {
