@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::context_policy::ContextReductionPolicyArgs;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
@@ -106,28 +107,34 @@ async fn handle_spawn_agent(
     .await
     .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
-    let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
-        config,
-        input_items,
-        Some(thread_spawn_source(
-            session.thread_id,
-            &turn.session_source,
-            child_depth,
-            prepared.role_name.as_deref(),
-            /*task_name*/ None,
-        )?),
-        SpawnAgentOptions {
-            fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
-            fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
-            parent_thread_id: Some(session.thread_id),
-            parent_turn_id: Some(turn.sub_id.clone()),
-            root_turn_id: turn.turn_metadata_state.root_turn_id(),
-            turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-            environments: Some(step_context.environments.to_selections()),
-            multi_agent_v2_usage_hints: None,
-            cyber_access_program: turn.cyber_access_program,
-        },
-    ))
+    let result = Box::pin(
+        session.services.agent_control.spawn_agent_with_metadata(
+            config,
+            input_items,
+            Some(thread_spawn_source(
+                session.thread_id,
+                &turn.session_source,
+                child_depth,
+                prepared.role_name.as_deref(),
+                /*task_name*/ None,
+            )?),
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
+                fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
+                parent_thread_id: Some(session.thread_id),
+                parent_turn_id: Some(turn.sub_id.clone()),
+                root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+                environments: Some(step_context.environments.to_selections()),
+                multi_agent_v2_usage_hints: None,
+                cyber_access_program: turn.cyber_access_program,
+                context_reduction_policy: args
+                    .context_policy
+                    .map(crate::agent::context_policy::ContextReductionPolicyArgs::into_overrides),
+                context_policy_inherit_to_children: args.inherit_to_children,
+            },
+        ),
+    )
     .await
     .map_err(collab_spawn_error);
     let (new_thread_id, new_agent_metadata, status) = match &result {
@@ -227,6 +234,8 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    context_policy: Option<ContextReductionPolicyArgs>,
+    inherit_to_children: Option<bool>,
     #[serde(default)]
     fork_context: bool,
 }

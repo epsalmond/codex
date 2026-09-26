@@ -1887,6 +1887,60 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
 }
 
 #[tokio::test]
+async fn migration_finishes_bounded_thread_spawn_scan_without_owner_settings() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let parent_thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        vec![
+            rollout_response_item(input_response_message(
+                "assistant",
+                &"superseded parent prefix ".repeat(1024),
+            )),
+            compacted(vec![input_response_message(
+                "user",
+                "latest compacted child context",
+            )]),
+            started("child-turn"),
+            serde_json::from_value(json!({
+                "type": "turn_context",
+                "payload": {
+                    "turn_id": "child-turn",
+                    "cwd": home.path(),
+                    "approval_policy": "never",
+                    "sandbox_policy": {"type": "read-only"},
+                    "model": "test-model",
+                    "summary": "auto"
+                }
+            }))
+            .expect("build child turn context"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate ThreadSpawn rollout without a settings checkpoint");
+
+    let migrated = fs::read_to_string(&path).expect("read migrated rollout");
+    assert!(!migrated.contains("superseded parent prefix"));
+    assert!(migrated.contains("latest compacted child context"));
+}
+
+#[tokio::test]
 async fn migration_keeps_small_uncompacted_subagent_replay_as_prefix() {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();

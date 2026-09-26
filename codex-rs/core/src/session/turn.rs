@@ -176,6 +176,9 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    if has_explicit_assignment_input(&input) {
+        sess.clear_context_reduction_recovery_latches().await;
+    }
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
     }
@@ -188,7 +191,7 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(
+    match run_pre_sampling_compact(
         &sess,
         &turn_context,
         &mut client_session,
@@ -196,37 +199,53 @@ pub(crate) async fn run_turn(
     )
     .await
     {
-        // Compaction runs before the new input is recorded, so preserve it on every failure.
-        run_hooks_and_record_inputs(
-            &sess,
-            &turn_context,
-            &turn_context.capture_current_model_info(),
-            &input,
-            PersistContext::Standard,
-        )
-        .await;
-        if matches!(err.details(), CodexErrorDetails::TurnAborted) {
-            return Err(err);
-        }
-        if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
-            return Err(err);
-        }
-        let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+        Ok(None) => {}
+        Ok(Some(message)) => {
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &turn_context.capture_current_model_info(),
+                &input,
+                PersistContext::Standard,
+            )
             .await;
-        // Publish the failure only after prompt hooks finish, so clients cannot react to
-        // an error by steering follow-up input into a turn still preserving its prompt.
-        let message_prefix = match turn_context.provider.capabilities().remote_compaction {
-            RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
-            RemoteCompactionSupport::Unsupported => None,
-        };
-        sess.send_event(
-            turn_context.as_ref(),
-            EventMsg::Error(err.to_error_event(message_prefix)),
-        )
-        .await;
-        error!("Failed to run pre-sampling compact");
-        return Ok(None);
+            return Err(CodexErr::InvalidRequest(message));
+        }
+        Err(err) => {
+            // Compaction runs before the new input is recorded, so preserve it on every failure.
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &turn_context.capture_current_model_info(),
+                &input,
+                PersistContext::Standard,
+            )
+            .await;
+            if matches!(err.details(), CodexErrorDetails::TurnAborted) {
+                return Err(err);
+            }
+            if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
+                return Err(err);
+            }
+            let error = err.to_codex_protocol_error();
+            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                .await;
+            // Publish the failure only after prompt hooks finish, so clients cannot react to
+            // an error by steering follow-up input into a turn still preserving its prompt.
+            let message_prefix = match turn_context.provider.capabilities().remote_compaction {
+                RemoteCompactionSupport::V2 => {
+                    Some("Error running remote compact task".to_string())
+                }
+                RemoteCompactionSupport::Unsupported => None,
+            };
+            sess.send_event(
+                turn_context.as_ref(),
+                EventMsg::Error(err.to_error_event(message_prefix)),
+            )
+            .await;
+            error!("Failed to run pre-sampling compact");
+            return Ok(None);
+        }
     }
 
     let user_input = turn_user_input(&input);
@@ -428,6 +447,9 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     let mut guardian_budget_compacted = false;
+    let mut has_sampled = false;
+    let mut pending_explicit_context_reset = false;
+    let mut pending_model_context_rollover = false;
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -440,6 +462,9 @@ pub(crate) async fn run_turn(
         } else {
             Vec::new()
         };
+        if has_explicit_assignment_input(&pending_input) {
+            sess.clear_context_reduction_recovery_latches().await;
+        }
 
         if run_hooks_and_record_inputs(
             &sess,
@@ -453,8 +478,65 @@ pub(crate) async fn run_turn(
             break;
         }
 
+        if !pending_input.is_empty() {
+            let pending_user_input = turn_user_input(&pending_input);
+            if allow_plugin_mentions {
+                required_plugins.extend(crate::plugins::collect_explicit_plugin_ids(
+                    &pending_user_input,
+                ));
+            }
+            let (pending_required_servers, _) =
+                required_mcp_servers_for_input(&sess, turn_context.as_ref(), &pending_user_input)
+                    .or_cancel(&cancellation_token)
+                    .await?;
+            required_servers.extend(pending_required_servers);
+            required_servers.sort_unstable();
+            required_servers.dedup();
+        }
+
         // Input and turn-start injections are recorded before recovery can continue this turn.
         turn_context.extension_data.insert(RecordedTurnInput);
+        if let Some((policy, _, _, _)) = sess.context_reduction_policy_status().await
+            && (!has_sampled
+                || (policy.enabled && policy.check_after_tools)
+                || pending_explicit_context_reset
+                || pending_model_context_rollover)
+        {
+            // A retained context must never outlive a history rewrite. At the first request,
+            // the initial snapshot predates the recorded turn input; after tools, the previous
+            // request snapshot predates their outputs. Drop it before shaking or compacting.
+            next_step_context.take();
+            let outcome = super::subagent_context_reduction::reduce_before_sampling(
+                &sess,
+                &turn_context,
+                &mut client_session,
+                &cancellation_token,
+                Some(&world_state),
+                super::subagent_context_reduction::ReductionBoundary {
+                    phase: CompactionPhase::MidTurn,
+                    explicit_context_reset: pending_explicit_context_reset,
+                    forced_model_rollover: pending_model_context_rollover,
+                },
+            )
+            .await?;
+            match outcome {
+                super::subagent_context_reduction::BoundaryOutcome::Stop(message) => {
+                    return Err(CodexErr::InvalidRequest(message));
+                }
+                super::subagent_context_reduction::BoundaryOutcome::Compacted => {
+                    if run_pending_session_start_hooks(&sess, &turn_context).await {
+                        return Ok(None);
+                    }
+                    pending_explicit_context_reset = false;
+                    pending_model_context_rollover = false;
+                    continue;
+                }
+                super::subagent_context_reduction::BoundaryOutcome::NoAction => {
+                    pending_explicit_context_reset = false;
+                    pending_model_context_rollover = false;
+                }
+            }
+        }
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(
             sess.as_ref(),
@@ -464,34 +546,9 @@ pub(crate) async fn run_turn(
         .await;
 
         // Capture once so context, advertised tools, and tool calls share one request view.
-        let step_context = match next_step_context.take() {
-            Some(step_context) if pending_input.is_empty() => step_context,
-            None if pending_input.is_empty() => {
-                sess.capture_step_context_with_required_mcp_servers(
-                    Arc::clone(&turn_context),
-                    &cancellation_token,
-                    required_servers,
-                    required_plugins,
-                )
-                .await?
-            }
-            Some(_) | None => {
-                let pending_user_input = turn_user_input(&pending_input);
-                if allow_plugin_mentions {
-                    required_plugins.extend(crate::plugins::collect_explicit_plugin_ids(
-                        &pending_user_input,
-                    ));
-                }
-                let (pending_required_servers, _) = required_mcp_servers_for_input(
-                    &sess,
-                    turn_context.as_ref(),
-                    &pending_user_input,
-                )
-                .or_cancel(&cancellation_token)
-                .await?;
-                required_servers.extend(pending_required_servers);
-                required_servers.sort_unstable();
-                required_servers.dedup();
+        let step_context = match (next_step_context.take(), pending_input.is_empty()) {
+            (Some(step_context), true) => step_context,
+            _ => {
                 sess.capture_step_context_with_required_mcp_servers(
                     Arc::clone(&turn_context),
                     &cancellation_token,
@@ -544,6 +601,7 @@ pub(crate) async fn run_turn(
         .await;
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
+                has_sampled = true;
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -607,8 +665,10 @@ pub(crate) async fn run_turn(
                     );
                 }
 
-                let should_roll_over = needs_follow_up
-                    && (sess.take_new_context_window_request().await || token_limit_reached);
+                let explicit_context_reset =
+                    take_context_reset_request(&sess, needs_follow_up).await;
+                let should_roll_over =
+                    needs_follow_up && (explicit_context_reset || token_limit_reached);
                 let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                 super::token_budget::maybe_record(
                     sess.as_ref(),
@@ -620,6 +680,15 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
+                    if let Some((policy, _, _, _)) = sess.context_reduction_policy_status().await
+                        && policy.enabled
+                        && policy.check_after_tools
+                    {
+                        pending_explicit_context_reset = explicit_context_reset;
+                        pending_model_context_rollover = token_limit_reached;
+                        can_drain_pending_input = !model_needs_follow_up;
+                        continue;
+                    }
                     if let Err(err) = run_auto_compact(
                         &sess,
                         Arc::clone(&step_context),
@@ -1278,33 +1347,19 @@ async fn track_turn_resolved_config_analytics(
         });
 }
 
-/// Automatic surgical context reduction, decided at the same pre-sampling point
-/// as auto-compaction.
+/// Automatic surgical context reduction at safe boundaries before a fresh
+/// model request.
 ///
-/// TURN ORDERING — why this is legal even though `/shake` refuses mid-turn:
+/// A manual shake is rejected while `active_turn` is `Some` because an
+/// in-flight `StepContext` may still hold a snapshot of history. Automatic
+/// shake is safe both before the first request is captured and between model
+/// requests after the previous step and all tool futures have finished. The
+/// child mid-turn path drops its previous step before entering the reducer, and
+/// every caller captures a fresh step only after any history rewrite completes.
 ///
-/// `handlers::shake` rejects a manual shake while `active_turn` is `Some`
-/// because a running task may already hold a `StepContext` snapshot of the
-/// history, and rewriting history underneath it would make the snapshot and the
-/// live history disagree. By the time `run_turn` executes, `active_turn` *is*
-/// `Some` (`Session::spawn_task` registers it before the task body runs), so the
-/// manual guard would always refuse here. The guard's real precondition,
-/// however, is "no step context has captured this history yet", and that holds
-/// at this exact point:
-///
-///   * `run_pre_sampling_compact` is the first thing `run_turn` does, before
-///     `capture_step_context`, so no step context exists for this turn;
-///   * this turn's user input has not been recorded yet
-///     (`run_hooks_and_record_inputs(.., TurnStart)` comes later), so the
-///     rewritten history is exactly the settled history of previous turns;
-///   * auto-compaction rewrites history wholesale at this very point via
-///     `run_auto_compact` -> `replace_compacted_history`, so the slot is already
-///     established as safe for a full history replacement.
-///
-/// We therefore call `handlers::apply_shake` with this turn's own context rather
-/// than `handlers::shake`, and pass no expected fingerprint: the preview and the
-/// shake run back-to-back under the same turn with no await on client input in
-/// between, so there is no stale-confirmation window to guard against.
+/// `handlers::apply_shake` receives the current turn context directly. Preview
+/// and application happen without yielding to new client input, so no stale
+/// fingerprint confirmation is needed.
 ///
 /// ESCALATION: when the first (plain automatic) pass leaves the thread still
 /// above the auto-shake threshold — whether that pass applied or was skipped
@@ -1325,7 +1380,38 @@ async fn track_turn_resolved_config_analytics(
 /// window. Escalation is a no-op after it: the escalation re-check is the same
 /// `decide` call that just declined, so it declines again. See
 /// management-plane#989.
-async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
+#[derive(Clone, Debug, Default)]
+pub(super) struct AutoShakeOutcome {
+    pub(super) attempted: bool,
+    pub(super) changed: bool,
+    pub(super) artifact_save_failures: usize,
+    pub(super) skipped_reason: Option<String>,
+}
+
+pub(super) struct AutoShakePassOptions<'a> {
+    pub(super) model_slug: &'a str,
+    pub(super) active_context_tokens: i64,
+    pub(super) protect_tokens: usize,
+    pub(super) min_elidable_percent: i64,
+    pub(super) min_savings_tokens: i64,
+    pub(super) trigger: ShakeTrigger,
+}
+
+impl AutoShakeOutcome {
+    pub(super) fn merge(&mut self, next: Self) {
+        self.attempted |= next.attempted;
+        self.changed |= next.changed;
+        self.artifact_save_failures += next.artifact_save_failures;
+        if self.skipped_reason.is_none() {
+            self.skipped_reason = next.skipped_reason;
+        }
+    }
+}
+
+pub(super) async fn maybe_run_pre_sampling_auto_shake(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+) -> AutoShakeOutcome {
     let config = &turn_context.config.auto_shake;
     let model_info = turn_context.model_info();
     let persistent_thread = !turn_context.config.ephemeral;
@@ -1387,7 +1473,10 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
                         active_context_tokens = token_status.active_context_tokens,
                         "auto-shake skipped"
                     );
-                    return;
+                    return AutoShakeOutcome {
+                        skipped_reason: Some(cold_resume_reason.as_str().to_string()),
+                        ..Default::default()
+                    };
                 }
             }
         }
@@ -1401,15 +1490,17 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         ),
     };
 
-    let shook = run_auto_shake_pass(
+    let mut outcome = run_auto_shake_pass(
         sess,
         turn_context,
-        model_info.slug.as_str(),
-        token_status.active_context_tokens,
-        crate::shake::AUTO_PROTECT_TOKENS,
-        min_elidable_percent,
-        min_savings_tokens,
-        trigger,
+        AutoShakePassOptions {
+            model_slug: model_info.slug.as_str(),
+            active_context_tokens: token_status.active_context_tokens,
+            protect_tokens: crate::shake::AUTO_PROTECT_TOKENS,
+            min_elidable_percent,
+            min_savings_tokens,
+            trigger,
+        },
     )
     .await;
 
@@ -1419,7 +1510,7 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
     // enabled/persistent-thread/context-window/threshold checks the first
     // pass used, so "still above the auto-shake threshold" means the same
     // thing both times.
-    let active_context_tokens = if shook {
+    let active_context_tokens = if outcome.changed {
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await
             .active_context_tokens
@@ -1440,35 +1531,42 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
         // Below threshold now (or no longer eligible for some other reason
         // `decide` already logged appropriately on the first call) -- no
         // escalation needed.
-        return;
+        return outcome;
     };
-    run_auto_shake_pass(
-        sess,
-        turn_context,
-        model_info.slug.as_str(),
-        active_context_tokens,
-        crate::shake::MANUAL_PROTECT_TOKENS,
-        min_elidable_percent,
-        min_savings_tokens / 2,
-        ShakeTrigger::AutomaticEscalated,
-    )
-    .await;
+    outcome.merge(
+        run_auto_shake_pass(
+            sess,
+            turn_context,
+            AutoShakePassOptions {
+                model_slug: model_info.slug.as_str(),
+                active_context_tokens,
+                protect_tokens: crate::shake::MANUAL_PROTECT_TOKENS,
+                min_elidable_percent,
+                min_savings_tokens: min_savings_tokens / 2,
+                trigger: ShakeTrigger::AutomaticEscalated,
+            },
+        )
+        .await,
+    );
+    outcome
 }
 
 /// Run one automatic shake pass against the thread's current live history:
 /// measure via the read-only preview, skip if it would not clear
-/// `min_elidable_percent` / `min_savings_tokens`, otherwise apply it. Returns
-/// whether a shake was actually applied.
-async fn run_auto_shake_pass(
+/// `min_elidable_percent` / `min_savings_tokens`, otherwise apply it.
+pub(super) async fn run_auto_shake_pass(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-    model_slug: &str,
-    active_context_tokens: i64,
-    protect_tokens: usize,
-    min_elidable_percent: i64,
-    min_savings_tokens: i64,
-    trigger: ShakeTrigger,
-) -> bool {
+    options: AutoShakePassOptions<'_>,
+) -> AutoShakeOutcome {
+    let AutoShakePassOptions {
+        model_slug,
+        active_context_tokens,
+        protect_tokens,
+        min_elidable_percent,
+        min_savings_tokens,
+        trigger,
+    } = options;
     let escalated = trigger == ShakeTrigger::AutomaticEscalated;
 
     // Read-only measurement of the real transformation, including the recovery
@@ -1494,7 +1592,10 @@ async fn run_auto_shake_pass(
             escalated,
             "auto-shake skipped"
         );
-        return false;
+        return AutoShakeOutcome {
+            skipped_reason: Some("below_min_elidable_share".to_string()),
+            ..Default::default()
+        };
     }
     // Absolute floor alongside the percent gate: a shake that clears the
     // percent threshold but frees near-zero tokens (small context windows)
@@ -1513,7 +1614,10 @@ async fn run_auto_shake_pass(
             escalated,
             "auto-shake skipped"
         );
-        return false;
+        return AutoShakeOutcome {
+            skipped_reason: Some("below_min_savings".to_string()),
+            ..Default::default()
+        };
     }
 
     info!(
@@ -1527,7 +1631,7 @@ async fn run_auto_shake_pass(
         escalated,
         "auto-shake triggered"
     );
-    handlers::apply_shake(
+    let result = handlers::apply_shake(
         sess,
         turn_context.as_ref(),
         ShakeMode::Elide,
@@ -1535,7 +1639,14 @@ async fn run_auto_shake_pass(
         trigger,
     )
     .await;
-    true
+    AutoShakeOutcome {
+        attempted: true,
+        changed: !result.is_noop(),
+        artifact_save_failures: result.artifact_save_failures,
+        skipped_reason: result
+            .is_noop()
+            .then(|| "no_recoverable_regions_or_artifact_save_failed".to_string()),
+    }
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -1544,14 +1655,37 @@ async fn run_pre_sampling_compact(
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
-) -> CodexResult<()> {
+) -> CodexResult<Option<String>> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
-    // Auto-shake is attempted first so a successful surgical reduction can
-    // remove the need to compact at all. Auto-compaction below re-reads token
-    // status afterwards and remains the fallback whenever shake is disabled,
-    // impossible, or did not free enough.
-    maybe_run_pre_sampling_auto_shake(sess, turn_context).await;
+    if sess.context_reduction_policy_status().await.is_some() {
+        match super::subagent_context_reduction::reduce_before_sampling(
+            sess,
+            turn_context,
+            client_session,
+            cancellation_token,
+            /*world_state*/ None,
+            super::subagent_context_reduction::ReductionBoundary {
+                phase: CompactionPhase::PreTurn,
+                explicit_context_reset: false,
+                forced_model_rollover: false,
+            },
+        )
+        .await?
+        {
+            super::subagent_context_reduction::BoundaryOutcome::NoAction
+            | super::subagent_context_reduction::BoundaryOutcome::Compacted => {}
+            super::subagent_context_reduction::BoundaryOutcome::Stop(message) => {
+                return Ok(Some(message));
+            }
+        }
+    } else {
+        // Auto-shake is attempted first so a successful surgical reduction can
+        // remove the need to compact at all. Auto-compaction below re-reads token
+        // status afterwards and remains the fallback whenever shake is disabled,
+        // impossible, or did not free enough.
+        maybe_run_pre_sampling_auto_shake(sess, turn_context).await;
+    }
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
@@ -1572,7 +1706,7 @@ async fn run_pre_sampling_compact(
         )
         .await?;
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Returns true only when both turns declare compaction compatibility hashes and they differ.
@@ -1711,12 +1845,28 @@ async fn maybe_run_previous_model_inline_compact(
     Ok(())
 }
 
+async fn take_context_reset_request(sess: &Session, needs_follow_up: bool) -> bool {
+    if needs_follow_up {
+        sess.take_new_context_window_request().await
+    } else {
+        false
+    }
+}
+
+fn has_explicit_assignment_input(input: &[TurnInput]) -> bool {
+    input.iter().any(|item| match item {
+        TurnInput::UserInput { .. } => true,
+        TurnInput::InterAgentCommunication(communication) => communication.trigger_turn,
+        TurnInput::FunctionCallOutput(_) | TurnInput::ResponseItem(_) => false,
+    })
+}
+
 #[instrument(
     level = "trace",
     skip_all,
     fields(reason = ?reason, phase = ?phase)
 )]
-async fn run_auto_compact(
+pub(super) async fn run_auto_compact(
     sess: &Arc<Session>,
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,

@@ -79,6 +79,8 @@ mod guardian_authorization;
 mod guardian_cached_score;
 #[path = "guardian_checkpoint_migration_tests.rs"]
 mod guardian_checkpoint_migration;
+mod subagent_context_reduction;
+mod subagent_context_reduction_continue;
 // Uses the same command-approval harness as guardian_review below.
 mod canonical_plugin_connectors;
 mod gateway_auth;

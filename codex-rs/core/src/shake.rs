@@ -424,6 +424,8 @@ pub(crate) struct ShakeResult {
     pub thinking_dropped: usize,
     /// Estimated context tokens reclaimed.
     pub tokens_freed: i64,
+    /// Recovery artifacts that failed to save, leaving their original regions intact.
+    pub artifact_save_failures: usize,
 }
 
 impl ShakeResult {

@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::context_policy::ContextReductionPolicyArgs;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
@@ -214,6 +215,10 @@ async fn handle_spawn_agent(
                     environments: Some(step_context.environments.to_selections()),
                     multi_agent_v2_usage_hints,
                     cyber_access_program: turn.cyber_access_program,
+                    context_reduction_policy: args.context_policy.map(
+                        crate::agent::context_policy::ContextReductionPolicyArgs::into_overrides,
+                    ),
+                    context_policy_inherit_to_children: args.inherit_to_children,
                 },
             ),
     )
@@ -277,6 +282,8 @@ struct SpawnAgentArgs {
     reasoning_effort: Option<ReasoningEffort>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
+    context_policy: Option<ContextReductionPolicyArgs>,
+    inherit_to_children: Option<bool>,
 }
 
 impl SpawnAgentArgs {
