@@ -126,6 +126,8 @@ jobs:
           if [[ "$FORCE" == "true" ]]; then
             echo "force=true: dispatching regardless of comparison"
             dispatch=true
+          elif [[ "$FORK_CONTAINS_UPSTREAM" == "true" ]]; then
+            echo "feature branch already contains $UPSTREAM_SHA; no duplicate merge while release work is pending"
           elif [[ -n "$CURRENT_BASE" && "$UPSTREAM_TAG" != "$CURRENT_BASE" ]]; then
             newest=$(printf '%s\n%s\n' "$UPSTREAM_TAG" "$CURRENT_BASE" | sort -V | tail -n1)
             if [[ "$newest" == "$UPSTREAM_TAG" ]]; then
@@ -134,8 +136,6 @@ jobs:
             else
               echo "upstream $UPSTREAM_TAG is not newer than $CURRENT_BASE: nothing to do"
             fi
-          elif [[ "$FORK_CONTAINS_UPSTREAM" == "true" ]]; then
-            echo "feature branch already contains $UPSTREAM_SHA; no duplicate merge while release work is pending"
           else
             echo "upstream $UPSTREAM_TAG is not in the feature branch yet: dispatching"
             dispatch=true
