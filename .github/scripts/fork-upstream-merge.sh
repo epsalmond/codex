@@ -127,6 +127,67 @@ write_ready_output() {
   } >> "$output"
 }
 
+unstamp_workspace_versions() {
+  local source_version="${upstream_tag#rust-v}"
+  python3 - "$repo_root/codex-rs/Cargo.toml" "$repo_root/codex-rs/Cargo.lock" "$source_version" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+lockfile_path = Path(sys.argv[2])
+source_version = sys.argv[3]
+
+manifest = manifest_path.read_text()
+workspace_match = re.search(r"(?m)^\[workspace\.package\][ \t]*$", manifest)
+if workspace_match is None:
+    raise SystemExit("workspace Cargo.toml has no [workspace.package] section")
+section_end = re.search(r"(?m)^\[", manifest[workspace_match.end() :])
+workspace_end = (
+    workspace_match.end() + section_end.start()
+    if section_end is not None
+    else len(manifest)
+)
+workspace = manifest[workspace_match.end() : workspace_end]
+version_match = re.search(r'(?m)^(version\s*=\s*")([^"]+)("\s*(?:#.*)?)$', workspace)
+if version_match is None:
+    raise SystemExit("workspace Cargo.toml has no literal workspace version")
+if version_match.group(2) != source_version:
+    raise SystemExit(
+        f"workspace Cargo.toml version is {version_match.group(2)}, expected {source_version}"
+    )
+manifest = (
+    manifest[: workspace_match.end()]
+    + workspace[: version_match.start(2)]
+    + "0.0.0"
+    + workspace[version_match.end(2) :]
+    + manifest[workspace_end:]
+)
+
+lockfile = lockfile_path.read_text()
+package_blocks = re.split(r"(?m)(?=^\[\[package\]\]\s*$)", lockfile)
+unstamped_packages = 0
+for index, block in enumerate(package_blocks):
+    if not block.startswith("[[package]]") or re.search(r"(?m)^source\s*=", block):
+        continue
+    lock_version = re.search(r'(?m)^(version\s*=\s*")([^"]+)("\s*)$', block)
+    if lock_version is not None and lock_version.group(2) == source_version:
+        package_blocks[index] = (
+            block[: lock_version.start(2)]
+            + "0.0.0"
+            + block[lock_version.end(2) :]
+        )
+        unstamped_packages += 1
+if unstamped_packages == 0:
+    raise SystemExit(
+        f"Cargo.lock has no local package at workspace version {source_version}"
+    )
+
+manifest_path.write_text(manifest)
+lockfile_path.write_text("".join(package_blocks))
+PY
+}
+
 fetch_upstream_tag
 
 case "$mode" in
@@ -161,7 +222,13 @@ case "$mode" in
     "${git_cmd[@]}" checkout --detach "$fork_sha" >/dev/null
     "${git_cmd[@]}" config user.name "github-actions[bot]"
     "${git_cmd[@]}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-    if "${git_cmd[@]}" merge --no-ff --no-edit "$upstream_sha"; then
+    if "${git_cmd[@]}" merge --no-ff --no-commit "$upstream_sha"; then
+      if ! unstamp_workspace_versions; then
+        "${git_cmd[@]}" merge --abort
+        die "could not restore the workspace Cargo version to 0.0.0"
+      fi
+      "${git_cmd[@]}" add codex-rs/Cargo.toml codex-rs/Cargo.lock
+      "${git_cmd[@]}" commit --no-edit
       computed_candidate=$("${git_cmd[@]}" rev-parse --verify 'HEAD^{commit}')
       candidate_sha=$computed_candidate
       verify_candidate
@@ -221,6 +288,10 @@ case "$mode" in
       die "could not recheck $fork_branch before landing"
     current_fork_sha=$("${git_cmd[@]}" rev-parse --verify "refs/remotes/origin/$fork_branch^{commit}") ||
       die "current $fork_branch is unavailable"
+    if [[ "$current_fork_sha" == "$candidate_sha" ]]; then
+      printf 'already-landed exact candidate %s on %s\n' "$candidate_sha" "$fork_branch"
+      exit 0
+    fi
     [[ "$current_fork_sha" == "$fork_sha" ]] ||
       die "$fork_branch moved from expected $fork_sha to $current_fork_sha before landing"
     "${git_cmd[@]}" push \
