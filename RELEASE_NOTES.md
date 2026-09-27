@@ -10,6 +10,10 @@ Spawned subagents inherit a 272,000-token Shake and compaction cap by default, t
 
 With wake mode enabled, a MultiAgentV2 root sleeps until a child reports back instead of polling `wait_agent`; Esc holds results for the next user message. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and its [detailed notes](releases/2026-09-26-wake-mode.md).
 
+## Subagents on a different model provider
+
+An agent role's `config_file` can now set `model_provider`, so `spawn_agent` runs that role's children against a self-hosted or otherwise alternate provider while the parent keeps its own login. See [subagents on a different model provider](README.md#subagents-on-a-different-model-provider) and its [detailed notes](releases/2026-09-26-subagent-provider.md).
+
 ## Statusline entries
 
 The TUI statusline can show the weekly usage reset time and the completion time of the latest live response. See the [statusline documentation](README.md#local-statusline-build).

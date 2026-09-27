@@ -148,6 +148,15 @@ async fn handle_spawn_agent(
     .await
     .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
+    // Forked history carries the parent provider's encrypted reasoning, which another provider
+    // cannot read.
+    if fork_mode.is_some() && config.model_provider_id != turn.config.model_provider_id {
+        let role_name = prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME);
+        let provider_id = &config.model_provider_id;
+        return Err(FunctionCallError::RespondToModel(format!(
+            "agent_type '{role_name}' switches model_provider to `{provider_id}` and cannot be used with a forked history; spawn it with fork_turns set to \"none\""
+        )));
+    }
     let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
     let spawn_source = thread_spawn_source(
         session.thread_id,

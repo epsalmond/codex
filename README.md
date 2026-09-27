@@ -139,6 +139,55 @@ children) does not wake yet; that is a later stage.
 This is off by default. With it off, behavior matches upstream. See the
 [release notes](releases/2026-09-26-wake-mode.md) for details and measurements.
 
+### Subagents on a different model provider
+
+An agent role can point its children at a different model provider than the
+one the parent session is using. The root config declares the provider under
+`[model_providers.<id>]` (self-hosted or otherwise), and the role's
+`config_file` sets `model_provider = "<id>"` plus `model`:
+
+```toml
+# ~/.codex/config.toml (root)
+
+[model_providers.self_hosted]
+name = "Self-hosted vLLM"
+base_url = "https://vllm.internal.example.com/v1"
+wire_api = "responses"
+env_key = "SELF_HOSTED_API_KEY"
+requires_openai_auth = false
+
+[agents.local]
+config_file = "agents/local.toml"
+```
+
+```toml
+# ~/.codex/agents/local.toml
+
+model_provider = "self_hosted"
+model = "my-org/local-coder-7b"
+model_context_window = 32000
+```
+
+`spawn_agent(agent_type="local")` then runs that child against `self_hosted`,
+while the parent keeps its own ChatGPT login and provider.
+
+A role may only reference a provider id already defined in the root config's
+`[model_providers]`; it cannot define a new `[model_providers.*]` table
+inline. If a role names an id that isn't declared at the root, `spawn_agent`
+fails with a clear error naming the role and the missing provider.
+`wire_api = "responses"` is required for any provider a role targets; Chat
+Completions is removed from this fork.
+
+Model names for an alternate provider aren't checked against a live catalog,
+so a role that switches providers should declare `model_context_window` (and
+optionally `model_auto_compact_token_limit`) so context tracking still works.
+Auth for the alternate provider follows its own `env_key` or `auth` setting,
+independent of the parent's ChatGPT login. See the
+[release notes](releases/2026-09-26-subagent-provider.md) for resolution
+rules and current limitations.
+A provider-switching role cannot fork the parent's history; spawn it with
+`fork_turns = "none"` (the default).
+
 ### Using Codex with your ChatGPT plan
 
 Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).

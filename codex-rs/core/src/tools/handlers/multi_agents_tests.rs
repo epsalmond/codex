@@ -157,7 +157,6 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
     tokio::fs::write(
         &role_config_path,
         r#"model = "gpt-5-role-override"
-model_provider = "ollama"
 model_reasoning_effort = "minimal"
 "#,
     )
@@ -414,6 +413,66 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
         ))
         .await
         .expect("fork_turns=all should apply agent_type overrides");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_forked_spawn_rejects_provider_switching_role() {
+    for fork_turns in ["all", "1"] {
+        let (mut session, mut turn) = make_session_and_context().await;
+        tokio::fs::create_dir_all(&turn.config.codex_home)
+            .await
+            .expect("codex home should be created");
+        let role_config_path = turn.config.codex_home.as_path().join("local-role.toml");
+        tokio::fs::write(&role_config_path, "model_provider = \"ollama\"\n")
+            .await
+            .expect("role config should be written");
+        let mut config = (*turn.config).clone();
+        config.agent_roles.insert(
+            "local".to_string(),
+            AgentRoleConfig {
+                description: Some("Runs on another provider".to_string()),
+                config_file: Some(role_config_path),
+                nickname_candidates: None,
+            },
+        );
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        turn.config = Arc::new(config);
+        turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+        let manager = thread_manager();
+        let root = manager
+            .start_thread(StartThreadOptions::new((*turn.config).clone()))
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.thread_id = root.thread_id;
+
+        let err = SpawnAgentHandlerV2::default()
+            .handle(invocation(
+                Arc::new(session),
+                Arc::new(turn),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo",
+                    "task_name": "local_fork",
+                    "agent_type": "local",
+                    "fork_turns": fork_turns
+                })),
+            ))
+            .await
+            .err()
+            .expect("forked history should reject a provider-switching role");
+
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "agent_type 'local' switches model_provider to `ollama` and cannot be used with a forked history; spawn it with fork_turns set to \"none\"".to_string(),
+            ),
+            "fork_turns={fork_turns}"
+        );
+    }
 }
 
 fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse {
