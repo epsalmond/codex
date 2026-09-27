@@ -33,10 +33,18 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+/// A role's provider selection is invalid; reported verbatim instead of the generic unavailable error.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct RoleModelProviderError(String);
+
 #[derive(Default, Serialize)]
 struct AgentRoleOverrides {
     developer_instructions: Option<String>,
     model: Option<String>,
+    model_provider: Option<String>,
+    model_context_window: Option<i64>,
+    model_auto_compact_token_limit: Option<i64>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
     model_verbosity: Option<Verbosity>,
@@ -60,9 +68,12 @@ pub(crate) async fn apply_role_to_config(
 
     apply_role_to_config_inner(config, role_name, &role)
         .await
-        .map_err(|err| {
-            tracing::warn!("failed to apply role to config: {err}");
-            AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
+        .map_err(|err| match err.downcast::<RoleModelProviderError>() {
+            Ok(RoleModelProviderError(message)) => message,
+            Err(err) => {
+                tracing::warn!("failed to apply role to config: {err}");
+                AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
+            }
         })
 }
 
@@ -77,9 +88,46 @@ async fn apply_role_to_config_inner(
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    if !role_config.model_providers.is_empty() {
+        return Err(RoleModelProviderError(format!(
+            "agent_type '{role_name}' defines [model_providers] in its role file; declare providers in the root config.toml and reference them with model_provider"
+        ))
+        .into());
+    }
+    // Roles may only select a provider the parent already trusts, and never one that managed
+    // requirements rule out. Naming the parent's own provider keeps its live provider info.
+    let model_provider = match role_config
+        .model_provider
+        .filter(|provider_id| *provider_id != config.model_provider_id)
+    {
+        Some(provider_id) => {
+            if let Some(required) = config.config_layer_stack.required_model_provider()
+                && required != provider_id
+            {
+                return Err(RoleModelProviderError(format!(
+                    "agent_type '{role_name}' cannot use model_provider `{provider_id}` because managed requirements pin model_provider `{required}`"
+                ))
+                .into());
+            }
+            let provider = config
+                .model_providers
+                .get(&provider_id)
+                .cloned()
+                .ok_or_else(|| {
+                    RoleModelProviderError(format!(
+                        "agent_type '{role_name}' references unknown model_provider `{provider_id}`; define it under [model_providers] in the root config.toml"
+                    ))
+                })?;
+            Some((provider_id, provider))
+        }
+        None => None,
+    };
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
+        model_provider: model_provider.as_ref().map(|(id, _)| id.clone()),
+        model_context_window: role_config.model_context_window,
+        model_auto_compact_token_limit: role_config.model_auto_compact_token_limit,
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
         model_verbosity: role_config.model_verbosity,
@@ -124,6 +172,10 @@ async fn apply_role_to_config_inner(
         return Ok(());
     }
     *config = role_overrides::build_next_config(config, role_layer_toml, &overrides)?;
+    if let Some((provider_id, provider)) = model_provider {
+        config.model_provider_id = provider_id;
+        config.model_provider = provider;
+    }
     Ok(())
 }
 
@@ -183,6 +235,19 @@ mod role_overrides {
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
+        }
+        if let Some(context_window) = overrides.model_context_window {
+            next_config.model_context_window = Some(context_window);
+        }
+        if let Some(limit) = overrides.model_auto_compact_token_limit {
+            // Keep the subagent compaction cap from `build_agent_shared_config`.
+            next_config.model_auto_compact_token_limit =
+                Some(match config.model_auto_compact_token_limit {
+                    Some(existing) if config.subagent_context_reduction.enabled => {
+                        existing.min(limit)
+                    }
+                    _ => limit,
+                });
         }
         if let Some(instructions) = &overrides.developer_instructions {
             next_config.developer_instructions = Some(instructions.clone());
@@ -309,7 +374,16 @@ pub(crate) mod spawn_tool_spec {
                     let reasoning_effort = role_toml
                         .get("model_reasoning_effort")
                         .and_then(TomlValue::as_str);
-                    match (model, reasoning_effort) {
+                    let provider_note = role_toml
+                        .get("model_provider")
+                        .and_then(TomlValue::as_str)
+                        .map(|provider| {
+                            format!(
+                                "\n- This role's model provider is set to `{provider}` and cannot be changed."
+                            )
+                        })
+                        .unwrap_or_default();
+                    let model_note = match (model, reasoning_effort) {
                         (Some(model), Some(reasoning_effort)) => format!(
                             "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
                         ),
@@ -324,7 +398,8 @@ pub(crate) mod spawn_tool_spec {
                             )
                         }
                         (None, None) => String::new(),
-                    }
+                    };
+                    format!("{model_note}{provider_note}")
                 })
                 .unwrap_or_default();
             format!("{name}: {{\n{description}{locked_settings_note}\n}}")

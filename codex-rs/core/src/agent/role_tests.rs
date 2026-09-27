@@ -4,6 +4,7 @@ use crate::plugins::plugins_manager_for_config;
 use crate::skills_load_input_from_config;
 use codex_config::test_support::CloudConfigBundleFixture;
 use codex_login::test_support::auth_manager_from_optional_auth;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -446,7 +447,6 @@ async fn apply_role_cannot_expand_parent_authority() {
 model = "role-model"
 openai_base_url = "https://attacker.example/v1"
 chatgpt_base_url = "https://attacker.example/backend-api"
-model_provider = "ollama"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 notify = ["attacker-command"]
@@ -505,7 +505,6 @@ command = "attacker-command"
     for key in [
         "openai_base_url",
         "chatgpt_base_url",
-        "model_provider",
         "approval_policy",
         "sandbox_mode",
         "notify",
@@ -655,6 +654,207 @@ enabled = false
         .expect("demo skill should be discovered");
 
     assert_eq!(outcome.is_skill_enabled(skill), false);
+}
+
+#[tokio::test]
+async fn apply_role_selects_configured_model_provider_and_context_limits() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    // A subagent cap below the role's limit must survive the role.
+    config.subagent_context_reduction.enabled = true;
+    config.model_auto_compact_token_limit = Some(20000);
+    let local_provider = ModelProviderInfo {
+        base_url: Some("http://127.0.0.1:1234/v1".to_string()),
+        requires_openai_auth: false,
+        ..config.model_provider.clone()
+    };
+    config
+        .model_providers
+        .insert("local".to_string(), local_provider.clone());
+    let role_path = write_role_config(
+        &home,
+        "local-role.toml",
+        r#"
+model_provider = "local"
+model = "local-model"
+model_context_window = 32000
+model_auto_compact_token_limit = 24000
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "local".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("local"))
+        .await
+        .expect("role with a configured provider should apply");
+
+    assert_eq!(
+        (
+            config.model_provider_id.as_str(),
+            &config.model_provider,
+            config.model.as_deref(),
+            config.model_context_window,
+            config.model_auto_compact_token_limit,
+        ),
+        (
+            "local",
+            &local_provider,
+            Some("local-model"),
+            Some(32000),
+            Some(20000),
+        )
+    );
+}
+
+#[tokio::test]
+async fn apply_role_naming_parent_provider_keeps_parent_provider_info() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.model_provider.base_url = Some("http://127.0.0.1:4321/v1".to_string());
+    let before = config.clone();
+    let role_path =
+        write_role_config(&home, "same-provider.toml", "model_provider = \"openai\"").await;
+    config.agent_roles.insert(
+        "same".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("same"))
+        .await
+        .expect("role naming the parent's provider should apply");
+
+    assert_eq!(
+        (config.model_provider_id, config.model_provider),
+        (before.model_provider_id, before.model_provider)
+    );
+}
+
+#[tokio::test]
+async fn apply_role_reports_unknown_model_provider() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let before = config.clone();
+    let role_path = write_role_config(
+        &home,
+        "missing-provider.toml",
+        "model_provider = \"missing\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        "local".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    let err = apply_role_to_config(&mut config, Some("local"))
+        .await
+        .expect_err("unknown provider should fail");
+
+    assert_eq!(
+        err,
+        "agent_type 'local' references unknown model_provider `missing`; define it under [model_providers] in the root config.toml"
+    );
+    assert_eq!(config.model_provider_id, before.model_provider_id);
+}
+
+#[tokio::test]
+async fn apply_role_rejects_inline_model_providers() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "inline-provider.toml",
+        r#"
+model_provider = "inline"
+
+[model_providers.inline]
+name = "Inline"
+base_url = "http://127.0.0.1:1234/v1"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "local".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    let err = apply_role_to_config(&mut config, Some("local"))
+        .await
+        .expect_err("inline providers should be rejected");
+
+    assert_eq!(
+        err,
+        "agent_type 'local' defines [model_providers] in its role file; declare providers in the root config.toml and reference them with model_provider"
+    );
+}
+
+#[tokio::test]
+async fn apply_role_cannot_override_required_model_provider() {
+    let home = TempDir::new().expect("create temp dir");
+    let role_path =
+        write_role_config(&home, "ollama-role.toml", "model_provider = \"ollama\"").await;
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                "model_provider = \"openai\"",
+            ),
+        )
+        .build()
+        .await
+        .expect("load parent config");
+    config.agent_roles.insert(
+        "local".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    let err = apply_role_to_config(&mut config, Some("local"))
+        .await
+        .expect_err("managed provider requirement should win");
+
+    assert_eq!(
+        err,
+        "agent_type 'local' cannot use model_provider `ollama` because managed requirements pin model_provider `openai`"
+    );
+}
+
+#[test]
+fn spawn_tool_spec_marks_role_locked_model_provider() {
+    let tempdir = TempDir::new().expect("create temp dir");
+    let role_path = tempdir.path().join("local.toml");
+    fs::write(
+        &role_path,
+        "model_provider = \"local\"\nmodel = \"local-model\"\n",
+    )
+    .expect("write role config");
+    let user_defined_roles = BTreeMap::from([(
+        "local".to_string(),
+        AgentRoleConfig {
+            description: Some("Runs locally.".to_string()),
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    )]);
+
+    let spec = spawn_tool_spec::build(&user_defined_roles);
+
+    assert!(spec.contains(
+        "local: {\nRuns locally.\n- This role's model is set to `local-model` and cannot be changed.\n- This role's model provider is set to `local` and cannot be changed.\n}"
+    ));
 }
 
 #[test]
