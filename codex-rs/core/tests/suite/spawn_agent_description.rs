@@ -20,6 +20,7 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
+use codex_protocol::protocol::SessionSource;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -389,13 +390,13 @@ async fn multi_agent_v2_wait_guidance_uses_overridable_developer_instructions(
 
 /// Resumed legacy threads receive current usage hints once, before their active mode.
 /// Configured hint overrides and disabled wait tools must retain their existing semantics.
-#[test_case(true, None, true; "legacy resume restores default wait guidance")]
-#[test_case(true, Some("Custom root instructions."), false; "legacy resume preserves custom usage hints")]
-#[test_case(true, Some("Legacy root instructions."), false; "legacy resume preserves unchanged custom usage hints")]
-#[test_case(false, None, false; "legacy resume omits disabled wait guidance")]
+#[test_case("enabled", None, true; "legacy resume restores polling guidance")]
+#[test_case("enabled", Some("Custom root instructions."), false; "legacy resume preserves custom usage hints")]
+#[test_case("enabled", Some("Legacy root instructions."), false; "legacy resume preserves unchanged custom usage hints")]
+#[test_case("disabled", None, false; "legacy resume omits polling guidance")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
-    wait_agent_enabled: bool,
+    agent_polling: &str,
     resumed_root_agent_usage_hint_text: Option<&str>,
     expected_wait_guidance: bool,
 ) -> Result<()> {
@@ -403,9 +404,8 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
     let legacy_root_agent_usage_hint_text = "Legacy root instructions.";
     let wait_guidance =
         "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
-    let config_toml = format!(
-        "[features.multi_agent_v2]\nenabled = true\nwait_agent_enabled = {wait_agent_enabled}\n"
-    );
+    let config_toml =
+        format!("[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{agent_polling}\"\n");
     let server = start_mock_server().await;
     let initial_response = mount_sse_once(
         &server,
@@ -416,6 +416,7 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
     )
     .await;
     let initial = test_codex()
+        .with_session_source(SessionSource::Cli)
         .with_pre_build_hook(move |home| {
             std::fs::write(home.join("config.toml"), &config_toml)
                 .expect("write multi-agent configuration");
@@ -499,11 +500,13 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
         ],
     )
     .await;
-    let mut resumed_builder = test_codex().with_config(move |config| {
-        if let Some(root_agent_usage_hint_text) = resumed_root_agent_usage_hint_text {
-            config.multi_agent_v2.root_agent_usage_hint_text = Some(root_agent_usage_hint_text);
-        }
-    });
+    let mut resumed_builder = test_codex()
+        .with_session_source(SessionSource::Cli)
+        .with_config(move |config| {
+            if let Some(root_agent_usage_hint_text) = resumed_root_agent_usage_hint_text {
+                config.multi_agent_v2.root_agent_usage_hint_text = Some(root_agent_usage_hint_text);
+            }
+        });
     let resumed = resumed_builder.resume(&server, home, rollout_path).await?;
 
     resumed.submit_turn("first turn after upgrading").await?;
@@ -552,7 +555,7 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
 
         let body = request.body_json();
         let wait_agent_tool = namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, "wait_agent");
-        assert_eq!(wait_agent_tool.is_some(), wait_agent_enabled);
+        assert_eq!(wait_agent_tool.is_some(), agent_polling == "enabled");
         if let Some(wait_agent_tool) = wait_agent_tool {
             assert_eq!(
                 wait_agent_tool
@@ -568,17 +571,17 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
 
 /// Resuming after wait-tool availability changes must refresh stale usage guidance once.
 /// The active multi-agent mode must remain after the updated instructions.
-#[test_case(true, false; "disabled wait agent invalidates prior guidance")]
-#[test_case(false, true; "enabled wait agent adds current guidance")]
+#[test_case("enabled", "disabled"; "disabled polling invalidates prior guidance")]
+#[test_case("disabled", "enabled"; "enabled polling adds current guidance")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
-    initial_wait_agent_enabled: bool,
-    resumed_wait_agent_enabled: bool,
+    initial_agent_polling: &str,
+    resumed_agent_polling: &str,
 ) -> Result<()> {
     let wait_guidance =
         "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
     let initial_config_toml = format!(
-        "[features.multi_agent_v2]\nenabled = true\nwait_agent_enabled = {initial_wait_agent_enabled}\n"
+        "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{initial_agent_polling}\"\n"
     );
     let server = start_mock_server().await;
     let initial_response = mount_sse_once(
@@ -590,6 +593,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
     )
     .await;
     let initial = test_codex()
+        .with_session_source(SessionSource::Cli)
         .with_pre_build_hook(move |home| {
             std::fs::write(home.join("config.toml"), &initial_config_toml)
                 .expect("write initial multi-agent configuration");
@@ -609,7 +613,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
             "wait_agent"
         )
         .is_some(),
-        initial_wait_agent_enabled
+        initial_agent_polling == "enabled"
     );
 
     let home = initial.home.clone();
@@ -622,7 +626,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
     std::fs::write(
         home.path().join("config.toml"),
         format!(
-            "[features.multi_agent_v2]\nenabled = true\nwait_agent_enabled = {resumed_wait_agent_enabled}\n"
+            "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{resumed_agent_polling}\"\n"
         ),
     )?;
 
@@ -640,7 +644,10 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
         ],
     )
     .await;
-    let resumed = test_codex().resume(&server, home, rollout_path).await?;
+    let resumed = test_codex()
+        .with_session_source(SessionSource::Cli)
+        .resume(&server, home, rollout_path)
+        .await?;
 
     resumed
         .submit_turn("first turn with updated wait-agent availability")
@@ -671,7 +678,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
         let current_usage_message = &developer_messages[current_usage_hint_position][0];
         assert_eq!(
             current_usage_message.contains(wait_guidance),
-            resumed_wait_agent_enabled
+            resumed_agent_polling == "enabled"
         );
         let active_mode_position = developer_messages
             .iter()
@@ -689,20 +696,20 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
         assert_eq!(
             namespace_child_tool(&request.body_json(), MULTI_AGENT_V2_NAMESPACE, "wait_agent")
                 .is_some(),
-            resumed_wait_agent_enabled
+            resumed_agent_polling == "enabled"
         );
     }
 
     Ok(())
 }
 
-#[test_case(true, false; "wait agent remains available without clock sleep")]
-#[test_case(true, true; "wait agent remains available with clock sleep")]
-#[test_case(false, false; "wait agent can be disabled without clock sleep")]
-#[test_case(false, true; "wait agent can be disabled with clock sleep")]
+#[test_case("enabled", false; "polling remains available without clock sleep")]
+#[test_case("enabled", true; "polling remains available with clock sleep")]
+#[test_case("disabled", false; "polling can be disabled without clock sleep")]
+#[test_case("disabled", true; "polling can be disabled with clock sleep")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_wait_agent_tool_follows_configuration(
-    wait_agent_enabled: bool,
+    agent_polling: &str,
     sleep_tool_enabled: bool,
 ) -> Result<()> {
     let current_time_reminder = if sleep_tool_enabled {
@@ -718,7 +725,7 @@ sleep_tool = true
         r#"
 [features.multi_agent_v2]
 enabled = true
-wait_agent_enabled = {wait_agent_enabled}
+agent_polling = "{agent_polling}"
 {current_time_reminder}"#
     );
     let server = start_mock_server().await;
@@ -728,6 +735,7 @@ wait_agent_enabled = {wait_agent_enabled}
     )
     .await;
     let test = test_codex()
+        .with_session_source(SessionSource::Cli)
         .with_pre_build_hook(move |home| {
             std::fs::write(home.join("config.toml"), &config_toml)
                 .expect("write multi-agent configuration");
@@ -742,7 +750,7 @@ wait_agent_enabled = {wait_agent_enabled}
     assert!(namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, SPAWN_AGENT_TOOL_NAME).is_some());
     assert_eq!(
         namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_some(),
-        wait_agent_enabled
+        agent_polling == "enabled"
     );
     assert_eq!(
         namespace_child_tool(&body, "clock", "sleep").is_some(),
@@ -757,7 +765,121 @@ wait_agent_enabled = {wait_agent_enabled}
                 "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.",
             )
             }),
-        wait_agent_enabled
+        agent_polling == "enabled"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_resume_of_interactive_multi_agent_thread_uses_wait_agent_fallback() -> Result<()> {
+    let config_toml = "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"disabled\"\n";
+    let server = start_mock_server().await;
+    let initial_response = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-initial"),
+            ev_completed("resp-initial"),
+        ]),
+    )
+    .await;
+    let initial = test_codex()
+        .with_session_source(SessionSource::Cli)
+        .with_pre_build_hook(move |home| {
+            std::fs::write(home.join("config.toml"), config_toml)
+                .expect("write multi-agent configuration");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    initial.submit_turn("start as an interactive root").await?;
+    assert!(
+        namespace_child_tool(
+            &initial_response.single_request().body_json(),
+            MULTI_AGENT_V2_NAMESPACE,
+            "wait_agent"
+        )
+        .is_none()
+    );
+
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("initial session should have a rollout path");
+    initial.codex.shutdown_and_wait().await?;
+
+    let resumed_response = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-resumed"),
+            ev_completed("resp-resumed"),
+        ]),
+    )
+    .await;
+    let resumed = test_codex().resume(&server, home, rollout_path).await?;
+    resumed.submit_turn("resume through codex exec").await?;
+
+    let request = resumed_response.single_request();
+    assert!(
+        namespace_child_tool(&request.body_json(), MULTI_AGENT_V2_NAMESPACE, "wait_agent")
+            .is_some()
+    );
+    assert!(
+        request
+            .message_input_texts("developer")
+            .iter()
+            .any(|message| {
+                message.contains(
+            "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.",
+        )
+            })
+    );
+
+    let home = resumed.home.clone();
+    let rollout_path = resumed
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("resumed session should have a rollout path");
+    resumed.codex.shutdown_and_wait().await?;
+
+    let tui_response = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-tui-resumed"),
+            ev_completed("resp-tui-resumed"),
+        ]),
+    )
+    .await;
+    let tui_resumed = test_codex()
+        .with_session_source(SessionSource::Cli)
+        .resume(&server, home, rollout_path)
+        .await?;
+    assert_eq!(
+        tui_resumed.config.multi_agent_v2.agent_polling,
+        codex_features::AgentPolling::Disabled
+    );
+    tui_resumed
+        .submit_turn("resume through the interactive CLI")
+        .await?;
+
+    let tui_request = tui_response.single_request();
+    assert!(
+        namespace_child_tool(
+            &tui_request.body_json(),
+            MULTI_AGENT_V2_NAMESPACE,
+            "wait_agent"
+        )
+        .is_none()
+    );
+    let tui_root_usage_hint = resolved_root_usage_hint(&tui_resumed.config, &tui_request);
+    assert!(
+        !tui_root_usage_hint.contains(
+            "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling."
+        ),
+        "interactive resume should remove prior wait guidance: {tui_root_usage_hint}"
     );
 
     Ok(())

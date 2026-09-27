@@ -343,6 +343,7 @@ pub struct TestCodexBuilder {
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     code_mode_host_program: Option<PathBuf>,
     history_mode: Option<ThreadHistoryMode>,
+    session_source: Option<SessionSource>,
     models_manager: Option<SharedModelsManager>,
     thread_store: Option<Arc<dyn ThreadStore>>,
     image_store: Arc<dyn AttachmentStore>,
@@ -394,6 +395,11 @@ impl TestCodexBuilder {
 
     pub fn with_history_mode(mut self, history_mode: ThreadHistoryMode) -> Self {
         self.history_mode = Some(history_mode);
+        self
+    }
+
+    pub fn with_session_source(mut self, session_source: SessionSource) -> Self {
+        self.session_source = Some(session_source);
         self
     }
 
@@ -753,7 +759,7 @@ impl TestCodexBuilder {
                 auth_manager.clone(),
                 models_manager,
                 codex_core::CodexAppsToolsCache::default(),
-                SessionSource::Exec,
+                self.session_source.clone().unwrap_or(SessionSource::Exec),
                 Arc::clone(&environment_manager),
                 Arc::new(extensions.build()),
                 user_instructions_provider,
@@ -1421,6 +1427,7 @@ pub fn test_codex() -> TestCodexBuilder {
         external_time_provider: None,
         code_mode_host_program: None,
         history_mode: None,
+        session_source: None,
         models_manager: None,
         thread_store: None,
         image_store: codex_core::passthrough_image_store(),

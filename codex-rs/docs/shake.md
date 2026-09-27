@@ -375,6 +375,10 @@ against their own parent's already-capped config, so the cap only ever
 tightens further down the tree. The root session's config is never touched by
 `[subagent_context_reduction]`.
 
+This child context policy is independent from parent scheduling. See
+[wake mode for multi-agent orchestrators](../../README.md#wake-mode-for-multi-agent-orchestrators)
+for the interactive-root default and the Exec/child polling scope.
+
 The mid-turn roll-over order also differs for subagents (see
 `codex-rs/core/src/session/mid_turn_reduction.rs`). At the point where a
 sampling follow-up would exceed the context limit:
@@ -480,6 +484,10 @@ see "Subagents" above for how the cap is applied.
 | --- | --- | --- | --- |
 | `subagent_context_reduction.enabled` | bool | `true` | Apply the cap to spawned and resumed children. |
 | `subagent_context_reduction.threshold_tokens` | int > 0 | `272000` | Token count at which subagents shake and then compact, when lower than the limits they would otherwise inherit. `0` is rejected with a config error. |
+
+This cap controls child context reduction, not whether a parent polls for child
+results. The separate root polling setting and its default are documented in
+[wake mode](../../README.md#wake-mode-for-multi-agent-orchestrators).
 
 Under `model_auto_compact_token_limit_scope = "body_after_prefix"` the
 compaction cap applies to body tokens while the shake cap applies to total

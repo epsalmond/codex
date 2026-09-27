@@ -33,7 +33,7 @@ pub(crate) fn usage_tags(
         "agent_default_subagent_model": config.agent_default_subagent_model,
         "agent_default_subagent_reasoning_effort": config.agent_default_subagent_reasoning_effort,
         "multi_agent_v2.max_concurrent_threads_per_session": config.multi_agent_v2.max_concurrent_threads_per_session,
-        "multi_agent_v2.wait_agent_enabled": config.multi_agent_v2.wait_agent_enabled,
+        "multi_agent_v2.agent_polling": config.multi_agent_v2.agent_polling,
         "max_goal_token_budget": config.max_goal_token_budget,
         "memories.generate_memories": config.memories.generate_memories,
         "memories.use_memories": config.memories.use_memories,

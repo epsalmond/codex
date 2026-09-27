@@ -201,6 +201,28 @@ fn merge_multi_agent_v2_boolean_preserves_existing_feature_table() {
     }
 }
 
+/// Polling mode remains a nested feature value and profile overlays replace it as expected.
+#[test]
+fn merge_multi_agent_v2_agent_polling_in_global_and_profile_tables() {
+    for feature_path in ["features", "profiles.work.features"] {
+        let mut base = parse_toml(&format!(
+            "[{feature_path}.multi_agent_v2]\nagent_polling = \"disabled\"\nsubagent_usage_hint_text = \"Delegate carefully.\"\n",
+        ));
+        let overlay = parse_toml(&format!(
+            "[{feature_path}.multi_agent_v2]\nagent_polling = \"enabled\"\n",
+        ));
+
+        merge_toml_values(&mut base, &overlay);
+
+        assert_eq!(
+            base,
+            parse_toml(&format!(
+                "[{feature_path}.multi_agent_v2]\nagent_polling = \"enabled\"\nsubagent_usage_hint_text = \"Delegate carefully.\"\n",
+            ))
+        );
+    }
+}
+
 /// Opaque desktop settings retain ordinary scalar/table replacement semantics.
 #[test]
 fn merge_multi_agent_v2_compatibility_excludes_opaque_desktop_paths() {

@@ -1,4 +1,4 @@
-//! Wake mode (`multi_agent_v2.wait_agent_enabled = false`): the root ends its turn while children
+//! Wake mode (`multi_agent_v2.agent_polling = "disabled"`): the root ends its turn while children
 //! work, and a child's report starts the root's next turn. These tests count root model requests,
 //! the cost that `wait_agent` polling used to add, and check that each result is consumed once.
 
@@ -15,6 +15,7 @@ use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_extension_items::sleep::SleepItem;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
@@ -26,6 +27,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ev_assistant_message;
@@ -68,24 +70,30 @@ const CHILD_DELAY: Duration = Duration::from_secs(1);
 /// Long enough for a spurious wake turn to have issued its request.
 const SETTLE: Duration = Duration::from_millis(750);
 
-fn configure_multi_agent(config: &mut Config, wait_agent_enabled: bool) {
+fn configure_multi_agent(config: &mut Config, agent_polling: Option<AgentPolling>) {
     for feature in [Feature::Collab, Feature::MultiAgentV2] {
         config
             .features
             .enable(feature)
             .expect("test config should allow feature update");
     }
-    config.multi_agent_v2.wait_agent_enabled = wait_agent_enabled;
+    if let Some(agent_polling) = agent_polling {
+        config.multi_agent_v2.agent_polling = agent_polling;
+    }
     config.multi_agent_v2.min_wait_timeout_ms = 100;
     config.model_provider.request_max_retries = Some(0);
     config.model_provider.stream_max_retries = Some(0);
     config.model_provider.supports_websockets = false;
 }
 
-async fn build_multi_agent(server: &MockServer, wait_agent_enabled: bool) -> Result<TestCodex> {
+async fn build_multi_agent(
+    server: &MockServer,
+    agent_polling: Option<AgentPolling>,
+) -> Result<TestCodex> {
     test_codex()
         .with_model("koffing")
-        .with_config(move |config| configure_multi_agent(config, wait_agent_enabled))
+        .with_session_source(SessionSource::Cli)
+        .with_config(move |config| configure_multi_agent(config, agent_polling))
         .build(server)
         .await
 }
@@ -286,7 +294,7 @@ async fn mount_child_answer(server: &MockServer, root: ThreadId, answer: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wake_mode_root_sleeps_until_child_reports() -> Result<()> {
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, /*wait_agent_enabled*/ false).await?;
+    let test = build_multi_agent(&server, None).await?;
     let root = test.session_configured.thread_id;
     mount_spawn_then_status(&server, root).await;
     mount_sse_once_match(
@@ -340,7 +348,7 @@ async fn wake_mode_root_sleeps_until_child_reports() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_agent_mode_polls_while_child_runs() -> Result<()> {
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, /*wait_agent_enabled*/ true).await?;
+    let test = build_multi_agent(&server, Some(AgentPolling::Enabled)).await?;
     let root = test.session_configured.thread_id;
     mount_spawn_then_status(&server, root).await;
     let polls = Arc::new(AtomicUsize::new(0));
@@ -401,7 +409,7 @@ async fn wake_mode_help_round_trip_wakes_root_twice() -> Result<()> {
     const FOLLOWUP: &str = "use blue";
     const ANSWER: &str = "painted it blue";
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, /*wait_agent_enabled*/ false).await?;
+    let test = build_multi_agent(&server, Some(AgentPolling::Disabled)).await?;
     let root = test.session_configured.thread_id;
     mount_spawn_then_status(&server, root).await;
     mount_sse_once_match(
@@ -507,7 +515,7 @@ async fn wake_mode_help_round_trip_wakes_root_twice() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wake_mode_progress_message_starts_no_root_turn() -> Result<()> {
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, /*wait_agent_enabled*/ false).await?;
+    let test = build_multi_agent(&server, Some(AgentPolling::Disabled)).await?;
     let root = test.session_configured.thread_id;
     mount_sse_once_match(
         &server,
@@ -572,7 +580,7 @@ fn final_answer_item(id: &str, text: &str) -> Value {
 async fn build_streaming_wake_mode(server: &StreamingSseServer) -> Arc<CodexThread> {
     test_codex()
         .with_model("gpt-5.4")
-        .with_config(|config| configure_multi_agent(config, /*wait_agent_enabled*/ false))
+        .with_config(|config| configure_multi_agent(config, Some(AgentPolling::Disabled)))
         .build_with_streaming_server(server)
         .await
         .expect("build streaming Codex test session")
@@ -927,7 +935,7 @@ async fn wake_mode_approval_abort_holds_reports_until_next_user_message() {
     let codex = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            configure_multi_agent(config, /*wait_agent_enabled*/ false);
+            configure_multi_agent(config, Some(AgentPolling::Disabled));
             config.permissions.approval_policy =
                 Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
@@ -1003,7 +1011,7 @@ async fn wake_mode_blocked_prompt_keeps_held_report() -> Result<()> {
             std::fs::write(home.join("hooks.json"), hooks.to_string()).expect("write hooks.json");
         })
         .with_config(|config| {
-            configure_multi_agent(config, /*wait_agent_enabled*/ false);
+            configure_multi_agent(config, Some(AgentPolling::Disabled));
             trust_discovered_hooks(config);
         })
         .build(&server)
@@ -1053,7 +1061,7 @@ async fn build_compacting_wake_mode(server: &StreamingSseServer) -> Arc<CodexThr
         .with_model("gpt-5.4")
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
-            configure_multi_agent(config, /*wait_agent_enabled*/ false);
+            configure_multi_agent(config, Some(AgentPolling::Disabled));
             config.model_auto_compact_token_limit = Some(100_000);
             let _ = config.features.enable(Feature::RemoteCompactionV2);
             let _ = config.features.disable(Feature::EnableRequestCompression);
@@ -1213,7 +1221,7 @@ async fn wake_mode_compact_replacing_resumed_user_turn_keeps_report() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_agent_root_keeps_child_reports_queue_only() -> Result<()> {
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, /*wait_agent_enabled*/ true).await?;
+    let test = build_multi_agent(&server, Some(AgentPolling::Enabled)).await?;
     let root = test.session_configured.thread_id;
     for turn in ["root-1", "root-2"] {
         mount_sse_once_match(

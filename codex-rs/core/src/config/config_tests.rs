@@ -3,7 +3,9 @@ use crate::config::edit::ConfigEditsBuilder;
 use crate::config::edit::apply_blocking;
 use crate::context::ContextualUserFragment;
 use crate::plugins::plugins_manager_for_config;
+use crate::session::multi_agents::ChildReportMode;
 use crate::session::multi_agents::resolve_usage_hints;
+use crate::session::multi_agents::resolve_usage_hints_with_root_polling;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
@@ -71,6 +73,7 @@ use codex_config::types::TuiPetAnchor;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
 use codex_exec_server::LOCAL_FS;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
 use codex_login::default_client::RESIDENCY_HEADER_NAME;
@@ -102,6 +105,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkAccess;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionSource;
 use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
 use tempfile::tempdir;
@@ -11891,7 +11895,7 @@ multi_agent_mode_hint_text = "Custom mode guidance."
 tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 expose_spawn_agent_model_overrides = false
-wait_agent_enabled = false
+agent_polling = "enabled"
 non_code_mode_only = true
 
 [agents]
@@ -11946,7 +11950,7 @@ max_concurrent_threads_per_session = 9
     );
     assert!(config.multi_agent_v2.hide_spawn_agent_metadata);
     assert!(!config.multi_agent_v2.expose_spawn_agent_model_overrides);
-    assert!(!config.multi_agent_v2.wait_agent_enabled);
+    assert_eq!(config.multi_agent_v2.agent_polling, AgentPolling::Enabled);
     assert!(config.multi_agent_v2.non_code_mode_only);
 
     Ok(())
@@ -11984,6 +11988,41 @@ enabled = true
 }
 
 #[test]
+fn multi_agent_v2_default_agent_polling_is_disabled() {
+    let config = resolve_multi_agent_v2_config(&ConfigToml::default());
+
+    assert_eq!(config.agent_polling, AgentPolling::Disabled);
+}
+
+#[test]
+fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
+    let config = resolve_multi_agent_v2_config(&ConfigToml::default());
+    let cli_mode = ChildReportMode::for_thread(&config, &SessionSource::Cli);
+    let exec_mode = ChildReportMode::for_thread(&config, &SessionSource::Exec);
+
+    assert_eq!(cli_mode, ChildReportMode::WakeOnReport);
+    assert_eq!(exec_mode, ChildReportMode::WaitAgent);
+
+    let messages = ResolvedModelMessages::bundled().multi_agent();
+    for (mode, expect_polling_guidance) in [(cli_mode, false), (exec_mode, true)] {
+        let usage_hints = resolve_usage_hints_with_root_polling(
+            &config,
+            messages,
+            /*omit_update_plan_instructions*/ false,
+            mode == ChildReportMode::WaitAgent,
+        );
+        let root = usage_hints
+            .root
+            .expect("root usage hint should be present")
+            .body();
+        assert_eq!(
+            root.contains("When calling `wait_agent`, prefer longer waits"),
+            expect_polling_guidance
+        );
+    }
+}
+
+#[test]
 fn multi_agent_v2_default_usage_hints_use_configured_thread_cap() {
     let config_toml = toml::from_str(
         r#"[features.multi_agent_v2]
@@ -11996,10 +12035,10 @@ max_concurrent_threads_per_session = 17
     let config = resolve_multi_agent_v2_config(&config_toml);
     let concurrency_guidance = "There are 17 available concurrency slots, meaning that up to 17 agents can be active at once, including you.";
     let messages = ResolvedModelMessages::bundled().multi_agent();
-    assert!(config.wait_agent_enabled);
-    for wait_agent_enabled in [true, false] {
+    assert_eq!(config.agent_polling, AgentPolling::Disabled);
+    for agent_polling in [AgentPolling::Enabled, AgentPolling::Disabled] {
         let mut config = config.clone();
-        config.wait_agent_enabled = wait_agent_enabled;
+        config.agent_polling = agent_polling;
         let usage_hints = resolve_usage_hints(
             &config, messages, /*omit_update_plan_instructions*/ false,
         );
@@ -12014,7 +12053,7 @@ max_concurrent_threads_per_session = 17
                 subagent.contains("When calling `wait_agent`, prefer longer waits"),
                 subagent.contains("If you are blocked, end your turn with your question"),
             ),
-            (wait_agent_enabled, true, !wait_agent_enabled)
+            (agent_polling == AgentPolling::Enabled, true, true,)
         );
     }
 
@@ -12115,17 +12154,17 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_allows_disabled_wait_agent_without_sleep_tool() -> std::io::Result<()> {
+async fn multi_agent_v2_allows_disabled_agent_polling_without_sleep_tool() -> std::io::Result<()> {
     for config_toml in [
         r#"
 [features.multi_agent_v2]
 enabled = true
-wait_agent_enabled = false
+agent_polling = "disabled"
 "#,
         r#"
 [features.multi_agent_v2]
 enabled = true
-wait_agent_enabled = false
+agent_polling = "disabled"
 
 [features.current_time_reminder]
 enabled = true
@@ -12134,7 +12173,7 @@ sleep_tool = false
         r#"
 [features.multi_agent_v2]
 enabled = true
-wait_agent_enabled = false
+agent_polling = "disabled"
 
 [features.current_time_reminder]
 enabled = false
@@ -12150,7 +12189,7 @@ sleep_tool = true
         )
         .await?;
 
-        assert!(!config.multi_agent_v2.wait_agent_enabled);
+        assert_eq!(config.multi_agent_v2.agent_polling, AgentPolling::Disabled);
     }
 
     Ok(())

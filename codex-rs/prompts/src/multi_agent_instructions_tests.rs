@@ -20,7 +20,7 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
             marked,
             omit_update_plan_instructions: true,
             max_concurrency: 2,
-            wait_agent_enabled: true,
+            root_agent_polling_enabled: true,
             expose_model_overrides: true,
             is_root: true,
         };
@@ -39,5 +39,28 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
                 ),
             ),
         );
+    }
+}
+
+#[test]
+fn subagent_guidance_is_independent_of_root_polling_mode() {
+    let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
+    let wait = DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT;
+    let expected_body = format!(
+        "Role.\n{shared}\n{wait}\n\n{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you."
+    );
+
+    for agent_polling_enabled in [true, false] {
+        let instructions = MultiAgentRoleInstructions::Composed {
+            base: "Role.".to_string(),
+            marked: false,
+            omit_update_plan_instructions: false,
+            max_concurrency: 2,
+            root_agent_polling_enabled: agent_polling_enabled,
+            expose_model_overrides: false,
+            is_root: false,
+        };
+
+        assert_eq!(instructions.body(), expected_body);
     }
 }

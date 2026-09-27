@@ -62,6 +62,7 @@ use codex_core_plugins::PluginsConfigInput;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::LOCAL_FS;
 use codex_exec_server::ReadFileOptions;
+use codex_features::AgentPolling;
 use codex_features::CodeModeConfigToml;
 use codex_features::CurrentTimeReminderConfigToml;
 use codex_features::CurrentTimeReminderDeliveryMode;
@@ -1376,7 +1377,7 @@ pub struct MultiAgentV2Config {
     pub tool_namespace: Option<String>,
     pub hide_spawn_agent_metadata: bool,
     pub expose_spawn_agent_model_overrides: bool,
-    pub wait_agent_enabled: bool,
+    pub agent_polling: AgentPolling,
     pub non_code_mode_only: bool,
 }
 
@@ -1395,7 +1396,7 @@ impl MultiAgentV2Config {
             tool_namespace: Some(DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE.to_string()),
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
-            wait_agent_enabled: true,
+            agent_polling: AgentPolling::Disabled,
             non_code_mode_only: true,
         }
     }
@@ -2817,9 +2818,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let subagent_usage_hint_text = base
         .and_then(|config| config.subagent_usage_hint_text.as_ref())
         .cloned();
-    let wait_agent_enabled = base
-        .and_then(|config| config.wait_agent_enabled)
-        .unwrap_or(default.wait_agent_enabled);
+    let agent_polling = base
+        .and_then(|config| config.agent_polling)
+        .unwrap_or(default.agent_polling);
     let subagent_developer_instructions = base
         .and_then(|config| config.subagent_developer_instructions.as_ref())
         .map(|instructions| instructions.trim().to_string());
@@ -2848,7 +2849,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         tool_namespace,
         hide_spawn_agent_metadata,
         expose_spawn_agent_model_overrides,
-        wait_agent_enabled,
+        agent_polling,
         non_code_mode_only,
     }
 }

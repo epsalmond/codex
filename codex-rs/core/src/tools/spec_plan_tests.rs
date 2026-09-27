@@ -1430,7 +1430,7 @@ async fn sleep_tool_stays_direct_and_outside_code_mode() {
                     sleep_tool: true,
                     ..CurrentTimeReminderConfig::default()
                 });
-                config.multi_agent_v2.wait_agent_enabled = false;
+                config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
             });
         })
         .await;
@@ -2912,8 +2912,9 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
 async fn multi_agent_v2_can_disable_wait_agent() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        turn.session_source = SessionSource::Cli;
         update_config(turn, |config| {
-            config.multi_agent_v2.wait_agent_enabled = false;
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
         });
     })
     .await;
@@ -2950,7 +2951,7 @@ fn collaboration_tool_description(plan: &ToolPlanProbe, tool_name: &str) -> Stri
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wake_mode_is_root_only() {
+async fn multi_agent_v2_wake_mode_is_root_only_with_exec_polling_fallback() {
     const WAKE_TEXT: &str = "A new turn starts for you when a child finishes or asks a question";
     const LIST_AGENTS_WAKE_TEXT: &str = "to address them with `send_message` or `followup_task`";
     let subagent_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -2960,16 +2961,42 @@ async fn multi_agent_v2_wake_mode_is_root_only() {
         agent_nickname: None,
         agent_role: None,
     });
-    for (wait_agent_enabled, session_source, expect_wake) in [
-        (false, SessionSource::Cli, true),
-        (false, subagent_source.clone(), false),
-        (true, SessionSource::Cli, false),
-        (true, subagent_source, false),
+    for (agent_polling, session_source, expect_wake) in [
+        (
+            codex_features::AgentPolling::Disabled,
+            SessionSource::Cli,
+            true,
+        ),
+        (
+            codex_features::AgentPolling::Disabled,
+            subagent_source.clone(),
+            false,
+        ),
+        (
+            codex_features::AgentPolling::Disabled,
+            SessionSource::Exec,
+            false,
+        ),
+        (
+            codex_features::AgentPolling::Enabled,
+            SessionSource::Cli,
+            false,
+        ),
+        (
+            codex_features::AgentPolling::Enabled,
+            subagent_source,
+            false,
+        ),
+        (
+            codex_features::AgentPolling::Enabled,
+            SessionSource::Exec,
+            false,
+        ),
     ] {
         let plan = probe(|turn| {
             set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
             update_config(turn, |config| {
-                config.multi_agent_v2.wait_agent_enabled = wait_agent_enabled;
+                config.multi_agent_v2.agent_polling = agent_polling;
             });
             // Subagents with an agent path get collaboration tools only on V2 models.
             update_turn_settings_for_test(turn, |settings| {
@@ -2992,7 +3019,7 @@ async fn multi_agent_v2_wake_mode_is_root_only() {
                     .contains(LIST_AGENTS_WAKE_TEXT),
             ),
             (expect_wake, expect_wake, expect_wake),
-            "wait_agent_enabled={wait_agent_enabled}, session_source={session_source:?}"
+            "agent_polling={agent_polling:?}, session_source={session_source:?}"
         );
     }
 }

@@ -18,7 +18,9 @@ use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::PersistentModeState;
+use crate::session::multi_agents::ChildReportMode;
 use crate::session::multi_agents::resolve_usage_hints;
+use crate::session::multi_agents::resolve_usage_hints_with_root_polling;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
@@ -932,10 +934,15 @@ impl LocalAgentControl {
         let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
             if multi_agent_version == MultiAgentVersion::V2 {
                 let parent_config = parent_thread.session.get_config().await;
-                let parent_usage_hints = resolve_usage_hints(
+                let root_polling_enabled = ChildReportMode::for_thread(
+                    &parent_config.multi_agent_v2,
+                    &parent_thread.session_source,
+                ) == ChildReportMode::WaitAgent;
+                let parent_usage_hints = resolve_usage_hints_with_root_polling(
                     &parent_config.multi_agent_v2,
                     ResolvedModelMessages::bundled().multi_agent(),
                     !parent_config.update_plan_enabled,
+                    root_polling_enabled,
                 );
                 [parent_usage_hints.root, parent_usage_hints.subagent]
                     .into_iter()

@@ -542,7 +542,11 @@ async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
                     .features
                     .enable(Feature::MultiAgentV2)
                     .expect("test config should allow feature update");
-                config.multi_agent_v2.wait_agent_enabled = mode == ChildReportMode::WaitAgent;
+                config.multi_agent_v2.agent_polling = if mode == ChildReportMode::WaitAgent {
+                    codex_features::AgentPolling::Enabled
+                } else {
+                    codex_features::AgentPolling::Disabled
+                };
             },
         )
         .await;
