@@ -240,6 +240,8 @@ pub use update_action::get_update_action;
 mod update_prompt;
 mod update_versions;
 mod updates;
+pub use fork_update::cli_long_version;
+
 #[cfg(not(debug_assertions))]
 pub use updates::check_fork_update_now;
 #[cfg(not(debug_assertions))]

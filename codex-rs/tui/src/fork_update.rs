@@ -26,7 +26,14 @@ pub(crate) const FORK_RELEASE_TAG: Option<&str> = option_env!("CODEX_FORK_RELEAS
 /// User-facing feature version for the Shake branding. This intentionally
 /// stays separate from `FORK_RELEASE_TAG`, which identifies a particular
 /// upstream base and release build.
-pub(crate) const SHAKE_FEATURE_VERSION: &str = "0.1.0";
+pub(crate) const SHAKE_FEATURE_VERSION: &str = "0.3.0";
+
+static CLI_LONG_VERSION: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+    FORK_RELEASE_TAG.map(|release_tag| {
+        let source_version = env!("CARGO_PKG_VERSION");
+        format!("{source_version}\nShake feature version: {SHAKE_FEATURE_VERSION}\nRelease tag: {release_tag}")
+    })
+});
 
 #[cfg(any(not(debug_assertions), test))]
 #[cfg_attr(debug_assertions, allow(dead_code))]
@@ -38,6 +45,12 @@ const DEFAULT_FORK_REPO: &str = "epsalmond/codex";
 /// Return the Shake feature version only for binaries built as fork releases.
 pub(crate) fn shake_feature_version() -> Option<&'static str> {
     FORK_RELEASE_TAG.map(|_| SHAKE_FEATURE_VERSION)
+}
+
+/// Return detailed `--version` output for fork releases while leaving `-V`
+/// on the upstream Codex version.
+pub fn cli_long_version() -> Option<&'static str> {
+    CLI_LONG_VERSION.as_deref()
 }
 
 /// Where fork users should look for release notes.

@@ -222,11 +222,21 @@ jobs:
         shell: bash
         env:
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
+          shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' tui/src/fork_update.rs)
+          test -n "$shake_version"
           reported=$(target/release/codex --version)
-          [[ "$reported" == "codex-cli $SOURCE_VERSION" ]] || {
-            echo "codex --version reported '$reported', expected codex-cli $SOURCE_VERSION" >&2
+          expected=$(printf 'codex-cli %s\nShake feature version: %s\nRelease tag: %s' \
+            "$SOURCE_VERSION" "$shake_version" "$RELEASE_TAG")
+          [[ "$reported" == "$expected" ]] || {
+            echo "codex --version reported '$reported', expected source, Shake, and release versions" >&2
+            exit 1
+          }
+          short_reported=$(target/release/codex -V)
+          [[ "$short_reported" == "codex-cli $SOURCE_VERSION" ]] || {
+            echo "codex -V reported '$short_reported', expected codex-cli $SOURCE_VERSION" >&2
             exit 1
           }
 
@@ -397,6 +407,8 @@ jobs:
           DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
           set -euo pipefail
+          shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' codex-rs/tui/src/fork_update.rs)
+          test -n "$shake_version"
           assets=(
             dist/codex-x86_64-unknown-linux-gnu.tar.gz
             dist/codex-aarch64-apple-darwin.tar.gz
@@ -405,6 +417,7 @@ jobs:
             dist/codex-symbols-aarch64-apple-darwin.tar.gz
             dist/SHA256SUMS
           )
+          release_title="Shake v${shake_version} (Codex ${SOURCE_VERSION})"
           for asset in "${assets[@]}"; do
             test -s "$asset"
           done
@@ -450,11 +463,11 @@ jobs:
             gh release upload "$RELEASE_TAG" -R "$FORK_REPO" \
               "${assets[@]}" --clobber
             gh release edit "$RELEASE_TAG" -R "$FORK_REPO" \
-              --notes-file release-body.md --prerelease
+              --title "$release_title" --notes-file release-body.md --prerelease
           else
             gh release create "$RELEASE_TAG" -R "$FORK_REPO" \
               --target "$RELEASE_SHA" --prerelease \
-              --title "local-features snapshot $SOURCE_VERSION" \
+              --title "$release_title" \
               --notes-file release-body.md "${assets[@]}"
           fi
 

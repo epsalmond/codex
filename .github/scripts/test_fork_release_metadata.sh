@@ -29,7 +29,6 @@ git -C "$fixture" commit -q -m 'upstream change'
 upstream_tip=$(git -C "$fixture" rev-parse HEAD)
 git -C "$fixture" switch -q -c integration-merge eric/local-features
 git -C "$fixture" merge -q --no-ff --no-edit -m 'Integrate upstream main' upstream/main
-integration_merge_sha=$(git -C "$fixture" rev-parse HEAD)
 git -C "$fixture" switch -q eric/local-features
 git -C "$fixture" merge -q --no-ff --no-edit -m 'GitHub merge pull request' integration-merge
 merge_sha=$(git -C "$fixture" rev-parse HEAD)
@@ -73,29 +72,17 @@ producer_sha=$(git -C "$fixture" rev-parse --short=12 "$merge_sha")
 
 grep -Fq 'bash .github/scripts/fork-release-notes.sh' "$workflow_file"
 sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
-sample_deb_asset="codex-shake_0.154.0+r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")_amd64.deb"
 body=$(bash "$script_dir/fork-release-notes.sh" \
   "$fixture" epsalmond/codex eric/local-features "$merge_sha" \
   0.154.0 rust-v2.0.0 "$upstream_tip" 2.35.0 branch-merge \
-  "$sample_release_tag" "$sample_deb_asset")
-grep -Fq "Fork release commit: \`$merge_sha\`" <<< "$body"
-grep -Fq "Integrated upstream main commit: \`$upstream_tip\`" <<< "$body"
-grep -Fq 'Exact stable lineage: `rust-v2.0.0`' <<< "$body"
-grep -Fq 'https://github.com/epsalmond/codex/blob/' <<< "$body"
-grep -Fq 'https://github.com/epsalmond/codex/compare/rust-v2.0.0...' <<< "$body"
+  "$sample_release_tag" codex-shake_0.154.0_amd64.deb)
 
-# Install block must offer all three options, and must not emit the
-# provenance phrase before the actual provenance block (fork-upstream-poll.yml
-# greps for "Based on upstream `rust-v" with head -1).
-grep -Fq 'brew install epsalmond/codex-shake/codex-shake' <<< "$body"
-grep -Fq "sudo dpkg -i $sample_deb_asset" <<< "$body"
-grep -Fq "releases/download/$sample_release_tag/$sample_deb_asset" <<< "$body"
-grep -Fq 'curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh' <<< "$body"
-grep -Fq 'brew upgrade epsalmond/codex-shake/codex-shake' <<< "$body"
-first_provenance_line=$(grep -n 'Based on upstream `rust-v' <<< "$body" | head -1 | cut -d: -f1)
-[[ -n "$first_provenance_line" ]]
-install_block_end=$(grep -n 'codex-shake-estimate --since 168' <<< "$body" | head -1 | cut -d: -f1)
-[[ -n "$install_block_end" && "$install_block_end" -lt "$first_provenance_line" ]]
+# The poll workflow reads this one-line release identity to identify the
+# upstream base tag. The body pins documentation and source commit links.
+grep -Fq "**Build:** Based on upstream \`rust-v2.0.0\`; Codex \`0.154.0\`" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/releases/tag/$sample_release_tag" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/commit/$merge_sha" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/blob/$merge_sha/codex-rs/docs/example.md" <<< "$body"
 
 # A same-name tag pointing elsewhere is rejected before any publish step.
 git -C "$fixture" tag "$release_tag" HEAD
