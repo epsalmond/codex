@@ -1,0 +1,281 @@
+name: fork-upstream-update
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Merge a stable upstream release or validate a Luna recovery.
+        required: true
+        type: choice
+        options:
+          - upstream
+          - recovery
+      upstream_tag:
+        description: Exact stable upstream rust-v tag.
+        required: true
+        type: string
+      upstream_sha:
+        description: Exact commit resolved by upstream_tag.
+        required: true
+        type: string
+      fork_sha:
+        description: Expected current eric/local-features commit and first merge parent.
+        required: true
+        type: string
+      recovery_branch:
+        description: Required for recovery, fork-recovery/<tag>/<fork_sha12>.
+        required: false
+        type: string
+      candidate_sha:
+        description: Required for recovery, exact commit at recovery_branch.
+        required: false
+        type: string
+
+env:
+  FORK_BRANCH: eric/local-features
+  UPSTREAM_URL: https://github.com/openai/codex.git
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-upstream-update
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare exact upstream merge
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      deployments: write
+    outputs:
+      result: ${{ steps.prepare.outputs.result }}
+      candidate_sha: ${{ steps.prepare.outputs.candidate_sha }}
+      candidate_branch: ${{ steps.prepare.outputs.candidate_branch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.fork_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Prepare merge candidate
+        id: prepare
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+          RECOVERY_BRANCH: ${{ inputs.recovery_branch }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          UPSTREAM_URL: ${{ env.UPSTREAM_URL }}
+        run: |
+          set -euo pipefail
+          args=(
+            --mode "prepare-$MODE"
+            --repo-root "$GITHUB_WORKSPACE"
+            --upstream-url "$UPSTREAM_URL"
+            --fork-branch "$FORK_BRANCH"
+            --upstream-tag "$UPSTREAM_TAG"
+            --upstream-sha "$UPSTREAM_SHA"
+            --fork-sha "$FORK_SHA"
+            --output "$GITHUB_OUTPUT"
+          )
+          if [[ "$MODE" == recovery ]]; then
+            args+=(--recovery-branch "$RECOVERY_BRANCH" --candidate-sha "$CANDIDATE_SHA")
+          fi
+          bash .github/scripts/fork-upstream-merge.sh "${args[@]}"
+
+      - name: Send conflict to local Luna recovery
+        if: steps.prepare.outputs.result == 'conflict'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+        run: |
+          set -euo pipefail
+          deployments=$(mktemp)
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/deployments?environment=upstream-release&per_page=100" \
+            --jq ".[] | select(.payload.schema_version == 2 and .payload.recovery_kind == \"merge_conflict\" and .payload.upstream_sha == \"$UPSTREAM_SHA\" and .payload.fork_sha == \"$FORK_SHA\") | .id" \
+            > "$deployments"
+          if [[ -s "$deployments" ]]; then
+            echo "conflict handoff already exists for $UPSTREAM_TAG at $FORK_SHA: $(sed -n '1p' "$deployments")"
+            exit 0
+          fi
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          payload=$(jq -n \
+            --arg upstream_tag "$UPSTREAM_TAG" \
+            --arg upstream_sha "$UPSTREAM_SHA" \
+            --arg fork_sha "$FORK_SHA" \
+            --arg run_url "$run_url" \
+            '{schema_version: 2, recovery_kind: "merge_conflict", upstream_tag: $upstream_tag, upstream_sha: $upstream_sha, fork_sha: $fork_sha, run_url: $run_url}')
+          body=$(jq -n \
+            --arg ref "$FORK_SHA" \
+            --arg desc "upstream merge conflict for $UPSTREAM_TAG" \
+            --argjson payload "$payload" \
+            '{ref: $ref, environment: "upstream-release", task: "upstream-release", auto_merge: false, required_contexts: [], transient_environment: true, description: $desc, payload: $payload}')
+          response=$(mktemp)
+          printf '%s\n' "$body" | gh api \
+            --method POST "repos/${GITHUB_REPOSITORY}/deployments" \
+            --input - > "$response"
+          deployment_id=$(jq -r '.id // empty' "$response")
+          [[ -n "$deployment_id" ]] || { cat "$response" >&2; exit 1; }
+          echo "created conflict deployment $deployment_id for $UPSTREAM_TAG at $FORK_SHA"
+
+  validate:
+    name: Validate exact candidate before landing
+    needs: prepare
+    if: needs.prepare.outputs.result == 'ready'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fork-upstream-validation.yml
+    with:
+      candidate_sha: ${{ needs.prepare.outputs.candidate_sha }}
+      candidate_branch: ${{ needs.prepare.outputs.candidate_branch }}
+      fork_sha: ${{ inputs.fork_sha }}
+      upstream_tag: ${{ inputs.upstream_tag }}
+      upstream_sha: ${{ inputs.upstream_sha }}
+
+  land:
+    name: Fast-forward feature branch and start release
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.result == 'ready'
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.fork_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch candidate and compare-and-swap the branch
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/fork-upstream-merge.sh \
+            --mode land \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --fork-branch "$FORK_BRANCH" \
+            --upstream-tag "$UPSTREAM_TAG" \
+            --upstream-sha "$UPSTREAM_SHA" \
+            --fork-sha "$FORK_SHA" \
+            --candidate-branch "$CANDIDATE_BRANCH" \
+            --candidate-sha "$CANDIDATE_SHA"
+
+      - name: Start exact release workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run fork-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$FORK_BRANCH" \
+            --field "release_sha=$RELEASE_SHA" \
+            --field "upstream_tag=$UPSTREAM_TAG" \
+            --field "upstream_sha=$UPSTREAM_SHA" \
+            --field "fork_sha=$FORK_SHA"
+          echo "dispatched release for exact merged commit $RELEASE_SHA"
+
+      - name: Remove successful upstream candidate branch
+        if: inputs.mode == 'upstream'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+        run: |
+          set -euo pipefail
+          git push \
+            "--force-with-lease=refs/heads/$CANDIDATE_BRANCH:$CANDIDATE_SHA" \
+            origin ":refs/heads/$CANDIDATE_BRANCH"
+
+  candidate-review:
+    name: Open review for failed candidate validation
+    needs: [prepare, validate]
+    if: ${{ always() && ((inputs.mode == 'recovery' && needs.prepare.result == 'failure') || needs.validate.result == 'failure') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open or update recovery pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          RECOVERY_BRANCH: ${{ inputs.recovery_branch }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" == recovery ]]; then
+            review_branch="$RECOVERY_BRANCH"
+            title="Resolve upstream conflict for $UPSTREAM_TAG"
+          else
+            review_branch="$CANDIDATE_BRANCH"
+            title="Review upstream merge candidate for $UPSTREAM_TAG"
+          fi
+          if [[ -z "$review_branch" ]]; then
+            echo "candidate branch was not created; see the failed workflow run"
+            exit 0
+          fi
+          candidate_sha=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${review_branch}" \
+            --jq '.object.sha' 2>/dev/null || true)
+          if [[ -z "$candidate_sha" ]]; then
+            echo "candidate branch is unavailable; see the failed workflow run"
+            exit 0
+          fi
+
+          body_file=$(mktemp)
+          cat > "$body_file" <<EOF
+          Actions could not validate or land this upstream merge candidate.
+
+          Upstream tag: \`$UPSTREAM_TAG\` ($UPSTREAM_SHA)
+          Expected fork parent: $FORK_SHA
+          Candidate branch: $review_branch
+          Candidate commit: $candidate_sha
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          The feature branch was left unchanged. Review the failed run before changing this candidate.
+          EOF
+          existing_pr=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "${GITHUB_REPOSITORY_OWNER}:${review_branch}" \
+            --base "$FORK_BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "$existing_pr" ]]; then
+            gh pr edit "$existing_pr" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
+          else
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --base "$FORK_BRANCH" \
+              --head "$review_branch" \
+              --title "$title" \
+              --body-file "$body_file"
+          fi
