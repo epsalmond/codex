@@ -1,0 +1,102 @@
+name: fork-upstream-validation
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      fork_sha:
+        required: false
+        type: string
+      upstream_tag:
+        required: false
+        type: string
+      upstream_sha:
+        required: false
+        type: string
+      candidate_branch:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate exact upstream merge
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.candidate_branch || inputs.candidate_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the exact candidate branch and commit
+        if: inputs.fork_sha != ''
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse --verify 'HEAD^{commit}')" == "$CANDIDATE_SHA" ]]
+          bash .github/scripts/fork-upstream-merge.sh \
+            --mode verify \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --upstream-tag "$UPSTREAM_TAG" \
+            --upstream-sha "$UPSTREAM_SHA" \
+            --fork-sha "$FORK_SHA" \
+            --candidate-sha "$CANDIDATE_SHA"
+
+      - uses: ./.github/actions/setup-ci
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs -> target
+          key: fork-release-validate
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Check formatting
+        run: just fmt-check
+
+      - name: Test merge, metadata, and release helpers
+        run: |
+          bash .github/scripts/test_fork_upstream_merge.sh
+          bash .github/scripts/test_fork_release_metadata.sh
+          bash .github/scripts/test_fork_release_notes.sh
+          bash .github/scripts/test_build_fork_deb.sh
+          bash .github/scripts/test_render_brew_formula.sh
+          python3 -m unittest scripts/install/test_shake_install.py
+
+      - name: Test scoped release behavior
+        run: |
+          just test -p codex-core --lib -E 'test(/guardian|shake|artifact/)'
+          just test -p codex-app-server-protocol
+          just test -p codex-app-server -E 'test(/shake|attachment/)'
+          just test -p codex-cli -E 'test(/update|fork/)'
+          just test -p codex-tui --lib -E 'test(/completion|fork_update|shake|slash/)'
