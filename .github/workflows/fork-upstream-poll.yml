@@ -1,14 +1,14 @@
 name: fork-upstream-poll
 # Detects a new stable upstream openai/codex rust-v* tag and creates a
-# GitHub Deployment on this repo so the management plane's webhook forwarder
-# (configured separately) can start an unattended rebase/publish. See
+# workflow_dispatch on eric/local-features so a GitHub-hosted runner can
+# merge and validate it. Only actual merge conflicts create the deployment
+# signal consumed by the management-plane webhook forwarder. See
 # epsalmond/management-plane#999.
 #
-# IMPORTANT (delivery path): a GitHub repository webhook cannot subscribe to
-# `repository_dispatch` — the API refuses that event ("These events are not
-# allowed for this hook"). `deployment` is a real webhook event and carries
-# a free-form JSON payload, so that's what carries this signal instead. The
-# webhook on this repo is already configured for `deployment` events.
+# IMPORTANT (delivery path): routine updates use `workflow_dispatch` because
+# pushes and deployments made with GITHUB_TOKEN do not start Actions runs.
+# On an actual merge conflict, the updater creates a `deployment` event with
+# a free-form payload for the existing management-plane webhook.
 #
 # IMPORTANT (GitHub default-branch constraint): `schedule` only runs from
 # the repository's default branch. This file must exist on whatever branch
@@ -36,8 +36,8 @@ env:
   FORK_REPO: epsalmond/codex
 
 permissions:
-  contents: write
-  deployments: write
+  actions: write
+  contents: read
 
 jobs:
   poll:
@@ -59,8 +59,12 @@ jobs:
             | sort -V \
             | tail -n1)
           [[ -n "$tag" ]] || { echo "no stable rust-v* tag found upstream" >&2; exit 1; }
+          sha=$(gh api "repos/${UPSTREAM_REPO}/commits/${tag}" --jq '.sha')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "upstream tag did not resolve to a commit SHA" >&2; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "upstream stable tag: $tag"
+          echo "upstream stable commit: $sha"
 
       - name: Find the fork's current published base tag
         id: current
@@ -88,12 +92,33 @@ jobs:
             echo "fork's current base tag: $base"
           fi
 
+      - name: Read feature branch and check upstream ancestry
+        id: fork
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          fork_sha=$(gh api "repos/${FORK_REPO}/git/ref/heads/eric/local-features" --jq '.object.sha')
+          [[ "$fork_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "feature branch did not resolve to a commit SHA" >&2; exit 1; }
+          comparison=$(gh api "repos/${FORK_REPO}/compare/${UPSTREAM_SHA}...${fork_sha}" --jq '.status')
+          case "$comparison" in
+            ahead|identical) contains_upstream=true ;;
+            behind|diverged) contains_upstream=false ;;
+            *) echo "unexpected compare status: $comparison" >&2; exit 1 ;;
+          esac
+          echo "sha=$fork_sha" >> "$GITHUB_OUTPUT"
+          echo "contains_upstream=$contains_upstream" >> "$GITHUB_OUTPUT"
+          echo "fork feature branch: $fork_sha; contains upstream commit: $contains_upstream"
+
       - name: Decide whether to dispatch
         id: decide
         shell: bash
         env:
           UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
           CURRENT_BASE: ${{ steps.current.outputs.base }}
+          FORK_CONTAINS_UPSTREAM: ${{ steps.fork.outputs.contains_upstream }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           set -euo pipefail
@@ -101,10 +126,7 @@ jobs:
           if [[ "$FORCE" == "true" ]]; then
             echo "force=true: dispatching regardless of comparison"
             dispatch=true
-          elif [[ -z "$CURRENT_BASE" ]]; then
-            echo "no current base tag on the fork yet: dispatching"
-            dispatch=true
-          elif [[ "$UPSTREAM_TAG" != "$CURRENT_BASE" ]]; then
+          elif [[ -n "$CURRENT_BASE" && "$UPSTREAM_TAG" != "$CURRENT_BASE" ]]; then
             newest=$(printf '%s\n%s\n' "$UPSTREAM_TAG" "$CURRENT_BASE" | sort -V | tail -n1)
             if [[ "$newest" == "$UPSTREAM_TAG" ]]; then
               echo "upstream $UPSTREAM_TAG is newer than $CURRENT_BASE: dispatching"
@@ -112,55 +134,29 @@ jobs:
             else
               echo "upstream $UPSTREAM_TAG is not newer than $CURRENT_BASE: nothing to do"
             fi
+          elif [[ "$FORK_CONTAINS_UPSTREAM" == "true" ]]; then
+            echo "feature branch already contains $UPSTREAM_SHA; no duplicate merge while release work is pending"
           else
-            echo "fork is already based on $CURRENT_BASE: nothing to do"
+            echo "upstream $UPSTREAM_TAG is not in the feature branch yet: dispatching"
+            dispatch=true
           fi
           echo "dispatch=$dispatch" >> "$GITHUB_OUTPUT"
 
-      - name: Create deployment signal
+      - name: Dispatch GitHub-hosted upstream merge
         if: steps.decide.outputs.dispatch == 'true'
         shell: bash
         env:
           UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
-          CURRENT_BASE: ${{ steps.current.outputs.base }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          FORK_SHA: ${{ steps.fork.outputs.sha }}
         run: |
           set -euo pipefail
-          # A repository webhook cannot subscribe to `repository_dispatch`
-          # (GitHub's API rejects that event for hooks), so this signal
-          # rides a GitHub Deployment instead: `deployment` is a real
-          # webhook event and its `payload` field is free-form JSON. This
-          # works with the default GITHUB_TOKEN (permissions:
-          # deployments: write above); no PAT needed.
-          desc="upstream ${UPSTREAM_TAG} is newer than fork base ${CURRENT_BASE:-<none>}"
-          payload=$(jq -n --arg ut "$UPSTREAM_TAG" --arg cb "$CURRENT_BASE" \
-            '{upstream_tag: $ut, current_base: $cb}')
-          body=$(jq -n \
-            --arg ref "$GITHUB_SHA" \
-            --arg desc "$desc" \
-            --argjson payload "$payload" \
-            '{
-              ref: $ref,
-              environment: "upstream-release",
-              task: "upstream-release",
-              auto_merge: false,
-              required_contexts: [],
-              transient_environment: true,
-              description: $desc,
-              payload: $payload
-            }')
-          response=$(mktemp)
-          if ! echo "$body" | gh api "repos/${FORK_REPO}/deployments" --input - > "$response" 2>&1; then
-            echo "deployment creation request failed:" >&2
-            cat "$response" >&2
-            exit 1
-          fi
-          # The Deployments API answers 202 with no deployment `id` when it
-          # could not decide the ref is safe to deploy or auto-merge produced a
-          # conflict. required_contexts: [] and auto_merge: false above avoid
-          # that path, so a response without an id is a hard failure.
-          if ! jq -e '.id' "$response" >/dev/null 2>&1; then
-            echo "deployment creation did not return an id:" >&2
-            cat "$response" >&2
-            exit 1
-          fi
-          echo "created deployment $(jq -r '.id' "$response") for $desc"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh workflow run fork-upstream-update.yml \
+            --repo "$FORK_REPO" \
+            --ref eric/local-features \
+            --field mode=upstream \
+            --field "upstream_tag=$UPSTREAM_TAG" \
+            --field "upstream_sha=$UPSTREAM_SHA" \
+            --field "fork_sha=$FORK_SHA"
+          echo "dispatched upstream merge for $UPSTREAM_TAG ($UPSTREAM_SHA) from $FORK_SHA; poll run: $run_url"
