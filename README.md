@@ -77,12 +77,46 @@ binary. It deliberately stops on a missing tag or rebase conflict.
 `codex` launches the managed local build; `codex-official` launches the npm
 installation directly as an escape hatch.
 
-Fork test builds of this branch are also published as `codex-shake`, beside
-your official `codex`, via `curl -fsSL .../install.sh | sh`, Homebrew
-(`brew install epsalmond/codex-shake/codex-shake`), or a `.deb` for
-Debian/Ubuntu x86_64 attached to each release. See the release notes on
-[epsalmond/codex releases](https://github.com/epsalmond/codex/releases) for
-the exact commands.
+Fork test builds are published as `codex-shake` beside the official `codex`.
+See [Installing codex-shake](#installing-codex-shake) for install and update
+commands, and the [fork release notes](https://github.com/epsalmond/codex/releases)
+for changes in each build.
+
+### Installing codex-shake
+
+Install the latest fork build on macOS or Linux with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
+```
+
+Homebrew is also available on macOS and Linux x86_64:
+
+```sh
+brew install epsalmond/codex-shake/codex-shake
+```
+
+Debian and Ubuntu x86_64 users can download the latest `.deb` from the
+[GitHub releases](https://github.com/epsalmond/codex/releases) and install it
+with `sudo dpkg -i ./codex-shake_<version>_amd64.deb`. The script installer
+adds `codex-shake` and `codex-shake-update` alongside the official `codex`.
+Run `codex-shake-update` to install a newer fork release. Homebrew users can
+run `brew upgrade epsalmond/codex-shake/codex-shake`. Debian and Ubuntu users
+can download and reinstall the newest `.deb`.
+
+### Identifying Shake feature support
+
+Run `codex --version` (or `codex-shake --version`) to see both the upstream
+Codex version and the Shake feature version and exact fork release tag. `-V`
+continues to show only the upstream Codex version. Binaries reporting Shake
+feature version `0.3.0` include opt-in event-driven root wakeups when subagents
+finish. The unpublished `0.2` milestone covered subagent shaking and compaction
+plus intra-turn shaking. Version `0.3.0` is the honorary bump that recognizes
+both milestones.
+
+The release tag is the reliable feature identity. An older binary can accept
+`wait_agent_enabled = false` and remove `wait_agent` from the root instructions
+without waking the root when a child finishes.
 
 ### Wake mode for multi-agent orchestrators
 

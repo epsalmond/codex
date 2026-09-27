@@ -1,46 +1,23 @@
-<!-- This file is the "What this fork adds" section of every GitHub release for
-     this branch. codex-fork-release adds the changelog before it and the
-     install block, provenance, and commit list after it. Plain markdown. -->
+## Automatic and manual Shake
 
-**Shake keeps long coding sessions smaller by removing older tool output from
-active context.** In one real-session replay benchmark, shaken runs used
-2.3–2.7× fewer standard Codex credits than the same session run in full.
-Surviving conversation content stays byte-identical, and removed content
-remains available in local artifact files; auto-shake runs by default and
-`/shake` previews or triggers it manually. Full benchmark table and
-methodology: [RESULTS.md](codex-rs/docs/shake-bench/RESULTS.md). Config and
-internals: [shake.md](codex-rs/docs/shake.md). Benchmark scripts and reports:
-[shake-bench](codex-rs/docs/shake-bench/README.md).
+`/shake` removes older tool output without asking a model to summarize it, and saves removed text in local artifact files. Automatic Shake can run at the pre-sampling point before compaction; see the [Shake documentation](codex-rs/docs/shake.md).
 
-**Subagent context reduction** caps how large a spawned or resumed child's
-context can grow: by default, a child shakes and then compacts once active
-context reaches 272,000 tokens or the limit it would otherwise inherit from
-the parent, whichever is lower, via the `[subagent_context_reduction]` config
-table. See [shake.md](codex-rs/docs/shake.md#subagents) for the full behavior.
+## Subagent context reduction
 
-**Statusline items** add two TUI-only `/statusline` entries: `weekly-reset`
-(compact local wall-clock time the weekly usage window resets) and
-`last-response-clock` (local time of the most recently completed live
-response in the session).
+Spawned subagents inherit a 272,000-token Shake and compaction cap by default, tightened further when the parent has a lower limit. Within a turn, a child shakes first and compacts if needed; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
 
-**Self-update and packaging** installs this branch's snapshots as
-`codex-shake`, beside the official `codex`, via `curl | sh`
-([install.sh](install.sh)), Homebrew
-(`brew install epsalmond/codex-shake/codex-shake`), or a `.deb` for
-Debian/Ubuntu x86_64 attached to each release. `codex-shake-update` checks and
-reinstalls the latest tag; `codex-shake-estimate` runs the offline savings
-estimator against local rollouts.
+## Wake mode for multi-agent orchestrators
 
-**Wake mode for multi-agent orchestrators** lets a MultiAgentV2 root sleep
-until a subagent reports back instead of polling `wait_agent`; it is opt-in
-via the `[features.multi_agent_v2] wait_agent_enabled = false` config key,
-and with it off, behavior matches upstream. See
-[README.md](README.md#wake-mode-for-multi-agent-orchestrators) and
-[releases/2026-09-26-wake-mode.md](releases/2026-09-26-wake-mode.md).
+With wake mode enabled, a MultiAgentV2 root sleeps until a child reports back instead of polling `wait_agent`; Esc holds results for the next user message. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and its [detailed notes](releases/2026-09-26-wake-mode.md).
 
-**Release automation** builds, validates, and publishes a prerelease whenever
-a merge lands on `eric/local-features` (a fast-forward push whose new tip is a
-two-parent merge commit) or a canonical `local-features-v*` tag is pushed as a
-manual recovery path: two-platform binaries with attached debug symbols, a
-`.deb`, and a Homebrew tap update, gated on the fork's own test suite. See
-[fork-release.yml](.github/workflows/fork-release.yml).
+## Statusline entries
+
+The TUI statusline can show the weekly usage reset time and the completion time of the latest live response. See the [statusline documentation](README.md#local-statusline-build).
+
+## Installation and self-update
+
+The fork installs as `codex-shake` beside the official `codex` binary and can update to the latest fork release. See the [installation instructions](README.md#installing-codex-shake).
+
+## Offline savings estimate
+
+`codex-shake-estimate` estimates Shake savings from local rollout files without sending them to a service. See the [estimator documentation](codex-rs/docs/shake-bench/README.md#offline-savings-estimate).
