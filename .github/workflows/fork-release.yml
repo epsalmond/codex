@@ -38,8 +38,7 @@ permissions:
 
 concurrency:
   group: fork-release
-  queue: max
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   prepare:
