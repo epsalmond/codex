@@ -6,8 +6,11 @@ name: fork-ci
 # sdk, ...) needs paid macos-15-xlarge and self-hosted Windows/Linux runner
 # groups, so it can never pass here. Those workflows are disabled at the repo
 # level (`gh workflow disable`), not deleted, so upstream rebases/merges stay
-# conflict-free. This workflow replaces them for PRs with fmt, clippy, build,
-# and tests on standard GitHub-hosted ubuntu and macOS runners only.
+# conflict-free. This workflow replaces them for PRs with fmt + clippy + build
+# only, on standard GitHub-hosted ubuntu and macOS runners. Tests are not run
+# here: contributors run them locally before pushing, and the workspace test
+# binaries do not fit a standard runner's disk or time budget. The build step
+# stays so people running the fork's binaries know they build in CI.
 # Pushes to eric/local-features are covered by fork-release.yml.
 on:
   pull_request:
@@ -24,18 +27,17 @@ jobs:
   check:
     name: Check - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: codex-rs
     env:
-      # Keep clippy, build, and nextest in one target/<triple>/debug tree.
+      # Keep clippy and build in one target/<triple>/debug tree.
       CARGO_BUILD_TARGET: ${{ matrix.target }}
       # Smaller target dir and cache on standard runners (as upstream CI).
       CARGO_INCREMENTAL: "0"
-      # Far smaller than the workspace's `debug = "limited"` but keeps
-      # file:line in backtraces. The test profile inherits dev (no explicit
-      # [profile.test] in codex-rs/Cargo.toml), so this covers test binaries.
+      # Far smaller than the workspace's `debug = "limited"` on disk while
+      # keeping file:line in backtraces.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     strategy:
       fail-fast: false
@@ -43,20 +45,15 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            # Full nextest only on Linux: building every test binary on the
-            # 3-core standard macos-15 runner (upstream uses sharded
-            # macos-15-xlarge) would take well over an hour per PR.
-            test: true
           - runner: macos-15
             target: aarch64-apple-darwin
-            test: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      # The standard runner's root disk fills while linking the workspace test
-      # binaries (ld SIGBUS). Drop preinstalled toolchains this job never uses.
+      # clippy --tests over the whole workspace fills much of a standard
+      # runner's root disk. Drop preinstalled toolchains this job never uses.
       - name: Free runner disk space
         if: runner.os == 'Linux'
         working-directory: .
@@ -70,7 +67,7 @@ jobs:
           fi
           df -h /
 
-      # DotSlash, just, unprivileged userns for sandbox tests, CODEX_REPO_ROOT.
+      # DotSlash and just (for `just fmt-check`), CODEX_REPO_ROOT.
       - uses: ./.github/actions/setup-ci
 
       # setup-ci moves CARGO_TARGET_DIR outside the checkout; point it back so
@@ -79,6 +76,7 @@ jobs:
         shell: bash
         run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/codex-rs/target" >> "$GITHUB_ENV"
 
+      # libcap-dev (via pkg-config) is required by codex-bwrap's build script.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         shell: bash
@@ -86,18 +84,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential pkg-config libcap-dev libasound2-dev bubblewrap
+            build-essential pkg-config libcap-dev
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ matrix.target }}
           components: clippy, rustfmt
-
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        if: matrix.test
-        with:
-          tool: nextest
-          version: 0.9.103
 
       # `just fmt-check` runs ruff through uv (same pin as fork-release.yml).
       - name: Install uv
@@ -159,32 +151,12 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --exclude codex-voice-host --tests -- -D warnings
 
-      # Clippy --tests already compiles the whole workspace, so only build the
-      # binaries that tests from other packages resolve at runtime via
-      # cargo_bin (codex; on Linux also the sandbox helper and the zsh-fork
-      # tests' codex-execve-wrapper). nextest builds the rest of the bins.
+      # The binaries fork-release ships, in the dev profile. Their
+      # release-profile build happens in fork-release.yml on push to
+      # eric/local-features.
       - name: cargo build
         shell: bash
         run: |
           set -euo pipefail
-          bins=(--bin codex)
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            bins+=(--bin codex-linux-sandbox --bin codex-execve-wrapper)
-          fi
-          cargo build --target ${{ matrix.target }} "${bins[@]}"
+          cargo build --target ${{ matrix.target }} --bin codex --bin codex-code-mode-host
           df -h /
-
-      # Mirrors `just test` / rust-ci-full's nextest env.
-      - name: cargo nextest
-        if: matrix.test
-        env:
-          RUST_BACKTRACE: 1
-          RUST_MIN_STACK: "8388608" # 8 MiB
-          NEXTEST_STATUS_LEVEL: leak
-        shell: bash
-        run: |
-          set -euo pipefail
-          status=0
-          cargo nextest run --workspace --exclude codex-voice-host --no-fail-fast || status=$?
-          df -h /
-          exit "$status"
