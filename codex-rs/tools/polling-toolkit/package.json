@@ -1,0 +1,15 @@
+{
+  "name": "codex-agent-polling-toolkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "scan": "node --experimental-strip-types src/cli.ts scan",
+    "fixture": "node --experimental-strip-types src/cli.ts fixture",
+    "replay": "node --experimental-strip-types src/cli.ts replay"
+  }
+}

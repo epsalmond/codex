@@ -1,0 +1,251 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+
+import { AppServerClient } from "./appserver.ts";
+import {
+  benchmarkValidity,
+  buildReplayConfig,
+  driveTask,
+  fingerprintSnapshot,
+  loadFixture,
+  materializeSnapshot,
+  pairedComparison,
+  parseReplayArgs,
+  safeMeasurement,
+  type ReplayFixture,
+} from "./replay.ts";
+import type { PollingScanResult } from "./scanner.ts";
+
+const LIMITS: ReplayFixture["limits"] = {
+  maxInputTokens: 5_000_000,
+  maxOutputTokens: 250_000,
+  maxModelRequests: 400,
+  maxRootTurns: 60,
+  maxChildren: 8,
+  maxWallMs: 2_700_000,
+  idleMs: 240_000,
+};
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function git(cwd: string, ...args: string[]): string {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr || "git command failed");
+  return result.stdout.trim();
+}
+
+async function withTemp<T>(action: (directory: string) => Promise<T> | T): Promise<T> {
+  const directory = mkdtempSync(join(tmpdir(), "codex-polling-replay-test-"));
+  chmodSync(directory, 0o700);
+  try {
+    return await action(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function makeCheckpoint(directory: string): { snapshot: string; promptPath: string; fixture: ReplayFixture } {
+  const snapshot = join(directory, "snapshot");
+  mkdirSync(snapshot, { mode: 0o700 });
+  git(snapshot, "init", "--quiet", "--initial-branch=main");
+  git(snapshot, "config", "user.name", "Synthetic Benchmark");
+  git(snapshot, "config", "user.email", "synthetic@example.invalid");
+  writeFileSync(join(snapshot, "README.md"), "Synthetic one-commit benchmark checkpoint.\n");
+  writeFileSync(join(snapshot, ".gitignore"), "target/\n");
+  git(snapshot, "add", "README.md", ".gitignore");
+  git(snapshot, "commit", "--quiet", "--no-gpg-sign", "-m", "synthetic checkpoint");
+  const promptPath = join(directory, "task.md");
+  const prompt = "Solve the synthetic task and finish with BENCHMARK_COMPLETE.\n";
+  writeFileSync(promptPath, prompt, { mode: 0o600 });
+  const commit = git(snapshot, "rev-parse", "HEAD");
+  const tree = git(snapshot, "rev-parse", "HEAD^{tree}");
+  const fixture: ReplayFixture = {
+    schemaVersion: 1,
+    id: "synthetic-example",
+    snapshotCommit: commit,
+    snapshotTree: tree,
+    snapshotSha256: sha256(tree),
+    snapshot: "snapshot",
+    prompt: "task.md",
+    promptSha256: sha256(prompt),
+    model: "gpt-test-model",
+    effort: "medium",
+    acceptance: { argv: ["true"], cwd: ".", timeoutMs: 10_000 },
+    limits: LIMITS,
+  };
+  return { snapshot, promptPath, fixture };
+}
+
+test("paired configs differ only in agent_polling", () => {
+  const fixture = {
+    model: "gpt-test-model",
+    effort: "medium",
+  } as ReplayFixture;
+  const polling = buildReplayConfig(fixture, "enabled").replace('agent_polling = "enabled"', 'agent_polling = "MODE"');
+  const wake = buildReplayConfig(fixture, "disabled").replace('agent_polling = "disabled"', 'agent_polling = "MODE"');
+  assert.equal(polling, wake);
+  assert.match(buildReplayConfig(fixture, "enabled"), /agent_polling = "enabled"/);
+  assert.match(buildReplayConfig(fixture, "disabled"), /agent_polling = "disabled"/);
+});
+
+test("loadFixture accepts an isolated one-commit checkpoint and rejects dirty files", async () => {
+  await withTemp((directory) => {
+    const { fixture } = makeCheckpoint(directory);
+    const manifestPath = join(directory, "manifest.json");
+    writeFileSync(manifestPath, JSON.stringify(fixture));
+    assert.equal(loadFixture(manifestPath).fixture.id, "synthetic-example");
+    writeFileSync(join(directory, "snapshot", "untracked.txt"), "synthetic untracked data");
+    assert.throws(() => loadFixture(manifestPath), /working tree must be clean/);
+  });
+});
+
+test("materializeSnapshot excludes ignored and untracked checkout files and removes clone history links", async () => {
+  await withTemp((directory) => {
+    const { snapshot } = makeCheckpoint(directory);
+    writeFileSync(join(snapshot, "untracked-private-note.txt"), "not committed");
+    mkdirSync(join(snapshot, "target"));
+    writeFileSync(join(snapshot, "target", "generated-answer.txt"), "ignored file");
+    const destination = join(directory, "replay-workspace");
+    materializeSnapshot(snapshot, destination);
+    assert.equal(existsSync(join(destination, "untracked-private-note.txt")), false);
+    assert.equal(existsSync(join(destination, "target", "generated-answer.txt")), false);
+    assert.equal(git(destination, "rev-list", "--all", "--count"), "1");
+    assert.equal(git(destination, "remote"), "");
+    assert.equal(git(destination, "tag", "--list"), "");
+    assert.equal(git(destination, "status", "--porcelain", "--untracked-files=all"), "");
+  });
+});
+
+test("snapshot fingerprint follows committed Git tree, not ambient ignored files", async () => {
+  await withTemp((directory) => {
+    const { snapshot } = makeCheckpoint(directory);
+    const before = fingerprintSnapshot(snapshot);
+    writeFileSync(join(snapshot, "ignored-but-untracked.txt"), "must not change checkpoint fingerprint");
+    assert.equal(fingerprintSnapshot(snapshot), before);
+  });
+});
+
+test("isolation check does not require a replay manifest", () => {
+  const options = parseReplayArgs(["--isolation-check", "--bin", "/tmp/codex"]);
+  assert.equal(options.mode, "isolation-check");
+  assert.equal(options.manifest, "");
+});
+
+test("only a complete accepted run with usage and a workspace change is valid", () => {
+  assert.equal(benchmarkValidity("complete", true, true, true), true);
+  assert.equal(benchmarkValidity("incomplete", true, true, true), false);
+  assert.equal(benchmarkValidity("complete", false, true, true), false);
+  assert.equal(benchmarkValidity("complete", true, false, true), false);
+  assert.equal(benchmarkValidity("complete", true, true, false), false);
+});
+
+test("paired comparison reports root and descendant reductions separately", () => {
+  const totals = (inputTokens: number, cachedInputTokens: number, outputTokens: number, responseCount: number) => ({
+    inputTokens,
+    cachedInputTokens,
+    uncachedInputTokens: inputTokens - cachedInputTokens,
+    outputTokens,
+    responseCount,
+  });
+  const categories = (waitInput: number, stdinInput: number) => ({
+    pure_wait_agent: totals(waitInput, 0, 0, 1),
+    wait_containing_mixed_calls: totals(0, 0, 0, 0),
+    pure_write_stdin: totals(stdinInput, 0, 0, 1),
+    other: totals(0, 0, 0, 0),
+    unknown_no_attribution: totals(0, 0, 0, 0),
+  });
+  const measurement = (rootWait: number, childWait: number) => ({
+    totals: totals(rootWait + childWait, 0, 0, 2),
+    byCategory: categories(rootWait + childWait, 0),
+    root: { totals: totals(rootWait, 0, 0, 1), byCategory: categories(rootWait, 0) },
+    descendants: [{ totals: totals(childWait, 0, 0, 1), byCategory: categories(childWait, 0) }],
+  });
+  const result = (mode: "polling" | "wake", attribution: ReturnType<typeof measurement>) => ({
+    mode,
+    status: "complete",
+    benchmarkValid: true,
+    metrics: { inputTokens: attribution.totals.inputTokens, cachedInputTokens: 0, uncachedInputTokens: attribution.totals.inputTokens, outputTokens: 0, modelRequests: 2 },
+    pollingAttribution: attribution,
+  });
+  const comparison = pairedComparison([result("polling", measurement(100, 80)), result("wake", measurement(20, 75))]);
+  assert.ok(comparison);
+  assert.equal(comparison.validPair, true);
+  const root = comparison.root as { totals: { inputTokens: { polling: number; wake: number; pollingMinusWake: number } } };
+  const descendants = comparison.descendants as { totals: { inputTokens: { polling: number; wake: number; pollingMinusWake: number } } };
+  assert.deepEqual(root.totals.inputTokens, { polling: 100, wake: 20, pollingMinusWake: 80 });
+  assert.deepEqual(descendants.totals.inputTokens, { polling: 80, wake: 75, pollingMinusWake: 5 });
+});
+
+test("persisted measurements strip local session IDs and rollout paths", () => {
+  const totals = { inputTokens: 1, cachedInputTokens: 0, uncachedInputTokens: 1, outputTokens: 0, responseCount: 1 };
+  const categories = {
+    pure_wait_agent: totals,
+    wait_containing_mixed_calls: { inputTokens: 0, cachedInputTokens: 0, uncachedInputTokens: 0, outputTokens: 0, responseCount: 0 },
+    pure_write_stdin: { inputTokens: 0, cachedInputTokens: 0, uncachedInputTokens: 0, outputTokens: 0, responseCount: 0 },
+    other: { inputTokens: 0, cachedInputTokens: 0, uncachedInputTokens: 0, outputTokens: 0, responseCount: 0 },
+    unknown_no_attribution: { inputTokens: 0, cachedInputTokens: 0, uncachedInputTokens: 0, outputTokens: 0, responseCount: 0 },
+  };
+  const privateId = "synthetic-session-id-to-strip";
+  const privatePath = "/private/local/rollout-synthetic.jsonl";
+  const scan = {
+    sessions: [{
+      sessionId: privateId,
+      root: { threadId: privateId, parentThreadId: null, sourceRolloutPaths: [privatePath], totals, byCategory: categories },
+      descendants: [],
+      totals,
+      byCategory: categories,
+      waitAttributedInputTokens: 1,
+      writeStdinAttributedInputTokens: 0,
+      pollingCandidateInputTokens: 1,
+    }],
+    totals,
+    byCategory: categories,
+    scannedRolloutCount: 1,
+    skippedRolloutCount: 0,
+  } as unknown as PollingScanResult;
+  const measurement = safeMeasurement(scan, privateId);
+  assert.ok(measurement);
+  const persisted = JSON.stringify(measurement);
+  assert.equal(persisted.includes(privateId), false);
+  assert.equal(persisted.includes(privatePath), false);
+});
+
+test("app-server task monitor waits for child completion and counts all threads without a provider", async () => {
+  await withTemp(async (directory) => {
+    const codexHome = join(directory, "codex-home");
+    mkdirSync(codexHome, { mode: 0o700 });
+    writeFileSync(join(codexHome, "config.toml"), "synthetic mock config\n");
+    const client = AppServerClient.spawn({
+      bin: process.execPath,
+      args: [fileURLToPath(new URL("./mock-app-server.mjs", import.meta.url))],
+      codexHome,
+      shutdownTimeoutMs: 1_000,
+    });
+    const fixture = {
+      model: "gpt-test-model",
+      effort: "medium",
+      limits: LIMITS,
+    } as ReplayFixture;
+    try {
+      await client.initialize({ name: "test", title: "test", version: "0" });
+      const outcome = await driveTask(client, fixture, "/workspace", "synthetic task");
+      assert.equal(outcome.status, "complete");
+      assert.equal(outcome.childThreads, 1);
+      assert.equal(outcome.terminalChildren, 1);
+      assert.equal(outcome.rootTurns, 2);
+      assert.equal(outcome.metrics.modelRequests, 3);
+      assert.equal(outcome.metrics.inputTokens, 220);
+      assert.equal(outcome.metrics.outputTokens, 9);
+    } finally {
+      await client.close();
+    }
+  });
+});
