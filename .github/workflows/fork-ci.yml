@@ -135,12 +135,13 @@ jobs:
         working-directory: .
         run: just fmt-check
 
+      # codex-voice-host needs GStreamer >= 1.28 (apt ships 1.24) and nothing depends on it.
       # Mirrors rust-ci-full.yml's clippy step (justfile `clippy` + -D warnings).
       - name: cargo clippy
-        run: cargo clippy --tests -- -D warnings
+        run: cargo clippy --workspace --exclude codex-voice-host --tests -- -D warnings
 
       - name: cargo build
-        run: cargo build --workspace --target ${{ matrix.target }}
+        run: cargo build --workspace --exclude codex-voice-host --target ${{ matrix.target }}
 
       # Mirrors `just test` / rust-ci-full's nextest env.
       - name: cargo nextest
@@ -149,4 +150,4 @@ jobs:
           RUST_BACKTRACE: 1
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
-        run: cargo nextest run --workspace --no-fail-fast
+        run: cargo nextest run --workspace --exclude codex-voice-host --no-fail-fast
