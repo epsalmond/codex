@@ -65,6 +65,24 @@ export type PollingMeasurement = {
   byCategory: CategoryTotals;
   root: { totals: TokenTotals; byCategory: CategoryTotals };
   descendants: Array<{ totals: TokenTotals; byCategory: CategoryTotals }>;
+  coverage: TraceCoverage;
+};
+
+export type TraceCoverage = {
+  complete: boolean;
+  expectedThreadCount: number;
+  observedThreadCount: number;
+  expectedDescendantCount: number;
+  observedDescendantCount: number;
+  runtimeThreadCountMismatch: boolean;
+  completeThreadCount: number;
+  missingThreadCount: number;
+  unexpectedThreadCount: number;
+  responseCountMismatchThreadCount: number;
+  tokenTotalsMismatchThreadCount: number;
+  noUsageThreadCount: number;
+  unattributedResponseCount: number;
+  skippedRolloutCount: number;
 };
 
 type ArmResult = {
@@ -82,6 +100,9 @@ export type Outcome = {
   childThreads: number;
   rootTurns: number;
   terminalChildren: number;
+  /** Private runtime identifiers used only to validate the local rollout trace. */
+  childThreadIds: string[];
+  threadUsageById: Record<string, Metrics>;
   taskElapsedMs: number;
   metrics: Metrics;
   finalMessageSha256?: string;
@@ -698,6 +719,7 @@ class Monitor {
   private readonly client: AppServerClient;
   private readonly limits: ReplayFixture["limits"];
   readonly metrics = emptyMetrics();
+  readonly threadUsageById = new Map<string, Metrics>();
   readonly descendants = new Set<string>();
   readonly finishedChildren = new Set<string>();
   readonly active = new Map<string, Set<string>>();
@@ -730,6 +752,7 @@ class Monitor {
 
   setRoot(id: string): void {
     this.root = id;
+    this.threadUsageById.set(id, emptyMetrics());
     for (const event of this.pending.splice(0)) this.onEvent(event);
   }
 
@@ -783,6 +806,13 @@ class Monitor {
         this.metrics.inputTokens += last.cachedInputTokens + last.uncachedInputTokens;
         this.metrics.outputTokens += last.outputTokens;
         this.metrics.modelRequests += 1;
+        const threadMetrics = this.threadUsageById.get(thread) ?? emptyMetrics();
+        threadMetrics.cachedInputTokens += last.cachedInputTokens;
+        threadMetrics.uncachedInputTokens += last.uncachedInputTokens;
+        threadMetrics.inputTokens += last.cachedInputTokens + last.uncachedInputTokens;
+        threadMetrics.outputTokens += last.outputTokens;
+        threadMetrics.modelRequests += 1;
+        this.threadUsageById.set(thread, threadMetrics);
       }
     }
     if (thread && turn && (event.method === "turn/completed" || event.method === "turn/failed")) {
@@ -862,6 +892,8 @@ class Monitor {
       childThreads: this.descendants.size,
       rootTurns: this.rootTurns,
       terminalChildren: this.finishedChildren.size,
+      childThreadIds: [...this.descendants],
+      threadUsageById: Object.fromEntries(this.threadUsageById),
       taskElapsedMs: this.taskStartedAt ? Date.now() - this.taskStartedAt : 0,
       metrics: { ...this.metrics },
       ...(this.finalHash ? { finalMessageSha256: this.finalHash } : {}),
@@ -967,9 +999,66 @@ export function runAcceptance(
   return { passed: result.status === 0, exitCode: result.status, elapsedMs: Date.now() - started };
 }
 
-export function safeMeasurement(scan: PollingScanResult, rootThreadId: string): PollingMeasurement | undefined {
+export function safeMeasurement(
+  scan: PollingScanResult,
+  outcome: Pick<Outcome, "rootThreadId" | "childThreads" | "childThreadIds" | "threadUsageById">,
+): PollingMeasurement | undefined {
+  const rootThreadId = outcome.rootThreadId;
   const session = scan.sessions.find((candidate) => candidate.sessionId === rootThreadId);
   if (!session) return undefined;
+  const sessionThreads = [session.root, ...session.descendants];
+  const threadsById = new Map(sessionThreads.map((thread) => [thread.threadId, thread]));
+  const expectedIds = [rootThreadId, ...outcome.childThreadIds];
+  const expectedIdSet = new Set(expectedIds);
+  const observedIds = new Set(threadsById.keys());
+  const missingThreadCount = expectedIds.filter((id) => !observedIds.has(id)).length;
+  const unexpectedThreadCount = [...observedIds].filter((id) => !expectedIdSet.has(id)).length;
+  const runtimeThreadCountMismatch = outcome.childThreadIds.length !== outcome.childThreads;
+  let completeThreadCount = 0;
+  let responseCountMismatchThreadCount = 0;
+  let tokenTotalsMismatchThreadCount = 0;
+  let noUsageThreadCount = 0;
+  for (const id of expectedIds) {
+    const expected = outcome.threadUsageById[id] ?? emptyMetrics();
+    const observed = threadsById.get(id);
+    if (!observed) continue;
+    const responseCountMatches = observed.totals.responseCount === expected.modelRequests;
+    const totalsMatch =
+      observed.totals.inputTokens === expected.inputTokens &&
+      observed.totals.cachedInputTokens === expected.cachedInputTokens &&
+      observed.totals.uncachedInputTokens === expected.uncachedInputTokens &&
+      observed.totals.outputTokens === expected.outputTokens;
+    if (!responseCountMatches) responseCountMismatchThreadCount += 1;
+    if (!totalsMatch) tokenTotalsMismatchThreadCount += 1;
+    if (expected.modelRequests === 0 || observed.totals.responseCount === 0) noUsageThreadCount += 1;
+    if (
+      responseCountMatches && totalsMatch && expected.modelRequests > 0 &&
+      observed.byCategory.unknown_no_attribution.responseCount === 0
+    ) completeThreadCount += 1;
+  }
+  const unattributedResponseCount = sessionThreads.reduce(
+    (sum, thread) => sum + thread.byCategory.unknown_no_attribution.responseCount,
+    0,
+  );
+  const coverage: TraceCoverage = {
+    complete: !runtimeThreadCountMismatch && session.descendants.length === outcome.childThreads &&
+      missingThreadCount === 0 && unexpectedThreadCount === 0 &&
+      responseCountMismatchThreadCount === 0 && tokenTotalsMismatchThreadCount === 0 &&
+      noUsageThreadCount === 0 && unattributedResponseCount === 0 && scan.skippedRolloutCount === 0,
+    expectedThreadCount: expectedIds.length,
+    observedThreadCount: sessionThreads.length,
+    expectedDescendantCount: outcome.childThreads,
+    observedDescendantCount: session.descendants.length,
+    runtimeThreadCountMismatch,
+    completeThreadCount,
+    missingThreadCount,
+    unexpectedThreadCount,
+    responseCountMismatchThreadCount,
+    tokenTotalsMismatchThreadCount,
+    noUsageThreadCount,
+    unattributedResponseCount,
+    skippedRolloutCount: scan.skippedRolloutCount,
+  };
   const cleanThread = (thread: { totals: TokenTotals; byCategory: CategoryTotals }) => ({
     totals: thread.totals,
     byCategory: thread.byCategory,
@@ -979,6 +1068,7 @@ export function safeMeasurement(scan: PollingScanResult, rootThreadId: string): 
     byCategory: session.byCategory,
     root: cleanThread(session.root),
     descendants: session.descendants.map(cleanThread),
+    coverage,
   };
 }
 
@@ -1138,10 +1228,13 @@ async function runArm(
   }
   if (sandboxExitConfirmed && outcome?.rootThreadId) {
     try {
-      measurement = safeMeasurement(await scanCodexHomes([home]), outcome.rootThreadId);
+      measurement = safeMeasurement(await scanCodexHomes([home]), outcome);
       if (!measurement) {
         status = "incomplete";
         reason = "usage_trace_missing";
+      } else if (!measurement.coverage.complete) {
+        status = "incomplete";
+        reason = "usage_trace_incomplete";
       } else {
         const metrics = measured(measurement);
         if (metrics.inputTokens >= fixture.limits.maxInputTokens) {
@@ -1195,7 +1288,7 @@ async function runArm(
     });
     rmSync(sandboxDir, { recursive: true, force: true });
   }
-  const usageTracePresent = Boolean(measurement && metrics.modelRequests > 0);
+  const traceCoverageComplete = Boolean(measurement?.coverage.complete);
   const result = {
     schemaVersion: 1,
     fixtureId: fixture.id,
@@ -1223,16 +1316,17 @@ async function runArm(
       descendants: measurement.descendants,
       totals: measurement.totals,
       byCategory: measurement.byCategory,
+      coverage: measurement.coverage,
     } : null,
     acceptance,
     changedFiles: changed.files,
     changedPatchSha256: changed.sha256,
     changesPresent: changed.files > 0,
-    usageTracePresent,
+    traceCoverageComplete,
     benchmarkValid: benchmarkValidity(
       status,
       acceptance.passed,
-      usageTracePresent,
+      traceCoverageComplete,
       changed.files > 0,
     ),
   };

@@ -156,7 +156,9 @@ test("discovers nested descendants and ranks only pure wait_agent input", async 
     assert.equal(session.descendants[1]?.byCategory.pure_wait_agent.inputTokens, 30);
     assert.equal(session.waitAttributedInputTokens, 41);
     assert.equal(session.writeStdinAttributedInputTokens, 5);
-    assert.equal(session.pollingCandidateInputTokens, 46);
+    assert.equal(session.pollingCandidateInputTokens, null);
+    assert.equal(session.usageTraceAvailable, true);
+    assert.equal(session.actionAttributionComplete, false);
     assert.deepEqual(session.totals, {
       inputTokens: 66,
       cachedInputTokens: 19,
@@ -220,6 +222,7 @@ test("ranks pure write_stdin candidates alongside strict wait_agent usage", asyn
     const result = await scanCodexHomes([home]);
     assert.deepEqual(result.sessions.map((session) => session.sessionId), [stdinId, waitId]);
     assert.equal(result.sessions[0]?.pollingCandidateInputTokens, 11);
+    assert.equal(result.sessions[0]?.actionAttributionComplete, true);
     assert.equal(result.sessions[0]?.waitAttributedInputTokens, 0);
   });
 });
@@ -289,6 +292,27 @@ test("keeps missing and malformed action attribution in the unknown bucket", asy
   });
 });
 
+test("treats an observed non-tool response as other rather than missing attribution", async () => {
+  await withHomes(async (directory) => {
+    const home = join(directory, "codex-home");
+    await writeRollout(
+      home,
+      "sessions/rollout-text-only.jsonl",
+      rollout(
+        metadata(rootId, rootId),
+        { type: "response_item", payload: { type: "message", role: "assistant" } },
+        completed("response-text-only", { input_tokens: 12, cached_input_tokens: 0, output_tokens: 2 }),
+      ),
+    );
+
+    const result = await scanCodexHomes([home]);
+    assert.equal(result.byCategory.other.inputTokens, 12);
+    assert.equal(result.byCategory.unknown_no_attribution.responseCount, 0);
+    assert.equal(result.sessions[0]?.pollingCandidateInputTokens, 0);
+    assert.equal(result.sessions[0]?.actionAttributionComplete, true);
+  });
+});
+
 test("returns local root IDs and rollout paths from only explicitly supplied homes", async () => {
   await withHomes(async (directory) => {
     const suppliedHome = join(directory, "selected-home");
@@ -348,6 +372,21 @@ test("reads a synthetic compressed rollout", async () => {
     assert.equal(result.sessions[0]?.sessionId, rootId);
     assert.equal(result.sessions[0]?.waitAttributedInputTokens, 13);
     assert.deepEqual(result.sessions[0]?.root.sourceRolloutPaths, [sourcePath]);
+  });
+});
+
+test("marks sessions without persisted usage as unavailable instead of zero polling", async () => {
+  await withHomes(async (directory) => {
+    const home = join(directory, "codex-home");
+    await writeRollout(home, "sessions/rollout-no-usage.jsonl", rollout(metadata(rootId, rootId)));
+
+    const result = await scanCodexHomes([home]);
+    const session = result.sessions[0];
+    assert.equal(session?.usageTraceAvailable, false);
+    assert.equal(session?.waitAttributedInputTokens, null);
+    assert.equal(session?.writeStdinAttributedInputTokens, null);
+    assert.equal(session?.pollingCandidateInputTokens, null);
+    assert.equal(session?.actionAttributionComplete, false);
   });
 });
 

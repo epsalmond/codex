@@ -379,6 +379,11 @@ This child context policy is independent from parent scheduling. See
 [wake mode for multi-agent orchestrators](../../README.md#wake-mode-for-multi-agent-orchestrators)
 for the interactive-root default and the Exec/child polling scope.
 
+To inspect your own local rollouts for token use attributed to `wait_agent` and
+related polling, then prepare a bounded polling-versus-wake comparison from a
+reviewed task and checkpoint, see the [agent polling toolkit](../tools/polling-toolkit/README.md).
+The scanner reads only the Codex homes you provide and does not upload session data.
+
 The mid-turn roll-over order also differs for subagents (see
 `codex-rs/core/src/session/mid_turn_reduction.rs`). At the point where a
 sampling follow-up would exceed the context limit:

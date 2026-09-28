@@ -20,7 +20,7 @@ import {
   safeMeasurement,
   type ReplayFixture,
 } from "./replay.ts";
-import type { PollingScanResult } from "./scanner.ts";
+import { scanCodexHomes, type PollingScanResult } from "./scanner.ts";
 
 const LIMITS: ReplayFixture["limits"] = {
   maxInputTokens: 5_000_000,
@@ -147,6 +147,151 @@ test("only a complete accepted run with usage and a workspace change is valid", 
   assert.equal(benchmarkValidity("complete", true, true, false), false);
 });
 
+test("requires complete root and descendant rollout coverage before accepting a trace", () => {
+  const rootId = "synthetic-root";
+  const childId = "synthetic-child";
+  const usage = (inputTokens: number, responseCount = 1) => ({
+    inputTokens,
+    cachedInputTokens: 0,
+    uncachedInputTokens: inputTokens,
+    outputTokens: 2,
+    responseCount,
+  });
+  const categories = (category: string, totals: ReturnType<typeof usage>) => ({
+    pure_wait_agent: category === "pure_wait_agent" ? totals : usage(0, 0),
+    wait_containing_mixed_calls: category === "wait_containing_mixed_calls" ? totals : usage(0, 0),
+    pure_write_stdin: category === "pure_write_stdin" ? totals : usage(0, 0),
+    other: category === "other" ? totals : usage(0, 0),
+    unknown_no_attribution: category === "unknown_no_attribution" ? totals : usage(0, 0),
+  });
+  const thread = (id: string, parentThreadId: string | null, category: string, totals: ReturnType<typeof usage>) => ({
+    threadId: id,
+    parentThreadId,
+    sourceRolloutPaths: [],
+    totals,
+    byCategory: categories(category, totals),
+  });
+  const scan = (children: ReturnType<typeof thread>[], skippedRolloutCount = 0) => {
+    const root = thread(rootId, null, "pure_wait_agent", usage(10));
+    const all = [root, ...children];
+    const byCategory = categories("none", usage(0, 0));
+    for (const item of all) {
+      for (const key of Object.keys(byCategory) as Array<keyof typeof byCategory>) {
+        for (const field of Object.keys(item.byCategory[key]) as Array<keyof ReturnType<typeof usage>>) {
+          byCategory[key][field] += item.byCategory[key][field];
+        }
+      }
+    }
+    return {
+      sessions: [{
+        sessionId: rootId,
+        root,
+        descendants: children,
+        usageTraceAvailable: all.some((entry) => entry.totals.responseCount > 0),
+        totals: all.reduce((total, entry) => ({
+          inputTokens: total.inputTokens + entry.totals.inputTokens,
+          cachedInputTokens: total.cachedInputTokens + entry.totals.cachedInputTokens,
+          uncachedInputTokens: total.uncachedInputTokens + entry.totals.uncachedInputTokens,
+          outputTokens: total.outputTokens + entry.totals.outputTokens,
+          responseCount: total.responseCount + entry.totals.responseCount,
+        }), usage(0, 0)),
+        byCategory,
+        waitAttributedInputTokens: 10,
+        writeStdinAttributedInputTokens: 0,
+        pollingCandidateInputTokens: 10,
+        actionAttributionComplete: true,
+      }],
+      totals: usage(0, 0),
+      byCategory,
+      scannedRolloutCount: all.length,
+      skippedRolloutCount,
+    } as unknown as PollingScanResult;
+  };
+  const expected = (childThreadIds: string[], childInputTokens = 20) => ({
+    rootThreadId: rootId,
+    childThreads: childThreadIds.length,
+    childThreadIds,
+    threadUsageById: {
+      [rootId]: { ...usage(10), modelRequests: 1 },
+      ...(childThreadIds.length ? { [childId]: { ...usage(childInputTokens), modelRequests: 1 } } : {}),
+    },
+  });
+
+  const complete = safeMeasurement(scan([thread(childId, rootId, "pure_wait_agent", usage(20))]), expected([childId]));
+  assert.equal(complete?.coverage.complete, true);
+  assert.equal(complete?.coverage.completeThreadCount, 2);
+
+  const wrongRuntimeCount = safeMeasurement(
+    scan([thread(childId, rootId, "pure_wait_agent", usage(20))]),
+    { ...expected([childId]), childThreads: 2 },
+  );
+  assert.equal(wrongRuntimeCount?.coverage.complete, false);
+  assert.equal(wrongRuntimeCount?.coverage.runtimeThreadCountMismatch, true);
+
+  const missing = safeMeasurement(scan([]), expected([childId]));
+  assert.equal(missing?.coverage.complete, false);
+  assert.equal(missing?.coverage.missingThreadCount, 1);
+
+  const malformed = safeMeasurement(scan([], 1), expected([childId]));
+  assert.equal(malformed?.coverage.complete, false);
+  assert.equal(malformed?.coverage.skippedRolloutCount, 1);
+
+  const zeroUsage = safeMeasurement(scan([thread(childId, rootId, "other", usage(0, 0))]), expected([childId]));
+  assert.equal(zeroUsage?.coverage.complete, false);
+  assert.equal(zeroUsage?.coverage.noUsageThreadCount, 1);
+
+  const unknown = safeMeasurement(
+    scan([thread(childId, rootId, "unknown_no_attribution", usage(20))]),
+    expected([childId]),
+  );
+  assert.equal(unknown?.coverage.complete, false);
+  assert.equal(unknown?.coverage.unattributedResponseCount, 1);
+});
+
+test("scanner-skipped malformed child rollout invalidates measured coverage", async () => {
+  await withTemp(async (directory) => {
+    const home = join(directory, "codex-home");
+    const rootId = "synthetic-root";
+    const childId = "synthetic-child";
+    const rootRollout = join(home, "sessions", "rollout-root.jsonl");
+    const childRollout = join(home, "sessions", "rollout-child.jsonl");
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    const metadata = (id: string, sessionId: string, parentThreadId?: string) => ({
+      type: "session_meta",
+      payload: { id, session_id: sessionId, ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}) },
+    });
+    const usageRecord = (threadId: string, responseId: string, inputTokens: number) => ({
+      type: "token_usage_record",
+      payload: {
+        thread_id: threadId,
+        response_id: responseId,
+        usage: { input_tokens: inputTokens, cached_input_tokens: 0, output_tokens: 2 },
+      },
+    });
+    writeFileSync(rootRollout, [
+      metadata(rootId, rootId),
+      { type: "response_item", payload: { type: "function_call", name: "wait_agent" } },
+      usageRecord(rootId, "root-response", 10),
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    writeFileSync(childRollout, "malformed child rollout\n");
+
+    const scan = await scanCodexHomes([home]);
+    const measurement = safeMeasurement(scan, {
+      rootThreadId: rootId,
+      childThreads: 1,
+      childThreadIds: [childId],
+      threadUsageById: {
+        [rootId]: { inputTokens: 10, cachedInputTokens: 0, uncachedInputTokens: 10, outputTokens: 2, modelRequests: 1 },
+        [childId]: { inputTokens: 5, cachedInputTokens: 0, uncachedInputTokens: 5, outputTokens: 2, modelRequests: 1 },
+      },
+    });
+    assert.equal(scan.skippedRolloutCount, 1);
+    assert.equal(measurement?.coverage.complete, false);
+    assert.equal(measurement?.coverage.missingThreadCount, 1);
+    assert.equal(measurement?.coverage.skippedRolloutCount, 1);
+  });
+});
+
 test("paired comparison reports root and descendant reductions separately", () => {
   const totals = (inputTokens: number, cachedInputTokens: number, outputTokens: number, responseCount: number) => ({
     inputTokens,
@@ -167,6 +312,22 @@ test("paired comparison reports root and descendant reductions separately", () =
     byCategory: categories(rootWait + childWait, 0),
     root: { totals: totals(rootWait, 0, 0, 1), byCategory: categories(rootWait, 0) },
     descendants: [{ totals: totals(childWait, 0, 0, 1), byCategory: categories(childWait, 0) }],
+    coverage: {
+      complete: true,
+      expectedThreadCount: 2,
+      observedThreadCount: 2,
+      expectedDescendantCount: 1,
+      observedDescendantCount: 1,
+      runtimeThreadCountMismatch: false,
+      completeThreadCount: 2,
+      missingThreadCount: 0,
+      unexpectedThreadCount: 0,
+      responseCountMismatchThreadCount: 0,
+      tokenTotalsMismatchThreadCount: 0,
+      noUsageThreadCount: 0,
+      unattributedResponseCount: 0,
+      skippedRolloutCount: 0,
+    },
   });
   const result = (mode: "polling" | "wake", attribution: ReturnType<typeof measurement>) => ({
     mode,
@@ -211,7 +372,14 @@ test("persisted measurements strip local session IDs and rollout paths", () => {
     scannedRolloutCount: 1,
     skippedRolloutCount: 0,
   } as unknown as PollingScanResult;
-  const measurement = safeMeasurement(scan, privateId);
+  const measurement = safeMeasurement(scan, {
+    rootThreadId: privateId,
+    childThreads: 0,
+    childThreadIds: [],
+    threadUsageById: {
+      [privateId]: { inputTokens: 1, cachedInputTokens: 0, uncachedInputTokens: 1, outputTokens: 0, modelRequests: 1 },
+    },
+  });
   assert.ok(measurement);
   const persisted = JSON.stringify(measurement);
   assert.equal(persisted.includes(privateId), false);

@@ -38,14 +38,18 @@ export interface SessionSummary {
   sessionId: string;
   root: ThreadSummary;
   descendants: ThreadSummary[];
+  /** False means the rollout had no provider usage records, not zero token use. */
+  usageTraceAvailable: boolean;
   totals: TokenTotals;
   byCategory: CategoryTotals;
   /** Strict wait_agent total across root and descendants. */
-  waitAttributedInputTokens: number;
+  waitAttributedInputTokens: number | null;
   /** Pure write_stdin total; this can include non-polling stdin writes. */
-  writeStdinAttributedInputTokens: number;
-  /** wait_agent plus write_stdin candidate input, kept separate from mixed/unknown actions. */
-  pollingCandidateInputTokens: number;
+  writeStdinAttributedInputTokens: number | null;
+  /** null when usage is absent or action attribution is incomplete. */
+  pollingCandidateInputTokens: number | null;
+  /** False if usage is absent or any response has mixed or unknown action attribution. */
+  actionAttributionComplete: boolean;
 }
 
 /** Results are returned to the local caller; this module has no network or write path. */
@@ -74,6 +78,7 @@ interface UsageCandidate {
   responseId: string;
   usage: UsageValues;
   actionNames: Array<string | null>;
+  nonToolResponseItem: boolean;
 }
 
 interface ParsedRollout {
@@ -185,25 +190,36 @@ export async function scanCodexHomes(
       addCategoryTotals(byCategory, descendant.byCategory);
     }
     const totals = totalsFromCategories(byCategory);
+    const actionAttributionComplete = totals.responseCount > 0 &&
+      byCategory.wait_containing_mixed_calls.responseCount === 0 &&
+      byCategory.unknown_no_attribution.responseCount === 0;
     sessions.push({
       sessionId: rootId,
       root,
       descendants,
+      usageTraceAvailable: totals.responseCount > 0,
       totals,
       byCategory,
-      waitAttributedInputTokens: sumThreadCategory(root, descendants, "pure_wait_agent"),
-      writeStdinAttributedInputTokens: sumThreadCategory(root, descendants, "pure_write_stdin"),
-      pollingCandidateInputTokens: sumTokenTotals(
-        sumThreadCategory(root, descendants, "pure_wait_agent"),
-        sumThreadCategory(root, descendants, "pure_write_stdin"),
-      ),
+      waitAttributedInputTokens: totals.responseCount > 0
+        ? sumThreadCategory(root, descendants, "pure_wait_agent")
+        : null,
+      writeStdinAttributedInputTokens: totals.responseCount > 0
+        ? sumThreadCategory(root, descendants, "pure_write_stdin")
+        : null,
+      pollingCandidateInputTokens: actionAttributionComplete
+        ? sumTokenTotals(
+          sumThreadCategory(root, descendants, "pure_wait_agent"),
+          sumThreadCategory(root, descendants, "pure_write_stdin"),
+        )
+        : null,
+      actionAttributionComplete,
     });
   }
 
   sessions.sort(
     (left, right) =>
-      right.pollingCandidateInputTokens - left.pollingCandidateInputTokens ||
-      right.waitAttributedInputTokens - left.waitAttributedInputTokens ||
+      (right.pollingCandidateInputTokens ?? -1) - (left.pollingCandidateInputTokens ?? -1) ||
+      (right.waitAttributedInputTokens ?? -1) - (left.waitAttributedInputTokens ?? -1) ||
       left.sessionId.localeCompare(right.sessionId),
   );
   const byCategory = emptyCategoryTotals();
@@ -270,6 +286,7 @@ async function parseRolloutFile(sourcePath: string): Promise<ParsedRollout | nul
   const lines = createInterface({ input: readable, crlfDelay: Infinity });
   let metadata: SessionMetadata | null = null;
   let pendingActionNames: Array<string | null> = [];
+  let pendingNonToolResponseItem = false;
   const candidates = new Map<string, UsageCandidate>();
 
   try {
@@ -281,34 +298,44 @@ async function parseRolloutFile(sourcePath: string): Promise<ParsedRollout | nul
       } else if (row.type === "response_item") {
         const action = responseItemActionName(row.payload);
         if (action !== undefined) pendingActionNames.push(action);
+        else if (nonEmptyString(asRecord(row.payload)?.type)) pendingNonToolResponseItem = true;
       } else if (row.type === "event_msg") {
         const event = asRecord(row.payload);
         if (event?.type === "raw_response_completed") {
           const responseId = nonEmptyString(event.response_id);
           const usage = parseUsage(event.token_usage);
           const actionNames = pendingActionNames;
+          const nonToolResponseItem = pendingNonToolResponseItem;
           pendingActionNames = [];
+          pendingNonToolResponseItem = false;
           if (responseId && usage) {
             mergeCandidate(candidates, {
               threadId: metadata?.threadId ?? "",
               responseId,
               usage,
               actionNames,
+              nonToolResponseItem,
             });
           }
         }
       } else if (row.type === "token_usage_record") {
         const record = asRecord(row.payload);
         if (record) {
-          const candidate = parseTokenUsageRecord(record, pendingActionNames, metadata?.threadId);
+          const candidate = parseTokenUsageRecord(
+            record,
+            pendingActionNames,
+            pendingNonToolResponseItem,
+            metadata?.threadId,
+          );
           pendingActionNames = [];
+          pendingNonToolResponseItem = false;
           if (candidate) mergeCandidate(candidates, candidate);
         }
       } else if (row.type === "compacted") {
         const payload = asRecord(row.payload);
         const record = asRecord(payload?.latest_token_usage_record);
         if (record) {
-          const candidate = parseTokenUsageRecord(record, [], metadata?.threadId);
+          const candidate = parseTokenUsageRecord(record, [], false, metadata?.threadId);
           if (candidate) mergeCandidate(candidates, candidate);
         }
       }
@@ -341,13 +368,14 @@ function parseSessionMetadata(value: unknown): SessionMetadata | null {
 function parseTokenUsageRecord(
   record: Record<string, unknown>,
   actionNames: Array<string | null>,
+  nonToolResponseItem: boolean,
   fallbackThreadId?: string,
 ): UsageCandidate | null {
   const responseId = nonEmptyString(record.response_id);
   const threadId = nonEmptyString(record.thread_id) ?? fallbackThreadId;
   const usage = parseUsage(record.usage);
   if (!responseId || !threadId || !usage) return null;
-  return { threadId, responseId, usage, actionNames: [...actionNames] };
+  return { threadId, responseId, usage, actionNames: [...actionNames], nonToolResponseItem };
 }
 
 function parseUsage(value: unknown): UsageValues | null {
@@ -399,8 +427,8 @@ function nonNegativeCount(value: unknown): number {
   return Math.min(Math.trunc(value), Number.MAX_SAFE_INTEGER);
 }
 
-function classifyActions(actionNames: Array<string | null>): PollingActionCategory {
-  if (actionNames.length === 0) return "unknown_no_attribution";
+function classifyActions(actionNames: Array<string | null>, nonToolResponseItem: boolean): PollingActionCategory {
+  if (actionNames.length === 0) return nonToolResponseItem ? "other" : "unknown_no_attribution";
   const waitCount = actionNames.filter((name) => name === "wait_agent").length;
   if (waitCount > 0) {
     return actionNames.every((name) => name === "wait_agent")
@@ -469,7 +497,7 @@ function findRootId(
 function summarizeThread(thread: MutableThread): ThreadSummary {
   const byCategory = emptyCategoryTotals();
   for (const candidate of thread.usageByResponse.values()) {
-    const category = classifyActions(candidate.actionNames);
+    const category = classifyActions(candidate.actionNames, candidate.nonToolResponseItem);
     addUsage(byCategory[category], candidate.usage);
   }
   return {
