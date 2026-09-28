@@ -1459,6 +1459,9 @@ async fn maybe_run_pre_sampling_auto_shake(sess: &Arc<Session>, turn_context: &A
 /// measure via the read-only preview, skip if it would not clear
 /// `min_elidable_percent` / `min_savings_tokens`, otherwise apply it. Returns
 /// whether a shake was actually applied.
+// The two call sites (initial and escalated pass) differ in nearly every
+// argument, so a params struct would only restate them.
+#[allow(clippy::too_many_arguments)]
 async fn run_auto_shake_pass(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
