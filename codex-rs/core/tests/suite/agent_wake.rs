@@ -90,9 +90,17 @@ async fn build_multi_agent(
     server: &MockServer,
     agent_polling: Option<AgentPolling>,
 ) -> Result<TestCodex> {
+    build_multi_agent_with_source(server, agent_polling, SessionSource::Cli).await
+}
+
+async fn build_multi_agent_with_source(
+    server: &MockServer,
+    agent_polling: Option<AgentPolling>,
+    session_source: SessionSource,
+) -> Result<TestCodex> {
     test_codex()
         .with_model("koffing")
-        .with_session_source(SessionSource::Cli)
+        .with_session_source(session_source)
         .with_config(move |config| configure_multi_agent(config, agent_polling))
         .build(server)
         .await
@@ -347,8 +355,21 @@ async fn wake_mode_root_sleeps_until_child_reports() -> Result<()> {
 /// Baseline for the harness: with `wait_agent`, the same child costs one root request per poll.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_agent_mode_polls_while_child_runs() -> Result<()> {
+    assert_wait_agent_polls_while_child_runs(SessionSource::Cli, Some(AgentPolling::Enabled)).await
+}
+
+/// Exec keeps `wait_agent` polling by default because its process exits with the root turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_mode_polls_while_child_runs_by_default() -> Result<()> {
+    assert_wait_agent_polls_while_child_runs(SessionSource::Exec, None).await
+}
+
+async fn assert_wait_agent_polls_while_child_runs(
+    session_source: SessionSource,
+    agent_polling: Option<AgentPolling>,
+) -> Result<()> {
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, Some(AgentPolling::Enabled)).await?;
+    let test = build_multi_agent_with_source(&server, agent_polling, session_source).await?;
     let root = test.session_configured.thread_id;
     mount_spawn_then_status(&server, root).await;
     let polls = Arc::new(AtomicUsize::new(0));
@@ -580,6 +601,7 @@ fn final_answer_item(id: &str, text: &str) -> Value {
 async fn build_streaming_wake_mode(server: &StreamingSseServer) -> Arc<CodexThread> {
     test_codex()
         .with_model("gpt-5.4")
+        .with_session_source(SessionSource::Cli)
         .with_config(|config| configure_multi_agent(config, Some(AgentPolling::Disabled)))
         .build_with_streaming_server(server)
         .await
@@ -934,6 +956,7 @@ async fn wake_mode_approval_abort_holds_reports_until_next_user_message() {
         start_streaming_sse_server(vec![first, final_answer_chunks("resp-2", "summary")]).await;
     let codex = test_codex()
         .with_model("gpt-5.4")
+        .with_session_source(SessionSource::Cli)
         .with_config(|config| {
             configure_multi_agent(config, Some(AgentPolling::Disabled));
             config.permissions.approval_policy =
@@ -997,6 +1020,7 @@ async fn wake_mode_blocked_prompt_keeps_held_report() -> Result<()> {
     let server = start_mock_server().await;
     let test = test_codex()
         .with_model("koffing")
+        .with_session_source(SessionSource::Cli)
         .with_pre_build_hook(|home| {
             let script_path = home.join("block_prompt_hook.py");
             std::fs::write(
@@ -1059,6 +1083,7 @@ async fn wake_mode_blocked_prompt_keeps_held_report() -> Result<()> {
 async fn build_compacting_wake_mode(server: &StreamingSseServer) -> Arc<CodexThread> {
     test_codex()
         .with_model("gpt-5.4")
+        .with_session_source(SessionSource::Cli)
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             configure_multi_agent(config, Some(AgentPolling::Disabled));

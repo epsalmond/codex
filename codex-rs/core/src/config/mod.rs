@@ -1616,10 +1616,10 @@ impl Config {
     }
 
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
-        if self.features.enabled(Feature::MultiAgentV2) {
-            Some(MultiAgentVersion::V2)
-        } else if !self.agents_enabled {
+        if !self.agents_enabled {
             Some(MultiAgentVersion::Disabled)
+        } else if self.features.enabled(Feature::MultiAgentV2) {
+            Some(MultiAgentVersion::V2)
         } else {
             None
         }

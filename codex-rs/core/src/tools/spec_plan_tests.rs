@@ -2934,6 +2934,23 @@ async fn multi_agent_v2_can_disable_wait_agent() {
     assert!(plan.can_manage_children);
 }
 
+#[tokio::test]
+async fn agents_disabled_hides_multi_agent_tools_from_v2_model() {
+    let plan = probe(|turn| {
+        update_config(turn, |config| {
+            config.agents_enabled = false;
+        });
+        turn.multi_agent_version = turn
+            .config
+            .multi_agent_version_for_model(Some(MultiAgentVersion::V2));
+    })
+    .await;
+
+    plan.assert_visible_lacks(&["collaboration"]);
+    plan.assert_registered_lacks(&["collaboration.spawn_agent", "collaboration.wait_agent"]);
+    assert!(!plan.can_manage_children);
+}
+
 fn collaboration_tool_description(plan: &ToolPlanProbe, tool_name: &str) -> String {
     let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
         panic!("expected the collaboration namespace");

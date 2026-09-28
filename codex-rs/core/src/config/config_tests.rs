@@ -12022,6 +12022,34 @@ fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
     }
 }
 
+#[tokio::test]
+async fn explicit_agents_disabled_overrides_default_multi_agent_v2() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        "[agents]\nenabled = false\n",
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(!config.agents_enabled);
+    assert!(config.features.enabled(Feature::MultiAgentV2));
+    assert_eq!(
+        config.multi_agent_version_override(),
+        Some(MultiAgentVersion::Disabled)
+    );
+    assert_eq!(
+        config.multi_agent_version_for_model(Some(MultiAgentVersion::V2)),
+        MultiAgentVersion::Disabled
+    );
+
+    Ok(())
+}
+
 #[test]
 fn multi_agent_v2_default_usage_hints_use_configured_thread_cap() {
     let config_toml = toml::from_str(
