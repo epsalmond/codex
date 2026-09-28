@@ -81,6 +81,7 @@ export type TraceCoverage = {
   responseCountMismatchThreadCount: number;
   tokenTotalsMismatchThreadCount: number;
   noUsageThreadCount: number;
+  mixedActionResponseCount: number;
   unattributedResponseCount: number;
   skippedRolloutCount: number;
 };
@@ -1033,18 +1034,24 @@ export function safeMeasurement(
     if (expected.modelRequests === 0 || observed.totals.responseCount === 0) noUsageThreadCount += 1;
     if (
       responseCountMatches && totalsMatch && expected.modelRequests > 0 &&
-      observed.byCategory.unknown_no_attribution.responseCount === 0
+      observed.byCategory.unknown_no_attribution.responseCount === 0 &&
+      observed.byCategory.wait_containing_mixed_calls.responseCount === 0
     ) completeThreadCount += 1;
   }
   const unattributedResponseCount = sessionThreads.reduce(
     (sum, thread) => sum + thread.byCategory.unknown_no_attribution.responseCount,
     0,
   );
+  const mixedActionResponseCount = sessionThreads.reduce(
+    (sum, thread) => sum + thread.byCategory.wait_containing_mixed_calls.responseCount,
+    0,
+  );
   const coverage: TraceCoverage = {
     complete: !runtimeThreadCountMismatch && session.descendants.length === outcome.childThreads &&
       missingThreadCount === 0 && unexpectedThreadCount === 0 &&
       responseCountMismatchThreadCount === 0 && tokenTotalsMismatchThreadCount === 0 &&
-      noUsageThreadCount === 0 && unattributedResponseCount === 0 && scan.skippedRolloutCount === 0,
+      noUsageThreadCount === 0 && mixedActionResponseCount === 0 &&
+      unattributedResponseCount === 0 && scan.skippedRolloutCount === 0,
     expectedThreadCount: expectedIds.length,
     observedThreadCount: sessionThreads.length,
     expectedDescendantCount: outcome.childThreads,
@@ -1056,6 +1063,7 @@ export function safeMeasurement(
     responseCountMismatchThreadCount,
     tokenTotalsMismatchThreadCount,
     noUsageThreadCount,
+    mixedActionResponseCount,
     unattributedResponseCount,
     skippedRolloutCount: scan.skippedRolloutCount,
   };

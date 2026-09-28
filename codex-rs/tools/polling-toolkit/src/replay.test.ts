@@ -171,8 +171,8 @@ test("requires complete root and descendant rollout coverage before accepting a 
     totals,
     byCategory: categories(category, totals),
   });
-  const scan = (children: ReturnType<typeof thread>[], skippedRolloutCount = 0) => {
-    const root = thread(rootId, null, "pure_wait_agent", usage(10));
+  const scan = (children: ReturnType<typeof thread>[], skippedRolloutCount = 0, rootCategory = "pure_wait_agent") => {
+    const root = thread(rootId, null, rootCategory, usage(10));
     const all = [root, ...children];
     const byCategory = categories("none", usage(0, 0));
     for (const item of all) {
@@ -246,6 +246,20 @@ test("requires complete root and descendant rollout coverage before accepting a 
   );
   assert.equal(unknown?.coverage.complete, false);
   assert.equal(unknown?.coverage.unattributedResponseCount, 1);
+
+  const mixedRoot = safeMeasurement(
+    scan([thread(childId, rootId, "pure_wait_agent", usage(20))], 0, "wait_containing_mixed_calls"),
+    expected([childId]),
+  );
+  assert.equal(mixedRoot?.coverage.complete, false);
+  assert.equal(mixedRoot?.coverage.mixedActionResponseCount, 1);
+
+  const mixedChild = safeMeasurement(
+    scan([thread(childId, rootId, "wait_containing_mixed_calls", usage(20))]),
+    expected([childId]),
+  );
+  assert.equal(mixedChild?.coverage.complete, false);
+  assert.equal(mixedChild?.coverage.mixedActionResponseCount, 1);
 });
 
 test("scanner-skipped malformed child rollout invalidates measured coverage", async () => {
@@ -325,6 +339,7 @@ test("paired comparison reports root and descendant reductions separately", () =
       responseCountMismatchThreadCount: 0,
       tokenTotalsMismatchThreadCount: 0,
       noUsageThreadCount: 0,
+      mixedActionResponseCount: 0,
       unattributedResponseCount: 0,
       skippedRolloutCount: 0,
     },
