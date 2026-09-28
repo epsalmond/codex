@@ -6,6 +6,25 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AgentPolling": {
+      "description": "Controls whether a MultiAgentV2 root polls `wait_agent` for child reports.",
+      "oneOf": [
+        {
+          "description": "Wake an interactive root when a direct child reports back.",
+          "enum": [
+            "disabled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Keep the root's `wait_agent` polling behavior.",
+          "enum": [
+            "enabled"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "AgentRoleToml": {
       "additionalProperties": false,
       "properties": {
@@ -2726,6 +2745,14 @@
     "MultiAgentV2ConfigToml": {
       "additionalProperties": false,
       "properties": {
+        "agent_polling": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentPolling"
+            }
+          ],
+          "description": "Root child-report polling mode. Defaults to `disabled`; Exec and child sessions still poll."
+        },
         "default_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000.0,
@@ -2787,10 +2814,6 @@
         },
         "usage_hint_text": {
           "type": "string"
-        },
-        "wait_agent_enabled": {
-          "description": "Expose the multi-agent v2 `wait_agent` tool.",
-          "type": "boolean"
         }
       },
       "type": "object"

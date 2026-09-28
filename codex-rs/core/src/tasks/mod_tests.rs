@@ -8,7 +8,7 @@ use super::emit_turn_network_proxy_metric;
 use crate::session::TurnInput;
 use crate::session::multi_agents::ChildReportMode;
 use crate::session::session::Session;
-use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_session_source_and_rx;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
@@ -534,18 +534,29 @@ async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
         mode: ChildReportMode,
         unread: [InterAgentCommunication; 2],
     ) -> (Vec<TurnInput>, usize) {
-        let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
-            CodexAuth::from_api_key("Test API Key"),
-            Vec::new(),
-            |config| {
-                config
-                    .features
-                    .enable(Feature::MultiAgentV2)
-                    .expect("test config should allow feature update");
-                config.multi_agent_v2.wait_agent_enabled = mode == ChildReportMode::WaitAgent;
-            },
-        )
-        .await;
+        let session_source = if mode == ChildReportMode::WakeOnReport {
+            SessionSource::Cli
+        } else {
+            SessionSource::Exec
+        };
+        let (session, turn_context, rx) =
+            make_session_and_context_with_auth_and_config_and_session_source_and_rx(
+                CodexAuth::from_api_key("Test API Key"),
+                Vec::new(),
+                session_source,
+                |config| {
+                    config
+                        .features
+                        .enable(Feature::MultiAgentV2)
+                        .expect("test config should allow feature update");
+                    config.multi_agent_v2.agent_polling = if mode == ChildReportMode::WaitAgent {
+                        codex_features::AgentPolling::Enabled
+                    } else {
+                        codex_features::AgentPolling::Disabled
+                    };
+                },
+            )
+            .await;
         for communication in unread {
             session
                 .input_queue

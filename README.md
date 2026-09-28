@@ -109,26 +109,31 @@ can download and reinstall the newest `.deb`.
 Run `codex --version` (or `codex-shake --version`) to see both the upstream
 Codex version and the Shake feature version and exact fork release tag. `-V`
 continues to show only the upstream Codex version. Binaries reporting Shake
-feature version `0.3.0` include opt-in event-driven root wakeups when subagents
-finish. The unpublished `0.2` milestone covered subagent shaking and compaction
-plus intra-turn shaking. Version `0.3.0` is the honorary bump that recognizes
-both milestones.
+feature version `0.3.0` include event-driven wakeups for interactive CLI and
+app-server MultiAgentV2 roots by default. Exec sessions and child sessions
+still poll for child reports. The unpublished `0.2` milestone covered subagent shaking and
+compaction plus intra-turn shaking. Version `0.3.0` is the honorary bump that
+recognizes both milestones.
 
-The release tag is the reliable feature identity. An older binary can accept
-`wait_agent_enabled = false` and remove `wait_agent` from the root instructions
-without waking the root when a child finishes.
+The release tag is the reliable feature identity. Older binaries do not
+recognize the `agent_polling` string setting.
 
 ### Wake mode for multi-agent orchestrators
 
-In wake mode, a MultiAgentV2 root sleeps until a child subagent reports back,
-instead of polling `wait_agent` in a loop. Turn it on with:
+In wake mode, an interactive MultiAgentV2 root sleeps until a child subagent
+reports back instead of polling `wait_agent` in a loop. MultiAgentV2 is enabled
+by default, and `agent_polling` defaults to `"disabled"`, so interactive CLI
+and app-server roots use wake mode without extra configuration. Exec sessions and all child
+sessions still use `wait_agent` in this stage.
+
+To keep polling in an interactive root, set:
 
 ```toml
 [features.multi_agent_v2]
-wait_agent_enabled = false
+agent_polling = "enabled"
 ```
 
-or for a single run, `codex -c features.multi_agent_v2.wait_agent_enabled=false`.
+or for a single run, `codex -c 'features.multi_agent_v2.agent_polling="enabled"'`.
 
 Esc pauses wakeups and holds any child results that arrive; the TUI shows "N
 child results queued — delivered with your next message", and they are
@@ -136,8 +141,9 @@ delivered together with the next user message. Subagents keep `wait_agent`
 regardless of this setting, and a nested parent (a subagent with its own
 children) does not wake yet; that is a later stage.
 
-This is off by default. With it off, behavior matches upstream. See the
-[release notes](releases/2026-09-26-wake-mode.md) for details and measurements.
+For the separate Shake and compaction cap on child context, see [subagent
+context reduction](codex-rs/docs/shake.md#subagents). See the [release
+notes](releases/2026-09-26-wake-mode.md) for details and measurements.
 
 ### Subagents on a different model provider
 

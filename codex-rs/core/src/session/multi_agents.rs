@@ -2,6 +2,7 @@ use crate::agent::types::ResolvedMultiAgentV2UsageHints;
 use crate::config::MultiAgentV2Config;
 use crate::context::MultiAgentRoleInstructions;
 use crate::session::step_context::StepContext;
+use codex_features::AgentPolling;
 use codex_prompts::ResolvedMessage;
 use codex_prompts::ResolvedModelMessages;
 use codex_prompts::ResolvedMultiAgentMessages;
@@ -29,7 +30,12 @@ pub enum ChildReportMode {
 
 impl ChildReportMode {
     pub(crate) fn for_thread(config: &MultiAgentV2Config, session_source: &SessionSource) -> Self {
-        if config.wait_agent_enabled || session_source.is_non_root_agent() {
+        // `codex exec` exits when the root turn completes, even if children are still running.
+        // Keep polling there until the exec lifecycle can remain alive for child reports.
+        if config.agent_polling == AgentPolling::Enabled
+            || session_source.is_non_root_agent()
+            || matches!(session_source, SessionSource::Exec)
+        {
             Self::WaitAgent
         } else {
             Self::WakeOnReport
@@ -59,10 +65,15 @@ pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRo
 
     let multi_agent_messages =
         ResolvedModelMessages::from_model(&step_context.settings.model_info).multi_agent();
-    let snapshot = resolve_usage_hints(
+    let root_polling_enabled = ChildReportMode::for_thread(
+        &turn_context.config.multi_agent_v2,
+        &turn_context.session_source,
+    ) == ChildReportMode::WaitAgent;
+    let snapshot = resolve_usage_hints_with_root_polling(
         &turn_context.config.multi_agent_v2,
         multi_agent_messages,
         !turn_context.config.update_plan_enabled && turn_context.config.model_catalog.is_none(),
+        root_polling_enabled,
     );
     match &turn_context.session_source {
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => snapshot.subagent,
@@ -81,6 +92,20 @@ pub(crate) fn resolve_usage_hints(
     multi_agent_messages: ResolvedMultiAgentMessages<'_>,
     omit_update_plan_instructions: bool,
 ) -> ResolvedMultiAgentV2UsageHints {
+    resolve_usage_hints_with_root_polling(
+        config,
+        multi_agent_messages,
+        omit_update_plan_instructions,
+        config.agent_polling == AgentPolling::Enabled,
+    )
+}
+
+pub(crate) fn resolve_usage_hints_with_root_polling(
+    config: &MultiAgentV2Config,
+    multi_agent_messages: ResolvedMultiAgentMessages<'_>,
+    omit_update_plan_instructions: bool,
+    root_polling_enabled: bool,
+) -> ResolvedMultiAgentV2UsageHints {
     let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>, is_root: bool| {
         // Configured roles take precedence; empty configured or catalog roles suppress fallback.
         if let Some(configured) = configured {
@@ -97,7 +122,7 @@ pub(crate) fn resolve_usage_hints(
             marked: message.catalog_override().is_some(),
             omit_update_plan_instructions,
             max_concurrency: config.max_concurrent_threads_per_session,
-            wait_agent_enabled: config.wait_agent_enabled,
+            root_agent_polling_enabled: root_polling_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
             is_root,
         })

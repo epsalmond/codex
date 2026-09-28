@@ -6045,6 +6045,12 @@ async fn responses_metadata_uses_selected_harness_analytics_client() {
 
 // todo: use online model info
 pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+    make_session_and_context_with_session_source(SessionSource::Exec).await
+}
+
+pub(crate) async fn make_session_and_context_with_session_source(
+    session_source: SessionSource,
+) -> (Session, TurnContext) {
     let (tx_event, _rx_event) = async_channel::unbounded();
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
@@ -6108,7 +6114,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         app_server_client_name: None,
         app_server_client_version: None,
         trusted_guardian_reviewer: false,
-        session_source: SessionSource::Exec,
+        session_source,
         history_mode: Default::default(),
         forked_from_thread_id: None,
         parent_thread_id: None,
@@ -8280,11 +8286,34 @@ pub(crate) async fn make_session_and_context_with_auth_and_config_and_rx<F>(
 where
     F: FnOnce(&mut Config),
 {
+    make_session_and_context_with_auth_and_config_and_session_source_and_rx(
+        auth,
+        dynamic_tools,
+        SessionSource::Exec,
+        configure_config,
+    )
+    .await
+}
+
+pub(crate) async fn make_session_and_context_with_auth_and_config_and_session_source_and_rx<F>(
+    auth: CodexAuth,
+    dynamic_tools: Vec<DynamicToolSpec>,
+    session_source: SessionSource,
+    configure_config: F,
+) -> (
+    Arc<Session>,
+    Arc<TurnContext>,
+    async_channel::Receiver<Event>,
+)
+where
+    F: FnOnce(&mut Config),
+{
     let codex_home = tempfile::tempdir().expect("create temp dir");
     make_session_and_context_with_auth_config_home_and_rx(
         auth,
         dynamic_tools,
         codex_home.path(),
+        session_source,
         configure_config,
     )
     .await
@@ -8294,6 +8323,7 @@ async fn make_session_and_context_with_auth_config_home_and_rx<F>(
     auth: CodexAuth,
     dynamic_tools: Vec<DynamicToolSpec>,
     codex_home: &Path,
+    session_source: SessionSource,
     configure_config: F,
 ) -> (
     Arc<Session>,
@@ -8367,7 +8397,7 @@ where
         app_server_client_name: None,
         app_server_client_version: None,
         trusted_guardian_reviewer: false,
-        session_source: SessionSource::Exec,
+        session_source,
         history_mode: Default::default(),
         forked_from_thread_id: None,
         parent_thread_id: None,
@@ -9748,6 +9778,8 @@ async fn make_multi_agent_v2_usage_hint_test_session(
         |config| {
             if enable_multi_agent_v2 {
                 let _ = config.features.enable(Feature::MultiAgentV2);
+            } else {
+                let _ = config.features.disable(Feature::MultiAgentV2);
             }
             config.multi_agent_v2.root_agent_usage_hint_text = Some("Root guidance.".to_string());
             config.multi_agent_v2.subagent_usage_hint_text = Some("Subagent guidance.".to_string());

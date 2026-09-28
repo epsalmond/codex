@@ -250,6 +250,17 @@ where
     Ok(feature)
 }
 
+/// Controls whether a MultiAgentV2 root polls `wait_agent` for child reports.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPolling {
+    /// Wake an interactive root when a direct child reports back.
+    #[default]
+    Disabled,
+    /// Keep the root's `wait_agent` polling behavior.
+    Enabled,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MultiAgentV2ConfigToml {
@@ -290,9 +301,9 @@ pub struct MultiAgentV2ConfigToml {
     /// corresponding guidance to root and subagent usage hints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expose_spawn_agent_model_overrides: Option<bool>,
-    /// Expose the multi-agent v2 `wait_agent` tool.
+    /// Root child-report polling mode. Defaults to `disabled`; Exec and child sessions still poll.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wait_agent_enabled: Option<bool>,
+    pub agent_polling: Option<AgentPolling>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub non_code_mode_only: Option<bool>,
 }

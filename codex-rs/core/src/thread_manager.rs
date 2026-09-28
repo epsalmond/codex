@@ -42,6 +42,7 @@ use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_extension_api::UserInstructionsProvider;
 use codex_extension_api::empty_extension_registry;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -507,6 +508,33 @@ pub fn local_agent_graph_store_from_state_db(
     state_db.map(|state_db| {
         Arc::new(LocalAgentGraphStore::new(Arc::clone(state_db))) as Arc<dyn AgentGraphStore>
     })
+}
+
+fn apply_exec_resume_polling_fallback(
+    current_session_source: &SessionSource,
+    initial_history: &InitialHistory,
+    config: &mut Config,
+) {
+    if !matches!(current_session_source, SessionSource::Exec)
+        || !config.features.enabled(Feature::MultiAgentV2)
+    {
+        return;
+    }
+
+    let resumed_session_source = initial_history
+        .get_resumed_session_sources()
+        .map(|(session_source, _)| session_source)
+        .unwrap_or_else(|| current_session_source.clone());
+    if matches!(
+        resumed_session_source,
+        SessionSource::Internal(_) | SessionSource::SubAgent(_)
+    ) {
+        return;
+    }
+
+    // The exec process exits after a root turn, so it must retain polling until exec can
+    // remain alive for child reports. Keep this runtime override out of stored user config.
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
 }
 
 impl ThreadManager {
@@ -1242,12 +1270,17 @@ impl ThreadManager {
     #[instrument(level = "trace", skip_all)]
     pub async fn resume_thread_with_history(
         &self,
-        config: Config,
+        mut config: Config,
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<NewThread> {
+        apply_exec_resume_polling_fallback(
+            &self.state.session_source,
+            &initial_history,
+            &mut config,
+        );
         let agent_control = self.agent_control_for_config(&config);
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
@@ -1287,14 +1320,19 @@ impl ThreadManager {
 
     pub(crate) async fn resume_thread_from_rollout_with_user_shell_override_for_tests(
         &self,
-        config: Config,
+        mut config: Config,
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
         user_shell_override: crate::shell::Shell,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
+        apply_exec_resume_polling_fallback(
+            &self.state.session_source,
+            &initial_history,
+            &mut config,
+        );
+        let agent_control = self.agent_control_for_config(&config);
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));

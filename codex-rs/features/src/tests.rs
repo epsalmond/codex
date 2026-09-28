@@ -33,6 +33,12 @@ fn under_development_features_are_disabled_by_default() {
 }
 
 #[test]
+fn multi_agent_v2_is_enabled_by_default() {
+    assert!(Feature::MultiAgentV2.default_enabled());
+    assert!(Features::with_defaults().enabled(Feature::MultiAgentV2));
+}
+
+#[test]
 fn tool_registry_config_is_not_a_feature_toggle() {
     let features: FeaturesToml = toml::from_str(
         "[tool_registry]\nerror_on_tool_collisions = true\nturn_metadata_includes_tool_info = true\n",
@@ -735,7 +741,7 @@ multi_agent_mode_hint_text = "Custom mode guidance."
 tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 expose_spawn_agent_model_overrides = true
-wait_agent_enabled = false
+agent_polling = "disabled"
 non_code_mode_only = true
 "#,
     )
@@ -762,10 +768,29 @@ non_code_mode_only = true
             tool_namespace: Some("agents".to_string()),
             hide_spawn_agent_metadata: Some(true),
             expose_spawn_agent_model_overrides: Some(true),
-            wait_agent_enabled: Some(false),
+            agent_polling: Some(crate::AgentPolling::Disabled),
             non_code_mode_only: Some(true),
         }))
     );
+}
+
+#[test]
+fn multi_agent_v2_agent_polling_deserializes_named_modes() {
+    for (mode, expected) in [
+        ("disabled", crate::AgentPolling::Disabled),
+        ("enabled", crate::AgentPolling::Enabled),
+    ] {
+        let features: FeaturesToml =
+            toml::from_str(&format!("[multi_agent_v2]\nagent_polling = \"{mode}\"\n",))
+                .expect("agent_polling should accept its documented string modes");
+
+        let Some(crate::FeatureToml::Config(config)) = features.multi_agent_v2 else {
+            panic!("multi_agent_v2 table should deserialize as configuration");
+        };
+        assert_eq!(config.agent_polling, Some(expected));
+    }
+
+    assert!(toml::from_str::<FeaturesToml>("[multi_agent_v2]\nagent_polling = 'poll'\n").is_err());
 }
 
 #[test]

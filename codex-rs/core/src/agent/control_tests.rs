@@ -2437,7 +2437,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
         marked: true,
         omit_update_plan_instructions: false,
         max_concurrency: 2,
-        wait_agent_enabled: false,
+        root_agent_polling_enabled: false,
         expose_model_overrides: false,
         is_root: true,
     };
@@ -3940,20 +3940,20 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
 
 /// Stage 1 wake mode: a completion sent to the root is marked as a wake whatever the child's
 /// config says; the root decides on receipt. Non-root parents keep `wait_agent`.
-#[test_case::test_case("/root", false, true; "root parent with wake mode child")]
-#[test_case::test_case("/root", true, true; "root parent with wait_agent child")]
-#[test_case::test_case("/root/worker_a", false, false; "non-root parent")]
+#[test_case::test_case("/root", codex_features::AgentPolling::Disabled, true; "root parent with wake mode child")]
+#[test_case::test_case("/root", codex_features::AgentPolling::Enabled, true; "root parent with polling child")]
+#[test_case::test_case("/root/worker_a", codex_features::AgentPolling::Disabled, false; "non-root parent")]
 #[tokio::test]
 async fn multi_agent_v2_completion_marks_only_root_parent_wake(
     parent_path: &str,
-    wait_agent_enabled: bool,
+    agent_polling: codex_features::AgentPolling,
     expected_trigger_turn: bool,
 ) {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let mut child_config = harness.config.clone();
     let _ = child_config.features.enable(Feature::MultiAgentV2);
-    child_config.multi_agent_v2.wait_agent_enabled = wait_agent_enabled;
+    child_config.multi_agent_v2.agent_polling = agent_polling;
     let parent_path = AgentPath::try_from(parent_path).expect("parent path");
     let child_path = parent_path.join("child").expect("child path");
     // V2 children report through their own session, not the completion watcher.
