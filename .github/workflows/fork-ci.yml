@@ -33,6 +33,10 @@ jobs:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
       # Smaller target dir and cache on standard runners (as upstream CI).
       CARGO_INCREMENTAL: "0"
+      # Far smaller than the workspace's `debug = "limited"` but keeps
+      # file:line in backtraces. The test profile inherits dev (no explicit
+      # [profile.test] in codex-rs/Cargo.toml), so this covers test binaries.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +54,21 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      # The standard runner's root disk fills while linking the workspace test
+      # binaries (ld SIGBUS). Drop preinstalled toolchains this job never uses.
+      - name: Free runner disk space
+        if: runner.os == 'Linux'
+        working-directory: .
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          if command -v docker >/dev/null 2>&1; then
+            sudo docker image prune --all --force
+          fi
+          df -h /
 
       # DotSlash, just, unprivileged userns for sandbox tests, CODEX_REPO_ROOT.
       - uses: ./.github/actions/setup-ci
@@ -140,8 +159,20 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --exclude codex-voice-host --tests -- -D warnings
 
+      # Clippy --tests already compiles the whole workspace, so only build the
+      # binaries that tests from other packages resolve at runtime via
+      # cargo_bin (codex; on Linux also the sandbox helper and the zsh-fork
+      # tests' codex-execve-wrapper). nextest builds the rest of the bins.
       - name: cargo build
-        run: cargo build --workspace --exclude codex-voice-host --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bins=(--bin codex)
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            bins+=(--bin codex-linux-sandbox --bin codex-execve-wrapper)
+          fi
+          cargo build --target ${{ matrix.target }} "${bins[@]}"
+          df -h /
 
       # Mirrors `just test` / rust-ci-full's nextest env.
       - name: cargo nextest
@@ -150,4 +181,10 @@ jobs:
           RUST_BACKTRACE: 1
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
-        run: cargo nextest run --workspace --exclude codex-voice-host --no-fail-fast
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          cargo nextest run --workspace --exclude codex-voice-host --no-fail-fast || status=$?
+          df -h /
+          exit "$status"
