@@ -72,6 +72,14 @@ impl ChatWidget {
             ServerNotification::ThreadSettingsUpdated(notification) => {
                 self.on_thread_settings_updated(notification);
             }
+            ServerNotification::ThreadWakeupsUpdated(notification) => {
+                let queued_results = if notification.paused {
+                    notification.queued_results
+                } else {
+                    0
+                };
+                self.bottom_pane.set_queued_agent_results(queued_results);
+            }
             ServerNotification::TurnStarted(notification) => {
                 if from_replay {
                     self.restore_realtime_transcripts_before_turn(&notification.turn.id);

@@ -4,6 +4,8 @@ use crate::ThreadManager;
 use crate::agent::child_config::apply_spawn_agent_service_tier;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::child_config::build_agent_spawn_config;
+use crate::agent::types::ContextReductionOutcome;
+use crate::agent::types::ContextReductionRecord;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::PermissionProfileSnapshot;
@@ -155,7 +157,6 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
     tokio::fs::write(
         &role_config_path,
         r#"model = "gpt-5-role-override"
-model_provider = "ollama"
 model_reasoning_effort = "minimal"
 "#,
     )
@@ -216,6 +217,7 @@ struct ListAgentsResult {
 struct ListedAgentResult {
     agent_name: String,
     agent_status: serde_json::Value,
+    context: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -411,6 +413,66 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
         ))
         .await
         .expect("fork_turns=all should apply agent_type overrides");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_forked_spawn_rejects_provider_switching_role() {
+    for fork_turns in ["all", "1"] {
+        let (mut session, mut turn) = make_session_and_context().await;
+        tokio::fs::create_dir_all(&turn.config.codex_home)
+            .await
+            .expect("codex home should be created");
+        let role_config_path = turn.config.codex_home.as_path().join("local-role.toml");
+        tokio::fs::write(&role_config_path, "model_provider = \"ollama\"\n")
+            .await
+            .expect("role config should be written");
+        let mut config = (*turn.config).clone();
+        config.agent_roles.insert(
+            "local".to_string(),
+            AgentRoleConfig {
+                description: Some("Runs on another provider".to_string()),
+                config_file: Some(role_config_path),
+                nickname_candidates: None,
+            },
+        );
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        turn.config = Arc::new(config);
+        turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+        let manager = thread_manager();
+        let root = manager
+            .start_thread(StartThreadOptions::new((*turn.config).clone()))
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.thread_id = root.thread_id;
+
+        let err = SpawnAgentHandlerV2::default()
+            .handle(invocation(
+                Arc::new(session),
+                Arc::new(turn),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo",
+                    "task_name": "local_fork",
+                    "agent_type": "local",
+                    "fork_turns": fork_turns
+                })),
+            ))
+            .await
+            .err()
+            .expect("forked history should reject a provider-switching role");
+
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "agent_type 'local' switches model_provider to `ollama` and cannot be used with a forked history; spawn it with fork_turns set to \"none\"".to_string(),
+            ),
+            "fork_turns={fork_turns}"
+        );
+    }
 }
 
 fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse {
@@ -1412,8 +1474,17 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
             }),
         )
         .await;
+    child_thread
+        .session
+        .record_context_reduction(ContextReductionRecord {
+            at: 1_700_000_000,
+            before_tokens: 300_000,
+            after_tokens: Some(40_000),
+            outcome: ContextReductionOutcome::Shaken,
+        })
+        .await;
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -1438,6 +1509,26 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .find(|agent| agent.agent_name == "/root/worker")
         .expect("worker agent should be listed");
     assert_eq!(worker.agent_status, json!({"completed": "done"}));
+    // The child's token count depends on its startup history, so only its type is pinned.
+    let mut context = worker.context.clone();
+    let active_tokens = context
+        .as_object_mut()
+        .and_then(|context| context.remove("active_tokens"));
+    assert_eq!(
+        (active_tokens.is_some_and(|tokens| tokens.is_i64()), context),
+        (
+            true,
+            json!({
+                "basis": "estimate",
+                "last_reduction": {
+                    "at": 1_700_000_000,
+                    "before_tokens": 300_000,
+                    "after_tokens": 40_000,
+                    "outcome": "shaken"
+                }
+            })
+        ),
+    );
     assert_eq!(success, Some(true));
 }
 
@@ -1506,7 +1597,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_role: None,
     });
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -1568,7 +1659,7 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
         .await
         .expect("close_agent should succeed");
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -1639,7 +1730,7 @@ async fn multi_agent_v2_list_agents_keeps_interrupted_resident_agents() {
         .expect("interrupt_agent should succeed");
     let _ = expect_text_output(interrupt_output);
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -1915,7 +2006,9 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                                 if communication.author == worker_path
                                     && communication.recipient == AgentPath::root()
                                     && communication.other_recipients.is_empty()
-                                    && !communication.trigger_turn =>
+                                    // Completions to the root are marked as wakes; the root
+                                    // decides on receipt.
+                                    && communication.trigger_turn =>
                             {
                                 Some(communication.content)
                             }
@@ -3923,7 +4016,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
         .expect("closed children should load");
     assert_eq!(closed_children, Vec::<ThreadId>::new());
 
-    let output = ListAgentsHandlerV2
+    let output = ListAgentsHandlerV2::default()
         .handle(invocation(
             session.clone(),
             turn.clone(),
@@ -4532,6 +4625,8 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = Some(ReasoningEffort::High);
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+    expected.model_auto_compact_token_limit = Some(272_000);
+    expected.auto_shake.max_threshold_tokens = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {
@@ -4576,8 +4671,10 @@ async fn build_agent_spawn_config_inherits_auto_shake() {
                 cache_ttl: Some(codex_config::config_toml::AutoShakeDurationToml(120)),
             },
         )]),
+        max_threshold_tokens: None,
     };
-    let expected = parent.auto_shake.clone();
+    let mut expected = parent.auto_shake.clone();
+    expected.max_threshold_tokens = Some(272_000);
     let base_instructions = BaseInstructions {
         text: "base".to_string(),
         provenance: None,
@@ -4630,6 +4727,8 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort().cloned();
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
+    expected.model_auto_compact_token_limit = Some(272_000);
+    expected.auto_shake.max_threshold_tokens = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {

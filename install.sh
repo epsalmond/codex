@@ -210,6 +210,11 @@ CODEX_SHAKE_REPO=$repo_q
 CODEX_SHAKE_HOME=$home_q
 CODEX_SHAKE_BIN_DIR=$bin_q
 export CODEX_SHAKE_REPO CODEX_SHAKE_HOME CODEX_SHAKE_BIN_DIR
+# Work around https://github.com/openai/codex/issues/48068 for Ghostty.
+if [ "\${TERM:-}" = xterm-ghostty ] && [ -z "\${COLORTERM:-}" ]; then
+    COLORTERM=truecolor
+fi
+export COLORTERM
 dir=$(shell_quote "$home_dir/current")
 PATH="\$dir:\$PATH" exec "\$dir/codex" "\$@"
 EOF

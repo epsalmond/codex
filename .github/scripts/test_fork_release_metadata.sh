@@ -29,7 +29,6 @@ git -C "$fixture" commit -q -m 'upstream change'
 upstream_tip=$(git -C "$fixture" rev-parse HEAD)
 git -C "$fixture" switch -q -c integration-merge eric/local-features
 git -C "$fixture" merge -q --no-ff --no-edit -m 'Integrate upstream main' upstream/main
-integration_merge_sha=$(git -C "$fixture" rev-parse HEAD)
 git -C "$fixture" switch -q eric/local-features
 git -C "$fixture" merge -q --no-ff --no-edit -m 'GitHub merge pull request' integration-merge
 merge_sha=$(git -C "$fixture" rev-parse HEAD)
@@ -47,8 +46,19 @@ git -C "$fixture" push -q "$upstream_remote" \
   refs/tags/rust-v2.0.0:refs/tags/rust-v2.0.0
 git -C "$fixture" tag -d rust-v9.9.9-alpha.1 rust-v2.0.0 >/dev/null
 
-# A later local head proves preparation uses the event SHA, not a live branch.
+# Recovery releases use a direct two-parent merge whose parent order is the
+# fork branch first and the exact stable upstream commit second.
+git -C "$fixture" switch -q -c exact-upstream-merge "$fork_tip"
+git -C "$fixture" merge -q --no-ff --no-edit -m 'Merge exact upstream tag' upstream/main
+dispatch_sha=$(git -C "$fixture" rev-parse HEAD)
+git -C "$fixture" switch -q eric/local-features
+git -C "$fixture" merge -q --no-ff --no-edit -m 'Record direct upstream merge' exact-upstream-merge
 git -C "$fixture" commit --allow-empty -q -m 'later local head'
+fork_remote="$fixture/fork.git"
+git init --bare -q "$fork_remote"
+git -C "$fixture" push -q "$fork_remote" \
+  eric/local-features:refs/heads/eric/local-features
+
 event_output="$fixture/event-output"
 bash "$metadata_script" \
   --repo-root "$fixture" \
@@ -57,6 +67,10 @@ bash "$metadata_script" \
   --event-sha "$merge_sha" \
   --event-before "$fork_tip" \
   --upstream-url "$upstream_remote" \
+  --fork-url "$fork_remote" \
+  --upstream-tag "" \
+  --upstream-sha "" \
+  --fork-sha "" \
   --output "$event_output"
 
 grep -Fxq "release_sha=$merge_sha" "$event_output"
@@ -71,31 +85,62 @@ producer_sha=$(git -C "$fixture" rev-parse --short=12 "$merge_sha")
 [[ "$release_tag" =~ ^local-features-v0\.154\.0-main-r[0-9]{14}\.[0-9a-f]{28}$ ]]
 [[ "${release_tag##*.}" == "$source_sequence_hex$producer_sha" ]]
 
+dispatch_output="$fixture/dispatch-output"
+bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name workflow_dispatch \
+  --event-ref refs/heads/eric/local-features \
+  --event-sha "$dispatch_sha" \
+  --upstream-url "$upstream_remote" \
+  --fork-url "$fork_remote" \
+  --upstream-tag rust-v2.0.0 \
+  --upstream-sha "$upstream_tip" \
+  --fork-sha "$fork_tip" \
+  --output "$dispatch_output"
+grep -Fxq "release_sha=$dispatch_sha" "$dispatch_output"
+grep -Fxq 'source_kind=branch-merge' "$dispatch_output"
+if bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name workflow_dispatch \
+  --event-ref refs/heads/eric/local-features \
+  --event-sha "$merge_sha" \
+  --upstream-url "$upstream_remote" \
+  --fork-url "$fork_remote" \
+  --upstream-tag rust-v2.0.0 \
+  --upstream-sha "$upstream_tip" \
+  --fork-sha "$fork_tip" \
+  --output "$fixture/wrong-parents-output"; then
+  echo "expected workflow dispatch to reject a merge with different parents" >&2
+  exit 1
+fi
+if bash "$metadata_script" \
+  --repo-root "$fixture" \
+  --event-name workflow_dispatch \
+  --event-ref refs/heads/eric/local-features \
+  --event-sha "$dispatch_sha" \
+  --upstream-url "$upstream_remote" \
+  --fork-url "$fork_remote" \
+  --upstream-tag rust-v1.2.3 \
+  --upstream-sha "$upstream_tip" \
+  --fork-sha "$fork_tip" \
+  --output "$fixture/wrong-tag-output"; then
+  echo "expected workflow dispatch to reject a mismatched upstream tag" >&2
+  exit 1
+fi
+
 grep -Fq 'bash .github/scripts/fork-release-notes.sh' "$workflow_file"
 sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
-sample_deb_asset="codex-shake_0.154.0+r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")_amd64.deb"
 body=$(bash "$script_dir/fork-release-notes.sh" \
   "$fixture" epsalmond/codex eric/local-features "$merge_sha" \
   0.154.0 rust-v2.0.0 "$upstream_tip" 2.35.0 branch-merge \
-  "$sample_release_tag" "$sample_deb_asset")
-grep -Fq "Fork release commit: \`$merge_sha\`" <<< "$body"
-grep -Fq "Integrated upstream main commit: \`$upstream_tip\`" <<< "$body"
-grep -Fq 'Exact stable lineage: `rust-v2.0.0`' <<< "$body"
-grep -Fq 'https://github.com/epsalmond/codex/blob/' <<< "$body"
-grep -Fq 'https://github.com/epsalmond/codex/compare/rust-v2.0.0...' <<< "$body"
+  "$sample_release_tag" codex-shake_0.154.0_amd64.deb)
 
-# Install block must offer all three options, and must not emit the
-# provenance phrase before the actual provenance block (fork-upstream-poll.yml
-# greps for "Based on upstream `rust-v" with head -1).
-grep -Fq 'brew install epsalmond/codex-shake/codex-shake' <<< "$body"
-grep -Fq "sudo dpkg -i $sample_deb_asset" <<< "$body"
-grep -Fq "releases/download/$sample_release_tag/$sample_deb_asset" <<< "$body"
-grep -Fq 'curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh' <<< "$body"
-grep -Fq 'brew upgrade epsalmond/codex-shake/codex-shake' <<< "$body"
-first_provenance_line=$(grep -n 'Based on upstream `rust-v' <<< "$body" | head -1 | cut -d: -f1)
-[[ -n "$first_provenance_line" ]]
-install_block_end=$(grep -n 'codex-shake-estimate --since 168' <<< "$body" | head -1 | cut -d: -f1)
-[[ -n "$install_block_end" && "$install_block_end" -lt "$first_provenance_line" ]]
+# The poll workflow reads this one-line release identity to identify the
+# upstream base tag. The body pins documentation and source commit links.
+grep -Fq "**Build:** Based on upstream \`rust-v2.0.0\`; Codex \`0.154.0\`" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/releases/tag/$sample_release_tag" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/commit/$merge_sha" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/blob/$merge_sha/codex-rs/docs/example.md" <<< "$body"
 
 # A same-name tag pointing elsewhere is rejected before any publish step.
 git -C "$fixture" tag "$release_tag" HEAD

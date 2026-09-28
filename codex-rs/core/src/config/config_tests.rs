@@ -856,6 +856,42 @@ async fn load_config_rejects_non_positive_auto_compact_fallback_buffer() -> std:
 }
 
 #[tokio::test]
+async fn load_config_resolves_subagent_context_reduction() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config = Config::load_from_base_config_with_overrides(
+        toml::from_str(
+            "[subagent_context_reduction]\nenabled = false\nthreshold_tokens = 150000\n",
+        )
+        .expect("TOML should deserialize"),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        config.subagent_context_reduction,
+        SubagentContextReductionConfig {
+            enabled: false,
+            threshold_tokens: 150_000,
+        }
+    );
+
+    let codex_home = tempdir()?;
+    let error = Config::load_from_base_config_with_overrides(
+        toml::from_str("[subagent_context_reduction]\nthreshold_tokens = 0\n")
+            .expect("TOML should deserialize"),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("zero threshold should be rejected");
+    assert_eq!(
+        error.to_string(),
+        "subagent_context_reduction.threshold_tokens must be positive"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_rejects_missing_auto_compact_fallback_buffer() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml = toml::from_str(
@@ -11967,14 +12003,19 @@ max_concurrent_threads_per_session = 17
         let usage_hints = resolve_usage_hints(
             &config, messages, /*omit_update_plan_instructions*/ false,
         );
-        for hint in [usage_hints.root, usage_hints.subagent] {
-            let hint = hint.expect("default usage hints should be present").body();
-            assert!(hint.contains(concurrency_guidance));
-            assert_eq!(
-                hint.contains("When calling `wait_agent`, prefer longer waits"),
-                wait_agent_enabled
-            );
-        }
+        let [root, subagent] = [usage_hints.root, usage_hints.subagent]
+            .map(|hint| hint.expect("default usage hints should be present").body());
+        assert!(root.contains(concurrency_guidance));
+        assert!(subagent.contains(concurrency_guidance));
+        // Wake mode removes `wait_agent` for the root only; subagents keep it.
+        assert_eq!(
+            (
+                root.contains("wait_agent"),
+                subagent.contains("When calling `wait_agent`, prefer longer waits"),
+                subagent.contains("If you are blocked, end your turn with your question"),
+            ),
+            (wait_agent_enabled, true, !wait_agent_enabled)
+        );
     }
 
     let mut empty_messages = messages;

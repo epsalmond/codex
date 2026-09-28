@@ -12,6 +12,10 @@ event_ref=""
 event_sha=""
 event_before=""
 upstream_url=""
+fork_url=""
+upstream_tag=""
+upstream_sha=""
+fork_sha=""
 output=""
 
 usage() {
@@ -42,11 +46,27 @@ while (($# > 0)); do
       shift 2
       ;;
     --event-before)
-      event_before=${2:?--event-before requires a value}
+      event_before=${2-}
       shift 2
       ;;
     --upstream-url)
       upstream_url=${2:?--upstream-url requires a value}
+      shift 2
+      ;;
+    --fork-url)
+      fork_url=${2:?--fork-url requires a value}
+      shift 2
+      ;;
+    --upstream-tag)
+      upstream_tag=${2-}
+      shift 2
+      ;;
+    --upstream-sha)
+      upstream_sha=${2-}
+      shift 2
+      ;;
+    --fork-sha)
+      fork_sha=${2-}
       shift 2
       ;;
     --output)
@@ -68,7 +88,7 @@ done
   usage
   exit 2
 }
-[[ "$event_name" == push ]] || die "unsupported event: $event_name"
+[[ "$event_name" == push || "$event_name" == workflow_dispatch ]] || die "unsupported event: $event_name"
 [[ "$event_sha" =~ ^[0-9a-f]{40}$ ]] || die "event SHA is not a full lowercase commit SHA"
 
 git_cmd=(git -C "$repo_root")
@@ -96,12 +116,24 @@ source_kind=tag
 case "$event_ref" in
   "refs/heads/$fork_branch")
     source_kind=branch-merge
-    [[ "$event_before" =~ ^[0-9a-f]{40}$ ]] || die "branch event has no full before SHA"
-    [[ "$event_before" != 0000000000000000000000000000000000000000 ]] || die "branch creation is not a fast-forward update"
-    "${git_cmd[@]}" rev-parse --verify "$event_before^{commit}" >/dev/null || die "before SHA is not available"
-    "${git_cmd[@]}" merge-base --is-ancestor "$event_before" "$release_sha" ||
-      die "branch event is not a fast-forward update"
     [[ "$parent_count" -eq 2 ]] || die "branch event must point to a two-parent merge commit"
+    if [[ "$event_name" == push ]]; then
+      [[ "$event_before" =~ ^[0-9a-f]{40}$ ]] || die "branch event has no full before SHA"
+      [[ "$event_before" != 0000000000000000000000000000000000000000 ]] || die "branch creation is not a fast-forward update"
+      "${git_cmd[@]}" rev-parse --verify "$event_before^{commit}" >/dev/null || die "before SHA is not available"
+      "${git_cmd[@]}" merge-base --is-ancestor "$event_before" "$release_sha" ||
+        die "branch event is not a fast-forward update"
+    else
+      [[ "$event_ref" == "refs/heads/$fork_branch" ]] || die "workflow dispatch must target $fork_branch"
+      [[ "$upstream_tag" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+        die "workflow dispatch must identify a stable upstream tag"
+      [[ "$upstream_sha" =~ ^[0-9a-f]{40}$ ]] || die "workflow dispatch upstream SHA is invalid"
+      [[ "$fork_sha" =~ ^[0-9a-f]{40}$ ]] || die "workflow dispatch fork SHA is invalid"
+      [[ -n "$fork_url" ]] || die "workflow dispatch needs the fork repository URL"
+      read -r _ first_parent second_parent <<< "$parent_line"
+      [[ "$first_parent" == "$fork_sha" && "$second_parent" == "$upstream_sha" ]] ||
+        die "workflow dispatch commit parents do not match the supplied fork and upstream SHAs"
+    fi
     ;;
   refs/tags/*)
     tag=${event_ref#refs/tags/}
@@ -132,6 +164,23 @@ if [[ -n "$upstream_url" ]]; then
     die "public openai/main has no common history with $release_sha"
   [[ -n "$included_upstream_main_sha" ]] ||
     die "public openai/main merge-base is empty"
+fi
+
+if [[ "$event_name" == workflow_dispatch ]]; then
+  resolved_upstream_sha=$("${git_cmd[@]}" rev-parse --verify \
+    "refs/tags/fork-release-upstream/$upstream_tag^{commit}") ||
+    die "upstream tag is unavailable: $upstream_tag"
+  [[ "$resolved_upstream_sha" == "$upstream_sha" ]] ||
+    die "upstream tag $upstream_tag resolves to $resolved_upstream_sha, expected $upstream_sha"
+
+  fork_ref=refs/remotes/fork-release/eric-local-features
+  "${git_cmd[@]}" fetch --no-tags --quiet "$fork_url" \
+    "+refs/heads/$fork_branch:$fork_ref" ||
+    die "could not fetch the current $fork_branch branch"
+  fork_branch_sha=$("${git_cmd[@]}" rev-parse --verify "$fork_ref^{commit}") ||
+    die "current $fork_branch branch is not available"
+  "${git_cmd[@]}" merge-base --is-ancestor "$release_sha" "$fork_branch_sha" ||
+    die "workflow dispatch commit is not on the landed $fork_branch branch"
 fi
 
 stable_lineage=$(

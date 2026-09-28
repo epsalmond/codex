@@ -2439,6 +2439,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
         max_concurrency: 2,
         wait_agent_enabled: false,
         expose_model_overrides: false,
+        is_root: true,
     };
     let parent_task = InterAgentCommunication::new(
         AgentPath::root(),
@@ -3935,6 +3936,90 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
             /*trigger_turn*/ false,
         )
     ));
+}
+
+/// Stage 1 wake mode: a completion sent to the root is marked as a wake whatever the child's
+/// config says; the root decides on receipt. Non-root parents keep `wait_agent`.
+#[test_case::test_case("/root", false, true; "root parent with wake mode child")]
+#[test_case::test_case("/root", true, true; "root parent with wait_agent child")]
+#[test_case::test_case("/root/worker_a", false, false; "non-root parent")]
+#[tokio::test]
+async fn multi_agent_v2_completion_marks_only_root_parent_wake(
+    parent_path: &str,
+    wait_agent_enabled: bool,
+    expected_trigger_turn: bool,
+) {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let mut child_config = harness.config.clone();
+    let _ = child_config.features.enable(Feature::MultiAgentV2);
+    child_config.multi_agent_v2.wait_agent_enabled = wait_agent_enabled;
+    let parent_path = AgentPath::try_from(parent_path).expect("parent path");
+    let child_path = parent_path.join("child").expect("child path");
+    // V2 children report through their own session, not the completion watcher.
+    let child_thread = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(child_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            ..StartThreadOptions::new(child_config)
+        })
+        .await
+        .expect("child thread should start")
+        .thread;
+    let child_turn = child_thread.session.new_default_turn().await;
+    child_thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let expected_message = crate::session_prefix::format_inter_agent_completion_message(
+        parent_path.clone(),
+        child_path.clone(),
+        &AgentStatus::Completed(Some("done".to_string())),
+    )
+    .expect("completed status should render");
+    let expected = (
+        parent_thread_id,
+        Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                child_path,
+                parent_path,
+                Vec::new(),
+                expected_message,
+                expected_trigger_turn,
+            ),
+            start_options: Default::default(),
+        },
+    );
+    timeout(Duration::from_secs(5), async {
+        while !harness
+            .manager
+            .captured_ops()
+            .iter()
+            .any(|entry| captured_op_matches(entry, &expected))
+        {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("completion should reach the parent with the expected trigger_turn");
 }
 
 #[tokio::test]

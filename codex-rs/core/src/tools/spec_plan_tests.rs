@@ -2933,6 +2933,70 @@ async fn multi_agent_v2_can_disable_wait_agent() {
     assert!(plan.can_manage_children);
 }
 
+fn collaboration_tool_description(plan: &ToolPlanProbe, tool_name: &str) -> String {
+    let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+        panic!("expected the collaboration namespace");
+    };
+    namespace
+        .tools
+        .iter()
+        .find_map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name => {
+                Some(tool.description.clone())
+            }
+            ResponsesApiNamespaceTool::Function(_) | ResponsesApiNamespaceTool::Custom(_) => None,
+        })
+        .unwrap_or_else(|| panic!("expected collaboration tool `{tool_name}`"))
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wake_mode_is_root_only() {
+    const WAKE_TEXT: &str = "A new turn starts for you when a child finishes or asks a question";
+    const LIST_AGENTS_WAKE_TEXT: &str = "to address them with `send_message` or `followup_task`";
+    let subagent_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    for (wait_agent_enabled, session_source, expect_wake) in [
+        (false, SessionSource::Cli, true),
+        (false, subagent_source.clone(), false),
+        (true, SessionSource::Cli, false),
+        (true, subagent_source, false),
+    ] {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.wait_agent_enabled = wait_agent_enabled;
+            });
+            // Subagents with an agent path get collaboration tools only on V2 models.
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).multi_agent_version =
+                    Some(MultiAgentVersion::V2);
+            });
+            turn.session_source = session_source.clone();
+        })
+        .await;
+
+        let wait_agent_present = plan
+            .namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
+            .iter()
+            .any(|name| name == "wait_agent");
+        assert_eq!(
+            (
+                !wait_agent_present,
+                collaboration_tool_description(&plan, "spawn_agent").contains(WAKE_TEXT),
+                collaboration_tool_description(&plan, "list_agents")
+                    .contains(LIST_AGENTS_WAKE_TEXT),
+            ),
+            (expect_wake, expect_wake, expect_wake),
+            "wait_agent_enabled={wait_agent_enabled}, session_source={session_source:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn tool_mode_selector_overrides_feature_flags() {
     let direct = probe(|turn| {

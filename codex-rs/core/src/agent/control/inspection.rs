@@ -4,6 +4,7 @@
 use super::LocalAgentControl;
 use crate::agent::api::AgentInfo;
 use crate::agent::api::AgentTarget;
+use crate::agent::types::AgentContextUsage;
 use crate::agent::types::LiveAgent;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
@@ -36,5 +37,14 @@ impl LocalAgentControl {
             },
             config: Box::new(thread.config_snapshot().await),
         })
+    }
+
+    /// Returns `None` when the agent is not loaded, so parents can tell unavailable from zero.
+    pub(crate) async fn agent_context_usage(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<AgentContextUsage> {
+        let thread = self.upgrade().ok()?.get_thread(thread_id).await.ok()?;
+        Some(thread.session.context_usage().await)
     }
 }

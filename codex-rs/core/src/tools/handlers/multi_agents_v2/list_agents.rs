@@ -1,9 +1,14 @@
 use super::analytics::ToolCallAnalytics;
 use super::*;
+use crate::agent::types::AgentContextUsage;
+use crate::session::multi_agents::ChildReportMode;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    pub(crate) child_report_mode: ChildReportMode,
+}
 
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
@@ -11,7 +16,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_list_agents_tool()
+        create_list_agents_tool(self.child_report_mode)
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -51,9 +56,9 @@ impl Handler {
             .await
             .map_err(collab_spawn_error)?;
 
-        let agents = agents
-            .into_iter()
-            .map(|agent| ListedAgent {
+        let mut listed = Vec::with_capacity(agents.len());
+        for agent in agents {
+            listed.push(ListedAgent {
                 agent_name: agent
                     .metadata
                     .agent_path
@@ -61,9 +66,14 @@ impl Handler {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| agent.thread_id.to_string()),
                 agent_status: agent.status,
-            })
-            .collect();
-        Ok(boxed_tool_output(ListAgentsResult { agents }))
+                context: session
+                    .services
+                    .agent_control
+                    .agent_context_usage(agent.thread_id)
+                    .await,
+            });
+        }
+        Ok(boxed_tool_output(ListAgentsResult { agents: listed }))
     }
 }
 
@@ -83,6 +93,7 @@ struct ListAgentsArgs {
 struct ListedAgent {
     agent_name: String,
     agent_status: AgentStatus,
+    context: Option<AgentContextUsage>,
 }
 
 #[derive(Debug, Serialize)]

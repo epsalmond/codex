@@ -1,5 +1,6 @@
 use crate::agent::child_config::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
 use crate::agent::child_config::model_supports_multi_agent_backend;
+use crate::session::multi_agents::ChildReportMode;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchema;
@@ -29,6 +30,7 @@ pub struct SpawnAgentToolOptions {
     pub expose_spawn_agent_model_overrides: bool,
     pub multi_agent_version: MultiAgentVersion,
     pub usage_hint_text: Option<String>,
+    pub child_report_mode: ChildReportMode,
 }
 
 impl Default for SpawnAgentToolOptions {
@@ -41,6 +43,7 @@ impl Default for SpawnAgentToolOptions {
             expose_spawn_agent_model_overrides: false,
             multi_agent_version: MultiAgentVersion::Disabled,
             usage_hint_text: None,
+            child_report_mode: ChildReportMode::WaitAgent,
         }
     }
 }
@@ -128,6 +131,7 @@ pub fn create_spawn_agent_tool_v2(
         description: spawn_agent_tool_description_v2(
             available_models_description.as_deref(),
             inherited_model_guidance,
+            options.child_report_mode.spawn_agent_guidance(),
             options.usage_hint_text,
             description_override,
         ),
@@ -293,7 +297,7 @@ pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     })
 }
 
-pub fn create_list_agents_tool() -> ToolSpec {
+pub fn create_list_agents_tool(child_report_mode: ChildReportMode) -> ToolSpec {
     let properties = BTreeMap::from([(
         "path_prefix".to_string(),
         JsonSchema::string(Some(
@@ -304,9 +308,7 @@ pub fn create_list_agents_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
-        description:
-            "List live agents in the current root thread tree. Optionally filter by task-path prefix."
-                .to_string(),
+        description: child_report_mode.list_agents_description().to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
@@ -473,9 +475,18 @@ fn list_agents_output_schema() -> Value {
                         "agent_status": {
                             "description": "Last known status of the agent.",
                             "allOf": [agent_status_output_schema()]
+                        },
+                        "context": {
+                            "type": ["object", "null"],
+                            "description": "Active context tokens. basis \"usage\": last model-reported usage plus estimated newer items; \"estimate\": no usage reported since the last history rewrite. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient}) or null. Null when unavailable.",
+                            "properties": {
+                                "active_tokens": { "type": "integer" },
+                                "basis": { "type": "string", "enum": ["usage", "estimate"] },
+                                "last_reduction": { "type": ["object", "null"] }
+                            }
                         }
                     },
-                    "required": ["agent_name", "agent_status"],
+                    "required": ["agent_name", "agent_status", "context"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -741,18 +752,22 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 fn spawn_agent_tool_description_v2(
     available_models_description: Option<&str>,
     inherited_model_guidance: Option<&str>,
+    child_report_guidance: Option<&str>,
     usage_hint_text: Option<String>,
     description: Option<&str>,
 ) -> String {
     let agent_role_guidance = available_models_description.unwrap_or_default();
     let inherited_model_guidance = inherited_model_guidance.unwrap_or_default();
+    let child_report_guidance = child_report_guidance
+        .map(|guidance| format!("\n\n{guidance}"))
+        .unwrap_or_default();
 
     let tool_description = if let Some(description) = description {
         format!(
             r#"
         {agent_role_guidance}
         {description}
-{inherited_model_guidance}"#
+{inherited_model_guidance}{child_report_guidance}"#
         )
     } else {
         format!(
@@ -765,7 +780,7 @@ The spawned agent will have the same tools as you and the ability to spawn its o
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
 
-Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context."#
+Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context.{child_report_guidance}"#
         )
     };
 

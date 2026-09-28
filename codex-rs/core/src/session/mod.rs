@@ -226,6 +226,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::exec_output::StreamOutput;
 
 mod code_mode_warning;
+mod context_reduction_telemetry;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod environment;
@@ -241,6 +242,7 @@ mod mcp;
 mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
+mod mid_turn_reduction;
 pub(crate) mod multi_agents;
 mod plugin_selection;
 pub(crate) mod prompt_cache_clock;
@@ -261,6 +263,7 @@ pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
 mod turn_suspension;
+mod wakeups;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 #[cfg(test)]
@@ -4748,6 +4751,7 @@ impl Session {
             }
 
             state.set_token_info(Some(info));
+            state.token_usage_estimated = true;
         }
         self.set_auto_compact_window_estimated_prefill_for_scope(
             turn_context,
@@ -4910,6 +4914,8 @@ impl Session {
 
     pub async fn interrupt_task(self: &Arc<Self>) {
         info!("interrupt received: abort current task, if any");
+        // Pause before aborting so the post-abort restart sees held mail.
+        self.pause_wakeups_for_interrupt().await;
         let had_active_turn = self.active_turn.lock().await.is_some();
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
         if !had_active_turn {

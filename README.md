@@ -77,12 +77,116 @@ binary. It deliberately stops on a missing tag or rebase conflict.
 `codex` launches the managed local build; `codex-official` launches the npm
 installation directly as an escape hatch.
 
-Fork test builds of this branch are also published as `codex-shake`, beside
-your official `codex`, via `curl -fsSL .../install.sh | sh`, Homebrew
-(`brew install epsalmond/codex-shake/codex-shake`), or a `.deb` for
-Debian/Ubuntu x86_64 attached to each release. See the release notes on
-[epsalmond/codex releases](https://github.com/epsalmond/codex/releases) for
-the exact commands.
+Fork test builds are published as `codex-shake` beside the official `codex`.
+See [Installing codex-shake](#installing-codex-shake) for install and update
+commands, and the [fork release notes](https://github.com/epsalmond/codex/releases)
+for changes in each build.
+
+### Installing codex-shake
+
+Install the latest fork build on macOS or Linux with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
+```
+
+Homebrew is also available on macOS and Linux x86_64:
+
+```sh
+brew install epsalmond/codex-shake/codex-shake
+```
+
+Debian and Ubuntu x86_64 users can download the latest `.deb` from the
+[GitHub releases](https://github.com/epsalmond/codex/releases) and install it
+with `sudo dpkg -i ./codex-shake_<version>_amd64.deb`. The script installer
+adds `codex-shake` and `codex-shake-update` alongside the official `codex`.
+Run `codex-shake-update` to install a newer fork release. Homebrew users can
+run `brew upgrade epsalmond/codex-shake/codex-shake`. Debian and Ubuntu users
+can download and reinstall the newest `.deb`.
+
+### Identifying Shake feature support
+
+Run `codex --version` (or `codex-shake --version`) to see both the upstream
+Codex version and the Shake feature version and exact fork release tag. `-V`
+continues to show only the upstream Codex version. Binaries reporting Shake
+feature version `0.3.0` include opt-in event-driven root wakeups when subagents
+finish. The unpublished `0.2` milestone covered subagent shaking and compaction
+plus intra-turn shaking. Version `0.3.0` is the honorary bump that recognizes
+both milestones.
+
+The release tag is the reliable feature identity. An older binary can accept
+`wait_agent_enabled = false` and remove `wait_agent` from the root instructions
+without waking the root when a child finishes.
+
+### Wake mode for multi-agent orchestrators
+
+In wake mode, a MultiAgentV2 root sleeps until a child subagent reports back,
+instead of polling `wait_agent` in a loop. Turn it on with:
+
+```toml
+[features.multi_agent_v2]
+wait_agent_enabled = false
+```
+
+or for a single run, `codex -c features.multi_agent_v2.wait_agent_enabled=false`.
+
+Esc pauses wakeups and holds any child results that arrive; the TUI shows "N
+child results queued — delivered with your next message", and they are
+delivered together with the next user message. Subagents keep `wait_agent`
+regardless of this setting, and a nested parent (a subagent with its own
+children) does not wake yet; that is a later stage.
+
+This is off by default. With it off, behavior matches upstream. See the
+[release notes](releases/2026-09-26-wake-mode.md) for details and measurements.
+
+### Subagents on a different model provider
+
+An agent role can point its children at a different model provider than the
+one the parent session is using. The root config declares the provider under
+`[model_providers.<id>]` (self-hosted or otherwise), and the role's
+`config_file` sets `model_provider = "<id>"` plus `model`:
+
+```toml
+# ~/.codex/config.toml (root)
+
+[model_providers.self_hosted]
+name = "Self-hosted vLLM"
+base_url = "https://vllm.internal.example.com/v1"
+wire_api = "responses"
+env_key = "SELF_HOSTED_API_KEY"
+requires_openai_auth = false
+
+[agents.local]
+config_file = "agents/local.toml"
+```
+
+```toml
+# ~/.codex/agents/local.toml
+
+model_provider = "self_hosted"
+model = "my-org/local-coder-7b"
+model_context_window = 32000
+```
+
+`spawn_agent(agent_type="local")` then runs that child against `self_hosted`,
+while the parent keeps its own ChatGPT login and provider.
+
+A role may only reference a provider id already defined in the root config's
+`[model_providers]`; it cannot define a new `[model_providers.*]` table
+inline. If a role names an id that isn't declared at the root, `spawn_agent`
+fails with a clear error naming the role and the missing provider.
+`wire_api = "responses"` is required for any provider a role targets; Chat
+Completions is removed from this fork.
+
+Model names for an alternate provider aren't checked against a live catalog,
+so a role that switches providers should declare `model_context_window` (and
+optionally `model_auto_compact_token_limit`) so context tracking still works.
+Auth for the alternate provider follows its own `env_key` or `auth` setting,
+independent of the parent's ChatGPT login. See the
+[release notes](releases/2026-09-26-subagent-provider.md) for resolution
+rules and current limitations.
+A provider-switching role cannot fork the parent's history; spawn it with
+`fork_turns = "none"` (the default).
 
 ### Using Codex with your ChatGPT plan
 

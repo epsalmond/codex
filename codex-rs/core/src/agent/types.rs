@@ -7,6 +7,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::turn_input::CyberAccessProgram;
+use serde::Serialize;
 
 /// Registry identity shared by loaded and unloaded agents.
 /// Registered agents have an `agent_id`; a reserved spawn can still be awaiting its ID.
@@ -44,6 +45,49 @@ pub struct LiveAgent {
     pub thread_id: ThreadId,
     pub metadata: AgentMetadata,
     pub status: AgentStatus,
+}
+
+/// How an automatic context reduction ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReductionOutcome {
+    /// Shaking alone brought active context below the threshold.
+    Shaken,
+    /// Compaction ran after shaking was skipped or insufficient, or directly for an explicit
+    /// new-context-window request.
+    Compacted,
+    /// Reduction ran or was attempted but active context stayed above the threshold.
+    Insufficient,
+}
+
+/// The most recent automatic context reduction of an agent. Runtime-only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ContextReductionRecord {
+    /// Unix seconds.
+    pub at: i64,
+    pub before_tokens: i64,
+    /// `None` when the post-reduction size is unknown.
+    pub after_tokens: Option<i64>,
+    pub outcome: ContextReductionOutcome,
+}
+
+/// Where an agent's active context token count comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTokenBasis {
+    /// Last model-reported usage plus a local estimate of items recorded since.
+    Usage,
+    /// No model usage reported since the thread started or history was last rewritten;
+    /// a local estimate of recorded history.
+    Estimate,
+}
+
+/// Active-context snapshot reported to a parent by `list_agents`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AgentContextUsage {
+    pub active_tokens: i64,
+    pub basis: ContextTokenBasis,
+    pub last_reduction: Option<ContextReductionRecord>,
 }
 
 #[derive(Clone, Debug, Default)]

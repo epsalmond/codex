@@ -1,37 +1,27 @@
-<!-- This file is the notes section of every GitHub release for this branch.
-     codex-fork-release adds the install block before it and the base tag and
-     commit list after it. Plain markdown. -->
+## Automatic and manual Shake
 
-**Codex Shake keeps long coding sessions smaller by removing older tool output
-from active context. In our replay benchmark, shaken runs used 2.3–2.7× fewer
-Codex credits.**
+`/shake` removes older tool output without asking a model to summarize it, and saves removed text in local artifact files. Automatic Shake can run at the pre-sampling point before compaction; see the [Shake documentation](codex-rs/docs/shake.md).
 
-Surviving conversation content stays byte-identical, and removed content remains
-available in local artifact files. Auto-shake runs by default; `/shake` lets you
-preview and trigger it yourself.
+## Subagent context reduction
 
-The published replay reduced active history from 536k to 176k tokens. Its
-measured results were:
+Spawned subagents inherit a 272,000-token Shake and compaction cap by default, tightened further when the parent has a lower limit. Within a turn, a child shakes first and compacts if needed; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
 
-| arm | active history | standard Codex credits | end state |
-|---|---:|---:|---|
-| full history, cold cache | 536k | 840 | 12/12 |
-| shaken, cold cache | 176k | 312 | 11/12 |
-| full history, warm cache | 536k | 809 | 12/12 |
-| shaken, warm cache | 176k | 358 | 12/12 |
+## Wake mode for multi-agent orchestrators
 
-This was n=1 per cell, with builds stubbed; the one cold shaken run missed one
-structural check. An earlier replay projected 4.8x lower API cost using the API
-rate card ($59.46/$12.37); it used 2.42× fewer Codex credits.
+With wake mode enabled, a MultiAgentV2 root sleeps until a child reports back instead of polling `wait_agent`; Esc holds results for the next user message. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and its [detailed notes](releases/2026-09-26-wake-mode.md).
 
-No artifact recovery reads were observed in the nine runs covered by the
-recovery report. Cache behavior and savings vary by workload; see the
-benchmark methodology.
+## Subagents on a different model provider
 
-The weekly projection estimated 2.04B fewer input tokens out of 12.37B across
-182 historical threads. It is a projection from rollouts, not a plan-quota
-measurement.
+An agent role's `config_file` can now set `model_provider`, so `spawn_agent` runs that role's children against a self-hosted or otherwise alternate provider while the parent keeps its own login. See [subagents on a different model provider](README.md#subagents-on-a-different-model-provider) and its [detailed notes](releases/2026-09-26-subagent-provider.md).
 
-- Headline numbers: [RESULTS.md](codex-rs/docs/shake-bench/RESULTS.md)
-- Docs and config: [shake.md](codex-rs/docs/shake.md)
-- Benchmark scripts and full reports: [shake-bench](codex-rs/docs/shake-bench/README.md)
+## Statusline entries
+
+The TUI statusline can show the weekly usage reset time and the completion time of the latest live response. See the [statusline documentation](README.md#local-statusline-build).
+
+## Installation and self-update
+
+The fork installs as `codex-shake` beside the official `codex` binary and can update to the latest fork release. See the [installation instructions](README.md#installing-codex-shake).
+
+## Offline savings estimate
+
+`codex-shake-estimate` estimates Shake savings from local rollout files without sending them to a service. See the [estimator documentation](codex-rs/docs/shake-bench/README.md#offline-savings-estimate).

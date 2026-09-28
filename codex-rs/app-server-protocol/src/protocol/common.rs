@@ -1933,6 +1933,8 @@ server_notification_definitions! {
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
     #[experimental("thread/queue/changed")]
     ThreadQueueChanged => "thread/queue/changed" (v2::ThreadQueueChangedNotification),
+    #[experimental("thread/wakeups/updated")]
+    ThreadWakeupsUpdated => "thread/wakeups/updated" (v2::ThreadWakeupsUpdatedNotification),
     #[experimental("project/changed")]
     ProjectChanged => "project/changed" (v2::ProjectChangedNotification),
     #[experimental("thread/project/updated")]

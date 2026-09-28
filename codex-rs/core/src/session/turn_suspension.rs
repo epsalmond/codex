@@ -5,6 +5,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::turn_input::SuspendTurnOutcome;
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,7 +96,11 @@ pub(super) async fn suspend_turn_and_shutdown(
     }
     // Pending accepted input and interactive waiters live only in this process. Handoff
     // intentionally drops that state; persisting or replaying it needs a separate protocol.
-    session.input_queue.clear_pending(&turn).await;
+    let mode = session.child_report_mode().await.unwrap_or_default();
+    session
+        .input_queue
+        .clear_pending(&turn, &TurnAbortReason::Interrupted, mode)
+        .await;
 
     // Stop all producers before flushing their final history and closing its writer.
     // If either persistence step fails, do not report success: the current worker

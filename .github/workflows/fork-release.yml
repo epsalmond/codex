@@ -11,6 +11,24 @@ on:
       - eric/local-features
     tags:
       - "local-features-v*"
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact upstream merge commit already landed on eric/local-features.
+        required: true
+        type: string
+      upstream_tag:
+        description: Stable upstream rust-v tag merged into release_sha.
+        required: true
+        type: string
+      upstream_sha:
+        description: Exact commit resolved by upstream_tag.
+        required: true
+        type: string
+      fork_sha:
+        description: Exact eric/local-features parent of the upstream merge.
+        required: true
+        type: string
 
 env:
   FORK_BRANCH: eric/local-features
@@ -37,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -47,9 +65,13 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REF: ${{ github.ref }}
-          EVENT_SHA: ${{ github.sha }}
+          EVENT_SHA: ${{ inputs.release_sha || github.sha }}
           EVENT_BEFORE: ${{ github.event.before }}
           UPSTREAM_URL: https://github.com/openai/codex.git
+          FORK_URL: https://github.com/${{ github.repository }}.git
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
         run: |
           set -euo pipefail
           .github/scripts/fork-release-metadata.sh \
@@ -59,65 +81,23 @@ jobs:
             --event-sha "$EVENT_SHA" \
             --event-before "$EVENT_BEFORE" \
             --upstream-url "$UPSTREAM_URL" \
+            --fork-url "$FORK_URL" \
+            --upstream-tag "$UPSTREAM_TAG" \
+            --upstream-sha "$UPSTREAM_SHA" \
+            --fork-sha "$FORK_SHA" \
             --output "$GITHUB_OUTPUT"
 
   validate:
     name: Validate workflow and updater
     needs: prepare
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.prepare.outputs.release_sha }}
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup-ci
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.3"
-
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          components: rustfmt
-
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: nextest
-          version: 0.9.103
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.12"
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: codex-rs -> target
-          key: fork-release-validate
-
-      - uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-unknown-linux-gnu
-
-      - name: Check formatting
-        run: just fmt-check
-
-      - name: Test release helpers offline
-        working-directory: .
-        run: |
-          bash .github/scripts/test_fork_release_metadata.sh
-          bash .github/scripts/test_build_fork_deb.sh
-          bash .github/scripts/test_render_brew_formula.sh
-          python3 -m unittest scripts/install/test_shake_install.py
-
-      - name: Test scoped release behavior
-        run: |
-          just test -p codex-core --lib -E 'test(/guardian|shake|artifact/)'
-          just test -p codex-app-server-protocol
-          just test -p codex-app-server -E 'test(/shake|attachment/)'
-          just test -p codex-cli -E 'test(/update|fork/)'
-          just test -p codex-tui --lib -E 'test(/completion|fork_update|shake|slash/)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fork-upstream-validation.yml
+    with:
+      candidate_sha: ${{ needs.prepare.outputs.release_sha }}
+      fork_sha: ${{ inputs.fork_sha }}
+      upstream_tag: ${{ inputs.upstream_tag }}
+      upstream_sha: ${{ inputs.upstream_sha }}
 
   build:
     name: Build - ${{ matrix.target }}
@@ -221,11 +201,21 @@ jobs:
         shell: bash
         env:
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
+          shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' tui/src/fork_update.rs)
+          test -n "$shake_version"
           reported=$(target/release/codex --version)
-          [[ "$reported" == "codex-cli $SOURCE_VERSION" ]] || {
-            echo "codex --version reported '$reported', expected codex-cli $SOURCE_VERSION" >&2
+          expected=$(printf 'codex-cli %s\nShake feature version: %s\nRelease tag: %s' \
+            "$SOURCE_VERSION" "$shake_version" "$RELEASE_TAG")
+          [[ "$reported" == "$expected" ]] || {
+            echo "codex --version reported '$reported', expected source, Shake, and release versions" >&2
+            exit 1
+          }
+          short_reported=$(target/release/codex -V)
+          [[ "$short_reported" == "codex-cli $SOURCE_VERSION" ]] || {
+            echo "codex -V reported '$short_reported', expected codex-cli $SOURCE_VERSION" >&2
             exit 1
           }
 
@@ -315,6 +305,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
           fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -353,7 +344,7 @@ jobs:
           DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse --verify HEAD^{commit})" = "$RELEASE_SHA"
+          test "$(git rev-parse --verify 'HEAD^{commit}')" = "$RELEASE_SHA"
           test "$(git rev-parse --verify "$RELEASE_SHA^{commit}")" = "$RELEASE_SHA"
 
           linux_archive="dist/codex-x86_64-unknown-linux-gnu.tar.gz"
@@ -395,6 +386,8 @@ jobs:
           DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
           set -euo pipefail
+          shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' codex-rs/tui/src/fork_update.rs)
+          test -n "$shake_version"
           assets=(
             dist/codex-x86_64-unknown-linux-gnu.tar.gz
             dist/codex-aarch64-apple-darwin.tar.gz
@@ -403,6 +396,7 @@ jobs:
             dist/codex-symbols-aarch64-apple-darwin.tar.gz
             dist/SHA256SUMS
           )
+          release_title="Shake v${shake_version} (Codex ${SOURCE_VERSION})"
           for asset in "${assets[@]}"; do
             test -s "$asset"
           done
@@ -448,11 +442,11 @@ jobs:
             gh release upload "$RELEASE_TAG" -R "$FORK_REPO" \
               "${assets[@]}" --clobber
             gh release edit "$RELEASE_TAG" -R "$FORK_REPO" \
-              --notes-file release-body.md --prerelease
+              --title "$release_title" --notes-file release-body.md --prerelease
           else
             gh release create "$RELEASE_TAG" -R "$FORK_REPO" \
               --target "$RELEASE_SHA" --prerelease \
-              --title "local-features snapshot $SOURCE_VERSION" \
+              --title "$release_title" \
               --notes-file release-body.md "${assets[@]}"
           fi
 

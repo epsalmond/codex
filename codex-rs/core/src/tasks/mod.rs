@@ -29,6 +29,7 @@ use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::hook_runtime::run_turn_interrupt_hooks;
 use crate::session::TurnInput;
+use crate::session::multi_agents::ChildReportMode;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn_context::NewTurnContextOptions;
@@ -183,6 +184,14 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
     /// Returns the tracing name for a spawned task span.
     fn span_name(&self) -> &'static str;
 
+    /// Returns whether the task reads the mail queued in its turn's pending input.
+    ///
+    /// In wake mode, a task that does not read it returns it to the mailbox when it finishes, so
+    /// a wake turn delivers it. Model turns read it; compaction, review and shell commands do not.
+    fn reads_pending_input(&self) -> bool {
+        self.kind() == TaskKind::Regular
+    }
+
     /// Executes the task until completion or cancellation.
     ///
     /// Implementations typically stream protocol events using `session` and
@@ -222,6 +231,8 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
 
     fn span_name(&self) -> &'static str;
 
+    fn reads_pending_input(&self) -> bool;
+
     fn run(
         self: Arc<Self>,
         session: Arc<Session>,
@@ -243,6 +254,10 @@ where
 
     fn span_name(&self) -> &'static str {
         SessionTask::span_name(self)
+    }
+
+    fn reads_pending_input(&self) -> bool {
+        SessionTask::reads_pending_input(self)
     }
 
     fn run(
@@ -556,7 +571,14 @@ impl Session {
         if let Some(active_turn) = active_turn_to_clear {
             // Let interrupted tasks observe cancellation before dropping pending approvals, or an
             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-            self.input_queue.clear_pending(&active_turn).await;
+            let mode = self.child_report_mode().await.unwrap_or_default();
+            if self
+                .input_queue
+                .clear_pending(&active_turn, &reason, mode)
+                .await
+            {
+                self.emit_agent_wakeups_updated().await;
+            }
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
             self.maybe_start_turn_for_pending_work().await;
@@ -602,7 +624,14 @@ impl Session {
         }
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-        self.input_queue.clear_pending(&active_turn).await;
+        let mode = self.child_report_mode().await.unwrap_or_default();
+        if self
+            .input_queue
+            .clear_pending(&active_turn, &reason, mode)
+            .await
+        {
+            self.emit_agent_wakeups_updated().await;
+        }
 
         if reason == TurnAbortReason::Interrupted {
             self.maybe_start_turn_for_pending_work().await;
@@ -616,6 +645,7 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) {
+        let task_succeeded = task_result.is_ok();
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -641,21 +671,35 @@ impl Session {
             .turn_metadata_state
             .cancel_git_enrichment_task();
 
-        let turn_state = {
+        let finished_task = {
             let mut active = self.active_turn.lock().await;
             active.as_mut().and_then(|active_turn| {
                 let task = active_turn.task.take()?;
                 task.handle.detach();
-                Some(Arc::clone(&active_turn.turn_state))
+                Some((
+                    Arc::clone(&active_turn.turn_state),
+                    task.task.reads_pending_input(),
+                ))
             })
         };
-        let Some(turn_state) = turn_state else {
+        let Some((turn_state, read_pending_input)) = finished_task else {
             return;
         };
-        let pending_input = self
+        let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
             .await;
+        // In wake mode, a task that never reads the mail `start_task` handed it returns all of
+        // it, in order, so the wake below delivers it. A model turn records unread mail as
+        // upstream does, so a turn that ended before reading it cannot restart on it; so does a
+        // failed task.
+        if !read_pending_input
+            && task_succeeded
+            && turn_context.terminal_error.lock().await.is_none()
+            && self.child_report_mode().await == Some(ChildReportMode::WakeOnReport)
+        {
+            self.input_queue.return_to_mailbox(&mut pending_input).await;
+        }
         let (
             turn_had_memory_citation,
             turn_tool_calls,

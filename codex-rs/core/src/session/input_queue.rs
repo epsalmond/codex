@@ -1,3 +1,4 @@
+use crate::session::multi_agents::ChildReportMode;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
@@ -6,12 +7,15 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
@@ -81,6 +85,8 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    /// Holds trigger-turn mail after an interrupt until the next user message.
+    wakeups_paused: AtomicBool,
 }
 
 struct PendingMailboxCommunication {
@@ -95,6 +101,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            wakeups_paused: AtomicBool::new(false),
         }
     }
 
@@ -126,6 +133,7 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
+        let held = communication.trigger_turn && self.wakeups_paused();
         self.mailbox_pending_mails
             .lock()
             .await
@@ -134,28 +142,60 @@ impl InputQueue {
                 start_options,
                 _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
             });
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        // Held mail has nothing to deliver yet, so it must not interrupt a `sleep`.
+        if !held {
+            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        }
     }
 
+    /// Returns whether mail is ready for delivery. Paused wakeups hold trigger-turn mail.
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
-        !self.mailbox_pending_mails.lock().await.is_empty()
-    }
-
-    pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
+        let paused = self.wakeups_paused();
         self.mailbox_pending_mails
             .lock()
             .await
             .iter()
-            .any(|mail| mail.communication.trigger_turn)
+            .any(|mail| !(paused && mail.communication.trigger_turn))
     }
 
-    pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
-        let pending_mails = self
-            .mailbox_pending_mails
+    /// Returns whether pending mail should start a turn. Paused wakeups hold it.
+    pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
+        !self.wakeups_paused() && self.trigger_turn_mailbox_count().await > 0
+    }
+
+    pub(crate) async fn trigger_turn_mailbox_count(&self) -> usize {
+        self.mailbox_pending_mails
             .lock()
             .await
-            .drain(..)
-            .collect::<Vec<_>>();
+            .iter()
+            .filter(|mail| mail.communication.trigger_turn)
+            .count()
+    }
+
+    pub(crate) fn pause_wakeups(&self) {
+        self.wakeups_paused.store(true, Ordering::SeqCst);
+    }
+
+    /// Clears the pause and returns whether wakeups were paused.
+    pub(crate) fn resume_wakeups(&self) -> bool {
+        self.wakeups_paused.swap(false, Ordering::SeqCst)
+    }
+
+    pub(crate) fn wakeups_paused(&self) -> bool {
+        self.wakeups_paused.load(Ordering::SeqCst)
+    }
+
+    /// Drains deliverable mail. Paused wakeups leave trigger-turn mail queued.
+    pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
+        let pending_mails = {
+            let paused = self.wakeups_paused();
+            let mut mails = self.mailbox_pending_mails.lock().await;
+            let (held, deliverable): (VecDeque<_>, VecDeque<_>) = mails
+                .drain(..)
+                .partition(|mail| paused && mail.communication.trigger_turn);
+            *mails = held;
+            deliverable
+        };
         // A later follow-up supersedes the earlier choice, including an omitted choice.
         let mut start_options = pending_mails
             .iter()
@@ -204,10 +244,71 @@ impl InputQueue {
     }
 
     /// Clear any pending waiters and input buffered for the current turn.
-    pub(crate) async fn clear_pending(&self, active_turn: &ActiveTurn) {
-        let mut turn_state = active_turn.turn_state.lock().await;
-        turn_state.clear_pending_waiters();
-        turn_state.pending_input.items.clear();
+    ///
+    /// In wake mode, unconsumed agent mail returns to the mailbox, where the next turn delivers it
+    /// or a pause holds it. An unpaused interrupt drops it instead, so an interrupted
+    /// `followup_task` does not restart a subagent. Outside wake mode it is dropped, as upstream
+    /// does. Returns whether any mail was returned.
+    pub(crate) async fn clear_pending(
+        &self,
+        active_turn: &ActiveTurn,
+        reason: &TurnAbortReason,
+        mode: ChildReportMode,
+    ) -> bool {
+        let mut items = {
+            let mut turn_state = active_turn.turn_state.lock().await;
+            turn_state.clear_pending_waiters();
+            std::mem::take(&mut turn_state.pending_input.items)
+        };
+        if mode != ChildReportMode::WakeOnReport
+            || (!self.wakeups_paused() && *reason == TurnAbortReason::Interrupted)
+        {
+            return false;
+        }
+        self.return_to_mailbox(&mut items).await
+    }
+
+    /// Takes the agent mail from the active turn's pending input, in order, and leaves the rest.
+    pub(crate) async fn take_pending_agent_mail(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> Vec<TurnInput> {
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .map(|turn| Arc::clone(&turn.turn_state));
+        let Some(turn_state) = turn_state else {
+            return Vec::new();
+        };
+        let mut turn_state = turn_state.lock().await;
+        let (mail, rest) = std::mem::take(&mut turn_state.pending_input.items)
+            .into_iter()
+            .partition(|item| matches!(item, TurnInput::InterAgentCommunication(_)));
+        turn_state.pending_input.items = rest;
+        mail
+    }
+
+    /// Moves the agent mail in `items` back to the front of the mailbox, in order, and leaves the
+    /// other input in `items`. Returns whether any mail was returned.
+    pub(crate) async fn return_to_mailbox(&self, items: &mut Vec<TurnInput>) -> bool {
+        let mut returned = Vec::new();
+        for item in std::mem::take(items) {
+            match item {
+                TurnInput::InterAgentCommunication(communication) => returned.push(communication),
+                other => items.push(other),
+            }
+        }
+        let any_returned = !returned.is_empty();
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        for communication in returned.into_iter().rev() {
+            mails.push_front(PendingMailboxCommunication {
+                communication,
+                start_options: TurnStartOptions::default(),
+                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+            });
+        }
+        any_returned
     }
 
     pub(crate) async fn defer_mailbox_delivery_to_next_turn(
@@ -661,5 +762,170 @@ mod tests {
             .enqueue_mailbox_communication(trigger_mail, Default::default())
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    /// In wake mode, unconsumed child mail survives a paused or replaced turn, in order and exactly
+    /// once. An unpaused interrupt drops it, so an interrupted `followup_task` does not restart a
+    /// subagent.
+    #[tokio::test]
+    async fn clear_pending_returns_unconsumed_mail_unless_interrupted_unpaused() {
+        let worker = AgentPath::try_from("/root/worker").expect("agent path");
+        let mail = |content, trigger_turn| {
+            TurnInput::InterAgentCommunication(make_mail(
+                worker.clone(),
+                AgentPath::root(),
+                content,
+                trigger_turn,
+            ))
+        };
+        let (report, progress, later) = (
+            mail("report", /*trigger_turn*/ true),
+            mail("progress", /*trigger_turn*/ false),
+            mail("later", /*trigger_turn*/ true),
+        );
+        let steer = TurnInput::UserInput {
+            acceptance_order: None,
+            content: vec![UserInput::Text {
+                text: "steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+        };
+        let returned = vec![report.clone(), progress.clone(), later.clone()];
+        let wake = ChildReportMode::WakeOnReport;
+        for (paused, reason, mode, expected) in [
+            (true, TurnAbortReason::Interrupted, wake, returned.clone()),
+            (false, TurnAbortReason::Replaced, wake, returned.clone()),
+            (
+                false,
+                TurnAbortReason::Interrupted,
+                wake,
+                vec![later.clone()],
+            ),
+            // Outside wake mode a replaced turn drops its unread mail, as upstream does.
+            (
+                false,
+                TurnAbortReason::Replaced,
+                ChildReportMode::WaitAgent,
+                vec![later.clone()],
+            ),
+        ] {
+            let input_queue = InputQueue::new();
+            let active_turn = ActiveTurn::default();
+            input_queue
+                .extend_pending_input_for_turn_state(
+                    active_turn.turn_state.as_ref(),
+                    vec![report.clone(), steer.clone(), progress.clone()],
+                )
+                .await;
+            let TurnInput::InterAgentCommunication(later_mail) = later.clone() else {
+                unreachable!("later is agent mail");
+            };
+            input_queue
+                .enqueue_mailbox_communication(later_mail, Default::default())
+                .await;
+            if paused {
+                input_queue.pause_wakeups();
+            }
+
+            let returned_mail = input_queue.clear_pending(&active_turn, &reason, mode).await;
+            input_queue.resume_wakeups();
+            let delivered = input_queue.drain_mailbox_input_items().await.0;
+            let left_in_turn = input_queue
+                .take_pending_input_for_turn_state(active_turn.turn_state.as_ref())
+                .await;
+            let redelivered = input_queue.drain_mailbox_input_items().await.0;
+
+            assert_eq!(
+                (returned_mail, delivered, left_in_turn, redelivered),
+                (expected.len() > 1, expected, Vec::new(), Vec::new()),
+                "paused={paused} reason={reason:?} mode={mode:?}"
+            );
+        }
+    }
+
+    /// Held trigger-turn mail has nothing to deliver, so it must not interrupt a `sleep`.
+    #[tokio::test]
+    async fn paused_wakeups_hold_trigger_mail_without_activity() {
+        let worker = AgentPath::try_from("/root/worker").expect("agent path");
+        let input_queue = InputQueue::new();
+        input_queue.pause_wakeups();
+        let (activity_rx, _) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    worker.clone(),
+                    AgentPath::root(),
+                    "report",
+                    /*trigger_turn*/ true,
+                ),
+                Default::default(),
+            )
+            .await;
+        let held = (
+            activity_rx.has_changed().expect("activity sender"),
+            input_queue.subscribe_activity(/*turn_state*/ None).await.1,
+        );
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    worker,
+                    AgentPath::root(),
+                    "progress",
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+
+        assert_eq!(
+            (held, activity_rx.has_changed().expect("activity sender")),
+            ((false, None), true)
+        );
+    }
+
+    /// A task that never read its input returns all of its agent mail, queue-only included, so a
+    /// later progress message is never delivered ahead of an earlier report. Other input stays.
+    #[tokio::test]
+    async fn return_to_mailbox_returns_all_agent_mail_in_order() {
+        let worker = AgentPath::try_from("/root/worker").expect("agent path");
+        let mail = |content, trigger_turn| {
+            TurnInput::InterAgentCommunication(make_mail(
+                worker.clone(),
+                AgentPath::root(),
+                content,
+                trigger_turn,
+            ))
+        };
+        let (progress, report, later) = (
+            mail("progress", /*trigger_turn*/ false),
+            mail("report", /*trigger_turn*/ true),
+            mail("later", /*trigger_turn*/ true),
+        );
+        let steer = TurnInput::UserInput {
+            acceptance_order: None,
+            content: vec![UserInput::Text {
+                text: "steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+        };
+        let input_queue = InputQueue::new();
+        let TurnInput::InterAgentCommunication(later_mail) = later.clone() else {
+            unreachable!("later is agent mail");
+        };
+        input_queue
+            .enqueue_mailbox_communication(later_mail, Default::default())
+            .await;
+        let mut items = vec![progress.clone(), steer.clone(), report.clone()];
+
+        let returned = input_queue.return_to_mailbox(&mut items).await;
+        let delivered = input_queue.drain_mailbox_input_items().await.0;
+
+        assert_eq!(
+            (returned, items, delivered),
+            (true, vec![steer], vec![progress, report, later])
+        );
     }
 }

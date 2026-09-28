@@ -4088,6 +4088,23 @@
         }
       ]
     },
+    "SubagentContextReductionToml": {
+      "additionalProperties": false,
+      "description": "`[subagent_context_reduction]`: caps the auto-compaction limit and the auto-shake threshold of subagents. The root agent is unaffected.",
+      "properties": {
+        "enabled": {
+          "description": "Apply the subagent cap. Defaults to `true`.",
+          "type": "boolean"
+        },
+        "threshold_tokens": {
+          "description": "Token count at which subagents shake and then compact, when lower than the limits they would otherwise inherit. Defaults to 272000. Under `model_auto_compact_token_limit_scope = \"body_after_prefix\"` the compaction cap applies to body tokens while the shake cap applies to total tokens.",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -7543,6 +7560,15 @@
         }
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
+    },
+    "subagent_context_reduction": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SubagentContextReductionToml"
+        }
+      ],
+      "default": null,
+      "description": "Lower the context-reduction limits of spawned and resumed subagents so they shake and compact earlier than the root agent."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

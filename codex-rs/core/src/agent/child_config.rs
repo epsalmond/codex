@@ -59,18 +59,38 @@ pub(crate) async fn prepare_agent_spawn_config(
     if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
         reject_full_fork_agent_type_override(options.role_name)?;
     }
-    apply_requested_spawn_agent_model_overrides(
+    let parent_provider_id = config.model_provider_id.clone();
+    let requested_model = options
+        .model
+        .or(turn.config.agent_default_subagent_model.as_deref());
+    let requested_reasoning_effort = options
+        .reasoning_effort
+        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
+    let requested_overrides = apply_requested_spawn_agent_model_overrides(
         session,
         step_context,
         &mut config,
-        options.model,
-        options.reasoning_effort,
+        requested_model,
+        requested_reasoning_effort.clone(),
     )
-    .await?;
+    .await;
     if !options.full_history_fork
         || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
     {
+        // The root catalog only describes the root provider, so a role that switches providers
+        // keeps the unchecked request instead of failing on it.
+        if requested_overrides.is_err() {
+            if let Some(model) = requested_model {
+                config.model = Some(model.to_string());
+            }
+            if requested_reasoning_effort.is_some() {
+                config.model_reasoning_effort = requested_reasoning_effort;
+            }
+        }
         apply_spawn_agent_role(session, &mut config, options.role_name).await?;
+        if config.model_provider_id == parent_provider_id {
+            requested_overrides?;
+        }
         if options.version == SpawnConfigVersion::V2
             && options.full_history_fork
             && config.developer_instructions.is_none()
@@ -79,6 +99,8 @@ pub(crate) async fn prepare_agent_spawn_config(
                 .developer_instructions
                 .clone_from(&turn.developer_instructions);
         }
+    } else {
+        requested_overrides?;
     }
     apply_spawn_agent_service_tier(session, &mut config).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
@@ -151,6 +173,23 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     {
         config.developer_instructions = Some(developer_instructions);
     }
+    // Subagents reuse the root's shake-then-compact path at a lower limit. Taking the
+    // min keeps nested children idempotent and never raises a user-configured limit.
+    if config.subagent_context_reduction.enabled {
+        let threshold_tokens =
+            i64::try_from(config.subagent_context_reduction.threshold_tokens).unwrap_or(i64::MAX);
+        config.model_auto_compact_token_limit = Some(
+            config
+                .model_auto_compact_token_limit
+                .map_or(threshold_tokens, |limit| limit.min(threshold_tokens)),
+        );
+        config.auto_shake.max_threshold_tokens = Some(
+            config
+                .auto_shake
+                .max_threshold_tokens
+                .map_or(threshold_tokens, |cap| cap.min(threshold_tokens)),
+        );
+    }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
@@ -201,9 +240,6 @@ async fn apply_requested_spawn_agent_model_overrides(
     requested_reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), String> {
     let turn = step_context.turn.as_ref();
-    let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
-    let requested_reasoning_effort = requested_reasoning_effort
-        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
     if requested_model.is_none() && requested_reasoning_effort.is_none() {
         return Ok(());
     }
@@ -287,8 +323,12 @@ async fn apply_spawn_agent_role(
 ) -> Result<(), String> {
     let previous_model = config.model.clone();
     let previous_reasoning_effort = config.model_reasoning_effort.clone();
+    let previous_provider_id = config.model_provider_id.clone();
     apply_role_to_config(config, role_name).await?;
-    if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+    // The shared models manager only knows the root provider's catalog.
+    if config.model_provider_id != previous_provider_id
+        || (config.model == previous_model
+            && config.model_reasoning_effort == previous_reasoning_effort)
     {
         return Ok(());
     }
