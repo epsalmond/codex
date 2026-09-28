@@ -1,0 +1,162 @@
+name: fork-ci
+
+# Lean PR gate for the epsalmond/codex fork.
+#
+# Upstream's PR gate (blocking-ci.yml and everything it calls: bazel, rust-ci,
+# sdk, ...) needs paid macos-15-xlarge and self-hosted Windows/Linux runner
+# groups, so it can never pass here. Those workflows are disabled at the repo
+# level (`gh workflow disable`), not deleted, so upstream rebases/merges stay
+# conflict-free. This workflow replaces them for PRs with fmt + clippy + build
+# only, on standard GitHub-hosted ubuntu and macOS runners. Tests are not run
+# here: contributors run them locally before pushing, and the workspace test
+# binaries do not fit a standard runner's disk or time budget. The build step
+# stays so people running the fork's binaries know they build in CI.
+# Pushes to eric/local-features are covered by fork-release.yml.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      # Keep clippy and build in one target/<triple>/debug tree.
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+      # Smaller target dir and cache on standard runners (as upstream CI).
+      CARGO_INCREMENTAL: "0"
+      # Far smaller than the workspace's `debug = "limited"` on disk while
+      # keeping file:line in backtraces.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # clippy --tests over the whole workspace fills much of a standard
+      # runner's root disk. Drop preinstalled toolchains this job never uses.
+      - name: Free runner disk space
+        if: runner.os == 'Linux'
+        working-directory: .
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          if command -v docker >/dev/null 2>&1; then
+            sudo docker image prune --all --force
+          fi
+          df -h /
+
+      # DotSlash and just (for `just fmt-check`), CODEX_REPO_ROOT.
+      - uses: ./.github/actions/setup-ci
+
+      # setup-ci moves CARGO_TARGET_DIR outside the checkout; point it back so
+      # rust-cache's `codex-rs -> target` workspace is the dir actually used.
+      - name: Use in-tree Cargo target dir
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/codex-rs/target" >> "$GITHUB_ENV"
+
+      # libcap-dev (via pkg-config) is required by codex-bwrap's build script.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
+
+      # `just fmt-check` runs ruff through uv (same pin as fork-release.yml).
+      - name: Install uv
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+
+      # setup-rusty-v8 resolves the V8 version with python3.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs -> target
+          key: fork-ci-${{ matrix.target }}
+          # Save the cache even when clippy/build/tests fail, so the next push
+          # to a failing PR does not rebuild cold.
+          cache-on-failure: true
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      # Same fix as fork-release.yml: rust-cache prunes the extracted
+      # librusty_v8.a while the restored fingerprint keeps v8's build script
+      # fresh, so cached builds fail to link. Re-extract it up front.
+      - name: Restore rusty_v8 static library for cached builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUSTY_V8_ARCHIVE"
+          lib_dir="target/${{ matrix.target }}/debug/gn_out/obj"
+          mkdir -p "$lib_dir"
+          gunzip -c "$RUSTY_V8_ARCHIVE" > "$lib_dir/librusty_v8.a"
+          test -s "$lib_dir/librusty_v8.a"
+
+      # Same cheap, offline checks as fork-release.yml's validate job.
+      - name: Test release helpers offline
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          bash .github/scripts/test_fork_release_metadata.sh
+          bash .github/scripts/test_build_fork_deb.sh
+          bash .github/scripts/test_render_brew_formula.sh
+          python3 -m unittest scripts/install/test_shake_install.py
+
+      # Same step as fork-release.yml's validate job: scripts/format.py
+      # --check over just, Rust, Bazel/Starlark (buildifier via DotSlash from
+      # setup-ci), and Python (ruff via uv).
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: just fmt-check
+
+      # codex-voice-host needs GStreamer >= 1.28 (apt ships 1.24) and nothing depends on it.
+      # Mirrors rust-ci-full.yml's clippy step (justfile `clippy` + -D warnings).
+      - name: cargo clippy
+        run: cargo clippy --workspace --exclude codex-voice-host --tests -- -D warnings
+
+      # The binaries fork-release ships, in the dev profile. Their
+      # release-profile build happens in fork-release.yml on push to
+      # eric/local-features.
+      - name: cargo build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --target ${{ matrix.target }} --bin codex --bin codex-code-mode-host
+          df -h /

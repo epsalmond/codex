@@ -101,8 +101,13 @@ pub(crate) fn fork_releases_api_url() -> String {
 fn fork_install_command_for_repo(repo: &str) -> String {
     let script_url =
         format!("https://raw.githubusercontent.com/{repo}/eric/local-features/install.sh");
-    let curl_command = shlex::try_join(["curl", "-fsSL", script_url.as_str()])
-        .expect("static curl command arguments should be shell-joinable");
+    // try_join fails only on NUL bytes, which an environment variable cannot
+    // carry; fall back to the default repo rather than emit an unquoted URL.
+    let curl_command = shlex::try_join(["curl", "-fsSL", script_url.as_str()]).unwrap_or_else(|_| {
+        format!(
+            "curl -fsSL https://raw.githubusercontent.com/{DEFAULT_FORK_REPO}/eric/local-features/install.sh"
+        )
+    });
     format!("{curl_command} | bash")
 }
 

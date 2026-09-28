@@ -22,6 +22,7 @@ use codex_core_api::CodexThread;
 use codex_core_api::Config;
 use codex_core_api::ConfigLayerStack;
 use codex_core_api::Constrained;
+use codex_core_api::DEFAULT_SUBAGENT_CONTEXT_REDUCTION_THRESHOLD_TOKENS;
 use codex_core_api::EnvironmentManager;
 use codex_core_api::EventMsg;
 use codex_core_api::ExecServerRuntimePaths;
@@ -47,6 +48,7 @@ use codex_core_api::SessionSource;
 use codex_core_api::SqliteConfig;
 use codex_core_api::StartIfIdleSubmission;
 use codex_core_api::StartThreadOptions;
+use codex_core_api::SubagentContextReductionConfig;
 use codex_core_api::TerminalResizeReflowConfig;
 use codex_core_api::ThreadManager;
 use codex_core_api::ThreadStoreConfig;
@@ -196,6 +198,11 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_auto_compact_token_limit_scope: AutoCompactTokenLimitScope::Total,
+        auto_shake: Default::default(),
+        subagent_context_reduction: SubagentContextReductionConfig {
+            enabled: true,
+            threshold_tokens: DEFAULT_SUBAGENT_CONTEXT_REDUCTION_THRESHOLD_TOKENS,
+        },
         model_post_turn_compact_threshold_percent: 0,
         model_provider_id,
         model_provider,
