@@ -67,17 +67,17 @@ function requestIndexForOrdinal(ordinal: number): number {
   // (i.e. "this event is part of building toward request N").
   let lo = 0;
   let hi = requests.length - 1;
-  let ans = requests.length + 1; // past the end -> after the last recorded request
+  let answer = requests.length + 1; // past the end -> after the last recorded request
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     if (requests[mid].ordinal > ordinal) {
-      ans = requests[mid].index;
+      answer = requests[mid].index;
       hi = mid - 1;
     } else {
       lo = mid + 1;
     }
   }
-  return ans;
+  return answer;
 }
 
 // --- 2. Walk response_items, classify tool calls, extract files -------------

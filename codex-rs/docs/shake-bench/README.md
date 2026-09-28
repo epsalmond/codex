@@ -62,7 +62,7 @@ adapter difference disclosed below.
 
 Each fixture is a ~35k-token synthetic project conversation: 165 distractor
 exchanges, 325 authoritative state items, provisional values that are later
-corrected, and an answer-free shared tail. It carries 75 pre-selected hidden
+corrected, and an answer-free shared tail. It carries 75 preselected hidden
 questions in five categories (15 each):
 
 `exact_recall`, `relational_state`, `tool_history`, `distractor_resolution`,

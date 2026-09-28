@@ -35,7 +35,7 @@ has() {
   if [[ ! -f "$RS/$file" ]]; then fail "$label — $file is missing"; return; fi
   if grep -Eq -- "$re" "$RS/$file"; then pass "$label"; else fail "$label — $file does not match /$re/"; fi
 }
-hasnt() {
+has_not() {
   local label="$1" file="$2" re="$3"
   if [[ ! -f "$RS/$file" ]]; then fail "$label — $file is missing"; return; fi
   if grep -Eq -- "$re" "$RS/$file"; then fail "$label — $file still matches /$re/"; else pass "$label"; fi
@@ -165,9 +165,9 @@ has "D3 artifact store tests cover a non-boundary offset" \
 # ---- E. no new compiler warnings, checked by source ----------------------
 # Requirement 1. The one warning the checkpoint carries is an unused import the
 # session removed; it is the only warning `cargo check` reported at the cutoff.
-hasnt "E1 unused wiremock body_json import removed" \
+has_not "E1 unused wiremock body_json import removed" \
       core/tests/suite/openai_file_mcp.rs '^use wiremock::matchers::body_json;'
-hasnt "E2 rate_limits.rs no longer clones a Copy timestamp" \
+has_not "E2 rate_limits.rs no longer clones a Copy timestamp" \
       tui/src/status/rate_limits.rs 'format_reset_timestamp\(dt\.clone\(\), captured_at\)'
 
 # ---- F. nothing from the checkpoint regressed -----------------------------
