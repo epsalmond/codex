@@ -1,0 +1,33 @@
+name: fork-upstream-update
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        required: true
+        type: choice
+        options:
+          - upstream
+          - recovery
+      upstream_tag:
+        required: true
+        type: string
+      upstream_sha:
+        required: true
+        type: string
+      fork_sha:
+        required: true
+        type: string
+      recovery_branch:
+        required: false
+        type: string
+      candidate_sha:
+        required: false
+        type: string
+
+jobs:
+  require-feature-branch:
+    if: github.ref == 'refs/heads/fork-automation'
+    runs-on: ubuntu-22.04
+    steps:
+      - run: echo "Dispatch this workflow on eric/local-features." >&2; exit 1
