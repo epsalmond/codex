@@ -1025,12 +1025,6 @@ async fn legacy_rollback_replay_retains_only_surviving_steered_answers() -> Resu
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum LifecycleBoundary {
-    LegacyRollbackReplay,
-    ChildFork,
-}
-
 // Cover live copied history and a truncated referenced checkpoint. Parent-answer
 // omission is already exercised by retained_answers_cross_real_session_boundaries.
 #[test_case(ThreadHistoryMode::Legacy; "copied worker history")]
