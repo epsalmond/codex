@@ -137,10 +137,9 @@ impl ThreadStore for GatedChildMetadataStore {
 async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_order() -> Result<()>
 {
     let server = start_mock_server().await;
-    let initial_url = format!("{}/v1", server.uri());
     let initial = test_codex()
         .with_config(move |config| {
-            configure_multi_agent_v2_with_role(config, &initial_url);
+            configure_multi_agent_v2_with_role(config);
             config
                 .features
                 .enable(Feature::Sqlite)
@@ -217,11 +216,10 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
         started: started_tx,
         completed: completed_tx,
     });
-    let resume_url = format!("{}/v1", server.uri());
     let mut resume_builder = test_codex()
         .with_thread_store(store)
         .with_config(move |config| {
-            configure_multi_agent_v2_with_role(config, &resume_url);
+            configure_multi_agent_v2_with_role(config);
             config
                 .features
                 .enable(Feature::Sqlite)

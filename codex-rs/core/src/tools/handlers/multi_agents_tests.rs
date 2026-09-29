@@ -529,7 +529,7 @@ async fn multi_agent_v2_forked_spawn_rejects_provider_switching_role() {
             .start_thread(StartThreadOptions::new((*turn.config).clone()))
             .await
             .expect("root thread should start");
-        session.services.agent_control = manager.agent_control();
+        set_agent_control(&mut session, manager.agent_control());
         session.thread_id = root.thread_id;
 
         let err = SpawnAgentHandlerV2::default()
@@ -2278,6 +2278,7 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
                 turn_id: Some(aborted_turn.sub_id.clone()),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
             }),

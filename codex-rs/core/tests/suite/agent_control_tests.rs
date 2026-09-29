@@ -408,6 +408,7 @@ async fn host_factory_follows_thread_lifecycle() -> anyhow::Result<()> {
         conversation_id: root_id,
         history: Arc::new(saved.items),
         rollout_path: test.codex.rollout_path(),
+        last_activity_at: None,
     });
     let fork = manager
         .fork_thread_from_history(ForkSnapshot::Interrupted, options(), history.clone())

@@ -4505,6 +4505,7 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
                 conversation_id: context.thread_id,
                 history: Arc::new(context.items),
                 rollout_path: Some(path),
+                last_activity_at: None,
             }),
             auth_manager,
             /*parent_trace*/ None,
@@ -5684,3 +5685,6 @@ async fn remote_v2_compaction_refreshes_instructions_and_preserves_them_on_cold_
 
     Ok(())
 }
+
+#[path = "compact_program_tests.rs"]
+mod program_tests;

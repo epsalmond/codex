@@ -34,7 +34,7 @@ if [[ "$stable_lineage" == none ]]; then
     "$source_version" "$fork_repo" "$release_tag" "$short_commit" \
     "$fork_repo" "$commit"
 else
-  printf "**Build:** Based on upstream \`%s\`; Codex \`%s\`; [fork release tag](https://github.com/%s/releases/tag/%s), source [\`%s\`](https://github.com/%s/commit/%s).\n" \
-    "$stable_lineage" "$source_version" "$fork_repo" "$release_tag" \
+  printf "**Build:** Based on upstream \`%s\`; [upstream release notes](https://github.com/openai/codex/releases/tag/%s); Codex \`%s\`; [fork release tag](https://github.com/%s/releases/tag/%s), source [\`%s\`](https://github.com/%s/commit/%s).\n" \
+    "$stable_lineage" "$stable_lineage" "$source_version" "$fork_repo" "$release_tag" \
     "$short_commit" "$fork_repo" "$commit"
 fi

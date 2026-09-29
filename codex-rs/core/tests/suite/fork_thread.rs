@@ -53,6 +53,7 @@ async fn ephemeral_fork_skips_stored_title_lookup() -> anyhow::Result<()> {
                 conversation_id: test.session_configured.thread_id,
                 history: Arc::new(Vec::new()),
                 rollout_path: None,
+                last_activity_at: None,
             }),
         )
         .await?;

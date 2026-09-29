@@ -40,6 +40,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -283,7 +284,10 @@ async fn streamed_question_precedes_reply_across_resume(
         ],
         vec![StreamingSseChunk {
             gate: None,
-            body: sse(vec![ev_completed("answer-response")]),
+            body: sse(vec![
+                ev_assistant_message("empty-final", ""),
+                ev_completed("answer-response"),
+            ]),
         }],
     ])
     .await;
@@ -341,6 +345,7 @@ async fn streamed_question_precedes_reply_across_resume(
     let retained = history
         .retained_context()
         .context("live retained context")?;
+    assert!(!retained.has_omitted_assistant_messages());
     assert_eq!(
         retained
             .ordered_entries()
@@ -743,7 +748,7 @@ async fn legacy_checkpoint_recovers_root_excerpt_before_discarding_backup(
                 text: "Never publish publicly.".to_owned(),
             }];
             window.push(shortened.into());
-            checkpoint.guardian_history = Some(GuardianHistoryCheckpoint(vec![source]));
+            checkpoint.guardian_history = Some(GuardianHistoryCheckpoint(vec![source.into()]));
         }
         LegacyInstructionSource::ModelWindow => window.push(source.into()),
         LegacyInstructionSource::Missing => expected = legacy,

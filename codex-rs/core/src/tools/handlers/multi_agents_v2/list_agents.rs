@@ -69,7 +69,7 @@ impl Handler {
                 agent_status: agent.status,
                 context: session
                     .services
-                    .agent_control
+                    .local_agent_runtime
                     .agent_context_usage(agent.thread_id)
                     .await,
             });

@@ -512,6 +512,7 @@ async fn local_preparation_is_durable_before_first_input_and_survives_restart(
                 conversation_id: context.thread_id,
                 history: Arc::new(context.items),
                 rollout_path: Some(rollout_path),
+                last_activity_at: None,
             }),
             initial.thread_manager.auth_manager(),
             /*parent_trace*/ None,

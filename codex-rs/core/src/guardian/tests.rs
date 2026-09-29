@@ -1229,6 +1229,7 @@ async fn guardian_prompt_rejects_oversized_environment_ids() -> anyhow::Result<(
 fn format_guardian_action_pretty_preserves_small_payload() -> serde_json::Result<()> {
     let action = GuardianApprovalRequest::ApplyPatch {
         id: "patch-1".to_string(),
+        environment_id: "local".to_string(),
         cwd: test_path_buf("/tmp").abs().into(),
         files: Vec::new(),
         patch: "line\n".to_string(),

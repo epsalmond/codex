@@ -2,6 +2,8 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::ForkSnapshot;
 use codex_core::StartThreadOptions;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -21,6 +23,7 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Regular (non-hidden) `.log` files directly under `dir`, or an empty `Vec`
 /// if it does not exist.
@@ -185,10 +188,20 @@ fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + 
             .context("source rollout for fork")?;
         let mut ephemeral_fork_config = resumed.config.clone();
         ephemeral_fork_config.ephemeral = true;
-        let ephemeral_fork = Box::pin(resumed.thread_manager.fork_thread(
+        let stored_history = resumed
+            .codex
+            .load_history(/*include_archived*/ false)
+            .await?;
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: stored_history.thread_id,
+            history: Arc::new(stored_history.items),
+            rollout_path: Some(source_rollout.clone()),
+            last_activity_at: None,
+        });
+        let ephemeral_fork = Box::pin(resumed.thread_manager.fork_thread_from_history(
             ForkSnapshot::Interrupted,
             StartThreadOptions::new(ephemeral_fork_config),
-            source_rollout.clone(),
+            history.clone(),
         ))
         .await?;
         let ephemeral_fork_artifacts = resumed
@@ -198,10 +211,10 @@ fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + 
         assert!(!ephemeral_fork_artifacts.exists());
         Box::pin(ephemeral_fork.thread.shutdown_and_wait()).await?;
 
-        let forked = Box::pin(resumed.thread_manager.fork_thread(
+        let forked = Box::pin(resumed.thread_manager.fork_thread_from_history(
             ForkSnapshot::Interrupted,
             StartThreadOptions::new(resumed.config.clone()),
-            source_rollout,
+            history,
         ))
         .await?;
         let fork_artifacts = resumed

@@ -1,11 +1,8 @@
 ---
 source: tui/src/history_cell/tests.rs
-assertion_line: 1827
+assertion_line: 1925
 expression: "render_lines(&cell.display_lines(44)).join(\"\\n\")"
 ---
-╭──────────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.154.0) · Shake v0.3… │
-│                                          │
-│ model:     gpt-5.4 high   /model to cha… │
-│ directory: project                       │
-╰──────────────────────────────────────────╯
+
+  >_ OpenAI Codex (v0.154.0) · Shake v0.3.0
+     project

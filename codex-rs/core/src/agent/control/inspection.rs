@@ -2,6 +2,7 @@
 //! Known unloaded agents stay distinct from missing identities and backend failures.
 
 use super::LocalAgentControl;
+use super::LocalAgentRuntime;
 use crate::agent::api::AgentInfo;
 use crate::agent::types::AgentContextUsage;
 use crate::agent::types::LiveAgent;
@@ -30,19 +31,15 @@ impl LocalAgentControl {
             config: Box::new(thread.config_snapshot().await),
         })
     }
+}
 
+impl LocalAgentRuntime {
     /// Returns `None` when the agent is not loaded, so parents can tell unavailable from zero.
     pub(crate) async fn agent_context_usage(
         &self,
         thread_id: ThreadId,
     ) -> Option<AgentContextUsage> {
-        let thread = self
-            .runtime
-            .upgrade()
-            .ok()?
-            .get_thread(thread_id)
-            .await
-            .ok()?;
+        let thread = self.upgrade().ok()?.get_thread(thread_id).await.ok()?;
         Some(thread.session.context_usage().await)
     }
 }

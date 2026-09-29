@@ -64,6 +64,7 @@ async fn local_thread_history_mode_survives_restart(
                 conversation_id: history.thread_id,
                 history: Arc::new(history.items),
                 rollout_path: initial.session_configured.rollout_path.clone(),
+                last_activity_at: None,
             }),
             initial.thread_manager.auth_manager(),
             /*parent_trace*/ None,
