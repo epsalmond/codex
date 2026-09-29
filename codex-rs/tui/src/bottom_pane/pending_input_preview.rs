@@ -17,8 +17,7 @@ use crate::wrapping::adaptive_wrap_lines;
 /// steers explain that they will be submitted after the next tool/result
 /// boundary unless the user invokes the interrupt binding to send them
 /// immediately. The edit hint at the bottom only appears when there are actual
-/// queued user inputs to pop back into the composer. Because some terminals
-/// intercept certain modifier-key combinations, the displayed binding is
+/// queued user inputs to pop back into the composer. The displayed binding is
 /// configurable via [`set_edit_binding`](Self::set_edit_binding).
 pub(crate) struct PendingInputPreview {
     pub pending_steers: Vec<String>,

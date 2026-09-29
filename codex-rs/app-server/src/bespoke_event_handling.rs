@@ -1434,6 +1434,7 @@ async fn start_command_execution_item(
             item: ThreadItem::CommandExecution {
                 id: item_id,
                 model_context,
+                sandbox_type: None,
                 plugin_id,
                 script_path,
                 command,
@@ -1479,6 +1480,7 @@ async fn complete_command_execution_item(
     let item = ThreadItem::CommandExecution {
         id: item_id,
         model_context: completion_item.model_context,
+        sandbox_type: None,
         plugin_id: completion_item.plugin_id,
         script_path: completion_item.script_path,
         command: completion_item.command,
@@ -2496,6 +2498,7 @@ mod tests {
                     payload.item,
                     ThreadItem::CommandExecution {
                         model_context: None,
+                        sandbox_type: None,
                         id: "cmd-1".to_string(),
                         plugin_id: completion_item.plugin_id.clone(),
                         script_path: completion_item.script_path.clone(),
