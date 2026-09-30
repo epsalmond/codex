@@ -71,9 +71,11 @@ payload_dir="$pkg_root/usr/lib/codex-shake"
 install -d -m 0755 "$payload_dir" "$pkg_root/usr/bin" \
   "$pkg_root/usr/share/doc/codex-shake" "$pkg_root/DEBIAN"
 
-# Unpack the tarball flat into the payload dir. The tarball layout is a flat
-# set of files at its root (codex, codex-code-mode-host, and optionally the
-# offline savings estimator payload).
+# Unpack the tarball into the payload dir. Current tarballs are a Codex
+# package (codex-package.json, bin/, codex-path/, codex-resources/) with
+# codex and codex-code-mode-host as root symlinks into bin/; older ones are a
+# flat set of files. Both carry the optional offline savings estimator
+# payload at the root.
 tar -xzf "$tarball" -C "$payload_dir"
 
 [[ -f "$payload_dir/codex" ]] || { echo "build-fork-deb: tarball missing codex" >&2; exit 1; }

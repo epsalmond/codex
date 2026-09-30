@@ -9,7 +9,9 @@
 # exact filename, then `sudo dpkg -i codex-shake_<version>_amd64.deb`).
 #
 # Rerun to update. Installs beside the official `codex`, never over it:
-#   ~/.local/share/codex-shake/<tag>/   codex + codex-code-mode-host (real binaries)
+#   ~/.local/share/codex-shake/<tag>/   Codex package (codex-package.json, bin/,
+#                                       codex-path/, codex-resources/) plus
+#                                       codex -> bin/codex
 #   ~/.local/share/codex-shake/current  -> <tag>
 #   ~/.local/bin/codex-shake            wrapper that execs current/codex
 #
@@ -183,9 +185,12 @@ else
   if [ ! -f "$tmp/unpack/codex" ] || [ ! -f "$tmp/unpack/codex-code-mode-host" ]; then
     die 'tarball did not contain codex and codex-code-mode-host'
   fi
+  # Package-layout releases ship bin/, codex-path/, and codex-resources/
+  # with codex and codex-code-mode-host as root symlinks into bin/; older
+  # releases are a flat set of files. chmod follows the symlinks either way.
   chmod 755 "$tmp/unpack/codex" "$tmp/unpack/codex-code-mode-host"
   if [ "$os" = apple-darwin ] && command -v xattr >/dev/null 2>&1; then
-    xattr -d com.apple.quarantine "$tmp/unpack/codex" "$tmp/unpack/codex-code-mode-host" 2>/dev/null || true
+    xattr -dr com.apple.quarantine "$tmp/unpack" 2>/dev/null || true
   fi
   mkdir -p "$home_dir"
   rm -rf "$install_dir.partial"
