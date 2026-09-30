@@ -271,6 +271,19 @@ mod rollout_payload;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
 
+/// Persisted progress for Shake's sealed, model-visible history prefix.
+///
+/// The watermark is an exclusive envelope index into the associated
+/// `replacement_history`. `epoch_id` changes when that history is replaced or
+/// rolled back across the watermark, and `sealed_prefix_digest` binds the
+/// watermark to the exact stored envelopes before it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ShakeHistoryState {
+    pub epoch_id: String,
+    pub watermark: u64,
+    pub sealed_prefix_digest: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactedItem {
     pub message: String,
@@ -289,6 +302,8 @@ pub struct CompactedItem {
     /// `thread/resume` can restore token usage totals from this field without scanning arbitrarily
     /// far past the compaction.
     pub latest_token_usage_record: Option<TokenUsageRecord>,
+    /// Persisted Shake boundary, tied to the replacement history in this checkpoint.
+    pub shake_history_state: Option<ShakeHistoryState>,
     /// Resume metadata for values not represented by the companion rollout records.
     /// Presence distinguishes explicitly persisted values from legacy fallback reconstruction.
     pub resume_metadata: Option<CompactionResumeMetadata>,
