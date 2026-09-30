@@ -216,6 +216,15 @@ jobs:
           fi
           grep -Fxq "version = \"$SOURCE_VERSION\"" Cargo.toml
 
+      # bwrap (bundled in the Linux package) links libcap via pkg-config.
+      - name: Install Linux bwrap build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
       - name: Cargo build
         shell: bash
         env:
