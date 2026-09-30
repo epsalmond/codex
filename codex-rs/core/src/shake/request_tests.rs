@@ -5,9 +5,13 @@ use super::validate_shake_request_prefix_epoch;
 use super::validate_shake_wire_prefix;
 use codex_api::Reasoning;
 use codex_api::ResponsesApiRequest;
+use codex_api::ResponsesApiTools;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use serde_json::value::RawValue;
+use std::sync::Arc;
 
 fn message(text: &str) -> ResponseItem {
     serde_json::from_value(json!({
@@ -141,6 +145,108 @@ fn dynamic_request_changes_rotate_expectation_without_moving_history_watermark()
 }
 
 #[test]
+fn changed_tools_instructions_and_modalities_each_start_a_new_request_epoch() {
+    let sealed = vec![message("sealed user")];
+    let mut cache_epoch: Option<ShakeRequestCacheEpoch> = None;
+    let initial = request(sealed.clone());
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &initial,
+        Some(&check(sealed.clone(), "history-1")),
+    )
+    .expect("initial request is accepted");
+
+    let mut changed_tools = request(sealed.clone());
+    let raw_tools = RawValue::from_string(
+        r#"[{"type":"function","name":"changed_tool","parameters":{"type":"object"}}]"#.to_string(),
+    )
+    .expect("valid tool JSON");
+    changed_tools.tools = Some(ResponsesApiTools::from(Arc::from(raw_tools)));
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &changed_tools,
+        Some(&check(sealed.clone(), "history-1")),
+    )
+    .expect("changed tools start a new request epoch");
+    let tools_identity = cache_epoch
+        .as_ref()
+        .expect("tool request cache epoch was recorded")
+        .dynamic_identity
+        .clone();
+
+    let mut changed_instructions = request(sealed.clone());
+    changed_instructions.instructions = "changed instructions".to_string();
+    let mut instructions_check = check(sealed.clone(), "history-1");
+    instructions_check.base_instructions = "changed base instructions".to_string();
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &changed_instructions,
+        Some(&instructions_check),
+    )
+    .expect("changed instructions start a new request epoch");
+    let instructions_identity = cache_epoch
+        .as_ref()
+        .expect("instruction request cache epoch was recorded")
+        .dynamic_identity
+        .clone();
+    assert_ne!(instructions_identity, tools_identity);
+
+    let mut modalities_check = check(sealed.clone(), "history-1");
+    modalities_check.input_modalities = vec![InputModality::Text];
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &request(sealed),
+        Some(&modalities_check),
+    )
+    .expect("changed input modalities start a new request epoch");
+    let modalities_identity = cache_epoch
+        .as_ref()
+        .expect("modality request cache epoch was recorded")
+        .dynamic_identity
+        .clone();
+    assert_ne!(modalities_identity, instructions_identity);
+    assert_eq!(cache_epoch.as_ref().map(|epoch| epoch.watermark), Some(1));
+}
+
+#[test]
+fn reasoning_none_and_some_have_distinct_dynamic_request_identities() {
+    let sealed = vec![message("sealed user"), message("sealed assistant")];
+    let mut cache_epoch: Option<ShakeRequestCacheEpoch> = None;
+    let request_without_reasoning = request(sealed.clone());
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &request_without_reasoning,
+        Some(&check(sealed.clone(), "history-1")),
+    )
+    .expect("initial request is accepted");
+    let identity_without_reasoning = cache_epoch
+        .as_ref()
+        .expect("cache epoch was recorded")
+        .dynamic_identity
+        .clone();
+
+    let mut request_with_reasoning = request(sealed.clone());
+    request_with_reasoning.reasoning = Some(Reasoning {
+        effort: None,
+        summary: None,
+        context: None,
+    });
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &request_with_reasoning,
+        Some(&check(sealed, "history-1")),
+    )
+    .expect("the optional reasoning shape starts a new cache expectation");
+    assert_ne!(
+        cache_epoch
+            .as_ref()
+            .expect("cache epoch was updated")
+            .dynamic_identity,
+        identity_without_reasoning
+    );
+}
+
+#[test]
 fn replaced_history_epoch_allows_a_new_prefix() {
     let first_prefix = vec![message("old sealed prefix")];
     let second_prefix = vec![message("new sealed prefix")];
@@ -169,6 +275,50 @@ fn canonical_request_bytes_ignore_nested_object_key_order() {
     assert_eq!(
         crate::shake::watermark::canonical_json_bytes(&first).unwrap(),
         crate::shake::watermark::canonical_json_bytes(&second).unwrap()
+    );
+}
+
+#[test]
+fn sealed_reasoning_item_none_and_empty_content_have_distinct_wire_prefixes() {
+    let reasoning_without_content: ResponseItem = serde_json::from_value(json!({
+        "type": "reasoning",
+        "summary": [],
+        "encrypted_content": null
+    }))
+    .expect("valid reasoning item without content");
+    let reasoning_with_empty_content: ResponseItem = serde_json::from_value(json!({
+        "type": "reasoning",
+        "summary": [],
+        "content": [],
+        "encrypted_content": null
+    }))
+    .expect("valid reasoning item with empty content");
+    let without_content_json = serde_json::to_value(&reasoning_without_content)
+        .expect("serialize reasoning without content");
+    let with_empty_content_json = serde_json::to_value(&reasoning_with_empty_content)
+        .expect("serialize reasoning with empty content");
+    assert_eq!(without_content_json["content"], serde_json::Value::Null);
+    assert!(with_empty_content_json.get("content").is_none());
+    assert_ne!(
+        super::super::watermark::canonical_json_bytes(&reasoning_without_content).unwrap(),
+        super::super::watermark::canonical_json_bytes(&reasoning_with_empty_content).unwrap(),
+    );
+
+    let sealed = vec![reasoning_without_content];
+    let mut cache_epoch: Option<ShakeRequestCacheEpoch> = None;
+    validate_shake_request_prefix_epoch(
+        &mut cache_epoch,
+        &request(sealed.clone()),
+        Some(&check(sealed.clone(), "history-1")),
+    )
+    .expect("serialized reasoning prefix is accepted");
+    assert!(
+        validate_shake_request_prefix_epoch(
+            &mut cache_epoch,
+            &request(vec![reasoning_with_empty_content]),
+            Some(&check(sealed, "history-1")),
+        )
+        .is_err()
     );
 }
 
