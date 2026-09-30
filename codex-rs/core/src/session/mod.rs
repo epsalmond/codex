@@ -1856,12 +1856,13 @@ impl Session {
         let reviewer_compaction_hash = reviewer.comp_hash.clone();
         {
             let mut state = self.state.lock().await;
-            if let Err(error) = state.replace_annotated_history(
+            if let Err(err) = state.replace_annotated_history(
                 history,
                 reference_context_item,
                 HistoryReplacement::Reset,
             ) {
-                warn!(%error, "reset history replacement unexpectedly failed");
+                warn!(%err, "refusing replay history replacement");
+                return None;
             }
             state
                 .history

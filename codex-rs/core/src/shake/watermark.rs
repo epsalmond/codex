@@ -62,9 +62,9 @@ pub(crate) fn matches_history(state: &ShakeHistoryState, items: &[ResponseItemEn
         return false;
     };
     watermark <= items.len()
-        && (state.epoch_id != UNSEALED_REPLAY_EPOCH_ID || watermark == 0)
         && !state.epoch_id.is_empty()
         && state.epoch_id.len() <= 64
+        && (state.epoch_id != UNSEALED_REPLAY_EPOCH_ID || watermark == 0)
         && state.sealed_prefix_digest.len() == SHA1_HEX_LENGTH
         && state
             .sealed_prefix_digest
