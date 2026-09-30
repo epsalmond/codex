@@ -55,6 +55,7 @@ struct FakeInstallerHttp {
 }
 
 #[cfg(unix)]
+#[ignore = "codex-shake disables the upstream updater (settings::FORK_AUTO_UPDATE_ENABLED)"]
 #[tokio::test]
 async fn explicit_update_migrates_running_and_stopped_installations() {
     for (running, local) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -412,6 +413,7 @@ async fn manual_request_recovers_when_one_shot_updater_exits() {
 }
 
 #[cfg(unix)]
+#[ignore = "codex-shake disables the upstream updater (settings::FORK_AUTO_UPDATE_ENABLED)"]
 #[tokio::test]
 async fn unsupported_request_preserves_updater_schedule() {
     use tokio::io::AsyncReadExt;

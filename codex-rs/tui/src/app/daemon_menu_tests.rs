@@ -105,14 +105,14 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
                 "daemon_menu",
                 render_bottom_popup(&app.chat_widget, /*width*/ 80)
             );
-        } else {
-            app.chat_widget.handle_key_event(KeyCode::Down.into());
         }
         assert!(rx.try_recv().is_err());
+        // codex-shake disables the public stable item, so the menu opens on this CLI build.
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
-        assert!(
-            matches!(rx.try_recv().unwrap(), AppEvent::ConfirmDaemonUpdate(selected) if selected == source)
-        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AppEvent::ConfirmDaemonUpdate(DaemonUpdateSource::ThisCli)
+        ));
         app.daemon_cli_executable = Some(
             AbsolutePathBuf::from_absolute_path(if cfg!(windows) {
                 r"C:\cli-build\bin\codex"
@@ -153,14 +153,14 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
                 "daemon_disconnected",
                 render_bottom_popup(&app.chat_widget, /*width*/ 80)
             );
-        } else {
-            app.chat_widget.handle_key_event(KeyCode::Down.into());
         }
         assert!(rx.try_recv().is_err());
+        // codex-shake disables the public stable item, so the menu opens on this CLI build.
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
-        assert!(
-            matches!(rx.try_recv().unwrap(), AppEvent::ConfirmDaemonUpdate(selected) if selected == source)
-        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AppEvent::ConfirmDaemonUpdate(DaemonUpdateSource::ThisCli)
+        ));
         app.confirm_daemon_update(source);
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         assert!(rx.try_recv().is_err());
@@ -182,11 +182,9 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
         "daemon_unpackaged_cli",
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
     );
+    // Without a package and with public stable disabled, nothing is selectable.
     app.chat_widget.handle_key_event(KeyCode::Enter.into());
-    assert!(matches!(
-        rx.try_recv().unwrap(),
-        AppEvent::ConfirmDaemonUpdate(DaemonUpdateSource::PublicStable)
-    ));
+    assert!(rx.try_recv().is_err());
 
     app.daemon_cli_executable = None;
     app.open_daemon_menu();

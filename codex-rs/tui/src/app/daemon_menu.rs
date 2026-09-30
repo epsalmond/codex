@@ -66,11 +66,20 @@ impl App {
         .into_iter()
         .map(|(source, name)| SelectionItem {
             name: name.to_string(),
-            is_disabled: unavailable.is_some(),
-            disabled_reason: (unavailable.is_none()
-                && source == DaemonUpdateSource::ThisCli
-                && !has_package)
-                .then(|| "This CLI has no local package to copy".to_string()),
+            // codex-shake never installs upstream releases into its daemon.
+            is_disabled: unavailable.is_some() || source == DaemonUpdateSource::PublicStable,
+            disabled_reason: if unavailable.is_some() {
+                None
+            } else {
+                match source {
+                    DaemonUpdateSource::PublicStable => {
+                        Some("codex-shake keeps the daemon on this CLI build".to_string())
+                    }
+                    DaemonUpdateSource::ThisCli => {
+                        (!has_package).then(|| "This CLI has no local package to copy".to_string())
+                    }
+                }
+            },
             actions: vec![Box::new(move |tx| {
                 tx.send(AppEvent::ConfirmDaemonUpdate(source));
             })],

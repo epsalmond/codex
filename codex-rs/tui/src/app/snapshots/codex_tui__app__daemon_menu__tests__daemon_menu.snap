@@ -1,12 +1,14 @@
 ---
 source: tui/src/app/daemon_menu_tests.rs
+assertion_line: 104
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Daemon
   Running daemon: v0.153.0
 
 
-› 1. Install latest public stable
-  2. Use this CLI build
+     Install latest public stable (disabled)  codex-shake keeps the daemon on
+                                              this CLI build
+› 1. Use this CLI build
 
   enter select · esc back
