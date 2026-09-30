@@ -183,9 +183,13 @@ pub(crate) async fn apply_shake(
         .await;
         return crate::shake::ShakeResult::default();
     }
+    let prior_shake_state = history.shake_history_state().clone();
     let mut envelopes = history.into_annotated_items();
+    let start = usize::try_from(prior_shake_state.watermark)
+        .unwrap_or(usize::MAX)
+        .min(envelopes.len());
     if let Some(expected) = expected_fingerprint
-        && crate::shake::preview::fingerprint(&envelopes, mode)
+        && crate::shake::preview::fingerprint(&envelopes, mode, &prior_shake_state)
             .ok()
             .as_ref()
             != Some(&expected)
@@ -201,47 +205,66 @@ pub(crate) async fn apply_shake(
         .await;
         return crate::shake::ShakeResult::default();
     }
-    let result = match mode {
-        codex_protocol::protocol::ShakeMode::Images => crate::shake::shake_images(&mut envelopes),
+    let (result, new_watermark) = match mode {
+        codex_protocol::protocol::ShakeMode::Images => {
+            let end = crate::shake::watermark::close_over_tool_calls(&envelopes, envelopes.len())
+                .max(start);
+            let result = crate::shake::shake_images(&mut envelopes[start..end]);
+            (result, end)
+        }
         codex_protocol::protocol::ShakeMode::Thinking => {
-            crate::shake::shake_thinking(&mut envelopes)
+            let end = crate::shake::watermark::close_over_tool_calls(&envelopes, envelopes.len())
+                .max(start);
+            let mut scanned = envelopes[start..end].to_vec();
+            let result = crate::shake::shake_thinking(&mut scanned);
+            let new_watermark = start + scanned.len();
+            envelopes.splice(start..end, scanned);
+            (result, new_watermark)
+        }
+        codex_protocol::protocol::ShakeMode::Elide if ephemeral_elide => {
+            let end = crate::shake::watermark::close_over_tool_calls(&envelopes, envelopes.len())
+                .max(start);
+            (crate::shake::ShakeResult::default(), end)
         }
         codex_protocol::protocol::ShakeMode::Elide => {
-            if ephemeral_elide {
-                crate::shake::ShakeResult::default()
-            } else {
-                let store = sess.artifact_store().await;
-                let mut save = |content: &str, label: &str| match store.save(content, label) {
-                    Ok(uri) => {
-                        // `save` mints its own id inside `uri`; reuse it (and
-                        // the same `label`) to compute the exact path it just
-                        // wrote to, so the placeholder can name it for
-                        // shell-tool search without a second filesystem call.
-                        uri.strip_prefix("artifact://")
-                            .map(|id| store.destination_path(id, label).display().to_string())
-                    }
-                    Err(err) => {
-                        warn!(%err, "failed to save shake artifact; preserving original region");
-                        None
-                    }
-                };
-                // Automatic shake protects a much larger recent tail than a
-                // manual `/shake`: it runs unattended and must not risk
-                // stripping content the agent is actively relying on. The
-                // escalated second automatic pass drops back to the manual
-                // (smaller) protect window, matching oh-my-pi's aggressive
-                // preset, since by this point the plain automatic pass already
-                // proved insufficient.
-                let protect_tokens = match trigger {
-                    ShakeTrigger::Manual | ShakeTrigger::AutomaticEscalated => {
-                        crate::shake::MANUAL_PROTECT_TOKENS
-                    }
-                    ShakeTrigger::Automatic | ShakeTrigger::AutomaticColdResume => {
-                        crate::shake::AUTO_PROTECT_TOKENS
-                    }
-                };
-                crate::shake::shake_elide_with_recovery(&mut envelopes, protect_tokens, &mut save)
-            }
+            let store = sess.artifact_store().await;
+            let mut save = |content: &str, label: &str| match store.save(content, label) {
+                Ok(uri) => {
+                    // `save` mints its own id inside `uri`; reuse it (and
+                    // the same `label`) to compute the exact path it just
+                    // wrote to, so the placeholder can name it for
+                    // shell-tool search without a second filesystem call.
+                    uri.strip_prefix("artifact://")
+                        .map(|id| store.destination_path(id, label).display().to_string())
+                }
+                Err(err) => {
+                    warn!(%err, "failed to save shake artifact; preserving original region");
+                    None
+                }
+            };
+            // Automatic shake protects a much larger recent tail than a
+            // manual `/shake`: it runs unattended and must not risk
+            // stripping content the agent is actively relying on. The
+            // escalated second automatic pass drops back to the manual
+            // (smaller) protect window, matching oh-my-pi's aggressive
+            // preset, since by this point the plain automatic pass already
+            // proved insufficient.
+            let protect_tokens = match trigger {
+                ShakeTrigger::Manual | ShakeTrigger::AutomaticEscalated => {
+                    crate::shake::MANUAL_PROTECT_TOKENS
+                }
+                ShakeTrigger::Automatic | ShakeTrigger::AutomaticColdResume => {
+                    crate::shake::AUTO_PROTECT_TOKENS
+                }
+            };
+            let end = envelopes.len();
+            crate::shake::shake_elide_watermarked(
+                &mut envelopes,
+                start,
+                end,
+                protect_tokens,
+                &mut save,
+            )
         }
     };
 
@@ -262,15 +285,18 @@ pub(crate) async fn apply_shake(
     } else {
         format!("⛭ shake: {}", result.summary_line(mode))
     };
-    if !result.is_noop() {
+    let history_changed = !result.is_noop();
+    let watermark_changed = u64::try_from(new_watermark)
+        .is_ok_and(|watermark| watermark != prior_shake_state.watermark);
+    if history_changed || watermark_changed {
         // Persist a full compaction checkpoint with the post-shake replacement
         // history so a cold resume reconstructs the rewritten (not pre-shake)
-        // context, then update token accounting for the live session.
+        // context and the scan boundary.
         if !sess
             .replace_history_and_persist_after_shake(
                 std::mem::take(&mut envelopes),
                 trigger.compacted_item_message(),
-                /*watermark_index*/ 0,
+                new_watermark,
             )
             .await
         {
@@ -290,7 +316,9 @@ pub(crate) async fn apply_shake(
             .await;
             return crate::shake::ShakeResult::default();
         }
-        sess.recompute_token_usage(turn_context).await;
+        if history_changed {
+            sess.recompute_token_usage(turn_context).await;
+        }
         let resolved_cache_ttl = turn_context
             .config
             .auto_shake

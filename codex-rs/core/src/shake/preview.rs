@@ -18,19 +18,25 @@ impl CodexThread {
             "Cannot preview shake while a turn is in progress."
         );
         let history = self.session.clone_history().await;
+        anyhow::ensure!(
+            history.shake_history_state_is_valid(),
+            "Stored Shake history seal is invalid."
+        );
         let ephemeral = self.session.get_config().await.ephemeral;
         let items = history.annotated_items();
+        let start = usize::try_from(history.shake_history_state().watermark)?;
         let artifact_store = self.session.artifact_store().await;
         // `/shake`'s preview measures what a manual shake would do, so it uses
         // the manual protect-tail size.
         let estimate = estimate_shake(
             items,
+            start,
             mode,
             super::MANUAL_PROTECT_TOKENS,
             /*persistent_thread*/ !ephemeral,
             &artifact_store,
         );
-        let fingerprint = fingerprint(items, mode)?;
+        let fingerprint = fingerprint(items, mode, history.shake_history_state())?;
         Ok(ShakePreview {
             fingerprint,
             tokens_before: estimate.tokens_before,
@@ -67,6 +73,7 @@ const DUMMY_ARTIFACT_ID: &str = "00000000000000000000000000000000";
 /// insert — including the file path.
 pub(crate) fn estimate_shake(
     items: &[ResponseItemEnvelope],
+    start: usize,
     mode: ShakeMode,
     protect_tokens: usize,
     persistent_thread: bool,
@@ -77,25 +84,44 @@ pub(crate) fn estimate_shake(
     let unavailable_reason = (!persistent_thread && mode == ShakeMode::Elide).then(|| {
         "Elide requires a persistent thread so removed text can be recovered.".to_string()
     });
+    let requested_end = reduced.len();
     let result = if unavailable_reason.is_some() {
         super::ShakeResult::default()
     } else {
         match mode {
-            ShakeMode::Elide => super::shake_elide_with_recovery(
-                &mut reduced,
-                protect_tokens,
-                &mut |content, label| {
-                    // Match the store's size limit and the real UUID's encoded length.
-                    (content.len() as u64 <= MAX_ARTIFACT_BYTES).then(|| {
-                        artifact_store
-                            .destination_path(DUMMY_ARTIFACT_ID, label)
-                            .display()
-                            .to_string()
-                    })
-                },
-            ),
-            ShakeMode::Images => super::shake_images(&mut reduced),
-            ShakeMode::Thinking => super::shake_thinking(&mut reduced),
+            ShakeMode::Elide => {
+                super::shake_elide_watermarked(
+                    &mut reduced,
+                    start,
+                    requested_end,
+                    protect_tokens,
+                    &mut |content, label| {
+                        // Match the store's size limit and the real UUID's encoded length.
+                        (content.len() as u64 <= MAX_ARTIFACT_BYTES).then(|| {
+                            artifact_store
+                                .destination_path(DUMMY_ARTIFACT_ID, label)
+                                .display()
+                                .to_string()
+                        })
+                    },
+                )
+                .0
+            }
+            ShakeMode::Images => {
+                let start = start.min(reduced.len());
+                let end =
+                    super::watermark::close_over_tool_calls(&reduced, reduced.len()).max(start);
+                super::shake_images(&mut reduced[start..end])
+            }
+            ShakeMode::Thinking => {
+                let start = start.min(reduced.len());
+                let end =
+                    super::watermark::close_over_tool_calls(&reduced, reduced.len()).max(start);
+                let mut scanned = reduced[start..end].to_vec();
+                let result = super::shake_thinking(&mut scanned);
+                reduced.splice(start..end, scanned);
+                result
+            }
         }
     };
     ShakeEstimate {
@@ -116,10 +142,12 @@ fn sum_item_tokens(items: &[ResponseItemEnvelope]) -> i64 {
 pub(crate) fn fingerprint(
     items: &[ResponseItemEnvelope],
     mode: ShakeMode,
+    history_state: &codex_history::ShakeHistoryState,
 ) -> serde_json::Result<String> {
     // This digest detects stale previews; it is not an authorization token.
     let mut digest = Sha1::new();
     digest.update(mode.as_str());
+    digest.update(serde_json::to_vec(history_state)?);
     for envelope in items {
         digest.update(serde_json::to_vec(&envelope.item)?);
     }
@@ -188,6 +216,7 @@ mod tests {
         );
         let estimate = estimate_shake(
             &history(Some("skills"), "read"),
+            /*start*/ 0,
             ShakeMode::Elide,
             super::super::MANUAL_PROTECT_TOKENS,
             /*persistent_thread*/ true,
@@ -199,6 +228,7 @@ mod tests {
         // Same history with an unprotected tool name is counted.
         let estimate = estimate_shake(
             &history(/*namespace*/ None, "exec_command"),
+            /*start*/ 0,
             ShakeMode::Elide,
             super::super::MANUAL_PROTECT_TOKENS,
             /*persistent_thread*/ true,
@@ -206,5 +236,44 @@ mod tests {
         );
         assert_eq!(estimate.result.tool_outputs_elided, 1);
         assert!(estimate.tokens_after < estimate.tokens_before);
+    }
+
+    #[test]
+    fn preview_does_not_measure_items_before_the_sealed_watermark() {
+        let store = crate::artifacts::ArtifactStore::for_thread(
+            std::path::Path::new("/codex-home"),
+            "preview-thread",
+        );
+        let items = history(/*namespace*/ None, "exec_command");
+        let estimate = estimate_shake(
+            &items,
+            /*start*/ 2,
+            ShakeMode::Elide,
+            super::super::MANUAL_PROTECT_TOKENS,
+            /*persistent_thread*/ true,
+            &store,
+        );
+
+        assert_eq!(estimate.result.tool_outputs_elided, 0);
+        assert_eq!(estimate.tokens_after, estimate.tokens_before);
+    }
+
+    #[test]
+    fn preview_fingerprint_changes_when_the_watermark_changes() {
+        let items = history(/*namespace*/ None, "exec_command");
+        let before = codex_history::ShakeHistoryState {
+            epoch_id: "epoch".to_string(),
+            watermark: 2,
+            sealed_prefix_digest: "0".repeat(40),
+        };
+        let after = codex_history::ShakeHistoryState {
+            watermark: 3,
+            ..before.clone()
+        };
+
+        assert_ne!(
+            fingerprint(&items, ShakeMode::Elide, &before).unwrap(),
+            fingerprint(&items, ShakeMode::Elide, &after).unwrap()
+        );
     }
 }
