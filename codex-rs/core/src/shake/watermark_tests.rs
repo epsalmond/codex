@@ -1,5 +1,7 @@
 use super::*;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
 
@@ -22,6 +24,26 @@ fn function_output(call_id: &str) -> ResponseItemEnvelope {
         name: None,
         namespace: None,
         output: FunctionCallOutputPayload::from_text("done".to_string()),
+        internal_chat_message_metadata_passthrough: None,
+    })
+}
+
+fn image_message(image_url: &str) -> ResponseItemEnvelope {
+    ResponseItemEnvelope::new(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "sealed image".to_string(),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: image_url.to_string(),
+                },
+                detail: None,
+            },
+        ],
+        phase: None,
         internal_chat_message_metadata_passthrough: None,
     })
 }
@@ -55,4 +77,41 @@ fn history_state_rejects_a_watermark_outside_the_history() {
     let items = vec![function_call("call-1")];
 
     assert!(state_for_epoch("epoch-1".to_string(), 2, &items).is_err());
+}
+
+#[test]
+fn media_preparation_migration_starts_a_new_epoch_but_corrupt_seals_stay_invalid() {
+    let legacy_history = vec![image_message("https://example.invalid/legacy.png")];
+    let valid_state = state_for_epoch("legacy-epoch".to_string(), 1, &legacy_history)
+        .expect("legacy history has a valid seal");
+    let prepared_history = vec![ResponseItemEnvelope::new(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "sealed image".to_string(),
+            },
+            ContentItem::InputText {
+                text: "remote image URLs are not supported".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    })];
+
+    let (migrated_state, migrated) =
+        rebase_after_media_preparation(valid_state.clone(), true, &prepared_history);
+    assert!(migrated);
+    assert_ne!(migrated_state.epoch_id, valid_state.epoch_id);
+    assert_eq!(migrated_state.watermark, 0);
+    assert!(matches_history(&migrated_state, &prepared_history));
+
+    let mut corrupt_state = valid_state;
+    corrupt_state.sealed_prefix_digest = "0".repeat(SHA1_HEX_LENGTH);
+    assert!(!matches_history(&corrupt_state, &legacy_history));
+    let (preserved_state, migrated) =
+        rebase_after_media_preparation(corrupt_state.clone(), false, &prepared_history);
+    assert!(!migrated);
+    assert_eq!(preserved_state, corrupt_state);
+    assert!(!matches_history(&preserved_state, &prepared_history));
 }

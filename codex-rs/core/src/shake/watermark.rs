@@ -43,6 +43,18 @@ pub(crate) fn unsealed_replay_state() -> ShakeHistoryState {
     }
 }
 
+pub(crate) fn rebase_after_media_preparation(
+    state: ShakeHistoryState,
+    checkpoint_was_valid: bool,
+    items: &[ResponseItemEnvelope],
+) -> (ShakeHistoryState, bool) {
+    if checkpoint_was_valid && !matches_history(&state, items) {
+        (fresh_epoch(), true)
+    } else {
+        (state, false)
+    }
+}
+
 pub(crate) fn matches_history(state: &ShakeHistoryState, items: &[ResponseItemEnvelope]) -> bool {
     let Ok(watermark) = usize::try_from(state.watermark) else {
         return false;
