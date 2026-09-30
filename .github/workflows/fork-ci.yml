@@ -11,9 +11,13 @@ name: fork-ci
 # here: contributors run them locally before pushing, and the workspace test
 # binaries do not fit a standard runner's disk or time budget. The build step
 # stays so people running the fork's binaries know they build in CI.
-# Pushes to eric/local-features are covered by fork-release.yml.
+# Pushes to eric/local-features run the same job only to write the Cargo cache
+# that PRs restore; the release itself is fork-release.yml.
 on:
   pull_request:
+  push:
+    branches:
+      - eric/local-features
   workflow_dispatch:
 
 permissions:
@@ -21,7 +25,8 @@ permissions:
 
 concurrency:
   group: fork-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A cancelled push run never saves its cache, so only PR runs are superseded.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -107,8 +112,13 @@ jobs:
         with:
           workspaces: codex-rs -> target
           key: fork-ci-${{ matrix.target }}
-          # Save the cache even when clippy/build/tests fail, so the next push
-          # to a failing PR does not rebuild cold.
+          # A PR's cache is readable only by that PR, yet each one is 1.4-1.7 GB
+          # per target, so a few open PRs exhausted the 10 GB repo budget and
+          # evicted the release caches. Only the base branch writes; PRs restore
+          # it (a base-branch cache is visible to its PRs).
+          save-if: ${{ github.ref == 'refs/heads/eric/local-features' }}
+          # Save even when clippy/build fails, so a red push does not leave the
+          # next run cold.
           cache-on-failure: true
 
       - uses: ./.github/actions/setup-rusty-v8
