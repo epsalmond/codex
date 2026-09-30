@@ -1905,6 +1905,31 @@ fn shake_replacement_rejects_drift_inside_the_sealed_prefix() {
 }
 
 #[test]
+fn invalid_restored_shake_seal_stays_invalid_until_explicit_compaction() {
+    let items = vec![user_input_text_msg("sealed user"), assistant_msg("answer")];
+    let mut history = create_history_with_items(items.clone());
+    history.restore_shake_history_state(Some(&codex_history::ShakeHistoryState {
+        epoch_id: "persisted-epoch".to_string(),
+        watermark: 1,
+        sealed_prefix_digest: "0".repeat(40),
+    }));
+    assert!(!history.shake_history_state_is_valid());
+    assert!(
+        history
+            .for_prompt_prefix(/*watermark*/ 1, &default_input_modalities())
+            .is_none()
+    );
+
+    history.replace_annotated(items.into_iter().map(ResponseItemEnvelope::new).collect());
+    assert!(!history.shake_history_state_is_valid());
+
+    let compacted_items = history.annotated_items().to_vec();
+    history.replace_compacted(compacted_items, /*reviewer_compaction_hash*/ None);
+    assert!(history.shake_history_state_is_valid());
+    assert_eq!(history.shake_history_state().watermark, 0);
+}
+
+#[test]
 fn drop_last_n_user_turns_preserves_annotations_for_surviving_developer_fragments() {
     let turn_id = "rolled-back-turn";
     let model_switch = ModelSwitchInstructions::new("switched model instructions").render();

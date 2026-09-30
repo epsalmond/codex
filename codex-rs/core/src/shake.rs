@@ -38,6 +38,7 @@ mod elide;
 pub(crate) mod preview;
 pub(crate) mod protection;
 mod recovery;
+pub(crate) mod request;
 pub(crate) mod watermark;
 pub(crate) use self::elide::shake_elide_watermarked;
 use self::recovery::is_artifact_recovery_output;

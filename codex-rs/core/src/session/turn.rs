@@ -31,6 +31,7 @@ use crate::mentions::collect_tool_mentions_from_messages;
 use crate::plugins::build_plugin_injections;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
+use crate::responses_metadata::ShakeRequestGuard;
 use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
@@ -1985,14 +1986,22 @@ async fn run_sampling_request(
     loop {
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
+        let history_snapshot = sess.clone_history().await;
+        if !history_snapshot.shake_history_state_is_valid() {
+            return Err(CodexErr::Stream(
+                "Shake sealed history state is invalid; refusing to dispatch a Responses request"
+                    .to_string(),
+            ));
+        }
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
-            sess.clone_history()
-                .await
+            history_snapshot
+                .clone()
                 .for_prompt(&step_context.settings.model_info.input_modalities)
         };
         let mut prompt_input = prompt_input;
+        let mut prefix_execution_calls = executed_tool_calls_by_output.clone();
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
@@ -2001,7 +2010,35 @@ async fn run_sampling_request(
             step_context.as_ref(),
             base_instructions.clone(),
         );
-        let responses_metadata = sess
+        let mut prefix_prompt = None;
+        let shake_history_state = history_snapshot.shake_history_state().clone();
+        if shake_history_state.watermark > 0 {
+            if !crate::shake::watermark::matches_history(
+                &shake_history_state,
+                history_snapshot.annotated_items(),
+            ) {
+                return Err(CodexErr::Stream(
+                    "Shake sealed history prefix changed unexpectedly".to_string(),
+                ));
+            }
+            let Some(mut prefix_input) = history_snapshot.for_prompt_prefix(
+                shake_history_state.watermark,
+                &step_context.settings.model_info.input_modalities,
+            ) else {
+                return Err(CodexErr::Stream(
+                    "Shake sealed history prefix could not be rebuilt".to_string(),
+                ));
+            };
+            sess.services
+                .executed_tool_calls
+                .attach_to_prompt(&mut prefix_input, &mut prefix_execution_calls);
+            prefix_prompt = Some(Arc::new(build_prompt(
+                prefix_input,
+                step_context.as_ref(),
+                base_instructions.clone(),
+            )));
+        }
+        let mut responses_metadata = sess
             .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
             .await;
         if crate::guardian::is_basic_session_source(&turn_context.session_source) {
@@ -2012,6 +2049,14 @@ async fn run_sampling_request(
                 &responses_metadata,
             )
             .await?;
+        }
+        if let Some(prefix_prompt) = prefix_prompt {
+            responses_metadata.shake_guard = Some(Arc::new(ShakeRequestGuard {
+                prefix_prompt,
+                history_state: shake_history_state,
+                provider_id: turn_context.config.model_provider_id.as_str().to_string(),
+                input_modalities: step_context.settings.model_info.input_modalities.clone(),
+            }));
         }
         let err = match try_run_sampling_request(
             tool_runtime.clone(),

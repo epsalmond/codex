@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::sync::Arc;
 
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -8,8 +9,10 @@ use codex_analytics::CompactionReason;
 use codex_analytics::CompactionStrategy;
 use codex_analytics::CompactionTrigger;
 use codex_git_utils::SanitizedGitUrl;
+use codex_history::ShakeHistoryState;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::McpAttribution;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
@@ -26,6 +29,7 @@ use crate::client::X_CODEX_PARENT_THREAD_ID_HEADER;
 use crate::client::X_CODEX_TURN_METADATA_HEADER;
 use crate::client::X_CODEX_WINDOW_ID_HEADER;
 use crate::client::X_OPENAI_SUBAGENT_HEADER;
+use crate::client_common::Prompt;
 
 pub(crate) const INSTALLATION_ID_KEY: &str = "installation_id";
 pub(crate) const SESSION_ID_KEY: &str = "session_id";
@@ -43,6 +47,25 @@ pub(crate) const TOOL_NAMESPACES_INFO_KEY: &str = "tool_namespaces_info";
 pub(crate) const TURN_STARTED_AT_UNIX_MS_KEY: &str = "turn_started_at_unix_ms";
 pub(crate) const HISTORY_INGEST_REQUESTED_KEY: &str = "history_ingest_requested";
 pub(crate) const ANALYTICS_ENABLED_KEY: &str = "analytics_enabled";
+
+#[derive(Clone)]
+pub(crate) struct ShakeRequestGuard {
+    pub(crate) prefix_prompt: Arc<Prompt>,
+    pub(crate) history_state: ShakeHistoryState,
+    pub(crate) provider_id: String,
+    pub(crate) input_modalities: Vec<InputModality>,
+}
+
+impl std::fmt::Debug for ShakeRequestGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ShakeRequestGuard")
+            .field("history_state", &self.history_state)
+            .field("provider_id", &self.provider_id)
+            .field("input_modalities", &self.input_modalities)
+            .finish_non_exhaustive()
+    }
+}
 pub(crate) const MCP_ATTRIBUTION_CLIENT_METADATA_KEY: &str = "mcp_attribution";
 pub(crate) const MAX_MCP_ATTRIBUTION_BYTES: usize = 16 * 1024;
 
@@ -264,6 +287,8 @@ pub struct CodexResponsesMetadata {
     pub(crate) analytics_enabled: Option<bool>,
     /// Cumulative MCP attribution for this logical request; body-only and model-invisible.
     pub(crate) mcp_attribution: Option<McpAttribution>,
+    /// Rebuilt sealed-history prefix used to validate the final Responses request.
+    pub(crate) shake_guard: Option<Arc<ShakeRequestGuard>>,
     pub(crate) extra: BTreeMap<String, String>,
 }
 
@@ -306,6 +331,7 @@ impl CodexResponsesMetadata {
             history_ingest_requested: None,
             analytics_enabled: None,
             mcp_attribution: None,
+            shake_guard: None,
             extra: BTreeMap::new(),
         }
     }

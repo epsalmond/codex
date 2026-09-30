@@ -595,6 +595,23 @@ impl ContextManager {
             .collect()
     }
 
+    pub(crate) fn for_prompt_prefix(
+        &self,
+        watermark: u64,
+        input_modalities: &[InputModality],
+    ) -> Option<Vec<ResponseItem>> {
+        let watermark = usize::try_from(watermark).ok()?;
+        if watermark > self.items.len()
+            || !self.shake_history_state_valid
+            || !watermark::matches_history(&self.shake_history_state, &self.items)
+        {
+            return None;
+        }
+        let mut prefix = self.clone();
+        prefix.items = Arc::new(self.items[..watermark].to_vec());
+        Some(prefix.for_prompt(input_modalities))
+    }
+
     /// Returns normalized history envelopes for internal consumers that must retain metadata.
     pub(crate) fn for_prompt_annotated(
         mut self,
