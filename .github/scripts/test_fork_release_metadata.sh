@@ -129,6 +129,42 @@ if bash "$metadata_script" \
 fi
 
 grep -Fq 'bash .github/scripts/fork-release-notes.sh' "$workflow_file"
+grep -Fq '      - "local-features-v*"' "$workflow_file"
+grep -Fq 'group: ${{ github.workflow }}-${{ github.ref }}' "$workflow_file"
+grep -Fq "if: github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN" "$workflow_file"
+grep -Fq "HAS_APP_PRIVATE_KEY: \${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}" "$workflow_file"
+grep -Fq 'uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0' "$workflow_file"
+grep -Fq 'client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}' "$workflow_file"
+grep -Fq 'repositories: codex' "$workflow_file"
+grep -Fq 'permission-contents: write' "$workflow_file"
+grep -Fq 'permission-workflows: write' "$workflow_file"
+grep -Fq 'APP_SLUG: ${{ steps.publisher-token.outputs.app-slug }}' "$workflow_file"
+grep -Fq 'EXPECTED_BOT_LOGIN: ${{ vars.RELEASE_APP_BOT_LOGIN }}' "$workflow_file"
+grep -Fq 'GH_TOKEN: ${{ steps.publisher-token.outputs.token }}' "$workflow_file"
+publish_permissions=$(sed -n '/^  publish:$/,/^    steps:$/p' "$workflow_file")
+grep -Fq '      contents: read' <<< "$publish_permissions"
+if grep -Fq '      contents: write' <<< "$publish_permissions"; then
+  echo "publish job should not grant write access to GITHUB_TOKEN" >&2
+  exit 1
+fi
+config_block=$(sed -n '/^      - name: Verify release publisher configuration$/,/^  validate:$/p' "$workflow_file")
+if grep -Fq '        if:' <<< "$config_block"; then
+  echo "publisher configuration must be checked for branch and tag releases" >&2
+  exit 1
+fi
+publisher_token_block=$(sed -n '/^      - name: Create release publisher token$/,/^      - name: Verify release publisher identity$/p' "$workflow_file")
+if grep -Fq '        if:' <<< "$publisher_token_block"; then
+  echo "publisher App token must be used for branch and tag releases" >&2
+  exit 1
+fi
+metadata_line=$(grep -n '^      - name: Resolve event identity$' "$workflow_file" | cut -d: -f1)
+config_line=$(grep -n '^      - name: Verify release publisher configuration$' "$workflow_file" | cut -d: -f1)
+validate_line=$(grep -n '^  validate:$' "$workflow_file" | cut -d: -f1)
+verify_artifacts_line=$(grep -n '^      - name: Verify artifacts and compose release body$' "$workflow_file" | cut -d: -f1)
+token_line=$(grep -n '^      - name: Create release publisher token$' "$workflow_file" | cut -d: -f1)
+publish_line=$(grep -n '^      - name: Create or update release after identity verification$' "$workflow_file" | cut -d: -f1)
+[[ "$metadata_line" -lt "$config_line" && "$config_line" -lt "$validate_line" ]]
+[[ "$verify_artifacts_line" -lt "$token_line" && "$token_line" -lt "$publish_line" ]]
 sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
 body=$(bash "$script_dir/fork-release-notes.sh" \
   "$fixture" epsalmond/codex eric/local-features "$merge_sha" \

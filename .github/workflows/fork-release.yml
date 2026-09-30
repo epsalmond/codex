@@ -37,12 +37,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: fork-release
+  # The publisher App's tag push starts a tag event while this branch run is
+  # still publishing. Keep that recovery/no-op run from cancelling the release.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   prepare:
     name: Prepare exact release identity
+    # The App-created tag event is already represented by the branch-merge
+    # release run. Skip only that exact App actor; human tag pushes remain the
+    # documented recovery path.
+    if: github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN
     runs-on: ubuntu-22.04
     outputs:
       release_sha: ${{ steps.metadata.outputs.release_sha }}
@@ -85,6 +91,27 @@ jobs:
             --upstream-sha "$UPSTREAM_SHA" \
             --fork-sha "$FORK_SHA" \
             --output "$GITHUB_OUTPUT"
+
+      - name: Verify release publisher configuration
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          APP_BOT_LOGIN: ${{ vars.RELEASE_APP_BOT_LOGIN }}
+          HAS_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_CLIENT_ID" ]]; then
+            echo "::error::Set the RELEASE_APP_CLIENT_ID repository variable before release publishing" >&2
+            exit 1
+          fi
+          if [[ -z "$APP_BOT_LOGIN" ]]; then
+            echo "::error::Set the RELEASE_APP_BOT_LOGIN repository variable before release publishing" >&2
+            exit 1
+          fi
+          if [[ "$HAS_APP_PRIVATE_KEY" != true ]]; then
+            echo "::error::Set the RELEASE_APP_PRIVATE_KEY repository secret before release publishing" >&2
+            exit 1
+          fi
 
   validate:
     name: Validate workflow and updater
@@ -298,7 +325,7 @@ jobs:
     needs: [prepare, validate, build]
     runs-on: ubuntu-22.04
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -373,10 +400,33 @@ jobs:
             "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version.txt)" \
             "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" > release-body.md
 
+      - name: Create release publisher token
+        id: publisher-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: codex
+          permission-contents: write
+          permission-workflows: write
+
+      - name: Verify release publisher identity
+        shell: bash
+        env:
+          APP_SLUG: ${{ steps.publisher-token.outputs.app-slug }}
+          EXPECTED_BOT_LOGIN: ${{ vars.RELEASE_APP_BOT_LOGIN }}
+        run: |
+          set -euo pipefail
+          if [[ "${APP_SLUG}[bot]" != "$EXPECTED_BOT_LOGIN" ]]; then
+            echo "::error::RELEASE_APP_BOT_LOGIN must exactly match the publisher App's bot login" >&2
+            exit 1
+          fi
+
       - name: Create or update release after identity verification
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.publisher-token.outputs.token }}
           FORK_REPO: ${{ github.repository }}
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
@@ -385,6 +435,10 @@ jobs:
           DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
           set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::No release publisher token is available for source kind $SOURCE_KIND" >&2
+            exit 1
+          fi
           shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' codex-rs/tui/src/fork_update.rs)
           test -n "$shake_version"
           assets=(
