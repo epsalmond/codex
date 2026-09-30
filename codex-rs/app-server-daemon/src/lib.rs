@@ -6,6 +6,7 @@ pub use backend::windows::DetachedLaunchRestricted;
 #[cfg(windows)]
 use backend::windows::try_lock_file;
 mod client;
+mod fork_follow;
 mod install_lock;
 mod launch;
 pub use launch::restart_with_features;
@@ -227,8 +228,12 @@ pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     if matches!(command, LifecycleCommand::Start | LifecycleCommand::Restart) {
         backend::windows::ensure_not_elevated()?;
     }
+    let daemon = Daemon::from_environment()?;
+    if command == LifecycleCommand::Start {
+        fork_follow::follow_cli_package(&daemon).await;
+    }
     // Keep daemon package preparation off callers' async stack frames.
-    Box::pin(Daemon::from_environment()?.run(command)).await
+    Box::pin(daemon.run(command)).await
 }
 
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
@@ -289,6 +294,10 @@ pub async fn update(
     ensure_supported_platform()?;
     #[cfg(windows)]
     backend::windows::ensure_not_elevated()?;
+    anyhow::ensure!(
+        settings::FORK_AUTO_UPDATE_ENABLED,
+        "codex-shake does not install upstream Codex releases; run `codex-shake-update`, which also updates the background server"
+    );
     update_loop::request_manual_update(&Daemon::from_environment()?, http_client_factory).await
 }
 

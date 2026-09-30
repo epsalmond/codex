@@ -18,6 +18,7 @@ pub async fn start_with_features(features: &BTreeMap<String, bool>) -> Result<Li
     crate::backend::windows::ensure_not_elevated()?;
     let mut daemon = Daemon::from_environment()?;
     daemon.log_diagnostics = true;
+    crate::fork_follow::follow_cli_package(&daemon).await;
     let _operation_lock = daemon.acquire_operation_lock().await?;
     let selected = daemon.current_installation()?;
     let mut overrides = selected.load_settings().await?.feature_overrides;

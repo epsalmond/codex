@@ -153,3 +153,53 @@ async fn telemetry_distinguishes_presence_from_default_values() -> anyhow::Resul
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn fork_policy_disables_upstream_auto_update() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("settings.json");
+    tokio::fs::write(
+        &path,
+        r#"{"remoteControlEnabled":true,"updater":{"autoUpdateEnabled":true,"updateIntervalMinutes":17}}"#,
+    )
+    .await
+    .expect("write settings");
+
+    let settings = DaemonSettings::load(&path).await.expect("load settings");
+    assert_eq!(
+        settings,
+        DaemonSettings {
+            remote_control_enabled: true,
+            auto_update_enabled: false,
+            update_interval_minutes: 17,
+            ..DaemonSettings::default()
+        }
+    );
+    let updater = super::UpdaterSettings::load(&path)
+        .await
+        .expect("load updater settings");
+    assert_eq!(
+        (updater.auto_update_enabled, updater.update_interval_minutes),
+        (false, 17)
+    );
+
+    tokio::fs::write(&path, r#"{"remoteControlEnabled":true}"#)
+        .await
+        .expect("write settings without updater");
+    DaemonSettings::load(&path)
+        .await
+        .expect("load settings")
+        .save(&path)
+        .await
+        .expect("save settings");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &tokio::fs::read(&path).await.expect("read settings")
+        )
+        .expect("parse settings"),
+        serde_json::json!({
+            "remoteControlEnabled": true,
+            "updater": {"autoUpdateEnabled": false},
+        })
+    );
+}

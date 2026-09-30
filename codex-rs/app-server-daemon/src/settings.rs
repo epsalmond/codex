@@ -15,6 +15,11 @@ pub(crate) const DEFAULT_UPDATE_INTERVAL_MINUTES: u32 = 60;
 pub(crate) const DEFAULT_SHUTDOWN_GRACE_SECONDS: u32 = 60;
 pub(crate) const MAX_SHUTDOWN_GRACE_SECONDS: u32 = 5 * 60;
 
+/// codex-shake fork policy: the managed daemon runs the codex-shake CLI package
+/// and must never be replaced by the upstream production installer, so the
+/// upstream auto-updater is always disabled regardless of stored settings.
+pub(crate) const FORK_AUTO_UPDATE_ENABLED: bool = false;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DaemonSettings {
     pub(crate) remote_control_enabled: bool,
@@ -29,7 +34,7 @@ impl Default for DaemonSettings {
         Self {
             remote_control_enabled: false,
             feature_overrides: BTreeMap::new(),
-            auto_update_enabled: true,
+            auto_update_enabled: FORK_AUTO_UPDATE_ENABLED,
             update_interval_minutes: DEFAULT_UPDATE_INTERVAL_MINUTES,
             shutdown_grace_seconds: DEFAULT_SHUTDOWN_GRACE_SECONDS,
         }
@@ -108,8 +113,9 @@ impl UpdaterSettings {
     pub(crate) async fn load(settings_file: &Path) -> Result<Self> {
         let settings: StoredSettings = read_settings(settings_file).await?;
         validate_shutdown_grace(settings.shutdown_grace_seconds)?;
-        let settings = settings.updater;
+        let mut settings = settings.updater;
         settings.validate()?;
+        settings.auto_update_enabled = FORK_AUTO_UPDATE_ENABLED;
         Ok(settings)
     }
 
@@ -134,7 +140,7 @@ impl DaemonSettings {
         Ok(Self {
             remote_control_enabled: settings.remote_control_enabled,
             feature_overrides: settings.feature_overrides,
-            auto_update_enabled: settings.updater.auto_update_enabled,
+            auto_update_enabled: FORK_AUTO_UPDATE_ENABLED,
             update_interval_minutes: settings.updater.update_interval_minutes,
             shutdown_grace_seconds: settings.shutdown_grace_seconds,
         })
@@ -168,6 +174,20 @@ impl DaemonSettings {
             "remoteControlEnabled".to_string(),
             Value::Bool(self.remote_control_enabled),
         );
+        // Persist the fork policy so an upstream daemon binary left over from
+        // an earlier auto-update also reads the updater as disabled.
+        let updater = settings
+            .entry("updater".to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !updater.is_object() {
+            *updater = Value::Object(Map::new());
+        }
+        if let Some(updater) = updater.as_object_mut() {
+            updater.insert(
+                "autoUpdateEnabled".to_string(),
+                Value::Bool(FORK_AUTO_UPDATE_ENABLED),
+            );
+        }
         if self.feature_overrides.is_empty() {
             settings.remove("featureOverrides");
         } else {
