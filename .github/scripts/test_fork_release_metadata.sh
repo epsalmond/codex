@@ -137,7 +137,7 @@ body=$(bash "$script_dir/fork-release-notes.sh" \
 
 # The poll workflow reads this one-line release identity to identify the
 # upstream base tag. The body pins documentation and source commit links.
-grep -Fq "**Build:** Based on upstream \`rust-v2.0.0\`; Codex \`0.154.0\`" <<< "$body"
+grep -Fq "**Build:** Based on upstream \`rust-v2.0.0\`; [upstream release notes](https://github.com/openai/codex/releases/tag/rust-v2.0.0); Codex \`0.154.0\`" <<< "$body"
 grep -Fq "https://github.com/epsalmond/codex/releases/tag/$sample_release_tag" <<< "$body"
 grep -Fq "https://github.com/epsalmond/codex/commit/$merge_sha" <<< "$body"
 grep -Fq "https://github.com/epsalmond/codex/blob/$merge_sha/codex-rs/docs/example.md" <<< "$body"

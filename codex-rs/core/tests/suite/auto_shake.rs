@@ -739,7 +739,10 @@ async fn cold_resume_shakes_when_the_prompt_cache_has_expired(case: ColdResumeCa
     Box::pin(fixture.codex.inject_response_items(oversized_history()?)).await?;
 
     let state_db = fixture.codex.state_db().expect("SQLite state DB enabled");
-    let log_layer = codex_state::log_db::start(state_db.clone());
+    let log_layer = codex_state::log_db::start(
+        state_db.clone(),
+        Arc::new(codex_feedback::CodexFeedback::new()),
+    );
     let subscriber = tracing_subscriber::registry().with(log_layer.clone());
     let _default = tracing::subscriber::set_default(subscriber);
 

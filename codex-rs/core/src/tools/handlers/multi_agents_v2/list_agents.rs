@@ -45,14 +45,15 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: ListAgentsArgs = parse_arguments(&arguments)?;
-        session
-            .services
-            .agent_control
-            .register_session_root(session.thread_id, turn.parent_thread_id);
         let agents = session
             .services
             .agent_control
-            .list_agents(&turn.session_source, args.path_prefix.as_deref())
+            .list(
+                session.thread_id,
+                turn.parent_thread_id,
+                &turn.session_source,
+                args.path_prefix.as_deref(),
+            )
             .await
             .map_err(collab_spawn_error)?;
 
@@ -68,7 +69,7 @@ impl Handler {
                 agent_status: agent.status,
                 context: session
                     .services
-                    .agent_control
+                    .local_agent_runtime
                     .agent_context_usage(agent.thread_id)
                     .await,
             });
