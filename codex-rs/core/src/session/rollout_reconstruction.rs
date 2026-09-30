@@ -11,6 +11,8 @@ use uuid::Uuid;
 #[derive(Debug, PartialEq)]
 pub(super) struct RolloutReconstruction {
     pub(super) history: Vec<ResponseItemEnvelope>,
+    pub(super) shake_history_state: codex_history::ShakeHistoryState,
+    pub(super) shake_history_state_valid: bool,
     pub(super) retained_context: codex_history::RetainedContext,
     pub(super) guardian_history: Option<codex_history::GuardianHistoryCheckpoint>,
     pub(super) last_started_turn_id: Option<String>,
@@ -397,11 +399,16 @@ impl Session {
             &turn_context.session_source,
             &turn_context.config.features,
         );
+        // Legacy rollouts do not carry a runtime epoch. Use a stable placeholder so independent
+        // full and bounded replays compare deterministically; the live installer replaces it
+        // with a UUID before request caching or checkpointing.
+        history.restore_shake_history_state(None);
         let mut saw_legacy_compaction_without_replacement_history = false;
         if let Some(checkpoint) = history_checkpoint
             && let Some(items) = &checkpoint.compacted.replacement_history
         {
             history.replace_annotated(items.clone());
+            history.restore_shake_history_state(checkpoint.compacted.shake_history_state.as_ref());
             history.restore_review_context(
                 checkpoint.compacted.retained_context.as_ref(),
                 checkpoint.compacted.guardian_history.as_ref(),
@@ -523,6 +530,8 @@ impl Session {
         RolloutReconstruction {
             retained_context: history.retained_context().clone(),
             guardian_history: history.guardian_history_checkpoint(),
+            shake_history_state: history.shake_history_state().clone(),
+            shake_history_state_valid: history.shake_history_state_is_valid(),
             last_started_turn_id,
             history: history.into_annotated_items(),
             previous_turn_settings,

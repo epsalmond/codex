@@ -1426,8 +1426,15 @@ impl Session {
         &self,
         items: Vec<codex_history::ResponseItemEnvelope>,
         message: String,
-    ) {
-        let (window_number, window_ids) = self.advance_auto_compact_window().await;
+        watermark_index: usize,
+    ) -> bool {
+        let (window_number, window_ids) = {
+            let state = self.state.lock().await;
+            (
+                state.auto_compact_window_number(),
+                state.auto_compact_window_ids(),
+            )
+        };
         self.replace_compacted_history(
             items,
             /*reference_context_item*/ None,
@@ -1438,10 +1445,11 @@ impl Session {
                 window_ids,
                 compaction_response_id: None,
                 compaction_model_hash: None,
+                shake_watermark_index: Some(watermark_index),
                 reviewer_compaction_hash: None,
             },
         )
-        .await;
+        .await
     }
     pub(crate) fn live_thread(&self) -> Option<&LiveThread> {
         self.services.live_thread.as_ref()
@@ -1759,6 +1767,8 @@ impl Session {
     ) -> Option<PreviousTurnSettings> {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
+            shake_history_state,
+            shake_history_state_valid,
             retained_context,
             guardian_history,
             last_started_turn_id,
@@ -1803,16 +1813,38 @@ impl Session {
             .zip(metadata)
             .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
             .collect();
+        let shake_history_state = if shake_history_state_valid {
+            usize::try_from(shake_history_state.watermark)
+                .ok()
+                .filter(|watermark| *watermark <= history.len())
+                .map(|watermark| {
+                    crate::shake::watermark::state_for_epoch(
+                        shake_history_state.epoch_id.clone(),
+                        watermark,
+                        &history,
+                    )
+                })
+                .and_then(Result::ok)
+                .unwrap_or(shake_history_state)
+        } else {
+            shake_history_state
+        };
         let context = crate::guardian::GuardianReviewContext::from(turn_context);
         let (_, reviewer) = crate::guardian::resolve_review_model(self, &context).await;
         let reviewer_compaction_hash = reviewer.comp_hash.clone();
         {
             let mut state = self.state.lock().await;
-            state.replace_annotated_history(
+            if let Err(error) = state.replace_annotated_history(
                 history,
                 reference_context_item,
                 HistoryReplacement::Reset,
-            );
+            ) {
+                warn!(%error, "reset history replacement unexpectedly failed");
+            }
+            state
+                .history
+                .restore_shake_history_state(Some(&shake_history_state));
+            state.history.activate_reconstructed_shake_history_state();
             state.history.restore_review_context(
                 Some(&retained_context),
                 guardian_history.as_ref(),
@@ -4160,8 +4192,8 @@ impl Session {
         mut items: Vec<ResponseItemEnvelope>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
-        metadata: CompactedHistoryMetadata,
-    ) {
+        mut metadata: CompactedHistoryMetadata,
+    ) -> bool {
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
@@ -4207,13 +4239,23 @@ impl Session {
                     }
                     (!retained.is_empty()).then(|| WorldStateSnapshot::from(&retained))
                 });
-            state.replace_annotated_history(
-                items,
-                reference_context_item.clone(),
-                HistoryReplacement::Compaction {
+            let replacement = match metadata.shake_watermark_index {
+                Some(watermark_index) => HistoryReplacement::Shake { watermark_index },
+                None => HistoryReplacement::Compaction {
                     reviewer_compaction_hash: metadata.reviewer_compaction_hash,
                 },
-            );
+            };
+            if let Err(err) =
+                state.replace_annotated_history(items, reference_context_item.clone(), replacement)
+            {
+                warn!(%err, "refusing shake checkpoint because its sealed prefix changed");
+                return false;
+            }
+            if metadata.shake_watermark_index.is_some() {
+                let (window_number, window_ids) = state.advance_auto_compact_window();
+                metadata.window_number = window_number;
+                metadata.window_ids = window_ids;
+            }
             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
             if let Some(snapshot) = snapshot {
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_object()));
@@ -4234,7 +4276,7 @@ impl Session {
                 window_id: Some(metadata.window_ids.window_id.to_string()),
                 compaction_response_id: metadata.compaction_response_id,
                 latest_token_usage_record: state.latest_token_usage_record.clone(),
-                shake_history_state: None,
+                shake_history_state: Some(state.history.shake_history_state().clone()),
                 resume_metadata: Some(CompactionResumeMetadata {
                     multi_agent_version: self.multi_agent_version(),
                     last_started_turn_id: state.last_started_turn_id.clone(),
@@ -4266,6 +4308,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+        true
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {
@@ -4702,6 +4745,7 @@ impl Session {
                 window_ids,
                 compaction_response_id: None,
                 compaction_model_hash: None,
+                shake_watermark_index: None,
                 reviewer_compaction_hash: None,
             },
         )

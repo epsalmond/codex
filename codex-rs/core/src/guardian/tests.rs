@@ -2697,6 +2697,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                 window_ids,
                 compaction_response_id: None,
                 compaction_model_hash: Some("test-checkpoint".to_owned()),
+                shake_watermark_index: None,
                 reviewer_compaction_hash: Some("test-checkpoint".to_owned()),
             },
         )

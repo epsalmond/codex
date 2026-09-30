@@ -37,6 +37,7 @@ pub(crate) mod auto;
 pub(crate) mod preview;
 pub(crate) mod protection;
 mod recovery;
+pub(crate) mod watermark;
 use self::protection::protected_output_flags;
 use self::recovery::is_artifact_recovery_output;
 use self::recovery::recovery_placeholder;

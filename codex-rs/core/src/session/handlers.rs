@@ -171,7 +171,19 @@ pub(crate) async fn apply_shake(
         mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
 
     // Load the live model history and apply the surgical reduction.
-    let mut envelopes = sess.clone_history().await.into_annotated_items();
+    let history = sess.clone_history().await;
+    if !history.shake_history_state_is_valid() {
+        sess.send_event(
+            turn_context,
+            EventMsg::Warning(WarningEvent {
+                message: "⛭ shake: Stored history seal is invalid; history was left unchanged."
+                    .to_string(),
+            }),
+        )
+        .await;
+        return crate::shake::ShakeResult::default();
+    }
+    let mut envelopes = history.into_annotated_items();
     if let Some(expected) = expected_fingerprint
         && crate::shake::preview::fingerprint(&envelopes, mode)
             .ok()
@@ -254,11 +266,30 @@ pub(crate) async fn apply_shake(
         // Persist a full compaction checkpoint with the post-shake replacement
         // history so a cold resume reconstructs the rewritten (not pre-shake)
         // context, then update token accounting for the live session.
-        sess.replace_history_and_persist_after_shake(
-            std::mem::take(&mut envelopes),
-            trigger.compacted_item_message(),
-        )
-        .await;
+        if !sess
+            .replace_history_and_persist_after_shake(
+                std::mem::take(&mut envelopes),
+                trigger.compacted_item_message(),
+                /*watermark_index*/ 0,
+            )
+            .await
+        {
+            warn!(
+                target: "codex_core::shake",
+                thread_id = %sess.thread_id,
+                turn_id = %turn_context.sub_id,
+                "refusing shake because its replacement changed the sealed history prefix"
+            );
+            sess.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: "⛭ shake: History changed while validating the sealed prefix; no changes were applied."
+                        .to_string(),
+                }),
+            )
+            .await;
+            return crate::shake::ShakeResult::default();
+        }
         sess.recompute_token_usage(turn_context).await;
         let resolved_cache_ttl = turn_context
             .config
