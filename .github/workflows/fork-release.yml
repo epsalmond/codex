@@ -221,7 +221,14 @@ jobs:
         env:
           CODEX_FORK_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
-        run: cargo build --release --bin codex --bin codex-code-mode-host
+        run: |
+          set -euo pipefail
+          bins=(--bin codex --bin codex-code-mode-host)
+          # The package layout needs the bundled bubblewrap sandbox on Linux.
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            bins+=(--bin bwrap)
+          fi
+          cargo build --release "${bins[@]}"
 
       - name: Verify binary version
         shell: bash
@@ -278,27 +285,54 @@ jobs:
           ldd --version | awk 'NR == 1 { print $NF }' > glibc-version.txt
           test -s glibc-version.txt
 
-      # Keep every shipped file at the archive root. The payload check makes
-      # an incomplete archive fail before it can be uploaded to the publish
-      # job.
+      # Build the canonical Codex package layout (codex-package.json, bin/,
+      # codex-path/rg, codex-resources/) that the app-server daemon needs to
+      # seed its managed install, then add the Shake extras at the package
+      # root. Root-level codex and codex-code-mode-host symlinks keep older
+      # install.sh copies, the .deb builder, and the Homebrew formula
+      # working; codex canonicalizes to bin/codex so the layout is detected.
+      # The payload check makes an incomplete archive fail before it can be
+      # uploaded to the publish job.
       - name: Package archive
         shell: bash
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
           archive="codex-$target.tar.gz"
-          stage=$(mktemp -d)
-          trap 'rm -rf "$stage"' EXIT
-          install -m 755 target/release/codex target/release/codex-code-mode-host "$stage/"
+          stage="$RUNNER_TEMP/codex-package-$target"
+          package_args=(
+            --target "$target"
+            --variant codex
+            --package-version "$SOURCE_VERSION"
+            --cargo-profile release
+            --entrypoint-bin target/release/codex
+            --code-mode-host-bin target/release/codex-code-mode-host
+            --package-dir "$stage"
+            --force
+          )
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            package_args+=(--bwrap-bin target/release/bwrap)
+          fi
+          python3 "$GITHUB_WORKSPACE/scripts/build_codex_package.py" "${package_args[@]}"
           install -m 755 docs/shake-bench/scripts/codex-shake-estimate \
             docs/shake-bench/scripts/shake-savings-estimate.py "$stage/"
           install -m 644 docs/shake-bench/scripts/pricing_lib.py \
             docs/shake-bench/pricing.json "$stage/"
+          ln -s bin/codex "$stage/codex"
+          ln -s bin/codex-code-mode-host "$stage/codex-code-mode-host"
           tar -C "$stage" -czf "$archive" \
+            codex-package.json bin codex-path codex-resources \
             codex codex-code-mode-host codex-shake-estimate \
             shake-savings-estimate.py pricing_lib.py pricing.json
 
           required=(
+            codex-package.json
+            bin/codex
+            bin/codex-code-mode-host
+            codex-path/rg
             codex
             codex-code-mode-host
             codex-shake-estimate
@@ -306,8 +340,15 @@ jobs:
             pricing_lib.py
             pricing.json
           )
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            required+=(codex-resources/bwrap)
+          fi
+          listing=$(tar -tzf "$archive")
           for entry in "${required[@]}"; do
-            tar -tzf "$archive" | grep -Fx "$entry" >/dev/null
+            grep -Fx "$entry" <<<"$listing" >/dev/null || {
+              echo "$archive is missing $entry" >&2
+              exit 1
+            }
           done
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
