@@ -157,6 +157,14 @@ jobs:
         with:
           workspaces: codex-rs -> target
           key: fork-release-${{ matrix.target }}
+          # Only the branch run writes. A local-features-v* tag run (manual
+          # recovery) saved a 1.3-1.6 GB copy scoped to that tag, which no
+          # branch run could restore and which still counted against the 10 GB
+          # repo budget.
+          save-if: ${{ github.ref == 'refs/heads/eric/local-features' }}
+          # Packaging steps after the build can fail; keep the compiled
+          # dependencies when they do.
+          cache-on-failure: true
 
       # Downloads and verifies the Codex-built rusty_v8 archive/binding for
       # this target, matching codex-update's --local build exactly.
