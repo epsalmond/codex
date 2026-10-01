@@ -2,7 +2,6 @@ use super::*;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
-use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
 
 fn function_call(call_id: &str) -> ResponseItemEnvelope {
