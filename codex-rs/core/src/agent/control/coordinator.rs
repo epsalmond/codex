@@ -9,9 +9,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 mod reports;
+mod wake_queue;
+use wake_queue::WakeQueue;
 
 pub(crate) const MAX_OUTSTANDING_ASSIGNMENTS: usize = 1_024;
 
@@ -83,6 +86,7 @@ pub(super) struct CoordinatorState {
     assignments: HashMap<AgentAssignmentId, Assignment>,
     reports: HashMap<ResponseItemId, TerminalReport>,
     pending_by_parent: HashMap<AgentAssignmentId, VecDeque<ResponseItemId>>,
+    wake_queue: WakeQueue,
     outstanding_assignments: usize,
 }
 
@@ -90,6 +94,7 @@ pub(super) struct CoordinatorState {
 #[derive(Default)]
 pub(crate) struct AgentWakeCoordinator {
     state: Mutex<CoordinatorState>,
+    wake_events: Notify,
 }
 
 impl AgentWakeCoordinator {
@@ -364,6 +369,7 @@ impl AgentWakeCoordinator {
         let Some(assignment) = state.assignments.remove(child) else {
             return;
         };
+        state.wake_queue.remove_assignment(child);
         if assignment.counts_toward_limit {
             state.outstanding_assignments = state.outstanding_assignments.saturating_sub(1);
         }

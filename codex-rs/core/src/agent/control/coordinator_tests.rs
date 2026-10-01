@@ -220,6 +220,11 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
         TerminalReportPublication::Published(report_id) => report_id,
         TerminalReportPublication::AlreadyPublished(_) => panic!("first publication is new"),
     };
+    let wake_request = coordinator
+        .claim_next_wake_request()
+        .expect("report publication queues its parent");
+    assert_eq!(wake_request.assignment(), &parent);
+    wake_request.complete();
     assert!(!coordinator.mark_report_recorded(&report_id));
     let report = coordinator
         .claim_pending_mailbox_reports(&parent)
@@ -252,6 +257,7 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
         Some(TerminalReportPublication::AlreadyPublished(published_id))
             if published_id == report_id
     ));
+    assert!(coordinator.claim_next_wake_request().is_none());
     assert!(coordinator.mark_report_recorded(&report_id));
     assert!(
         coordinator
@@ -272,6 +278,7 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
 
     assert_eq!(accepted_candidates, vec![report_id]);
     assert_eq!(coordinator.accept_reports(&parent, &accepted_candidates), 1);
+    assert!(coordinator.has_pending_reports(&parent));
     let next_prompt = [request_snapshot, input_with_report(&late_report)].concat();
     assert_eq!(
         coordinator.report_ids_in_prompt(&parent, &next_prompt),
@@ -298,6 +305,7 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
             .is_empty()
     );
     assert_eq!(coordinator.accept_reports(&fresh_parent, &[late_id]), 0);
+    assert!(!coordinator.has_pending_reports(&fresh_parent));
     assert_eq!(direct_children(&coordinator, &fresh_parent), 0);
     assert_eq!(outstanding(&coordinator), 0);
 }

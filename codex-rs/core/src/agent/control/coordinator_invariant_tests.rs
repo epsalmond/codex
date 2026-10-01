@@ -47,6 +47,88 @@ fn reserved_assignment_cannot_start_a_turn_before_commit() {
 }
 
 #[test]
+fn wake_queue_coalesces_targets_and_defers_fairly() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let first = new_child(&coordinator, &root, "first-turn");
+    let second = new_child(&coordinator, &root, "second-turn");
+
+    assert!(coordinator.request_wake(first.clone()));
+    assert!(!coordinator.request_wake(first.clone()));
+    assert!(coordinator.request_wake(second.clone()));
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("oldest wake is claimed");
+    assert_eq!(request.assignment(), &first);
+    request.defer();
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("deferred wake rotates behind its sibling");
+    assert_eq!(request.assignment(), &second);
+    request.complete();
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("deferred wake is retained");
+    assert_eq!(request.assignment(), &first);
+    request.complete();
+}
+
+#[test]
+fn wake_queue_discards_a_terminal_assignment_generation() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "interrupted-turn");
+
+    assert!(coordinator.request_wake(child.clone()));
+    assert_eq!(
+        coordinator.classify_turn_end(&child, "interrupted-turn", TurnEndDisposition::Interrupted,),
+        Ok(AssignmentPhase::Interrupted)
+    );
+    assert!(coordinator.claim_next_wake_request().is_none());
+}
+
+#[test]
+fn wake_queue_retries_once_for_reports_arriving_during_delivery() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+
+    assert!(coordinator.request_wake(child.clone()));
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("wake is claimed");
+    assert_eq!(request.assignment(), &child);
+    assert!(!coordinator.request_wake(child.clone()));
+    assert!(!coordinator.request_wake(child.clone()));
+    request.complete();
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("one additional wake is queued for reports that arrived in flight");
+    assert_eq!(request.assignment(), &child);
+    request.complete();
+    assert!(coordinator.claim_next_wake_request().is_none());
+}
+
+#[test]
+fn dropped_wake_claim_returns_to_the_queue() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+
+    assert!(coordinator.request_wake(child.clone()));
+    drop(
+        coordinator
+            .claim_next_wake_request()
+            .expect("wake request can be claimed"),
+    );
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("dropped request is requeued");
+    assert_eq!(request.assignment(), &child);
+    request.complete();
+}
+
+#[test]
 fn active_assignment_rejects_a_different_parent_generation() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let first_parent = new_root(&coordinator);

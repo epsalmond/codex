@@ -21,55 +21,73 @@ impl AgentWakeCoordinator {
         terminal_turn_id: &str,
         mut communication: InterAgentCommunication,
     ) -> Option<TerminalReportPublication> {
-        let mut state = self.lock_state();
-        let child_assignment = state.assignments.get(child)?;
-        if let Some(report_id) = &child_assignment.terminal_report_id {
-            return state
-                .reports
-                .get(report_id)
-                .filter(|report| report.terminal_turn_id == terminal_turn_id)
-                .map(|_| TerminalReportPublication::AlreadyPublished(report_id.clone()));
-        }
-        if !child_assignment.phase.is_terminal()
-            || child_assignment.terminal_turn_id.as_deref() != Some(terminal_turn_id)
-        {
-            return None;
-        }
-        let parent = child_assignment.parent.clone()?;
-        let parent_is_current_and_open = state.current_by_thread.get(&parent.thread_id)
-            == Some(&parent)
-            && state
-                .assignments
-                .get(&parent)
-                .is_some_and(|assignment| assignment.phase.is_open());
-        if !parent_is_current_and_open {
-            Self::release_assignment(&mut state, child);
-            return None;
-        }
+        let publication = {
+            let mut state = self.lock_state();
+            (|| {
+                let child_assignment = state.assignments.get(child)?;
+                if let Some(report_id) = &child_assignment.terminal_report_id {
+                    return state
+                        .reports
+                        .get(report_id)
+                        .filter(|report| report.terminal_turn_id == terminal_turn_id)
+                        .map(|report| {
+                            (
+                                TerminalReportPublication::AlreadyPublished(report_id.clone()),
+                                report.parent.clone(),
+                                report.delivery == ReportDeliveryState::PendingMailbox,
+                            )
+                        });
+                }
+                if !child_assignment.phase.is_terminal()
+                    || child_assignment.terminal_turn_id.as_deref() != Some(terminal_turn_id)
+                {
+                    return None;
+                }
+                let parent = child_assignment.parent.clone()?;
+                let parent_is_current_and_open = state.current_by_thread.get(&parent.thread_id)
+                    == Some(&parent)
+                    && state
+                        .assignments
+                        .get(&parent)
+                        .is_some_and(|assignment| assignment.phase.is_open());
+                if !parent_is_current_and_open {
+                    Self::release_assignment(&mut state, child);
+                    return None;
+                }
 
-        let report_id = ResponseItemId::with_suffix("amsg", Uuid::now_v7());
-        communication.id = Some(report_id.clone());
-        state.reports.insert(
-            report_id.clone(),
-            TerminalReport {
-                child: child.clone(),
-                parent: parent.clone(),
-                terminal_turn_id: terminal_turn_id.to_string(),
-                communication,
-                delivery: ReportDeliveryState::PendingMailbox,
-            },
-        );
-        state
-            .pending_by_parent
-            .entry(parent)
-            .or_default()
-            .push_back(report_id.clone());
-        state
-            .assignments
-            .get_mut(child)
-            .expect("child assignment checked above")
-            .terminal_report_id = Some(report_id.clone());
-        Some(TerminalReportPublication::Published(report_id))
+                let report_id = ResponseItemId::with_suffix("amsg", Uuid::now_v7());
+                communication.id = Some(report_id.clone());
+                state.reports.insert(
+                    report_id.clone(),
+                    TerminalReport {
+                        child: child.clone(),
+                        parent: parent.clone(),
+                        terminal_turn_id: terminal_turn_id.to_string(),
+                        communication,
+                        delivery: ReportDeliveryState::PendingMailbox,
+                    },
+                );
+                state
+                    .pending_by_parent
+                    .entry(parent.clone())
+                    .or_default()
+                    .push_back(report_id.clone());
+                state
+                    .assignments
+                    .get_mut(child)
+                    .expect("child assignment checked above")
+                    .terminal_report_id = Some(report_id.clone());
+                Some((
+                    TerminalReportPublication::Published(report_id),
+                    parent,
+                    true,
+                ))
+            })()
+        }?;
+        if publication.2 {
+            self.request_wake(publication.1);
+        }
+        Some(publication.0)
     }
 
     /// Claims each mailbox report once; callers release it if enqueue or history recording aborts.
@@ -107,6 +125,13 @@ impl AgentWakeCoordinator {
         }
         report.delivery = ReportDeliveryState::PendingMailbox;
         true
+    }
+
+    pub(crate) fn has_pending_reports(&self, parent: &AgentAssignmentId) -> bool {
+        self.lock_state()
+            .pending_by_parent
+            .get(parent)
+            .is_some_and(|reports| !reports.is_empty())
     }
 
     pub(crate) fn mark_report_recorded(&self, report_id: &ResponseItemId) -> bool {
