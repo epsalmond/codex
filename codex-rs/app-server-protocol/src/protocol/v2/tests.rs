@@ -662,6 +662,17 @@ fn collab_agent_state_maps_interrupted_status() {
 }
 
 #[test]
+fn collab_agent_state_maps_waiting_status() {
+    assert_eq!(
+        CollabAgentState::from(CoreAgentStatus::Waiting),
+        CollabAgentState {
+            status: CollabAgentStatus::Waiting,
+            message: None,
+        }
+    );
+}
+
+#[test]
 fn external_agent_config_plugins_details_round_trip() {
     let item: ExternalAgentConfigMigrationItem = serde_json::from_value(json!({
         "itemType": "PLUGINS",

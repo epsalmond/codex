@@ -1873,6 +1873,8 @@ pub enum AgentStatus {
     PendingInit,
     /// Agent is currently running.
     Running,
+    /// Agent is waiting for delegated work and can resume when results arrive.
+    Waiting,
     /// Agent's current turn was interrupted and it may receive more input.
     Interrupted,
     /// Agent is done. Contains the final assistant message.
@@ -4610,6 +4612,19 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(event.root_turn_id, None);
+    }
+
+    #[test]
+    fn waiting_agent_status_uses_a_stable_wire_value() -> Result<()> {
+        assert_eq!(
+            serde_json::to_value(AgentStatus::Waiting)?,
+            json!("waiting")
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentStatus>(json!("waiting"))?,
+            AgentStatus::Waiting
+        );
+        Ok(())
     }
 
     #[test]

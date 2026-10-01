@@ -631,6 +631,7 @@ class CodexResponseHandoffMode(Enum):
 class CollabAgentStatus(Enum):
     pending_init = "pendingInit"
     running = "running"
+    waiting = "waiting"
     interrupted = "interrupted"
     completed = "completed"
     errored = "errored"

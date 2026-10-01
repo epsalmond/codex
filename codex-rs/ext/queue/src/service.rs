@@ -218,6 +218,7 @@ impl QueuedItemService {
                             if matches!(
                                 thread.agent_status().await,
                                 AgentStatus::Running
+                                    | AgentStatus::Waiting
                                     | AgentStatus::Interrupted
                                     | AgentStatus::Shutdown
                                     | AgentStatus::NotFound
@@ -474,7 +475,10 @@ impl QueuedItemService {
             return;
         };
         if let Ok(thread) = manager.get_thread(thread_id).await
-            && !matches!(thread.agent_status().await, AgentStatus::Interrupted)
+            && !matches!(
+                thread.agent_status().await,
+                AgentStatus::Interrupted | AgentStatus::Waiting
+            )
         {
             thread
                 .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)

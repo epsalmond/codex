@@ -626,6 +626,7 @@ fn status_summary_spans(status: &CollabAgentState) -> Vec<Span<'static>> {
     match status.status {
         CollabAgentStatus::PendingInit => vec![Span::from("Pending init").fg(accent_color())],
         CollabAgentStatus::Running => vec![Span::from("Running").fg(accent_color()).bold()],
+        CollabAgentStatus::Waiting => vec![Span::from("Waiting for delegated work").dim()],
         // Allow `.yellow()`
         #[allow(clippy::disallowed_methods)]
         CollabAgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
@@ -718,6 +719,8 @@ mod tests {
             .expect("valid robie thread id");
         let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
             .expect("valid bob thread id");
+        let waiting_id = ThreadId::from_string("00000000-0000-0000-0000-000000000004")
+            .expect("valid waiting agent thread id");
 
         let spawn = tool_call_history_cell(
             &ThreadItem::CollabAgentToolCall {
@@ -782,7 +785,11 @@ mod tests {
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
-                receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
+                receiver_thread_ids: vec![
+                    robie_id.to_string(),
+                    bob_id.to_string(),
+                    waiting_id.to_string(),
+                ],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -795,10 +802,23 @@ mod tests {
                         bob_id.to_string(),
                         agent_state(CollabAgentStatus::Errored, Some("tool timeout")),
                     ),
+                    (
+                        waiting_id.to_string(),
+                        agent_state(CollabAgentStatus::Waiting, None),
+                    ),
                 ]),
             },
             /*cached_spawn_request*/ None,
-            |thread_id| metadata_for(thread_id, robie_id, bob_id),
+            |thread_id| {
+                if thread_id == waiting_id {
+                    AgentMetadata {
+                        agent_nickname: Some("Sage".to_string()),
+                        agent_role: Some("reviewer".to_string()),
+                    }
+                } else {
+                    metadata_for(thread_id, robie_id, bob_id)
+                }
+            },
         )
         .expect("wait end item renders");
 

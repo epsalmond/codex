@@ -70,7 +70,10 @@ async fn enrich_loaded_thread(
                     resolve_thread_status(ThreadStatus::Idle, /*has_in_progress_turn*/ true);
             }
         }
-        AgentStatus::PendingInit | AgentStatus::Interrupted | AgentStatus::Completed(_) => {
+        AgentStatus::PendingInit
+        | AgentStatus::Waiting
+        | AgentStatus::Interrupted
+        | AgentStatus::Completed(_) => {
             if watched_status.is_none() {
                 thread.status = ThreadStatus::Idle;
             }

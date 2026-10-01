@@ -545,6 +545,9 @@ mod agent {
 #[path = "phase2_sandbox_tests.rs"]
 mod sandbox_tests;
 #[cfg(test)]
+#[path = "phase2_status_tests.rs"]
+mod status_tests;
+#[cfg(test)]
 #[path = "phase2_workspace_roots_tests.rs"]
 mod workspace_roots_tests;
 
@@ -563,7 +566,10 @@ pub(super) fn get_watermark(
 fn is_final_agent_status(status: &AgentStatus) -> bool {
     !matches!(
         status,
-        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted
+        AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Waiting
+            | AgentStatus::Interrupted
     )
 }
 

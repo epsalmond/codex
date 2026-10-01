@@ -1281,6 +1281,7 @@ impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
 pub enum CollabAgentStatus {
     PendingInit,
     Running,
+    Waiting,
     Interrupted,
     Completed,
     Errored,
@@ -1305,6 +1306,10 @@ impl From<CoreAgentStatus> for CollabAgentState {
             },
             CoreAgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
+                message: None,
+            },
+            CoreAgentStatus::Waiting => Self {
+                status: CollabAgentStatus::Waiting,
                 message: None,
             },
             CoreAgentStatus::Interrupted => Self {
