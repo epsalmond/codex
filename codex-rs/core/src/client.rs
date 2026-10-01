@@ -84,9 +84,44 @@ use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
 
+use crate::attestation::AttestationContext;
+use crate::attestation::AttestationProvider;
+use crate::attestation::X_OAI_ATTESTATION_HEADER;
+use crate::client_common::Prompt;
+use crate::client_common::ResponseEvent;
+use crate::client_common::ResponseStream;
+use crate::context::BaseInstructionsFragment;
+use crate::context::ContextualUserFragment;
+use crate::cyber_access_program;
+use crate::feedback_tags;
+use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_metadata::subagent_header_value;
+use crate::shake::request::ShakeRequestCacheEpoch;
+use crate::shake::request::ShakeRequestCheck;
+use crate::shake::request::validate_shake_request_prefix_epoch;
+use crate::shake::request::validate_shake_wire_prefix;
+use crate::util::emit_feedback_auth_recovery_tags;
+use codex_feedback::FeedbackRequestTags;
+use codex_feedback::emit_feedback_request_tags_with_auth_env;
+use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_login::auth_env_telemetry::AuthEnvTelemetry;
+use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
+use codex_model_provider::AgentIdentitySessionFallback;
+use codex_model_provider::ProviderAuthScope;
+use codex_model_provider::ProviderUnauthorizedRecovery;
+use codex_model_provider::ResponsesConnectionKey;
+use codex_model_provider::SharedModelProvider;
+use codex_model_provider::WorkspaceRoutingContext;
+use codex_model_provider::create_model_provider;
+#[cfg(test)]
+use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -97,6 +132,10 @@ use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_response_debug_context::extract_response_debug_context;
+use codex_response_debug_context::extract_response_debug_context_from_api_error;
+use codex_response_debug_context::telemetry_api_error_message;
+use codex_response_debug_context::telemetry_transport_error_message;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
@@ -120,42 +159,6 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
-
-use crate::attestation::AttestationContext;
-use crate::attestation::AttestationProvider;
-use crate::attestation::X_OAI_ATTESTATION_HEADER;
-use crate::client_common::Prompt;
-use crate::client_common::ResponseEvent;
-use crate::client_common::ResponseStream;
-use crate::context::BaseInstructionsFragment;
-use crate::context::ContextualUserFragment;
-use crate::cyber_access_program;
-use crate::feedback_tags;
-use crate::responses_metadata::CodexResponsesMetadata;
-use crate::responses_metadata::subagent_header_value;
-use crate::util::emit_feedback_auth_recovery_tags;
-use codex_feedback::FeedbackRequestTags;
-use codex_feedback::emit_feedback_request_tags_with_auth_env;
-use codex_login::auth::AgentIdentityAuthPolicy;
-use codex_login::auth_env_telemetry::AuthEnvTelemetry;
-use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
-use codex_model_provider::AgentIdentitySessionFallback;
-use codex_model_provider::ProviderAuthScope;
-use codex_model_provider::ProviderUnauthorizedRecovery;
-use codex_model_provider::ResponsesConnectionKey;
-use codex_model_provider::SharedModelProvider;
-use codex_model_provider::WorkspaceRoutingContext;
-use codex_model_provider::create_model_provider;
-#[cfg(test)]
-use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
-use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::WireApi;
-use codex_protocol::error::CodexErr;
-use codex_protocol::error::Result;
-use codex_response_debug_context::extract_response_debug_context;
-use codex_response_debug_context::extract_response_debug_context_from_api_error;
-use codex_response_debug_context::telemetry_api_error_message;
-use codex_response_debug_context::telemetry_transport_error_message;
 
 pub const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
 pub const X_CODEX_INSTALLATION_ID_HEADER: &str = "x-codex-installation-id";
@@ -328,6 +331,8 @@ struct WebsocketSession {
     last_response_from_untraced_warmup: bool,
     connection_reused: StdMutex<bool>,
     continuation_reset_reason: Option<&'static str>,
+    /// Sealed request-prefix baseline persists with the cached Responses session across turns.
+    shake_request_cache_epoch: Option<ShakeRequestCacheEpoch>,
 }
 
 // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
@@ -421,6 +426,7 @@ impl WebsocketSession {
         *self = Self {
             auth_owner_generation: self.auth_owner_generation,
             continuation_reset_reason,
+            shake_request_cache_epoch: self.shake_request_cache_epoch.take(),
             ..Default::default()
         };
     }
@@ -1007,6 +1013,66 @@ impl ModelClient {
         Ok(request)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn build_responses_request_with_shake_check(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        include_internal: bool,
+    ) -> Result<(ResponsesApiRequest, Option<ShakeRequestCheck>)> {
+        let mut request = self.build_responses_request(
+            prompt,
+            model_info,
+            effort.clone(),
+            summary,
+            service_tier.clone(),
+            responses_metadata,
+            include_internal,
+        )?;
+        let Some(guard) = responses_metadata.shake_guard.as_deref() else {
+            return Ok((request, None));
+        };
+        let mut prefix_metadata = responses_metadata.clone();
+        prefix_metadata.shake_guard = None;
+        let mut prefix_request = self.build_responses_request(
+            &guard.prefix_prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            &prefix_metadata,
+            include_internal,
+        )?;
+        self.prepare_response_items_for_request(&mut request.input);
+        self.prepare_response_items_for_request(&mut prefix_request.input);
+        let prefix_len = prefix_request.input.len();
+        let request_prefix = request.input.get(..prefix_len).ok_or_else(|| {
+            CodexErr::Stream("Shake sealed prefix exceeds the full Responses request".to_string())
+        })?;
+        if crate::shake::watermark::canonical_json_bytes(request_prefix)?
+            != crate::shake::watermark::canonical_json_bytes(&prefix_request.input)?
+        {
+            return Err(CodexErr::Stream(
+                "Shake sealed history does not match the full logical Responses prefix".to_string(),
+            ));
+        }
+        Ok((
+            request,
+            Some(ShakeRequestCheck {
+                history_state: guard.history_state.clone(),
+                prefix_items: prefix_request.input,
+                base_instructions: prompt.base_instructions.text.clone(),
+                provider_id: guard.provider_id.clone(),
+                input_modalities: guard.input_modalities.clone(),
+                use_responses_lite: model_info.use_responses_lite,
+            }),
+        ))
+    }
+
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
             if item.id().is_some_and(|id| !id.is_prefixed()) {
@@ -1341,6 +1407,42 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    fn validate_shake_request_prefix(
+        &mut self,
+        request: &ResponsesApiRequest,
+        check: Option<&ShakeRequestCheck>,
+    ) -> Result<()> {
+        validate_shake_request_prefix_epoch(
+            &mut self.websocket_session.shake_request_cache_epoch,
+            request,
+            check,
+        )
+    }
+
+    fn validate_ws_shake_wire_prefix(
+        input: &[ResponseItem],
+        check: Option<&ShakeRequestCheck>,
+        full_send: bool,
+    ) -> Result<()> {
+        if full_send {
+            validate_shake_wire_prefix(input, check)?;
+        }
+        Ok(())
+    }
+
+    fn record_websocket_request_after_send(
+        &mut self,
+        request: ResponsesApiRequest,
+        input_was_bounded: bool,
+    ) {
+        // The next delta must extend exactly the input the server received.
+        self.websocket_session.last_request = if input_was_bounded {
+            None
+        } else {
+            Some(request)
+        };
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Builds shared Responses API transport options and request-body options.
     ///
@@ -1643,7 +1745,7 @@ impl ModelClientSession {
         )
     )]
     async fn stream_responses_api(
-        &self,
+        &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
@@ -1699,7 +1801,7 @@ impl ModelClientSession {
                 )
                 .await;
 
-            let mut request = self.client.build_responses_request(
+            let (mut request, shake_check) = self.client.build_responses_request_with_shake_check(
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1754,6 +1856,7 @@ impl ModelClientSession {
                 }
                 request.input = input;
             }
+            self.validate_shake_request_prefix(&request, shake_check.as_ref())?;
             inference_trace_attempt.record_started(&request);
             let client = ApiResponsesClient::new(
                 transport,
@@ -1874,7 +1977,7 @@ impl ModelClientSession {
                 client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
             );
-            let mut request = self.client.build_responses_request(
+            let (mut request, shake_check) = self.client.build_responses_request_with_shake_check(
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1890,6 +1993,15 @@ impl ModelClientSession {
                 client_setup.auth.as_ref(),
                 prompt.cyber_access_program,
             );
+            self.client
+                .prepare_response_items_for_request(&mut request.input);
+            let mut next_shake_request_cache_epoch =
+                self.websocket_session.shake_request_cache_epoch.clone();
+            validate_shake_request_prefix_epoch(
+                &mut next_shake_request_cache_epoch,
+                &request,
+                shake_check.as_ref(),
+            )?;
             let mut websocket_metadata = responses_metadata.clone();
             websocket_metadata.routing_hint = self.client.build_routing_hint_header(
                 client_setup.auth.as_ref(),
@@ -1995,6 +2107,7 @@ impl ModelClientSession {
                 Some(continuation) => (Some(continuation.response_id), Some(continuation.items)),
                 None => (None, None),
             };
+            let full_send = incremental_items.is_none();
             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
                 self.client
                     .prepare_response_items_for_request(incremental_items);
@@ -2040,13 +2153,18 @@ impl ModelClientSession {
             stamp_ws_stream_request_start_ms(&mut ws_request);
             let ResponsesWsRequest::ResponseCreate(payload) = &ws_request;
             let bounded_input = tool_metadata::bounded_input(&ws_request, payload.input);
+            let mut input_was_bounded = false;
             if let Some(input) = bounded_input.as_deref() {
+                input_was_bounded = input != payload.input;
                 if let Some(recorder) = &self.client.executed_tool_calls {
                     recorder.invalidate_wire_inventory_loss(payload.input, input);
                 }
                 let ResponsesWsRequest::ResponseCreate(payload) = &mut ws_request;
                 payload.input = input;
             }
+            let ResponsesWsRequest::ResponseCreate(payload) = &ws_request;
+            Self::validate_ws_shake_wire_prefix(payload.input, shake_check.as_ref(), full_send)?;
+            self.websocket_session.shake_request_cache_epoch = next_shake_request_cache_epoch;
             if !previous_response_id_from_untraced_warmup {
                 inference_trace_attempt.record_started(&ws_request);
             }
@@ -2082,7 +2200,7 @@ impl ModelClientSession {
                     item.set_id(original_item_id);
                 }
             }
-            self.websocket_session.last_request = Some(request);
+            self.record_websocket_request_after_send(request, input_was_bounded);
             self.websocket_session.last_response_from_untraced_warmup = warmup;
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);

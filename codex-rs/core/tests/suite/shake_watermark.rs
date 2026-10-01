@@ -1,12 +1,23 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::CodexThread;
+use codex_core::TurnInputRequest;
 use codex_history::RolloutItem;
 use codex_history::ShakeHistoryState;
+use codex_protocol::models::ExecutedToolCall;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ToolResultMetadata;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ShakeMode;
+use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ev_assistant_message;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_response_created;
 use core_test_support::responses::start_mock_server;
+use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -191,5 +202,117 @@ async fn resume_rejects_an_edited_sealed_media_checkpoint() -> Result<()> {
     );
 
     resumed.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_full_request_preserves_the_sealed_prefix() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+        vec![
+            ev_response_created("response-1"),
+            ev_assistant_message("message-1", "the sealed prefix was accepted"),
+            ev_completed("response-1"),
+        ],
+    ]])
+    .await;
+    let mut builder = test_codex().with_model("gpt-5.4");
+    let fixture = Box::pin(builder.build_with_websocket_server(&server)).await?;
+
+    let user_message: ResponseItem = serde_json::from_value(json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "seal this tool metadata"}]
+    }))?;
+    let function_call: ResponseItem = serde_json::from_value(json!({
+        "type": "function_call",
+        "id": "sealed-call-item",
+        "call_id": "sealed-tool-metadata",
+        "name": "exec_command",
+        "arguments": "{}"
+    }))?;
+    let mut output = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+        call_id: "sealed-tool-metadata".to_string(),
+        output: FunctionCallOutputPayload::from_text("small visible result".to_string()),
+    });
+    let mut executed_call = ExecutedToolCall::new("exec_command".to_string(), json!({}));
+    executed_call.set_tool_result_metadata(ToolResultMetadata::new(&json!({"sealed": true})));
+    output.append_executed_tool_calls(vec![executed_call]);
+    output.mark_tool_calls_complete();
+    let mutable_tail = serde_json::from_value(json!({
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "mutable tail ".repeat(6_000)}]
+    }))?;
+    Box::pin(fixture.codex.inject_response_items(vec![
+        user_message,
+        function_call,
+        output,
+        mutable_tail,
+    ]))
+    .await?;
+
+    let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+    Box::pin(fixture.codex.submit(Op::Shake {
+        mode: ShakeMode::Elide,
+        expected_fingerprint: Some(preview.fingerprint),
+    }))
+    .await?;
+    Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
+    }))
+    .await;
+    let sealed_state = latest_shake_state(&rollout_path(&fixture.codex)?)?;
+    let stored_history = fixture
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?;
+    let replacement_history = stored_history
+        .items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::Compacted(compacted) => compacted.replacement_history.as_ref(),
+            _ => None,
+        })
+        .context("shake should persist replacement history")?;
+    let output_index = replacement_history
+        .iter()
+        .position(|envelope| {
+            matches!(
+                &envelope.item,
+                ResponseItem::FunctionCallOutput { call_id: Some(call_id), .. }
+                    if call_id == "sealed-tool-metadata"
+            )
+        })
+        .expect("sealed tool output is in history");
+    assert!(usize::try_from(sealed_state.watermark)? > output_index);
+
+    fixture
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "this is a new delta after W".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let result = Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    }))
+    .await;
+    assert!(matches!(result, EventMsg::TurnComplete(_)));
+    let requests = server.single_connection();
+    assert_eq!(requests.len(), 2);
+    let generation = requests[1].body_json();
+    let _input = generation["input"].as_array().expect("full request input");
+    let serialized_input = generation["input"].to_string();
+    assert!(serialized_input.contains("seal this tool metadata"));
+    assert!(serialized_input.contains("sealed-tool-metadata"));
+    assert!(serialized_input.contains("exec_command"));
+    assert!(serialized_input.contains("this is a new delta after W"));
+
+    fixture.codex.shutdown_and_wait().await?;
+    server.shutdown().await;
     Ok(())
 }
