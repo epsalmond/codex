@@ -562,25 +562,23 @@ trust_level = "trusted"
         }
         if matches!(startup_result, Ok(Ok(()))) && renamed.is_ok() {
             if !fork && backend == "embedded" {
-                for (input, expected) in [
-                    ("/daemon\r", "Install latest public stable"),
-                    ("\r", "Update and exit"),
-                    ("\x1b[B\r", "Updating the local background server..."),
-                ] {
-                    session
-                        .writer_sender()
-                        .send(input.as_bytes().to_vec())
-                        .await?;
-                    tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
-                        while !output.contains(expected) {
-                            let bytes = stdout.recv().await.context("TUI exited before handoff")?;
-                            output.push_str(&String::from_utf8_lossy(&bytes));
-                        }
-                        Ok::<_, anyhow::Error>(())
-                    })
-                    .await
-                    .with_context(|| format!("waiting for {expected}: {output}"))??;
-                }
+                session.writer_sender().send(b"/daemon\r".to_vec()).await?;
+                tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+                    while !output.contains("codex-shake keeps the daemon on this CLI build") {
+                        let bytes = stdout
+                            .recv()
+                            .await
+                            .context("TUI exited before daemon menu")?;
+                        output.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await
+                .with_context(|| format!("waiting for fork update guidance: {output}"))??;
+                session.writer_sender().send(b"\x1b".to_vec()).await?;
+                // Give the terminal parser time to emit Esc before `/quit` arrives.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                session.writer_sender().send(b"/quit\r".to_vec()).await?;
             } else {
                 session.writer_sender().send(b"/quit\r".to_vec()).await?;
             }
@@ -616,12 +614,12 @@ trust_level = "trusted"
                 .flat_map(|scope| scope["metrics"].as_array().into_iter().flatten())
                 .collect::<Vec<_>>();
             if backend == "embedded" {
-                let update = exported
-                    .iter()
-                    .find(|metric| metric["name"] == "codex.daemon.update")
-                    .context("handoff metric")?;
-                let update_point = &update["sum"]["dataPoints"][0];
-                assert_eq!(update_point["asInt"], 1);
+                assert!(
+                    exported
+                        .iter()
+                        .all(|metric| metric["name"] != "codex.daemon.update"),
+                    "opening the disabled upstream-update menu must not record an update"
+                );
             }
             let point = exported
                 .iter()
