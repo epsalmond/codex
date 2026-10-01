@@ -40,7 +40,7 @@ concurrency:
   # The publisher App's tag push starts a tag event while this branch run is
   # still publishing. Keep that recovery/no-op run from cancelling the release.
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   prepare:
