@@ -3,8 +3,15 @@ use super::AgentWakeCoordinator;
 use super::CoordinatorState;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Weak;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WakeDispatchResult {
+    Complete,
+    Defer,
+}
 
 #[derive(Default)]
 pub(super) struct WakeQueue {
@@ -55,7 +62,7 @@ impl AgentWakeCoordinator {
             push_if_current_and_open(&mut state, assignment)
         };
         if queued {
-            self.wake_events.notify_one();
+            self.signal_wake_event();
         }
         queued
     }
@@ -67,6 +74,53 @@ impl AgentWakeCoordinator {
             coordinator: Arc::downgrade(self),
             assignment: Some(assignment),
         })
+    }
+
+    /// Runs one fair attempt per queued target, then waits for a resource or report event.
+    pub(crate) async fn run_wake_dispatcher<F, Fut>(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<()>,
+        mut dispatch: F,
+    ) where
+        F: FnMut(AgentAssignmentId) -> Fut + Send + 'static,
+        Fut: Future<Output = WakeDispatchResult> + Send + 'static,
+    {
+        loop {
+            let observed_epoch = self.wake_event_epoch();
+            let pass_size = self.pending_wake_count();
+            if pass_size == 0 {
+                tokio::select! {
+                    _ = self.wait_for_wake_event_after(observed_epoch) => {}
+                    _ = shutdown.changed() => return,
+                }
+                continue;
+            }
+
+            for _ in 0..pass_size {
+                let Some(request) = self.claim_next_wake_request() else {
+                    break;
+                };
+                let Some(assignment) = request.assignment().cloned() else {
+                    request.complete();
+                    continue;
+                };
+                match dispatch(assignment).await {
+                    WakeDispatchResult::Complete => request.complete(),
+                    WakeDispatchResult::Defer => request.defer(),
+                }
+            }
+
+            // Deferred requests stay queued but do not wake this worker. Registration above
+            // preserves events that arrive while the bounded pass is running.
+            tokio::select! {
+                _ = self.wait_for_wake_event_after(observed_epoch) => {}
+                _ = shutdown.changed() => return,
+            }
+        }
+    }
+
+    fn pending_wake_count(&self) -> usize {
+        self.lock_state().wake_queue.pending.len()
     }
 
     fn next_wake_assignment(&self) -> Option<AgentAssignmentId> {
@@ -98,25 +152,20 @@ impl AgentWakeCoordinator {
             requested_again && push_if_current_and_open(&mut state, assignment.clone())
         };
         if queued {
-            self.wake_events.notify_one();
+            self.signal_wake_event();
         }
     }
 
-    /// Sleeps until a report or a resource/lifecycle event may allow queued work to progress.
-    pub(crate) async fn wait_for_wake_event(&self) {
-        self.wake_events.notified().await;
-    }
-
     pub(crate) fn notify_capacity_available(&self) {
-        self.wake_events.notify_one();
+        self.signal_wake_event();
     }
 
     pub(crate) fn notify_active_turn_cleared(&self) {
-        self.wake_events.notify_one();
+        self.signal_wake_event();
     }
 
     pub(crate) fn notify_residency_available(&self) {
-        self.wake_events.notify_one();
+        self.signal_wake_event();
     }
 }
 
@@ -127,10 +176,8 @@ pub(crate) struct WakeRequest {
 }
 
 impl WakeRequest {
-    pub(crate) fn assignment(&self) -> &AgentAssignmentId {
-        self.assignment
-            .as_ref()
-            .expect("wake request is active until completed or deferred")
+    pub(crate) fn assignment(&self) -> Option<&AgentAssignmentId> {
+        self.assignment.as_ref()
     }
 
     pub(crate) fn complete(mut self) {
@@ -159,7 +206,7 @@ impl Drop for WakeRequest {
         };
         if let Some(coordinator) = self.coordinator.upgrade() {
             coordinator.defer_wake_request(assignment);
-            coordinator.wake_events.notify_one();
+            coordinator.signal_wake_event();
         }
     }
 }

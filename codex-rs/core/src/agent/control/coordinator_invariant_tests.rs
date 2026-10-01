@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::AgentPath;
 
 #[test]
 fn assignment_reservation_commit_rejects_parent_interruption() {
@@ -22,7 +23,7 @@ fn reserved_assignment_cannot_start_a_turn_before_commit() {
     let reservation = coordinator
         .reserve_child_assignment(root.clone(), ThreadId::new())
         .expect("child assignment is reserved");
-    let child = reservation.id.clone();
+    let child = reservation.id().clone();
 
     assert!(
         coordinator
@@ -59,17 +60,17 @@ fn wake_queue_coalesces_targets_and_defers_fairly() {
     let request = coordinator
         .claim_next_wake_request()
         .expect("oldest wake is claimed");
-    assert_eq!(request.assignment(), &first);
+    assert_eq!(request.assignment(), Some(&first));
     request.defer();
     let request = coordinator
         .claim_next_wake_request()
         .expect("deferred wake rotates behind its sibling");
-    assert_eq!(request.assignment(), &second);
+    assert_eq!(request.assignment(), Some(&second));
     request.complete();
     let request = coordinator
         .claim_next_wake_request()
         .expect("deferred wake is retained");
-    assert_eq!(request.assignment(), &first);
+    assert_eq!(request.assignment(), Some(&first));
     request.complete();
 }
 
@@ -94,7 +95,7 @@ fn wake_queue_rejects_a_reserved_target_until_its_turn_starts() {
     let reservation = coordinator
         .reserve_child_assignment(root.clone(), ThreadId::new())
         .expect("child assignment is reserved");
-    let child = reservation.id.clone();
+    let child = reservation.id().clone();
 
     assert!(!coordinator.request_wake(child.clone()));
     assert_eq!(reservation.commit(), Ok(child.clone()));
@@ -111,8 +112,67 @@ fn wake_queue_rejects_a_reserved_target_until_its_turn_starts() {
     let request = coordinator
         .claim_next_wake_request()
         .expect("started child is wakeable");
-    assert_eq!(request.assignment(), &child);
+    assert_eq!(request.assignment(), Some(&child));
     request.complete();
+}
+
+#[test]
+fn reload_authority_tracks_current_parent_and_root_generations() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+
+    let authority = coordinator
+        .reload_authority(&grandchild)
+        .expect("current nested assignment has reload authority");
+    assert_eq!(authority.parent_thread_id, child.thread_id);
+    assert_eq!(authority.root_thread_id, root.thread_id);
+
+    coordinator
+        .classify_turn_end(&child, "child-turn", TurnEndDisposition::Interrupted)
+        .expect("parent interruption detaches nested work");
+    assert!(coordinator.reload_authority(&grandchild).is_none());
+}
+
+#[test]
+fn subtree_close_retires_assignments_and_pending_reports_before_shutdown() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+    assert_eq!(
+        coordinator.classify_turn_end(
+            &grandchild,
+            "grandchild-turn",
+            TurnEndDisposition::Succeeded,
+        ),
+        Ok(AssignmentPhase::Completed)
+    );
+    let communication = InterAgentCommunication::new(
+        AgentPath::try_from("/root/child/grandchild").expect("valid path"),
+        AgentPath::try_from("/root/child").expect("valid path"),
+        Vec::new(),
+        "done".to_string(),
+        true,
+    );
+    assert!(
+        coordinator
+            .publish_terminal_report(&grandchild, "grandchild-turn", communication)
+            .is_some()
+    );
+    assert!(coordinator.has_pending_reports(&child));
+
+    coordinator.cancel_subtree(child.thread_id);
+
+    assert!(coordinator.current_assignment(child.thread_id).is_none());
+    assert!(
+        coordinator
+            .current_assignment(grandchild.thread_id)
+            .is_none()
+    );
+    assert!(!coordinator.has_pending_reports(&child));
+    assert!(coordinator.is_current_open_assignment(&root));
 }
 
 #[test]
@@ -125,14 +185,14 @@ fn wake_queue_retries_once_for_reports_arriving_during_delivery() {
     let request = coordinator
         .claim_next_wake_request()
         .expect("wake is claimed");
-    assert_eq!(request.assignment(), &child);
+    assert_eq!(request.assignment(), Some(&child));
     assert!(!coordinator.request_wake(child.clone()));
     assert!(!coordinator.request_wake(child.clone()));
     request.complete();
     let request = coordinator
         .claim_next_wake_request()
         .expect("one additional wake is queued for reports that arrived in flight");
-    assert_eq!(request.assignment(), &child);
+    assert_eq!(request.assignment(), Some(&child));
     request.complete();
     assert!(coordinator.claim_next_wake_request().is_none());
 }
@@ -152,7 +212,7 @@ fn dropped_wake_claim_returns_to_the_queue() {
     let request = coordinator
         .claim_next_wake_request()
         .expect("dropped request is requeued");
-    assert_eq!(request.assignment(), &child);
+    assert_eq!(request.assignment(), Some(&child));
     request.complete();
 }
 

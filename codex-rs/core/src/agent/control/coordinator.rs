@@ -9,6 +9,8 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -65,6 +67,7 @@ pub(crate) enum TurnEndDisposition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReportDeliveryState {
     PendingMailbox,
+    Claimed,
     Enqueued,
     Recorded,
 }
@@ -88,6 +91,7 @@ struct TerminalReport {
     terminal_turn_id: String,
     communication: InterAgentCommunication,
     delivery: ReportDeliveryState,
+    mailbox_inserted: bool,
 }
 
 #[derive(Default)]
@@ -105,6 +109,7 @@ pub(super) struct CoordinatorState {
 pub(crate) struct AgentWakeCoordinator {
     state: Mutex<CoordinatorState>,
     wake_events: Notify,
+    wake_event_epoch: AtomicU64,
 }
 
 impl AgentWakeCoordinator {
@@ -114,8 +119,28 @@ impl AgentWakeCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    pub(super) fn wake_event_epoch(&self) -> u64 {
+        self.wake_event_epoch.load(Ordering::Acquire)
+    }
+
     pub(super) fn signal_wake_event(&self) {
+        self.wake_event_epoch.fetch_add(1, Ordering::AcqRel);
         self.wake_events.notify_one();
+    }
+
+    pub(super) async fn wait_for_wake_event_after(&self, observed_epoch: u64) {
+        loop {
+            let notified = self.wake_events.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.wake_event_epoch() != observed_epoch {
+                return;
+            }
+            notified.await;
+            if self.wake_event_epoch() != observed_epoch {
+                return;
+            }
+        }
     }
 }
 
