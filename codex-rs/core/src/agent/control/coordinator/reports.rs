@@ -17,6 +17,35 @@ pub(crate) struct ClaimedTerminalReport {
     enqueued: bool,
 }
 
+/// Keeps a coordinator mailbox claim retryable while a session handler awaits queue admission.
+pub(crate) struct TerminalReportDeliveryGuard {
+    coordinator: Weak<AgentWakeCoordinator>,
+    id: ResponseItemId,
+    committed: bool,
+}
+
+impl TerminalReportDeliveryGuard {
+    pub(crate) fn acknowledge(&self, parent_thread_id: codex_protocol::ThreadId) -> bool {
+        self.coordinator.upgrade().is_some_and(|coordinator| {
+            coordinator.acknowledge_report_mailbox_delivery(&self.id, parent_thread_id)
+        })
+    }
+
+    pub(crate) fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TerminalReportDeliveryGuard {
+    fn drop(&mut self) {
+        if !self.committed
+            && let Some(coordinator) = self.coordinator.upgrade()
+        {
+            coordinator.release_mailbox_claim_for_retry(&self.id);
+        }
+    }
+}
+
 impl ClaimedTerminalReport {
     pub(crate) fn mark_enqueued(mut self) -> bool {
         let marked = self
@@ -44,6 +73,17 @@ pub(crate) enum TerminalReportPublication {
 }
 
 impl AgentWakeCoordinator {
+    pub(crate) fn delivery_guard(
+        self: &std::sync::Arc<Self>,
+        id: ResponseItemId,
+    ) -> TerminalReportDeliveryGuard {
+        TerminalReportDeliveryGuard {
+            coordinator: std::sync::Arc::downgrade(self),
+            id,
+            committed: false,
+        }
+    }
+
     /// Rechecks pending mailbox work when an assignment becomes eligible to receive a wake.
     pub(crate) fn request_wake_for_pending_mailbox_reports(
         &self,
@@ -139,32 +179,6 @@ impl AgentWakeCoordinator {
         Some(publication.0)
     }
 
-    /// Claims each mailbox report once; callers release it if enqueue or history recording aborts.
-    #[cfg(test)]
-    pub(crate) fn claim_pending_mailbox_reports(
-        &self,
-        parent: &AgentAssignmentId,
-    ) -> Vec<InterAgentCommunication> {
-        let mut state = self.lock_state();
-        let ids = state
-            .pending_by_parent
-            .get(parent)
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut reports = Vec::new();
-        for id in ids {
-            if let Some(report) = state.reports.get_mut(&id)
-                && report.delivery == ReportDeliveryState::PendingMailbox
-            {
-                report.delivery = ReportDeliveryState::Enqueued;
-                reports.push(report.communication.clone());
-            }
-        }
-        reports
-    }
-
     /// Claims one report so a failed send can release only the affected mailbox item.
     pub(crate) fn claim_next_mailbox_report(
         self: &std::sync::Arc<Self>,
@@ -218,6 +232,25 @@ impl AgentWakeCoordinator {
         }
         report.delivery = ReportDeliveryState::PendingMailbox;
         true
+    }
+
+    fn release_mailbox_claim_for_retry(&self, report_id: &ResponseItemId) -> bool {
+        let parent = {
+            let mut state = self.lock_state();
+            let Some(report) = state.reports.get_mut(report_id) else {
+                return false;
+            };
+            if !matches!(
+                report.delivery,
+                ReportDeliveryState::Claimed | ReportDeliveryState::Enqueued
+            ) || report.mailbox_inserted
+            {
+                return false;
+            }
+            report.delivery = ReportDeliveryState::PendingMailbox;
+            report.parent.clone()
+        };
+        self.request_wake(parent)
     }
 
     pub(crate) fn report_is_current_for_thread(
@@ -322,6 +355,18 @@ impl AgentWakeCoordinator {
             .pending_by_parent
             .get(parent)
             .is_some_and(|reports| !reports.is_empty())
+    }
+
+    pub(crate) fn has_recorded_reports(&self, parent: &AgentAssignmentId) -> bool {
+        let state = self.lock_state();
+        state.pending_by_parent.get(parent).is_some_and(|reports| {
+            reports.iter().any(|report_id| {
+                state
+                    .reports
+                    .get(report_id)
+                    .is_some_and(|report| report.delivery == ReportDeliveryState::Recorded)
+            })
+        })
     }
 
     pub(crate) fn mark_report_recorded(&self, report_id: &ResponseItemId) -> bool {

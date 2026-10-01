@@ -252,20 +252,15 @@ impl AgentWakeCoordinator {
         };
         let phase = assignment.phase;
         assignment.last_classified_phase = Some(phase);
-        let mut retry_recorded_reports = false;
-        if phase == AssignmentPhase::Waiting
-            && let Some(report_ids) = state.pending_by_parent.get(id).cloned()
-        {
-            for report_id in report_ids {
-                if let Some(report) = state.reports.get_mut(&report_id)
-                    && report.delivery == ReportDeliveryState::Recorded
-                {
-                    report.delivery = ReportDeliveryState::PendingMailbox;
-                    report.mailbox_inserted = false;
-                    retry_recorded_reports = true;
-                }
-            }
-        }
+        let wake_recorded_reports = phase == AssignmentPhase::Waiting
+            && state.pending_by_parent.get(id).is_some_and(|report_ids| {
+                report_ids.iter().any(|report_id| {
+                    state
+                        .reports
+                        .get(report_id)
+                        .is_some_and(|report| report.delivery == ReportDeliveryState::Recorded)
+                })
+            });
         if phase.is_terminal() {
             state.wake_queue.remove_assignment(id);
             Self::detach_direct_children(&mut state, id);
@@ -278,7 +273,7 @@ impl AgentWakeCoordinator {
             }
         }
         drop(state);
-        if retry_recorded_reports {
+        if wake_recorded_reports {
             self.request_wake(id.clone());
         }
         Ok(phase)

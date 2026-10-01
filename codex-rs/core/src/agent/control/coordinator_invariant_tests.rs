@@ -163,7 +163,7 @@ fn subtree_close_retires_assignments_and_pending_reports_before_shutdown() {
     );
     assert!(coordinator.has_pending_reports(&child));
 
-    coordinator.cancel_subtree(child.thread_id);
+    coordinator.cancel_subtree(&[child.thread_id]);
 
     assert!(coordinator.current_assignment(child.thread_id).is_none());
     assert!(
@@ -173,6 +173,93 @@ fn subtree_close_retires_assignments_and_pending_reports_before_shutdown() {
     );
     assert!(!coordinator.has_pending_reports(&child));
     assert!(coordinator.is_current_open_assignment(&root));
+}
+
+#[test]
+fn subtree_close_cancels_grandchildren_after_parent_interruption_detaches_them() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+
+    assert_eq!(
+        coordinator.classify_turn_end(
+            &child,
+            "child-turn",
+            TurnEndDisposition::Interrupted,
+        ),
+        Ok(AssignmentPhase::Interrupted)
+    );
+    assert_eq!(coordinator.parent_assignment(&grandchild), None);
+
+    coordinator.cancel_subtree(&[child.thread_id, grandchild.thread_id]);
+
+    assert!(coordinator.current_assignment(child.thread_id).is_none());
+    assert!(coordinator.current_assignment(grandchild.thread_id).is_none());
+    assert!(coordinator.is_current_open_assignment(&root));
+}
+
+#[test]
+fn production_report_claim_retries_after_failed_send_and_stops_after_enqueue() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let parent = new_root(&coordinator);
+    let child = new_child(&coordinator, &parent, "child-turn");
+    coordinator
+        .classify_turn_end(&child, "child-turn", TurnEndDisposition::Succeeded)
+        .expect("child turn is classified");
+    let report_id = match coordinator
+        .publish_terminal_report(
+            &child,
+            "child-turn",
+            InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("valid child path"),
+                AgentPath::root(),
+                Vec::new(),
+                "delegated work finished".to_string(),
+                /*trigger_turn*/ true,
+            ),
+        )
+        .expect("active parent receives terminal report")
+    {
+        TerminalReportPublication::Published(report_id) => report_id,
+        TerminalReportPublication::AlreadyPublished(_) => panic!("first publication is new"),
+    };
+
+    let failed_send = coordinator
+        .claim_next_mailbox_report(&parent)
+        .expect("pending report can be claimed for delivery");
+    assert_eq!(failed_send.id, report_id);
+    drop(failed_send);
+
+    let retry = coordinator
+        .claim_next_mailbox_report(&parent)
+        .expect("dropping a failed-send claim releases it for retry");
+    assert_eq!(retry.id, report_id);
+    assert!(retry.mark_enqueued());
+    assert!(coordinator.acknowledge_report_mailbox_delivery(&report_id, parent.thread_id));
+    assert!(coordinator
+        .claim_next_mailbox_report(&parent)
+        .is_none());
+    assert!(!coordinator.release_mailbox_claim(&report_id));
+    assert_eq!(direct_children(&coordinator, &parent), 1);
+
+    assert!(coordinator.mark_report_recorded(&report_id));
+    let communication = InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("valid child path"),
+        AgentPath::root(),
+        Vec::new(),
+        "delegated work finished".to_string(),
+        /*trigger_turn*/ true,
+    );
+    let communication = InterAgentCommunication {
+        id: Some(report_id.clone()),
+        ..communication
+    };
+    let prompt_input = vec![communication.to_model_input_item()];
+    let accepted = coordinator.report_ids_in_prompt(&parent, &prompt_input);
+    assert_eq!(accepted, vec![report_id]);
+    assert_eq!(coordinator.accept_reports(&parent, &accepted), 1);
+    assert_eq!(outstanding(&coordinator), 0);
 }
 
 #[test]

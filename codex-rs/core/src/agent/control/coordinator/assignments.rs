@@ -75,17 +75,26 @@ impl AgentWakeCoordinator {
                 .is_some_and(|assignment| assignment.phase.is_open())
     }
 
+    pub(crate) fn is_current_waiting_assignment(&self, id: &AgentAssignmentId) -> bool {
+        let state = self.lock_state();
+        state.current_by_thread.get(&id.thread_id) == Some(id)
+            && state
+                .assignments
+                .get(id)
+                .is_some_and(|assignment| assignment.phase == AssignmentPhase::Waiting)
+    }
+
     pub(crate) fn cancel_assignment(&self, id: &AgentAssignmentId) {
         let mut state = self.lock_state();
         Self::release_assignment(&mut state, id);
     }
 
-    pub(crate) fn cancel_subtree(&self, thread_id: ThreadId) {
+    pub(crate) fn cancel_subtree(&self, thread_ids: &[ThreadId]) {
         let mut state = self.lock_state();
         let mut pending = state
             .assignments
             .keys()
-            .filter(|assignment| assignment.thread_id == thread_id)
+            .filter(|assignment| thread_ids.contains(&assignment.thread_id))
             .cloned()
             .collect::<Vec<_>>();
         if pending.is_empty() {
