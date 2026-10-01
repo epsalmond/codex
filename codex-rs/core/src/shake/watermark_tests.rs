@@ -115,3 +115,18 @@ fn media_preparation_migration_starts_a_new_epoch_but_corrupt_seals_stay_invalid
     assert_eq!(preserved_state, corrupt_state);
     assert!(!matches_history(&preserved_state, &prepared_history));
 }
+
+#[test]
+fn sealed_boundary_moves_before_a_split_or_open_tool_call() {
+    let items = vec![function_call("call-1"), function_output("call-1")];
+
+    assert_eq!(close_over_tool_calls(&items, 1), 0);
+    assert_eq!(close_over_tool_calls(&items, 2), 2);
+    assert_eq!(close_over_tool_calls(&items[..1], 1), 0);
+}
+
+#[test]
+fn unpaired_output_does_not_block_a_boundary() {
+    let items = vec![function_output("external-call")];
+    assert_eq!(close_over_tool_calls(&items, 1), 1);
+}

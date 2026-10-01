@@ -112,13 +112,15 @@ fn compaction_output(summary: &str) -> Value {
 /// Two reads: ~87k tokens of old output that auto-shake can elide, then a ~29k-token
 /// recent tail it protects. `write_read_files` creates the files.
 fn file_reads() -> Vec<Value> {
-    Vec::from(
-        [("elidable", "older.txt"), ("recent", "recent.txt")].map(|(call_id, path)| {
-            let args =
-                json!({"cmd": format!("{READ_COMMAND} {path}"), "max_output_tokens": 100_000});
-            ev_exec_command_call_with_args(call_id, &args)
-        }),
-    )
+    Vec::from([
+        file_read("elidable", "older.txt"),
+        file_read("recent", "recent.txt"),
+    ])
+}
+
+fn file_read(call_id: &str, path: &str) -> Value {
+    let args = json!({"cmd": format!("{READ_COMMAND} {path}"), "max_output_tokens": 100_000});
+    ev_exec_command_call_with_args(call_id, &args)
 }
 
 fn write_read_files(test: &TestCodex) -> Result<()> {
@@ -283,9 +285,30 @@ async fn child_shakes_mid_turn_without_compacting() -> Result<()> {
 
     let server = start_mock_server().await;
     mount_root_spawn(&server, "worker", CHILD_TASK).await;
-    let sampled = |body: &Value| is_child(body) && call_output(body, "elidable").is_some();
-    let first = move |body: &Value| is_child(body) && !sampled(body);
-    mount(&server, "child-reads", first, file_reads()).await;
+    let has_elidable_output = |body: &Value| call_output(body, "elidable").is_some();
+    let has_recent_output = |body: &Value| call_output(body, "recent").is_some();
+    let first = move |body: &Value| is_child(body) && !has_elidable_output(body);
+    mount(
+        &server,
+        "child-read-elidable",
+        first,
+        vec![file_read("elidable", "older.txt")],
+    )
+    .await;
+    let second =
+        move |body: &Value| is_child(body) && has_elidable_output(body) && !has_recent_output(body);
+    mount(
+        &server,
+        "child-read-recent",
+        second,
+        vec![
+            file_read("recent", "recent.txt"),
+            ev_completed_with_tokens("child-read-recent", 100_000),
+        ],
+    )
+    .await;
+    let sampled =
+        move |body: &Value| is_child(body) && has_elidable_output(body) && has_recent_output(body);
     let done = ev_assistant_message("child-done", "child finished");
     mount(&server, "child-done", sampled, vec![done]).await;
 
@@ -293,6 +316,10 @@ async fn child_shakes_mid_turn_without_compacting() -> Result<()> {
         .build_with_auto_env(&server)
         .await?;
     write_read_files(&test)?;
+    std::fs::write(
+        test.workspace_path("older.txt"),
+        format!("{ELIDABLE_MARKER}\n").repeat(/*n*/ 4_000),
+    )?;
     test.submit_turn(ROOT_PROMPT).await?;
     wait_for_child_turn(&test).await?;
 
@@ -312,7 +339,7 @@ async fn child_shakes_mid_turn_without_compacting() -> Result<()> {
             output("elidable").contains(ELIDABLE_MARKER),
             output("recent").contains(RECENT_MARKER),
         ),
-        (vec![false, false], true, false, true),
+        (vec![false, false, false], true, false, true),
     );
     assert_eq!(
         listed_last_reduction(&test, &server, THRESHOLD).await?,

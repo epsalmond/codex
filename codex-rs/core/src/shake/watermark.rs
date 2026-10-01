@@ -1,7 +1,9 @@
 use codex_history::ResponseItemEnvelope;
 use codex_history::ShakeHistoryState;
+use codex_protocol::models::ResponseItem;
 use sha1::Digest;
 use sha1::Sha1;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 const SHA1_HEX_LENGTH: usize = 40;
@@ -98,6 +100,73 @@ pub(crate) fn history_prefix_digest(items: &[ResponseItemEnvelope]) -> Result<St
         digest.update(bytes);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Move a proposed boundary back to the earliest call/output pair it would split.
+pub(crate) fn close_over_tool_calls(items: &[ResponseItemEnvelope], candidate_end: usize) -> usize {
+    let candidate_end = candidate_end.min(items.len());
+    let mut calls: HashMap<(ToolCallKind, &str), Vec<usize>> = HashMap::new();
+    let mut outputs: HashMap<(ToolCallKind, &str), Vec<usize>> = HashMap::new();
+    for (index, envelope) in items.iter().enumerate() {
+        if let Some((kind, call_id)) = tool_call_identity(&envelope.item) {
+            calls.entry((kind, call_id)).or_default().push(index);
+        }
+        if let Some((kind, call_id)) = tool_output_identity(&envelope.item) {
+            outputs.entry((kind, call_id)).or_default().push(index);
+        }
+    }
+
+    let mut end = candidate_end;
+    for (index, envelope) in items.iter().take(candidate_end).enumerate() {
+        let Some((kind, call_id)) = tool_call_identity(&envelope.item) else {
+            continue;
+        };
+        let paired_output = outputs
+            .get(&(kind, call_id))
+            .and_then(|indices| indices.iter().copied().find(|output| *output > index));
+        if paired_output.is_none_or(|output| output >= candidate_end) {
+            end = end.min(index);
+        }
+    }
+    end
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ToolCallKind {
+    Function,
+    Custom,
+    ToolSearch,
+}
+
+fn tool_call_identity(item: &ResponseItem) -> Option<(ToolCallKind, &str)> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::LocalShellCall {
+            call_id: Some(call_id),
+            ..
+        } => Some((ToolCallKind::Function, call_id)),
+        ResponseItem::CustomToolCall { call_id, .. } => Some((ToolCallKind::Custom, call_id)),
+        ResponseItem::ToolSearchCall {
+            call_id: Some(call_id),
+            ..
+        } => Some((ToolCallKind::ToolSearch, call_id)),
+        _ => None,
+    }
+}
+
+fn tool_output_identity(item: &ResponseItem) -> Option<(ToolCallKind, &str)> {
+    match item {
+        ResponseItem::FunctionCallOutput {
+            call_id: Some(call_id),
+            ..
+        } => Some((ToolCallKind::Function, call_id)),
+        ResponseItem::CustomToolCallOutput { call_id, .. } => Some((ToolCallKind::Custom, call_id)),
+        ResponseItem::ToolSearchOutput {
+            call_id: Some(call_id),
+            ..
+        } => Some((ToolCallKind::ToolSearch, call_id)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

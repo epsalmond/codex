@@ -1534,9 +1534,15 @@ async fn run_auto_shake_pass(
     // Read-only measurement of the real transformation, including the recovery
     // placeholders it would insert. Writes nothing and makes no model request.
     let history = sess.clone_history().await;
+    if !history.shake_history_state_is_valid() {
+        return false;
+    }
+    let shake_start = usize::try_from(history.shake_history_state().watermark)
+        .unwrap_or(history.annotated_items().len());
     let artifact_store = sess.artifact_store().await;
     let estimate = crate::shake::preview::estimate_shake(
         history.annotated_items(),
+        shake_start,
         ShakeMode::Elide,
         protect_tokens,
         /*persistent_thread*/ true,
