@@ -2,6 +2,7 @@ use super::AgentAssignmentId;
 use super::AgentWakeCoordinator;
 use super::AssignmentPhase;
 use super::MAX_OUTSTANDING_ASSIGNMENTS;
+use super::TerminalReportPublication;
 use super::TurnEndDisposition;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 
 fn new_root(coordinator: &AgentWakeCoordinator) -> AgentAssignmentId {
     coordinator
-        .begin_or_continue_assignment(ThreadId::new(), None, /*allow_new_generation*/ false)
+        .begin_or_continue_assignment(ThreadId::new(), None, /*allow_new_generation*/ true)
         .expect("root assignment starts")
 }
 
@@ -23,6 +24,7 @@ fn new_child(
         .reserve_child_assignment(parent.clone(), ThreadId::new())
         .expect("child assignment is admitted")
         .commit()
+        .expect("parent still owns the reserved assignment")
 }
 
 fn terminal_report(
@@ -33,7 +35,7 @@ fn terminal_report(
     coordinator
         .classify_turn_end(child, terminal_turn_id, TurnEndDisposition::Succeeded)
         .expect("child turn is classified");
-    coordinator
+    match coordinator
         .publish_terminal_report(
             child,
             terminal_turn_id,
@@ -46,6 +48,10 @@ fn terminal_report(
             ),
         )
         .expect("active parent receives terminal report")
+    {
+        TerminalReportPublication::Published(report) => report,
+        TerminalReportPublication::AlreadyPublished => panic!("first publication is new"),
+    }
 }
 
 fn input_with_report(report: &InterAgentCommunication) -> Vec<ResponseItem> {
@@ -123,7 +129,7 @@ fn active_and_waiting_turns_keep_their_generation_and_terminal_followup_advances
         coordinator.classify_turn_end(&child, "child-final-turn", TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Completed)
     );
-    let child_report = coordinator
+    let child_report = match coordinator
         .publish_terminal_report(
             &child,
             "child-final-turn",
@@ -135,7 +141,11 @@ fn active_and_waiting_turns_keep_their_generation_and_terminal_followup_advances
                 /*trigger_turn*/ true,
             ),
         )
-        .expect("completed child reports to its parent");
+        .expect("completed child reports to its parent")
+    {
+        TerminalReportPublication::Published(report) => report,
+        TerminalReportPublication::AlreadyPublished => panic!("first publication is new"),
+    };
     let child_report_id = child_report.id.clone().expect("stable child report ID");
     coordinator.mark_report_recorded(&child_report_id);
     let child_candidates =
@@ -160,13 +170,20 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
     let report_id = report.id.clone().expect("report has a stable item ID");
 
     assert_eq!(
-        coordinator.pending_mailbox_reports(&parent),
+        coordinator.claim_pending_mailbox_reports(&parent),
         vec![report.clone()]
     );
-    assert!(coordinator.mark_report_recorded(&report_id));
-    assert!(coordinator.pending_mailbox_reports(&parent).is_empty());
-    assert!(coordinator.report_ids_in_prompt(&parent, &[]).is_empty());
+    assert!(
+        coordinator
+            .claim_pending_mailbox_reports(&parent)
+            .is_empty()
+    );
+    assert!(coordinator.release_mailbox_claim(&report_id));
     assert_eq!(
+        coordinator.claim_pending_mailbox_reports(&parent),
+        vec![report.clone()]
+    );
+    assert!(matches!(
         coordinator.publish_terminal_report(
             &child,
             "child-turn",
@@ -178,8 +195,15 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
                 /*trigger_turn*/ true,
             ),
         ),
-        Some(report.clone())
+        Some(TerminalReportPublication::AlreadyPublished)
+    ));
+    assert!(coordinator.mark_report_recorded(&report_id));
+    assert!(
+        coordinator
+            .claim_pending_mailbox_reports(&parent)
+            .is_empty()
     );
+    assert!(coordinator.report_ids_in_prompt(&parent, &[]).is_empty());
     assert_eq!(direct_children(&coordinator, &parent), 1);
     assert_eq!(outstanding(&coordinator), 1);
 
@@ -239,7 +263,7 @@ fn interrupted_child_requires_explicit_followup_and_then_gets_a_fresh_generation
         )
         .expect("child interruption is classified");
     assert_eq!(interruption, AssignmentPhase::Interrupted);
-    let report = coordinator
+    let report = match coordinator
         .publish_terminal_report(
             &child,
             "child-interrupted-turn",
@@ -251,7 +275,11 @@ fn interrupted_child_requires_explicit_followup_and_then_gets_a_fresh_generation
                 /*trigger_turn*/ true,
             ),
         )
-        .expect("interrupted attempt reports once");
+        .expect("interrupted attempt reports once")
+    {
+        TerminalReportPublication::Published(report) => report,
+        TerminalReportPublication::AlreadyPublished => panic!("first publication is new"),
+    };
     let report_id = report.id.clone().expect("stable report ID");
     coordinator.mark_report_recorded(&report_id);
     let candidates = coordinator.report_ids_in_prompt(&parent, &input_with_report(&report));

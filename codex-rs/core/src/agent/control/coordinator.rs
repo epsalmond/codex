@@ -2,7 +2,6 @@
 
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -11,6 +10,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use uuid::Uuid;
+
+mod reports;
+
+pub(crate) use reports::TerminalReportPublication;
 
 pub(crate) const MAX_OUTSTANDING_ASSIGNMENTS: usize = 1_024;
 
@@ -52,6 +55,7 @@ pub(crate) enum TurnEndDisposition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReportDeliveryState {
     PendingMailbox,
+    Enqueued,
     Recorded,
 }
 
@@ -60,6 +64,8 @@ struct Assignment {
     phase: AssignmentPhase,
     direct_children: HashSet<AgentAssignmentId>,
     terminal_turn_id: Option<String>,
+    terminal_disposition: Option<TurnEndDisposition>,
+    last_classified_phase: Option<AssignmentPhase>,
     terminal_report_id: Option<ResponseItemId>,
     counts_toward_limit: bool,
 }
@@ -73,7 +79,7 @@ struct TerminalReport {
 }
 
 #[derive(Default)]
-struct CoordinatorState {
+pub(super) struct CoordinatorState {
     current_by_thread: HashMap<ThreadId, AgentAssignmentId>,
     assignments: HashMap<AgentAssignmentId, Assignment>,
     reports: HashMap<ResponseItemId, TerminalReport>,
@@ -109,11 +115,14 @@ impl AgentWakeCoordinator {
                 .map(|assignment| assignment.phase)
                 .ok_or("current assignment is missing")?;
             if phase.is_open() {
-                state
+                let assignment = state
                     .assignments
                     .get_mut(&current)
-                    .expect("current assignment checked above")
-                    .phase = AssignmentPhase::Running;
+                    .expect("current assignment checked above");
+                if assignment.parent != parent {
+                    return Err("assignment belongs to a different parent generation");
+                }
+                assignment.phase = AssignmentPhase::Running;
                 return Ok(current);
             }
             if !allow_new_generation {
@@ -124,6 +133,9 @@ impl AgentWakeCoordinator {
             }) {
                 Self::release_assignment(&mut state, &current);
             }
+        }
+        if !allow_new_generation {
+            return Err("assignment is missing; an explicit followup is required");
         }
         Self::create_assignment(&mut state, thread_id, parent)
     }
@@ -139,7 +151,9 @@ impl AgentWakeCoordinator {
             .assignments
             .get(&parent)
             .ok_or("parent assignment is missing")?;
-        if !parent_assignment.phase.is_open() {
+        if state.current_by_thread.get(&parent.thread_id) != Some(&parent)
+            || !parent_assignment.phase.is_open()
+        {
             return Err("parent assignment is no longer active");
         }
         if state.outstanding_assignments >= MAX_OUTSTANDING_ASSIGNMENTS {
@@ -159,6 +173,8 @@ impl AgentWakeCoordinator {
                 phase: AssignmentPhase::Reserved,
                 direct_children: HashSet::new(),
                 terminal_turn_id: None,
+                terminal_disposition: None,
+                last_classified_phase: None,
                 terminal_report_id: None,
                 counts_toward_limit: true,
             },
@@ -185,11 +201,28 @@ impl AgentWakeCoordinator {
         disposition: TurnEndDisposition,
     ) -> Result<AssignmentPhase, &'static str> {
         let mut state = self.lock_state();
+        let terminal_turn_id = terminal_turn_id.into();
         let assignment = state
             .assignments
             .get_mut(id)
             .ok_or("assignment is missing")?;
-        assignment.terminal_turn_id = Some(terminal_turn_id.into());
+        if assignment.terminal_turn_id.as_deref() == Some(terminal_turn_id.as_str()) {
+            return if assignment.terminal_disposition == Some(disposition) {
+                assignment
+                    .last_classified_phase
+                    .ok_or("classified turn has no recorded phase")
+            } else {
+                Err("turn already has a different terminal outcome")
+            };
+        }
+        if assignment.phase.is_terminal() {
+            return Err("assignment already has a different terminal outcome");
+        }
+        if assignment.phase == AssignmentPhase::Waiting {
+            return Err("waiting assignment must start another turn before classification");
+        }
+        assignment.terminal_turn_id = Some(terminal_turn_id);
+        assignment.terminal_disposition = Some(disposition);
         assignment.phase = match disposition {
             TurnEndDisposition::Succeeded if !assignment.direct_children.is_empty() => {
                 AssignmentPhase::Waiting
@@ -200,6 +233,7 @@ impl AgentWakeCoordinator {
             TurnEndDisposition::Cancelled => AssignmentPhase::Cancelled,
         };
         let phase = assignment.phase;
+        assignment.last_classified_phase = Some(phase);
         if phase.is_terminal() {
             Self::detach_direct_children(&mut state, id);
             if state
@@ -211,153 +245,6 @@ impl AgentWakeCoordinator {
             }
         }
         Ok(phase)
-    }
-
-    /// Publishes a terminal report once and gives the persisted AgentMessage a stable ID.
-    pub(crate) fn publish_terminal_report(
-        &self,
-        child: &AgentAssignmentId,
-        terminal_turn_id: &str,
-        mut communication: InterAgentCommunication,
-    ) -> Option<InterAgentCommunication> {
-        let mut state = self.lock_state();
-        let child_assignment = state.assignments.get(child)?;
-        if let Some(report_id) = &child_assignment.terminal_report_id {
-            return state
-                .reports
-                .get(report_id)
-                .filter(|report| report.terminal_turn_id == terminal_turn_id)
-                .map(|report| report.communication.clone());
-        }
-        if !child_assignment.phase.is_terminal()
-            || child_assignment.terminal_turn_id.as_deref() != Some(terminal_turn_id)
-        {
-            return None;
-        }
-        let parent = child_assignment.parent.clone()?;
-        let parent_is_current_and_open = state.current_by_thread.get(&parent.thread_id)
-            == Some(&parent)
-            && state
-                .assignments
-                .get(&parent)
-                .is_some_and(|assignment| assignment.phase.is_open());
-        if !parent_is_current_and_open {
-            Self::release_assignment(&mut state, child);
-            return None;
-        }
-
-        let report_id = ResponseItemId::with_suffix("amsg", Uuid::now_v7());
-        communication.id = Some(report_id.clone());
-        let report = TerminalReport {
-            child: child.clone(),
-            parent: parent.clone(),
-            terminal_turn_id: terminal_turn_id.to_string(),
-            communication: communication.clone(),
-            delivery: ReportDeliveryState::PendingMailbox,
-        };
-        state.reports.insert(report_id.clone(), report);
-        state
-            .pending_by_parent
-            .entry(parent)
-            .or_default()
-            .push_back(report_id.clone());
-        state
-            .assignments
-            .get_mut(child)
-            .expect("child assignment checked above")
-            .terminal_report_id = Some(report_id);
-        Some(communication)
-    }
-
-    /// Returns mailbox reports without consuming them; only durable history recording advances state.
-    pub(crate) fn pending_mailbox_reports(
-        &self,
-        parent: &AgentAssignmentId,
-    ) -> Vec<InterAgentCommunication> {
-        let state = self.lock_state();
-        state
-            .pending_by_parent
-            .get(parent)
-            .into_iter()
-            .flatten()
-            .filter_map(|id| state.reports.get(id))
-            .filter(|report| report.delivery == ReportDeliveryState::PendingMailbox)
-            .map(|report| report.communication.clone())
-            .collect()
-    }
-
-    pub(crate) fn mark_report_recorded(&self, report_id: &ResponseItemId) -> bool {
-        let mut state = self.lock_state();
-        let Some(report) = state.reports.get_mut(report_id) else {
-            return false;
-        };
-        report.delivery = ReportDeliveryState::Recorded;
-        true
-    }
-
-    /// Captures only recorded reports whose stable IDs are present in this exact prompt snapshot.
-    pub(crate) fn report_ids_in_prompt(
-        &self,
-        parent: &AgentAssignmentId,
-        prompt_input: &[ResponseItem],
-    ) -> Vec<ResponseItemId> {
-        let prompt_ids = prompt_input
-            .iter()
-            .filter_map(ResponseItem::id)
-            .collect::<HashSet<_>>();
-        let state = self.lock_state();
-        state
-            .pending_by_parent
-            .get(parent)
-            .into_iter()
-            .flatten()
-            .filter(|id| prompt_ids.contains(id))
-            .filter(|id| {
-                state
-                    .reports
-                    .get(*id)
-                    .is_some_and(|report| report.delivery == ReportDeliveryState::Recorded)
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Consumes reports only after their IDs appeared in an accepted model request.
-    pub(crate) fn accept_reports(
-        &self,
-        parent: &AgentAssignmentId,
-        report_ids: &[ResponseItemId],
-    ) -> usize {
-        let mut state = self.lock_state();
-        let mut accepted = 0;
-        for report_id in report_ids {
-            let Some(report) = state.reports.get(report_id) else {
-                continue;
-            };
-            if &report.parent != parent || report.delivery != ReportDeliveryState::Recorded {
-                continue;
-            }
-            let report = state
-                .reports
-                .remove(report_id)
-                .expect("report checked above");
-            Self::remove_pending_report(&mut state, &report.parent, report_id);
-            if let Some(parent_assignment) = state.assignments.get_mut(parent) {
-                parent_assignment.direct_children.remove(&report.child);
-            }
-            if state.current_by_thread.get(&report.child.thread_id) == Some(&report.child) {
-                if let Some(child_assignment) = state.assignments.get_mut(&report.child) {
-                    child_assignment.parent = None;
-                    child_assignment.terminal_report_id = None;
-                    child_assignment.counts_toward_limit = false;
-                }
-                state.outstanding_assignments = state.outstanding_assignments.saturating_sub(1);
-            } else {
-                Self::release_assignment(&mut state, &report.child);
-            }
-            accepted += 1;
-        }
-        accepted
     }
 
     fn create_assignment(
@@ -389,6 +276,8 @@ impl AgentWakeCoordinator {
                 phase: AssignmentPhase::Running,
                 direct_children: HashSet::new(),
                 terminal_turn_id: None,
+                terminal_disposition: None,
+                last_classified_phase: None,
                 terminal_report_id: None,
                 counts_toward_limit: parent.is_some(),
             },
@@ -433,7 +322,7 @@ impl AgentWakeCoordinator {
         }
     }
 
-    fn release_assignment(state: &mut CoordinatorState, child: &AgentAssignmentId) {
+    pub(super) fn release_assignment(state: &mut CoordinatorState, child: &AgentAssignmentId) {
         let Some(assignment) = state.assignments.remove(child) else {
             return;
         };
@@ -457,7 +346,7 @@ impl AgentWakeCoordinator {
         }
     }
 
-    fn remove_pending_report(
+    pub(super) fn remove_pending_report(
         state: &mut CoordinatorState,
         parent: &AgentAssignmentId,
         report_id: &ResponseItemId,
@@ -472,13 +361,7 @@ impl AgentWakeCoordinator {
 
     fn rollback_reservation(&self, id: &AgentAssignmentId) {
         let mut state = self.lock_state();
-        if state
-            .assignments
-            .get(id)
-            .is_some_and(|assignment| assignment.phase == AssignmentPhase::Reserved)
-        {
-            Self::release_assignment(&mut state, id);
-        }
+        Self::release_assignment(&mut state, id);
     }
 }
 
@@ -489,12 +372,38 @@ pub(crate) struct AssignmentReservation {
 }
 
 impl AssignmentReservation {
-    pub(crate) fn commit(mut self) -> AgentAssignmentId {
-        if let Some(assignment) = self.coordinator.lock_state().assignments.get_mut(&self.id) {
-            assignment.phase = AssignmentPhase::Running;
+    pub(crate) fn commit(mut self) -> Result<AgentAssignmentId, &'static str> {
+        let mut state = self.coordinator.lock_state();
+        let assignment = state
+            .assignments
+            .get(&self.id)
+            .ok_or("assignment reservation was invalidated")?;
+        let Some(parent) = assignment.parent.as_ref() else {
+            return Err("assignment reservation was detached");
+        };
+        if assignment.phase != AssignmentPhase::Reserved
+            || state.current_by_thread.get(&self.id.thread_id) != Some(&self.id)
+            || state.current_by_thread.get(&parent.thread_id) != Some(parent)
+            || !state
+                .assignments
+                .get(parent)
+                .is_some_and(|parent_assignment| parent_assignment.phase.is_open())
+            || !state
+                .assignments
+                .get(parent)
+                .is_some_and(|parent_assignment| {
+                    parent_assignment.direct_children.contains(&self.id)
+                })
+        {
+            return Err("assignment reservation was invalidated");
         }
+        state
+            .assignments
+            .get_mut(&self.id)
+            .expect("assignment reservation checked above")
+            .phase = AssignmentPhase::Running;
         self.committed = true;
-        self.id.clone()
+        Ok(self.id.clone())
     }
 }
 
