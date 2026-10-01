@@ -1813,22 +1813,44 @@ impl Session {
             .zip(metadata)
             .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
             .collect();
-        let shake_history_state = if shake_history_state_valid {
-            usize::try_from(shake_history_state.watermark)
-                .ok()
-                .filter(|watermark| *watermark <= history.len())
-                .map(|watermark| {
-                    crate::shake::watermark::state_for_epoch(
-                        shake_history_state.epoch_id.clone(),
-                        watermark,
-                        &history,
-                    )
-                })
-                .and_then(Result::ok)
-                .unwrap_or(shake_history_state)
-        } else {
-            shake_history_state
-        };
+        // Rollout reconstruction validated this seal against the serialized checkpoint before
+        // image/audio preparation. If that deterministic replay normalization changed the prefix,
+        // make the migration explicit by starting an unsealed epoch; never rewrite the saved
+        // digest under its existing epoch. Invalid checkpoint seals remain invalid below.
+        let (shake_history_state, media_migration) =
+            crate::shake::watermark::rebase_after_media_preparation(
+                shake_history_state,
+                shake_history_state_valid,
+                &history,
+            );
+        if media_migration {
+            warn!(
+                thread_id = %self.thread_id,
+                epoch_id = %shake_history_state.epoch_id,
+                "replay media preparation changed a verified shake prefix; starting a new epoch"
+            );
+            self.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: "Resume media preparation changed the sealed Shake prefix. The saved watermark was reset to a new epoch at zero and will be persisted with the next history checkpoint.".to_string(),
+                }),
+            )
+            .await;
+        } else if !shake_history_state_valid {
+            warn!(
+                thread_id = %self.thread_id,
+                epoch_id = %shake_history_state.epoch_id,
+                watermark = shake_history_state.watermark,
+                "saved shake history seal does not match the checkpoint history"
+            );
+            self.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: "The saved Shake history seal does not match its checkpoint. The watermark was rejected as corrupt and cannot be used until an explicit history reset.".to_string(),
+                }),
+            )
+            .await;
+        }
         let context = crate::guardian::GuardianReviewContext::from(turn_context);
         let (_, reviewer) = crate::guardian::resolve_review_model(self, &context).await;
         let reviewer_compaction_hash = reviewer.comp_hash.clone();
