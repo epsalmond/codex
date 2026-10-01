@@ -116,12 +116,20 @@ impl AgentWakeCoordinator {
                 .map(|assignment| assignment.phase)
                 .ok_or("current assignment is missing")?;
             if phase.is_open() {
+                if phase == AssignmentPhase::Reserved {
+                    return Err("assignment reservation must commit before a turn starts");
+                }
                 let assignment = state
                     .assignments
                     .get_mut(&current)
                     .expect("current assignment checked above");
                 if assignment.parent != parent {
                     return Err("assignment belongs to a different parent generation");
+                }
+                if phase == AssignmentPhase::Waiting
+                    && assignment.terminal_turn_id.as_deref() == Some(turn_id.as_str())
+                {
+                    return Err("waiting assignment requires a new turn ID");
                 }
                 if assignment.phase == AssignmentPhase::Running {
                     match assignment.active_turn_id.as_deref() {

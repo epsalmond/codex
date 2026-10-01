@@ -16,6 +16,37 @@ fn assignment_reservation_commit_rejects_parent_interruption() {
 }
 
 #[test]
+fn reserved_assignment_cannot_start_a_turn_before_commit() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let reservation = coordinator
+        .reserve_child_assignment(root.clone(), ThreadId::new())
+        .expect("child assignment is reserved");
+    let child = reservation.id.clone();
+
+    assert!(
+        coordinator
+            .begin_or_continue_assignment(
+                child.thread_id,
+                Some(root.clone()),
+                "child-turn",
+                /*allow_new_generation*/ false,
+            )
+            .is_err()
+    );
+    assert_eq!(reservation.commit(), Ok(child.clone()));
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            child.thread_id,
+            Some(root),
+            "child-turn",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(child)
+    );
+}
+
+#[test]
 fn active_assignment_rejects_a_different_parent_generation() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let first_parent = new_root(&coordinator);
@@ -67,6 +98,16 @@ fn stale_turn_classification_cannot_overwrite_a_later_waiting_turn() {
     assert_eq!(
         coordinator.classify_turn_end(&child, "turn-a", TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Waiting)
+    );
+    assert!(
+        coordinator
+            .begin_or_continue_assignment(
+                child.thread_id,
+                Some(root.clone()),
+                "turn-a",
+                /*allow_new_generation*/ false,
+            )
+            .is_err()
     );
     assert_eq!(
         coordinator.begin_or_continue_assignment(
