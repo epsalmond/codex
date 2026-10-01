@@ -4,18 +4,25 @@ use codex_core::CodexThread;
 use codex_core::TurnInputRequest;
 use codex_history::RolloutItem;
 use codex_history::ShakeHistoryState;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ToolResultMetadata;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ShakeMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
@@ -314,5 +321,132 @@ async fn websocket_full_request_preserves_the_sealed_prefix() -> Result<()> {
 
     fixture.codex.shutdown_and_wait().await?;
     server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_dynamic_inputs_keep_the_shake_watermark_and_start_a_new_cache_epoch() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = Box::pin(start_mock_server()).await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("dynamic-r1"),
+                ev_assistant_message("dynamic-m1", "first response"),
+                ev_completed("dynamic-r1"),
+            ]),
+            sse(vec![
+                ev_response_created("dynamic-r2"),
+                ev_assistant_message("dynamic-m2", "second response"),
+                ev_completed("dynamic-r2"),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.2", |model| {
+            model.experimental_supported_tools.clear();
+        })
+        .with_model_info_override("gpt-5.2-text-only", |model| {
+            model.input_modalities = vec![InputModality::Text];
+            model.experimental_supported_tools = vec!["request_user_input_async".to_string()];
+        })
+        .with_model("gpt-5.2")
+        .with_config(|config| config.update_plan_enabled = true);
+    let fixture = Box::pin(builder.build_with_auto_env(&server)).await?;
+    let history: Vec<ResponseItem> = serde_json::from_value(json!([
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "the sealed image must stay within the history boundary"},
+                {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="}
+            ]
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "mutable tail ".repeat(6_000)}]
+        }
+    ]))?;
+    Box::pin(fixture.codex.inject_response_items(history)).await?;
+    let preview = fixture.codex.preview_shake(ShakeMode::Elide).await?;
+    Box::pin(fixture.codex.submit(Op::Shake {
+        mode: ShakeMode::Elide,
+        expected_fingerprint: Some(preview.fingerprint),
+    }))
+    .await?;
+    Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
+    }))
+    .await;
+    let state_before = latest_shake_state(&rollout_path(&fixture.codex)?)?;
+
+    fixture
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "first request".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let first_result = Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Error(_) | EventMsg::TurnComplete(_))
+    }))
+    .await;
+    assert!(
+        matches!(first_result, EventMsg::TurnComplete(_)),
+        "first request failed before a response: {first_result:?}"
+    );
+
+    let plan_mode = CollaborationMode {
+        mode: ModeKind::Plan,
+        settings: Settings {
+            model: "gpt-5.2-text-only".to_string(),
+            reasoning_effort: None,
+            developer_instructions: Some("Changed plan instructions for this request.".to_string()),
+        },
+    };
+    fixture
+        .codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "second request with changed tools and modalities".to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                collaboration_mode: Some(plan_mode),
+                ..Default::default()
+            }),
+        )
+        .await?;
+    let second_result = Box::pin(wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::Error(_) | EventMsg::TurnComplete(_))
+    }))
+    .await;
+    assert!(
+        matches!(second_result, EventMsg::TurnComplete(_)),
+        "second request failed before a response: {second_result:?}"
+    );
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].body_json();
+    let second = requests[1].body_json();
+    assert_eq!(first["model"], "gpt-5.2");
+    assert_eq!(second["model"], "gpt-5.2-text-only");
+    let first_input = first["input"].to_string();
+    let second_input = second["input"].to_string();
+    assert!(!first_input.contains("Changed plan instructions"));
+    assert!(second_input.contains("Changed plan instructions"));
+    assert_ne!(first["tools"], second["tools"]);
+    assert!(first["input"].to_string().contains("input_image"));
+    assert!(!second["input"].to_string().contains("input_image"));
+    let state_after = latest_shake_state(&rollout_path(&fixture.codex)?)?;
+    assert_eq!(state_after, state_before);
+
+    fixture.codex.shutdown_and_wait().await?;
     Ok(())
 }

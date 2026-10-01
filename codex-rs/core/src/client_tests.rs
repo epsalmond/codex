@@ -824,12 +824,20 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
         /*parent_thread_id*/ None,
         TestCodexResponsesRequestKind::Turn,
     );
-    for (scenario, base_url, previous_metadata, current_metadata, expect_incremental) in [
+    for (
+        scenario,
+        base_url,
+        previous_metadata,
+        current_metadata,
+        previous_input_was_bounded,
+        expect_incremental,
+    ) in [
         (
             "late_result",
             "https://api.openai.com/v1",
             None,
             Some("first"),
+            false,
             false,
         ),
         (
@@ -837,6 +845,7 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
             "https://api.openai.com/v1",
             Some("first"),
             Some("first"),
+            false,
             true,
         ),
         (
@@ -845,12 +854,14 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
             Some("first"),
             Some("second"),
             false,
+            false,
         ),
         (
             "ordinary_metadata_only",
             "https://api.openai.com/v1",
             None,
             None,
+            false,
             true,
         ),
         (
@@ -858,6 +869,23 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
             "https://proxy.example.com/v1",
             None,
             Some("first"),
+            false,
+            true,
+        ),
+        (
+            "lossy_full_input",
+            "https://api.openai.com/v1",
+            None,
+            None,
+            true,
+            false,
+        ),
+        (
+            "lossy_incremental_delta",
+            "https://api.openai.com/v1",
+            None,
+            None,
+            false,
             true,
         ),
     ] {
@@ -916,7 +944,7 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
         )?;
 
         let mut session = client.new_session();
-        session.websocket_session.last_request = Some(previous);
+        session.record_websocket_request_after_send(previous, previous_input_was_bounded);
         let (sender, receiver) = tokio::sync::oneshot::channel();
         sender
             .send(super::LastResponse {
@@ -935,6 +963,30 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
             expect_incremental.then_some(("previous-response".to_string(), vec![follow_up], false)),
             "{scenario}",
         );
+        if scenario == "lossy_incremental_delta" {
+            session.record_websocket_request_after_send(
+                current.clone(),
+                /*input_was_bounded*/ true,
+            );
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            sender
+                .send(super::LastResponse {
+                    response_id: "response-after-lossy-delta".to_string(),
+                    items_added: Vec::new(),
+                })
+                .unwrap();
+            session.websocket_session.last_response_rx = Some(receiver);
+            let mut next = current.clone();
+            next.input
+                .push(ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+                    call_id: "after-lossy-delta".to_string(),
+                    output: FunctionCallOutputPayload::from_text("next turn".to_string()),
+                }));
+            assert!(
+                session.prepare_websocket_request(&next).is_none(),
+                "a lossy delta must not become the next continuation base"
+            );
+        }
     }
     Ok(())
 }
