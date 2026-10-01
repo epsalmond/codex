@@ -26,6 +26,7 @@ use crate::event_mapping::parse_turn_item;
 use crate::guardian::GUARDIAN_MAX_ROOT_MESSAGE_TOKENS;
 use crate::guardian::guardian_truncate_text;
 use crate::session::turn_context::TurnContext;
+use crate::shake::watermark;
 use crate::utils::json::serialized_json_bytes;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -41,6 +42,7 @@ use codex_history::RetainedContext;
 use codex_history::RetainedContextEntry;
 use codex_history::RetainedContextEvent;
 use codex_history::RetainedInputSource;
+use codex_history::ShakeHistoryState;
 use codex_prompts::render_model_instructions;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::items::TurnItem;
@@ -92,6 +94,9 @@ pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector. Snapshots share the vector until a
     /// caller needs to mutate it, avoiding deep copies for read-only history consumers.
     items: Arc<Vec<ResponseItemEnvelope>>,
+    /// Persisted boundary before which Shake must leave the model-visible history unchanged.
+    shake_history_state: ShakeHistoryState,
+    shake_history_state_valid: bool,
     /// Compatibility history for legacy review and missing root instructions.
     review_history: Option<TranscriptHistory>,
     /// Host facts independent of the model window; snapshots share immutable state.
@@ -137,6 +142,9 @@ struct SharedConversationHistory {
 pub(crate) enum HistoryReplacement {
     Compaction {
         reviewer_compaction_hash: Option<String>,
+    },
+    Shake {
+        watermark_index: usize,
     },
     Reset,
 }
@@ -233,6 +241,8 @@ impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
             items: Arc::new(Vec::new()),
+            shake_history_state: watermark::fresh_epoch(),
+            shake_history_state_valid: true,
             review_history: None,
             retained_context: Arc::default(),
             guardian_review_mode: GuardianContextMode::ThreadOwned,
@@ -606,6 +616,34 @@ impl ContextManager {
         &self.items
     }
 
+    pub(crate) fn shake_history_state(&self) -> &ShakeHistoryState {
+        &self.shake_history_state
+    }
+
+    pub(crate) fn shake_history_state_is_valid(&self) -> bool {
+        self.shake_history_state_valid
+    }
+
+    pub(crate) fn restore_shake_history_state(&mut self, state: Option<&ShakeHistoryState>) {
+        self.shake_history_state = state
+            .cloned()
+            .unwrap_or_else(watermark::unsealed_replay_state);
+        self.shake_history_state_valid =
+            state.is_none_or(|state| watermark::matches_history(state, &self.items));
+    }
+
+    /// Gives a replayed history a process-local epoch before live request caching can use it.
+    pub(crate) fn activate_reconstructed_shake_history_state(&mut self) {
+        if self.shake_history_state.epoch_id == watermark::UNSEALED_REPLAY_EPOCH_ID {
+            self.reset_shake_history_state();
+        }
+    }
+
+    pub(crate) fn reset_shake_history_state(&mut self) {
+        self.shake_history_state = watermark::fresh_epoch();
+        self.shake_history_state_valid = true;
+    }
+
     /// Returns annotated history items and consumes the snapshot.
     pub(crate) fn into_annotated_items(self) -> Vec<ResponseItemEnvelope> {
         Arc::unwrap_or_clone(self.into_shared_annotated_items())
@@ -657,6 +695,11 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(items, &removed.item);
+            if self.shake_history_state_valid
+                && !watermark::matches_history(&self.shake_history_state, items)
+            {
+                self.shake_history_state = watermark::fresh_epoch();
+            }
             self.world_state_baseline = None;
         }
     }
@@ -667,6 +710,11 @@ impl ContextManager {
     }
 
     pub(crate) fn replace_annotated(&mut self, items: Vec<ResponseItemEnvelope>) {
+        if self.shake_history_state_valid
+            && !watermark::matches_history(&self.shake_history_state, &items)
+        {
+            self.shake_history_state = watermark::fresh_epoch();
+        }
         self.retained_context = Arc::default();
         self.user_message_revision = self.user_message_revision.saturating_add(1);
         if let Some(review_history) = &mut self.review_history {
@@ -715,12 +763,49 @@ impl ContextManager {
             self.review_history = Some(retained);
         }
         self.items = Arc::new(items);
+        self.reset_shake_history_state();
         self.history_version = self.history_version.saturating_add(1);
         if promoted {
             self.reset_version = self.history_version;
         }
         self.world_state_baseline = None;
         promoted
+    }
+
+    pub(crate) fn replace_shaken(
+        &mut self,
+        items: Vec<ResponseItemEnvelope>,
+        watermark_index: usize,
+    ) -> Result<bool, &'static str> {
+        if !self.shake_history_state_valid
+            || !watermark::matches_history(&self.shake_history_state, &self.items)
+        {
+            return Err("current shake history seal is invalid");
+        }
+        let sealed_watermark = usize::try_from(self.shake_history_state.watermark)
+            .map_err(|_| "current shake watermark does not fit in memory")?;
+        if watermark_index < sealed_watermark {
+            return Err("shake replacement cannot move the watermark backward");
+        }
+        let replacement_prefix_digest = watermark::history_prefix_digest(
+            items
+                .get(..sealed_watermark)
+                .ok_or("shake replacement is shorter than the sealed prefix")?,
+        )
+        .map_err(|_| "failed to digest the shake replacement prefix")?;
+        if replacement_prefix_digest != self.shake_history_state.sealed_prefix_digest {
+            return Err("shake replacement changed the sealed history prefix");
+        }
+        let next_state = watermark::state_for_epoch(
+            self.shake_history_state.epoch_id.clone(),
+            watermark_index,
+            &items,
+        )
+        .map_err(|_| "failed to build the next shake history seal")?;
+        let promoted = self.replace_compacted(items, None);
+        self.shake_history_state = next_state;
+        self.shake_history_state_valid = true;
+        Ok(promoted)
     }
 
     /// Drop the last `num_turns` instruction turns from this history.
@@ -760,6 +845,14 @@ impl ContextManager {
             user_positions[user_positions.len() - n_from_end]
         };
 
+        let minimum_cut = usize::try_from(self.shake_history_state.watermark)
+            .ok()
+            .filter(|watermark| cut_idx >= *watermark)
+            .unwrap_or(first_instruction_turn_idx);
+        let sealed_prefix_len = usize::try_from(self.shake_history_state.watermark)
+            .unwrap_or(0)
+            .min(snapshot.len());
+
         let first_removed_message_id = snapshot[cut_idx]
             .id()
             .map(codex_protocol::ResponseItemId::as_str);
@@ -769,24 +862,32 @@ impl ContextManager {
             history.truncate_before(&snapshot[cut_idx]);
         }
 
-        cut_idx =
-            self.trim_pre_turn_context_updates(&snapshot, first_instruction_turn_idx, cut_idx);
+        cut_idx = self.trim_pre_turn_context_updates(
+            &snapshot,
+            first_instruction_turn_idx,
+            cut_idx,
+            minimum_cut,
+        );
 
         // Apply the same acceptance boundary to the parent model window. The independent
         // transcript owns its rollback provenance even after this window is compacted.
         let mut retained_items = snapshot[..cut_idx]
             .iter()
-            .filter(|envelope| {
-                !source.acceptance_order().is_some_and(|boundary| {
-                    (matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "assistant")
-                        || matches!(&envelope.item, ResponseItem::FunctionCall { .. }))
-                        && RetainedInputSource::from(envelope.metadata.as_ref())
-                            .acceptance_order().is_some_and(|order| order >= boundary)
-                })
+            .enumerate()
+            .filter(|(index, envelope)| {
+                *index < sealed_prefix_len
+                    || !source.acceptance_order().is_some_and(|boundary| {
+                        (matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "assistant")
+                            || matches!(&envelope.item, ResponseItem::FunctionCall { .. }))
+                            && RetainedInputSource::from(envelope.metadata.as_ref())
+                                .acceptance_order().is_some_and(|order| order >= boundary)
+                    })
             })
+            .map(|(_, envelope)| envelope)
             .cloned()
             .collect::<Vec<_>>();
         if cut_idx == first_instruction_turn_idx
+            && (sealed_prefix_len == 0 || first_instruction_turn_idx < sealed_prefix_len)
             && let Some(first_turn_id) = snapshot[first_instruction_turn_idx].turn_id()
         {
             retained_items.retain_mut(|item| {
@@ -968,8 +1069,9 @@ impl ContextManager {
         snapshot: &[ResponseItemEnvelope],
         first_instruction_turn_idx: usize,
         mut cut_idx: usize,
+        minimum_cut: usize,
     ) -> usize {
-        while cut_idx > first_instruction_turn_idx {
+        while cut_idx > first_instruction_turn_idx.max(minimum_cut) {
             match &snapshot[cut_idx - 1].item {
                 ResponseItem::Message { role, content, .. }
                     if role == "developer" && is_contextual_dev_message_content(content) =>
