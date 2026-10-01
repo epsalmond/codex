@@ -8,7 +8,7 @@ fn assignment_reservation_commit_rejects_parent_interruption() {
         .reserve_child_assignment(root.clone(), ThreadId::new())
         .expect("child assignment is reserved");
     assert_eq!(
-        coordinator.classify_turn_end(&root, "root-interrupted", TurnEndDisposition::Interrupted),
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Interrupted),
         Ok(AssignmentPhase::Interrupted)
     );
     assert!(reservation.commit().is_err());
@@ -20,13 +20,14 @@ fn active_assignment_rejects_a_different_parent_generation() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let first_parent = new_root(&coordinator);
     let other_parent = new_root(&coordinator);
-    let child = new_child(&coordinator, &first_parent);
+    let child = new_child(&coordinator, &first_parent, "child-turn");
 
     assert!(
         coordinator
             .begin_or_continue_assignment(
                 child.thread_id,
                 Some(other_parent.clone()),
+                "other-parent-turn",
                 /*allow_new_generation*/ true,
             )
             .is_err()
@@ -39,8 +40,8 @@ fn active_assignment_rejects_a_different_parent_generation() {
 fn same_waiting_turn_remains_waiting_after_its_last_report_is_accepted() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let root = new_root(&coordinator);
-    let child = new_child(&coordinator, &root);
-    let grandchild = new_child(&coordinator, &child);
+    let child = new_child(&coordinator, &root, "waiting-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
     assert_eq!(
         coordinator.classify_turn_end(&child, "waiting-turn", TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Waiting)
@@ -57,10 +58,60 @@ fn same_waiting_turn_remains_waiting_after_its_last_report_is_accepted() {
 }
 
 #[test]
+fn stale_turn_classification_cannot_overwrite_a_later_waiting_turn() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "turn-a");
+    let _grandchild = new_child(&coordinator, &child, "grandchild-turn");
+
+    assert_eq!(
+        coordinator.classify_turn_end(&child, "turn-a", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            child.thread_id,
+            Some(root.clone()),
+            "turn-b",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(child.clone())
+    );
+    assert_eq!(
+        coordinator.classify_turn_end(&child, "turn-b", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            child.thread_id,
+            Some(root),
+            "turn-c",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(child.clone())
+    );
+
+    assert!(
+        coordinator
+            .classify_turn_end(&child, "turn-a", TurnEndDisposition::Succeeded)
+            .is_err()
+    );
+    assert!(
+        coordinator
+            .classify_turn_end(&child, "turn-b", TurnEndDisposition::Succeeded)
+            .is_err()
+    );
+    assert_eq!(
+        coordinator.classify_turn_end(&child, "turn-c", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+}
+
+#[test]
 fn accepting_a_terminal_report_retires_its_assignment() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let parent = new_root(&coordinator);
-    let child = new_child(&coordinator, &parent);
+    let child = new_child(&coordinator, &parent, "child-turn");
     let report = terminal_report(&coordinator, &child, "child-turn");
     let report_id = report.id.as_ref().expect("stable report ID");
     assert!(coordinator.mark_report_recorded(report_id));
@@ -79,7 +130,7 @@ fn accepting_a_terminal_report_retires_its_assignment() {
 fn interrupted_turn_rejects_late_terminal_classification() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let parent = new_root(&coordinator);
-    let child = new_child(&coordinator, &parent);
+    let child = new_child(&coordinator, &parent, "interrupted-turn");
     assert_eq!(
         coordinator.classify_turn_end(&child, "interrupted-turn", TurnEndDisposition::Interrupted),
         Ok(AssignmentPhase::Interrupted)

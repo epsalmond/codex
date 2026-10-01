@@ -13,8 +13,6 @@ use uuid::Uuid;
 
 mod reports;
 
-pub(crate) use reports::TerminalReportPublication;
-
 pub(crate) const MAX_OUTSTANDING_ASSIGNMENTS: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -63,6 +61,7 @@ struct Assignment {
     parent: Option<AgentAssignmentId>,
     phase: AssignmentPhase,
     direct_children: HashSet<AgentAssignmentId>,
+    active_turn_id: Option<String>,
     terminal_turn_id: Option<String>,
     terminal_disposition: Option<TurnEndDisposition>,
     last_classified_phase: Option<AssignmentPhase>,
@@ -105,9 +104,11 @@ impl AgentWakeCoordinator {
         &self,
         thread_id: ThreadId,
         parent: Option<AgentAssignmentId>,
+        turn_id: impl Into<String>,
         allow_new_generation: bool,
     ) -> Result<AgentAssignmentId, &'static str> {
         let mut state = self.lock_state();
+        let turn_id = turn_id.into();
         if let Some(current) = state.current_by_thread.get(&thread_id).cloned() {
             let phase = state
                 .assignments
@@ -121,6 +122,17 @@ impl AgentWakeCoordinator {
                     .expect("current assignment checked above");
                 if assignment.parent != parent {
                     return Err("assignment belongs to a different parent generation");
+                }
+                if assignment.phase == AssignmentPhase::Running {
+                    match assignment.active_turn_id.as_deref() {
+                        Some(active_turn_id) if active_turn_id == turn_id => return Ok(current),
+                        Some(_) => {
+                            return Err("another turn is already active for this assignment");
+                        }
+                        None => assignment.active_turn_id = Some(turn_id),
+                    }
+                } else {
+                    assignment.active_turn_id = Some(turn_id);
                 }
                 assignment.phase = AssignmentPhase::Running;
                 return Ok(current);
@@ -137,7 +149,7 @@ impl AgentWakeCoordinator {
         if !allow_new_generation {
             return Err("assignment is missing; an explicit followup is required");
         }
-        Self::create_assignment(&mut state, thread_id, parent)
+        Self::create_assignment(&mut state, thread_id, parent, turn_id)
     }
 
     /// Reserves the bounded assignment and parent obligation before delegated work starts.
@@ -163,7 +175,7 @@ impl AgentWakeCoordinator {
             return Err("thread already has a current assignment");
         }
         let id = AgentAssignmentId {
-            thread_id: thread_id.clone(),
+            thread_id,
             generation: Uuid::now_v7(),
         };
         state.assignments.insert(
@@ -172,6 +184,7 @@ impl AgentWakeCoordinator {
                 parent: Some(parent.clone()),
                 phase: AssignmentPhase::Reserved,
                 direct_children: HashSet::new(),
+                active_turn_id: None,
                 terminal_turn_id: None,
                 terminal_disposition: None,
                 last_classified_phase: None,
@@ -206,6 +219,20 @@ impl AgentWakeCoordinator {
             .assignments
             .get_mut(id)
             .ok_or("assignment is missing")?;
+        if assignment.active_turn_id.as_deref() != Some(terminal_turn_id.as_str()) {
+            if assignment.active_turn_id.is_some() {
+                return Err("turn does not own the active assignment");
+            }
+            return if assignment.terminal_turn_id.as_deref() == Some(terminal_turn_id.as_str())
+                && assignment.terminal_disposition == Some(disposition)
+            {
+                assignment
+                    .last_classified_phase
+                    .ok_or("classified turn has no recorded phase")
+            } else {
+                Err("turn is not active for this assignment")
+            };
+        }
         if assignment.terminal_turn_id.as_deref() == Some(terminal_turn_id.as_str()) {
             return if assignment.terminal_disposition == Some(disposition) {
                 assignment
@@ -223,6 +250,7 @@ impl AgentWakeCoordinator {
         }
         assignment.terminal_turn_id = Some(terminal_turn_id);
         assignment.terminal_disposition = Some(disposition);
+        assignment.active_turn_id = None;
         assignment.phase = match disposition {
             TurnEndDisposition::Succeeded if !assignment.direct_children.is_empty() => {
                 AssignmentPhase::Waiting
@@ -251,6 +279,7 @@ impl AgentWakeCoordinator {
         state: &mut CoordinatorState,
         thread_id: ThreadId,
         parent: Option<AgentAssignmentId>,
+        active_turn_id: String,
     ) -> Result<AgentAssignmentId, &'static str> {
         if let Some(parent) = &parent {
             if state.outstanding_assignments >= MAX_OUTSTANDING_ASSIGNMENTS {
@@ -266,7 +295,7 @@ impl AgentWakeCoordinator {
             }
         }
         let id = AgentAssignmentId {
-            thread_id: thread_id.clone(),
+            thread_id,
             generation: Uuid::now_v7(),
         };
         state.assignments.insert(
@@ -275,6 +304,7 @@ impl AgentWakeCoordinator {
                 parent: parent.clone(),
                 phase: AssignmentPhase::Running,
                 direct_children: HashSet::new(),
+                active_turn_id: Some(active_turn_id),
                 terminal_turn_id: None,
                 terminal_disposition: None,
                 last_classified_phase: None,
@@ -334,7 +364,7 @@ impl AgentWakeCoordinator {
         }
         let parent = assignment.parent;
         if let Some(parent) = &parent
-            && let Some(parent_assignment) = state.assignments.get_mut(&parent)
+            && let Some(parent_assignment) = state.assignments.get_mut(parent)
         {
             parent_assignment.direct_children.remove(child);
         }

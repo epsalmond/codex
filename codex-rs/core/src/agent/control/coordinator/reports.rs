@@ -9,12 +9,12 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 pub(crate) enum TerminalReportPublication {
-    Published(InterAgentCommunication),
-    AlreadyPublished,
+    Published(ResponseItemId),
+    AlreadyPublished(ResponseItemId),
 }
 
 impl AgentWakeCoordinator {
-    /// Publishes a terminal report once and gives the persisted AgentMessage a stable ID.
+    /// Publishes a terminal report once and returns only its stable ID; payload delivery must use a claim.
     pub(crate) fn publish_terminal_report(
         &self,
         child: &AgentAssignmentId,
@@ -28,7 +28,7 @@ impl AgentWakeCoordinator {
                 .reports
                 .get(report_id)
                 .filter(|report| report.terminal_turn_id == terminal_turn_id)
-                .map(|_| TerminalReportPublication::AlreadyPublished);
+                .map(|_| TerminalReportPublication::AlreadyPublished(report_id.clone()));
         }
         if !child_assignment.phase.is_terminal()
             || child_assignment.terminal_turn_id.as_deref() != Some(terminal_turn_id)
@@ -55,7 +55,7 @@ impl AgentWakeCoordinator {
                 child: child.clone(),
                 parent: parent.clone(),
                 terminal_turn_id: terminal_turn_id.to_string(),
-                communication: communication.clone(),
+                communication,
                 delivery: ReportDeliveryState::PendingMailbox,
             },
         );
@@ -68,11 +68,11 @@ impl AgentWakeCoordinator {
             .assignments
             .get_mut(child)
             .expect("child assignment checked above")
-            .terminal_report_id = Some(report_id);
-        Some(TerminalReportPublication::Published(communication))
+            .terminal_report_id = Some(report_id.clone());
+        Some(TerminalReportPublication::Published(report_id))
     }
 
-    /// Claims each mailbox report once; callers release the claim if enqueue fails.
+    /// Claims each mailbox report once; callers release it if enqueue or history recording aborts.
     pub(crate) fn claim_pending_mailbox_reports(
         &self,
         parent: &AgentAssignmentId,
@@ -114,6 +114,9 @@ impl AgentWakeCoordinator {
         let Some(report) = state.reports.get_mut(report_id) else {
             return false;
         };
+        if report.delivery != ReportDeliveryState::Enqueued {
+            return false;
+        }
         report.delivery = ReportDeliveryState::Recorded;
         true
     }
