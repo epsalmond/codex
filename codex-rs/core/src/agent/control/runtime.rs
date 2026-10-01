@@ -2,6 +2,7 @@
 //! Registry identity is allocation identity; cloning this handle preserves ownership checks.
 
 use super::LocalAgentControl;
+use super::coordinator::AgentWakeCoordinator;
 use super::execution::AgentExecutionLimiter;
 use super::residency::V2Residency;
 use crate::agent::api::AgentControl;
@@ -37,6 +38,8 @@ pub(crate) struct LocalAgentRuntime {
         Arc<OnceLock<Arc<dyn ThreadInstructionsProvider>>>,
     pub(super) registry: Arc<AgentRegistry>,
     pub(super) residency: Arc<V2Residency>,
+    /// In-memory assignment obligations and terminal reports for the agent tree.
+    pub(super) wake_coordinator: Arc<AgentWakeCoordinator>,
 }
 
 impl LocalAgentRuntime {
@@ -50,6 +53,7 @@ impl LocalAgentRuntime {
             thread_id_generator,
             registry: Arc::default(),
             residency: Arc::default(),
+            wake_coordinator: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
