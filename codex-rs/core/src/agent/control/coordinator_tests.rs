@@ -303,3 +303,6 @@ fn interrupted_child_requires_explicit_followup_and_then_gets_a_fresh_generation
         .expect("explicit followup clears the interruption pause");
     assert_ne!(resumed, child);
 }
+
+#[path = "coordinator_invariant_tests.rs"]
+mod invariant_tests;
