@@ -4234,6 +4234,7 @@ impl Session {
                 window_id: Some(metadata.window_ids.window_id.to_string()),
                 compaction_response_id: metadata.compaction_response_id,
                 latest_token_usage_record: state.latest_token_usage_record.clone(),
+                shake_history_state: None,
                 resume_metadata: Some(CompactionResumeMetadata {
                     multi_agent_version: self.multi_agent_version(),
                     last_started_turn_id: state.last_started_turn_id.clone(),

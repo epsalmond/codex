@@ -2307,6 +2307,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         window_id: Some(window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     })];
 
@@ -3245,6 +3246,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record,
+            shake_history_state: None,
             resume_metadata: None,
         })
     };
@@ -12908,6 +12910,7 @@ async fn sample_rollout(
         window_id: Some(window_ids.window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     }));
 
@@ -12943,6 +12946,7 @@ async fn sample_rollout(
         window_id: Some(window_ids.window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     }));
 

@@ -537,6 +537,7 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     };
 
@@ -594,6 +595,7 @@ fn compacted_resume_metadata_presence_round_trips_empty_values() -> Result<()> {
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: Some(resume_metadata.clone()),
     };
 
@@ -687,6 +689,7 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: Some(CompactionResumeMetadata {
             multi_agent_version: Some(MultiAgentVersion::V2),
             last_started_turn_id: Some("turn-1".to_string()),
@@ -900,6 +903,7 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         window_id: Some("019b3f6e-7a10-7cc3-8b6e-1d09e2f7a001".to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     };
 
@@ -915,6 +919,73 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
             "latest_token_usage_record": null,
         })
     );
+    Ok(())
+}
+
+#[test]
+fn compacted_item_persists_a_bounded_shake_history_state() -> Result<()> {
+    let item = CompactedItem {
+        message: "shake".to_string(),
+        replacement_history: Some(vec![response_message("user").into()]),
+        retained_context: None,
+        guardian_history: None,
+        mcp_resource_origins: None,
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
+        shake_history_state: Some(ShakeHistoryState {
+            epoch_id: "epoch-1".to_string(),
+            watermark: 1,
+            sealed_prefix_digest: "0123456789012345678901234567890123456789".to_string(),
+        }),
+        resume_metadata: None,
+    };
+
+    let serialized = serde_json::to_value(&item)?;
+    assert_eq!(
+        serialized["shake_history_state"],
+        json!({
+            "epoch_id": "epoch-1",
+            "watermark": 1,
+            "sealed_prefix_digest": "0123456789012345678901234567890123456789",
+        })
+    );
+    assert_eq!(serde_json::from_value::<CompactedItem>(serialized)?, item);
+
+    for invalid in [
+        json!({
+            "message": "shake",
+            "replacement_history": [response_message("user")],
+            "shake_history_state": {
+                "epoch_id": "epoch-1",
+                "watermark": 2,
+                "sealed_prefix_digest": "0123456789012345678901234567890123456789",
+            },
+        }),
+        json!({
+            "message": "shake",
+            "shake_history_state": {
+                "epoch_id": "epoch-1",
+                "watermark": 0,
+                "sealed_prefix_digest": "0123456789012345678901234567890123456789",
+            },
+        }),
+        json!({
+            "message": "shake",
+            "replacement_history": [],
+            "shake_history_state": {
+                "epoch_id": "epoch-1",
+                "watermark": 0,
+                "sealed_prefix_digest": "invalid",
+            },
+        }),
+    ] {
+        assert!(serde_json::from_value::<CompactedItem>(invalid).is_err());
+    }
+
     Ok(())
 }
 
@@ -940,6 +1011,7 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
+            shake_history_state: None,
             resume_metadata: None,
         }
     );
