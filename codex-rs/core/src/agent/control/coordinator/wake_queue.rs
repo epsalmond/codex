@@ -23,16 +23,17 @@ impl WakeQueue {
     }
 }
 
-fn is_current_and_open(state: &CoordinatorState, assignment: &AgentAssignmentId) -> bool {
+fn is_current_and_wakeable(state: &CoordinatorState, assignment: &AgentAssignmentId) -> bool {
     state.current_by_thread.get(&assignment.thread_id) == Some(assignment)
-        && state
-            .assignments
-            .get(assignment)
-            .is_some_and(|entry| entry.phase.is_open())
+        && state.assignments.get(assignment).is_some_and(|entry| {
+            entry.phase == super::AssignmentPhase::Waiting
+                || (entry.phase == super::AssignmentPhase::Running
+                    && entry.active_turn_id.is_some())
+        })
 }
 
 fn push_if_current_and_open(state: &mut CoordinatorState, assignment: AgentAssignmentId) -> bool {
-    if !is_current_and_open(state, &assignment) {
+    if !is_current_and_wakeable(state, &assignment) {
         return false;
     }
     if state.wake_queue.in_flight.contains(&assignment) {
@@ -72,7 +73,7 @@ impl AgentWakeCoordinator {
         let mut state = self.lock_state();
         while let Some(assignment) = state.wake_queue.pending.pop_front() {
             state.wake_queue.queued.remove(&assignment);
-            if is_current_and_open(&state, &assignment) {
+            if is_current_and_wakeable(&state, &assignment) {
                 state.wake_queue.in_flight.insert(assignment.clone());
                 return Some(assignment);
             }

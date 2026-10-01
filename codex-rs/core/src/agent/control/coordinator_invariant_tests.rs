@@ -88,6 +88,34 @@ fn wake_queue_discards_a_terminal_assignment_generation() {
 }
 
 #[test]
+fn wake_queue_rejects_a_reserved_target_until_its_turn_starts() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let reservation = coordinator
+        .reserve_child_assignment(root.clone(), ThreadId::new())
+        .expect("child assignment is reserved");
+    let child = reservation.id.clone();
+
+    assert!(!coordinator.request_wake(child.clone()));
+    assert_eq!(reservation.commit(), Ok(child.clone()));
+    assert!(!coordinator.request_wake(child.clone()));
+    coordinator
+        .begin_or_continue_assignment(
+            child.thread_id,
+            Some(root),
+            "child-turn",
+            /*allow_new_generation*/ false,
+        )
+        .expect("committed child starts its first turn");
+    assert!(coordinator.request_wake(child.clone()));
+    let request = coordinator
+        .claim_next_wake_request()
+        .expect("started child is wakeable");
+    assert_eq!(request.assignment(), &child);
+    request.complete();
+}
+
+#[test]
 fn wake_queue_retries_once_for_reports_arriving_during_delivery() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let root = new_root(&coordinator);
