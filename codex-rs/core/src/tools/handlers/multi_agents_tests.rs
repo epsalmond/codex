@@ -3193,6 +3193,48 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_returns_immediately_when_no_agent_can_report() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let output = timeout(
+        Duration::from_secs(/*secs*/ 5),
+        WaitAgentHandlerV2::default().handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait_agent",
+            function_payload(json!({})),
+        )),
+    )
+    .await
+    .expect("wait_agent should not wait when no agent can report")
+    .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "No subagents are running and no messages are queued, so nothing can report; returned without waiting.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
@@ -4791,7 +4833,6 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     expected.model_auto_compact_token_limit = Some(272_000);
     expected.auto_shake.max_threshold_tokens = Some(272_000);
-    expected.multi_agent_v2.subagent_context_token_cap = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {
@@ -4894,7 +4935,6 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
     expected.model_auto_compact_token_limit = Some(272_000);
     expected.auto_shake.max_threshold_tokens = Some(272_000);
-    expected.multi_agent_v2.subagent_context_token_cap = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {

@@ -670,7 +670,10 @@ pub(crate) async fn run_turn(
                             .await;
                             sess.track_turn_codex_error(turn_context.as_ref(), &err);
                             let mut error_event = err.to_error_event(/*message_prefix*/ None);
-                            error_event.message = subagent_context_limit_message(limit_tokens);
+                            error_event.message = subagent_context_limit_message(
+                                limit_tokens,
+                                turn_context.multi_agent_version,
+                            );
                             sess.send_event(&turn_context, EventMsg::Error(error_event))
                                 .await;
                             return Ok(None);

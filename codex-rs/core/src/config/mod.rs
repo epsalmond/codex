@@ -1412,10 +1412,6 @@ pub struct MultiAgentV2Config {
     pub disable_direct_message: bool,
     pub message_board_in_memory: bool,
     pub non_code_mode_only: bool,
-    /// Context token cap a subagent's role text states. Set on subagent configs from
-    /// `[subagent_context_reduction]`; not user-configurable.
-    #[serde(skip)]
-    pub subagent_context_token_cap: Option<u64>,
 }
 
 impl MultiAgentV2Config {
@@ -1455,7 +1451,6 @@ impl MultiAgentV2Config {
             disable_direct_message: false,
             message_board_in_memory: false,
             non_code_mode_only: true,
-            subagent_context_token_cap: None,
         }
     }
 }
@@ -2935,7 +2930,6 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         disable_direct_message,
         message_board_in_memory,
         non_code_mode_only,
-        subagent_context_token_cap: None,
     }
 }
 

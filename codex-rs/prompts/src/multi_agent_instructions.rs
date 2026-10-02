@@ -33,7 +33,7 @@ pub enum MultiAgentRoleInstructions {
         expose_model_overrides: bool,
         /// True for the root's role text, false for a subagent's.
         is_root: bool,
-        /// The `[subagent_context_reduction]` token cap, stated in a subagent's role text.
+        /// Token count at which a subagent's context compacts, stated in its role text.
         subagent_context_token_cap: Option<u64>,
     },
 }

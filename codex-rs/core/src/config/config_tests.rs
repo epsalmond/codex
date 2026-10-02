@@ -12287,6 +12287,7 @@ fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
             messages,
             /*omit_update_plan_instructions*/ false,
             mode == ChildReportMode::WaitAgent,
+            /*subagent_context_token_cap*/ None,
         );
         let root = usage_hints
             .root
@@ -12346,6 +12347,7 @@ max_concurrent_threads_per_session = 17
         config.agent_polling = agent_polling;
         let usage_hints = resolve_usage_hints(
             &config, messages, /*omit_update_plan_instructions*/ false,
+            /*subagent_context_token_cap*/ None,
         );
         let [root, subagent] = [usage_hints.root, usage_hints.subagent]
             .map(|hint| hint.expect("default usage hints should be present").body());
@@ -12369,6 +12371,7 @@ max_concurrent_threads_per_session = 17
         &config,
         empty_messages,
         /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
     assert!(usage_hints.root.is_none() && usage_hints.subagent.is_none());
 }
@@ -12401,6 +12404,7 @@ expose_spawn_agent_model_overrides = true
     messages.subagent = ResolvedMessage::Catalog("Catalog subagent base.");
     let usage_hints = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ true,
+        /*subagent_context_token_cap*/ None,
     );
     assert_eq!(
         (
@@ -12424,10 +12428,12 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
     let messages = ResolvedModelMessages::bundled().multi_agent();
     let usage_hints = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
     config.expose_spawn_agent_model_overrides = false;
     let usage_hints_without_model_overrides = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
 
     for (hint, hint_without_model_overrides) in [
@@ -12569,6 +12575,7 @@ subagent_usage_hint_text = ""
         &config.multi_agent_v2,
         messages,
         /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
     assert_eq!(
         (
