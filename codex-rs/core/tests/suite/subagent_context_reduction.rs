@@ -148,6 +148,7 @@ fn reduction_test(enabled: bool, threshold_tokens: u64) -> TestCodexBuilder {
             // `wait_agent` waits for new mailbox activity; a child that already finished
             // may have delivered its completion before the call.
             config.multi_agent_v2.default_wait_timeout_ms = 1_000;
+            config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 1_000;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.subagent_context_reduction = SubagentContextReductionConfig {

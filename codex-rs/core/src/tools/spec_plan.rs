@@ -787,7 +787,10 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
 fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOptions {
     if multi_agent_v2_enabled(turn_context) {
         return WaitAgentTimeoutOptions {
-            default_timeout_ms: turn_context.config.multi_agent_v2.default_wait_timeout_ms,
+            default_timeout_ms: turn_context
+                .config
+                .multi_agent_v2
+                .default_wait_timeout_ms_for(&turn_context.session_source),
             min_timeout_ms: turn_context.config.multi_agent_v2.min_wait_timeout_ms,
             max_timeout_ms: turn_context.config.multi_agent_v2.max_wait_timeout_ms,
         };

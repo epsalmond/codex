@@ -12152,6 +12152,10 @@ max_concurrent_threads_per_session = 9
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 120000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 30000);
     assert_eq!(
+        config.multi_agent_v2.noninteractive_default_wait_timeout_ms,
+        30000
+    );
+    assert_eq!(
         (
             config.agent_max_threads,
             config.effective_agent_max_threads(MultiAgentVersion::V2)
@@ -12289,7 +12293,7 @@ fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
             .expect("root usage hint should be present")
             .body();
         assert_eq!(
-            root.contains("When calling `wait_agent`, prefer longer waits"),
+            root.contains("When calling `wait_agent`, use long timeouts"),
             expect_polling_guidance
         );
     }
@@ -12351,7 +12355,7 @@ max_concurrent_threads_per_session = 17
         assert_eq!(
             (
                 root.contains("wait_agent"),
-                subagent.contains("When calling `wait_agent`, prefer longer waits"),
+                subagent.contains("When calling `wait_agent`, use long timeouts"),
                 subagent.contains("If you are blocked, end your turn with your question"),
             ),
             (agent_polling == AgentPolling::Enabled, true, true,)
@@ -12513,6 +12517,31 @@ subagent_developer_instructions = "  \t  "
         ..resolve_multi_agent_v2_config(&ConfigToml::default())
     };
     assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
+}
+
+#[test]
+fn multi_agent_v2_noninteractive_wait_default_is_longer_and_bounded() {
+    let default = resolve_multi_agent_v2_config(&ConfigToml::default());
+    assert_eq!(
+        [
+            SessionSource::Cli,
+            SessionSource::Exec,
+            SessionSource::SubAgent(SubAgentSource::Review),
+        ]
+        .map(|source| default.default_wait_timeout_ms_for(&source)),
+        [30_000, 300_000, 300_000],
+    );
+
+    let bounded: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+max_wait_timeout_ms = 60000
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    assert_eq!(
+        resolve_multi_agent_v2_config(&bounded).default_wait_timeout_ms_for(&SessionSource::Exec),
+        60_000,
+    );
 }
 
 #[tokio::test]

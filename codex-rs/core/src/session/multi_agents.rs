@@ -182,6 +182,7 @@ pub(crate) fn resolve_usage_hints_with_polling_modes(
             agent_polling_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
             is_root,
+            subagent_context_token_cap: config.subagent_context_token_cap,
         })
     };
 

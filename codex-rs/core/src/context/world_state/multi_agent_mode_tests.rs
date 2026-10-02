@@ -99,6 +99,7 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
         agent_polling_enabled: false,
         expose_model_overrides: false,
         is_root: true,
+        subagent_context_token_cap: None,
     };
     let previous_hint = MultiAgentUsageHintState::new(catalog_role("Previous role."));
     let previous_mode =

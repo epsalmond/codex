@@ -3203,6 +3203,7 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     config.multi_agent_v2.min_wait_timeout_ms = 50;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
 
     tokio::time::pause();
@@ -3250,6 +3251,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
 
     let output = WaitAgentHandlerV2::default()
@@ -3285,6 +3287,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3340,6 +3343,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     config.multi_agent_v2.min_wait_timeout_ms = 0;
     config.multi_agent_v2.max_wait_timeout_ms = 0;
     config.multi_agent_v2.default_wait_timeout_ms = 0;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 0;
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3380,6 +3384,7 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 50;
     config.multi_agent_v2.default_wait_timeout_ms = 1;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 1;
     set_turn_config(&mut turn, config);
 
     let Err(err) = WaitAgentHandlerV2::default()
@@ -3410,6 +3415,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1;
     config.multi_agent_v2.default_wait_timeout_ms = 1;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 1;
     set_turn_config(&mut turn, config);
 
     let output = WaitAgentHandlerV2::default()

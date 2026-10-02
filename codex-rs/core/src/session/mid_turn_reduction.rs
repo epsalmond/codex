@@ -42,7 +42,19 @@ pub(super) enum MidTurnReduction {
     /// Compaction ran and sampling continues (a root session may still be over the limit).
     Compacted,
     /// Compaction ran but a subagent's usage is still at or over the limit.
-    Insufficient,
+    Insufficient { limit_tokens: Option<i64> },
+}
+
+/// Error text for a subagent turn that ended over its context limit. The parent reads it
+/// as the child's status, so it states what happened and the parent's next step.
+pub(super) fn subagent_context_limit_message(limit_tokens: Option<i64>) -> String {
+    let limit = limit_tokens.map_or_else(
+        || "context limit".to_string(),
+        |limit| format!("{limit}-token context limit"),
+    );
+    format!(
+        "This subagent's turn ended because its context was still over its {limit} after compaction. Use `followup_task` to ask it for a brief report of its partial results, then delegate the remaining work as smaller tasks."
+    )
 }
 
 pub(super) async fn reduce_mid_turn(
@@ -108,7 +120,11 @@ pub(super) async fn reduce_mid_turn(
             full_context_window_limit = ?after_compact.full_context_window_limit,
             "mid-turn compaction left the subagent context over its limit; failing the turn"
         );
-        return Ok(MidTurnReduction::Insufficient);
+        return Ok(MidTurnReduction::Insufficient {
+            limit_tokens: after_compact
+                .auto_compact_scope_limit
+                .or(after_compact.full_context_window_limit),
+        });
     }
     Ok(MidTurnReduction::Compacted)
 }

@@ -189,6 +189,9 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
                 .max_threshold_tokens
                 .map_or(threshold_tokens, |cap| cap.min(threshold_tokens)),
         );
+        config.multi_agent_v2.subagent_context_token_cap = config
+            .model_auto_compact_token_limit
+            .and_then(|limit| u64::try_from(limit).ok());
     }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 

@@ -52,7 +52,10 @@ impl Handler {
         let args: WaitArgs = parse_arguments(&arguments)?;
         let min_timeout_ms = turn.config.multi_agent_v2.min_wait_timeout_ms;
         let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
-        let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
+        let default_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .default_wait_timeout_ms_for(&turn.session_source);
         let requested_timeout_ms = args.timeout_ms;
         let timeout_ms = match requested_timeout_ms {
             Some(ms) if ms > max_timeout_ms => {

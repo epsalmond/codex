@@ -1640,6 +1640,13 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_wake_mode_hint(&mut self, visible: bool) {
+        if self.pending_input_preview.wake_mode_hint != visible {
+            self.pending_input_preview.wake_mode_hint = visible;
+            self.request_redraw();
+        }
+    }
+
     /// Update the inactive-thread approval list shown above the composer.
     pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) {
         if self.pending_thread_approvals.set_threads(threads) {
@@ -2228,7 +2235,8 @@ impl BottomPane {
                 || !self.pending_input_preview.queued_messages.is_empty()
                 || !self.pending_input_preview.pending_steers.is_empty()
                 || !self.pending_input_preview.rejected_steers.is_empty()
-                || self.pending_input_preview.queued_agent_results > 0;
+                || self.pending_input_preview.queued_agent_results > 0
+                || self.pending_input_preview.wake_mode_hint;
             let has_status_or_footer = self.status_widget().is_some()
                 || self.hook_status_message.is_some()
                 || !self.unified_exec_footer.is_empty();

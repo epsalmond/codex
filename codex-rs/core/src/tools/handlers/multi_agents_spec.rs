@@ -735,10 +735,10 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 
 ### After you delegate
-- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
-- Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
+- Call wait_agent only when the next critical-path step needs a subagent's result and you have no other work until it returns.
+- Leave delegated subagent tasks to the subagent; spend your time integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
-- Do not repeatedly wait by reflex.
+- Wait again only after confirming you have no independent work left.
 - When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.
 
 ### Parallel delegation patterns
@@ -876,7 +876,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
         (
             "timeout_ms".to_string(),
             JsonSchema::number(Some(format!(
-                "Timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.",
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}. Use long timeouts (minutes); the call returns as soon as a target finishes.",
                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
             ))),
         ),

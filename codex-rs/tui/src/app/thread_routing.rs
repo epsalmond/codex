@@ -1274,6 +1274,11 @@ impl App {
             None
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let is_turn_completed = matches!(
+            &notification,
+            ServerNotification::TurnCompleted(completed)
+                if completed.turn.status == codex_app_server_protocol::TurnStatus::Completed
+        );
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
@@ -1321,6 +1326,13 @@ impl App {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
+        }
+        if self.primary_thread_id == Some(thread_id) {
+            if is_turn_started {
+                self.set_wake_mode_hint(/*visible*/ false);
+            } else if is_turn_completed {
+                self.show_wake_mode_hint_once();
+            }
         }
 
         // Settings snapshots do not belong in the transcript queue: apply them in receive order.
@@ -1396,6 +1408,32 @@ impl App {
     /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
     /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
     /// names and roles later; until then, rendering falls back to the thread id.
+    /// Explains wake mode the first time the root ends a turn while only children are working.
+    fn show_wake_mode_hint_once(&mut self) {
+        if self.wake_mode_hint_shown
+            || self.active_thread_id != self.primary_thread_id
+            || self.chat_widget.config_ref().multi_agent_v2.agent_polling
+                != codex_features::AgentPolling::Disabled
+        {
+            return;
+        }
+        let children_working = self
+            .agent_navigation
+            .ordered_path_backed_subagent_threads(self.primary_thread_id)
+            .into_iter()
+            .any(|(_, entry)| entry.is_running && !entry.is_closed);
+        if children_working {
+            self.wake_mode_hint_shown = true;
+            self.set_wake_mode_hint(/*visible*/ true);
+        }
+    }
+
+    fn set_wake_mode_hint(&mut self, visible: bool) {
+        if self.active_thread_id == self.primary_thread_id {
+            self.chat_widget.set_wake_mode_hint(visible);
+        }
+    }
+
     pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
         notification: &ServerNotification,
