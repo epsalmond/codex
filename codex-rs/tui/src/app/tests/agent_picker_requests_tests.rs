@@ -28,7 +28,7 @@ async fn visible_picker_retries_an_empty_preview_after_a_new_completion() -> Res
     )
     .await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    app.start_fresh_session_with_summary_hint(
+    app.start_fresh_session(
         &mut tui,
         &mut app_server,
         /*session_start_source*/ None,
@@ -37,7 +37,7 @@ async fn visible_picker_retries_an_empty_preview_after_a_new_completion() -> Res
     )
     .await;
     let root_thread_id = app.chat_widget.thread_id().expect("root thread started");
-    app.start_fresh_session_with_summary_hint(
+    app.start_fresh_session(
         &mut tui,
         &mut app_server,
         /*session_start_source*/ None,
@@ -169,8 +169,14 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
     let proxy = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
         let websocket = accept_async(stream).await?;
-        let (sink, mut source) = websocket.split();
-        let sink = Arc::new(tokio::sync::Mutex::new(sink));
+        let (mut sink, mut source) = websocket.split();
+        let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Message>();
+        let writer = tokio::spawn(async move {
+            while let Some(message) = write_rx.recv().await {
+                sink.send(message).await?;
+            }
+            Ok::<_, color_eyre::Report>(())
+        });
         while let Some(frame) = source.next().await {
             let text = match frame? {
                 Message::Text(text) => text,
@@ -190,10 +196,9 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
                         "codexHome": "/tmp/codex-tui-test"
                     }
                 });
-                sink.lock()
-                    .await
+                write_tx
                     .send(Message::Text(response.to_string().into()))
-                    .await?;
+                    .expect("test WebSocket writer remains open");
             } else if method == "thread/turns/list" {
                 let current = server_active.fetch_add(/*val*/ 1, Ordering::SeqCst) + 1;
                 server_max_active.fetch_max(current, Ordering::SeqCst);
@@ -205,7 +210,7 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
                     .send(thread_id)
                     .expect("test receiver remains open");
                 let request_id = request["id"].clone();
-                let response_sink = Arc::clone(&sink);
+                let response_tx = write_tx.clone();
                 let response_gate = Arc::clone(&server_gate);
                 let response_active = Arc::clone(&server_active);
                 tokio::spawn(async move {
@@ -224,15 +229,14 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
                             "backwardsCursor": null
                         }
                     });
-                    response_sink
-                        .lock()
-                        .await
+                    response_tx
                         .send(Message::Text(response.to_string().into()))
-                        .await
-                        .expect("websocket remains open");
+                        .expect("test WebSocket writer remains open");
                 });
             }
         }
+        drop(write_tx);
+        writer.await??;
         Ok::<_, color_eyre::Report>(())
     });
     let client = crate::connect_remote_app_server(crate::RemoteAppServerEndpoint::WebSocket {

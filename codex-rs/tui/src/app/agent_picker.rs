@@ -107,20 +107,20 @@ impl App {
             return;
         }
         let generation = self.agent_navigation.begin_picker_preview_generation(root);
-        let candidates: Vec<_> = thread_ids
-            .into_iter()
-            .filter(|thread_id| *thread_id != root)
-            .filter(|thread_id| self.agent_navigation.get(thread_id).is_some())
-            .take(AGENT_PICKER_MAX_THREADS)
-            .collect();
-        let requests: Vec<_> = candidates
-            .into_iter()
-            .filter_map(|thread_id| {
-                self.agent_navigation
-                    .begin_preview_backfill(thread_id)
-                    .map(|revision| (thread_id, revision))
-            })
-            .collect();
+        let mut candidate_count = 0;
+        let mut requests = Vec::new();
+        for thread_id in thread_ids {
+            if thread_id == root || self.agent_navigation.get(&thread_id).is_none() {
+                continue;
+            }
+            if candidate_count >= AGENT_PICKER_MAX_THREADS {
+                break;
+            }
+            candidate_count += 1;
+            if let Some(revision) = self.agent_navigation.begin_preview_backfill(thread_id) {
+                requests.push((thread_id, revision));
+            }
+        }
         if requests.is_empty() {
             return;
         }
