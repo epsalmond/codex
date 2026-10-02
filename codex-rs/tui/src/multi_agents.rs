@@ -45,6 +45,19 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) is_closed: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentPickerThreadDetails {
+    pub(crate) response_preview: Option<String>,
+    pub(crate) context_usage: Option<AgentPickerContextUsage>,
+    pub(crate) is_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentPickerContextUsage {
+    pub(crate) last_tokens: i64,
+    pub(crate) model_context_window: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubAgentActivityDisplay {
     pub(crate) thread_id: ThreadId,
