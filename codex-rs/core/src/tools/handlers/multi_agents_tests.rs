@@ -4791,6 +4791,7 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     expected.model_auto_compact_token_limit = Some(272_000);
     expected.auto_shake.max_threshold_tokens = Some(272_000);
+    expected.multi_agent_v2.subagent_context_token_cap = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {
@@ -4893,6 +4894,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
     expected.model_auto_compact_token_limit = Some(272_000);
     expected.auto_shake.max_threshold_tokens = Some(272_000);
+    expected.multi_agent_v2.subagent_context_token_cap = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {
