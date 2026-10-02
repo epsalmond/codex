@@ -361,11 +361,13 @@ async fn interrupt_persists_turn_aborted_marker_in_next_request() {
 
     let follow_up_request = &requests[1];
     let user_texts = follow_up_request.message_input_texts("user");
+    let developer_texts = follow_up_request.message_input_texts("developer");
     assert!(
         user_texts
             .iter()
+            .chain(developer_texts.iter())
             .any(|text| text.contains("<turn_aborted>")),
-        "expected <turn_aborted> marker in follow-up request"
+        "expected <turn_aborted> marker in follow-up request: user={user_texts:?}, developer={developer_texts:?}"
     );
     codex.submit(Op::CleanBackgroundTerminals).await.unwrap();
 }

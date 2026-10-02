@@ -15,6 +15,7 @@ use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_extension_api::empty_extension_registry;
+use codex_features::AgentPolling;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_models_manager::manager::RefreshStrategy;
@@ -355,6 +356,7 @@ async fn reserved_thread_id_is_used_without_changing_normal_id_generation() {
 async fn thread_id_generator_applies_to_roots_children_and_forks() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
