@@ -369,6 +369,7 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
         "message": "upward grandchild task marker",
         "task_name": "grandchild",
     }))?;
+    let worker_result = format!("worker result marker {}", "🧪résultat ".repeat(10_000));
     let root_id = Arc::new(Mutex::new(None::<String>));
     let child_id = Arc::new(Mutex::new(None::<String>));
     let root_id_for_matcher = Arc::clone(&root_id);
@@ -426,7 +427,7 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
                     streaming_event_chunk(ev_response_created("upward-child-resume")),
                     streaming_event_chunk(ev_assistant_message(
                         "upward-child-final",
-                        "worker result marker",
+                        &worker_result,
                     )),
                     streaming_event_chunk(ev_completed("upward-child-resume")),
                 ],
@@ -589,6 +590,16 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
         })
         .count();
     assert_eq!(worker_report_count, 1);
+    let worker_report = root_requests
+        .iter()
+        .flat_map(|request| request["input"].as_array().into_iter().flatten())
+        .find(|item| {
+            item["type"] == "agent_message" && item.to_string().contains("worker result marker")
+        })
+        .expect("root request contains the worker report");
+    assert!(
+        codex_utils_output_truncation::approx_token_count(&worker_report.to_string()) <= 1_000
+    );
     let _ = test.codex.shutdown_and_wait().await;
     server.shutdown().await;
     Ok(())

@@ -1,5 +1,6 @@
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::AgentStatus;
+use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
@@ -22,7 +23,9 @@ pub(crate) fn format_inter_agent_completion_message(
     status: &AgentStatus,
 ) -> Option<String> {
     let payload = match status {
-        AgentStatus::Completed(Some(message)) => message.clone(),
+        AgentStatus::Completed(Some(message)) => {
+            truncate_text(message, TruncationPolicy::Tokens(ERROR_MAX_TOKENS))
+        }
         AgentStatus::Completed(None) => String::new(),
         AgentStatus::Errored(error) => {
             let error = truncate_text(error, TruncationPolicy::Tokens(ERROR_MAX_TOKENS));
@@ -33,7 +36,15 @@ pub(crate) fn format_inter_agent_completion_message(
         AgentStatus::NotFound => "Agent was not found.".to_string(),
         AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Waiting => return None,
     };
-    Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
+    let message = InterAgentCompletionMessage::new(task_name, sender, payload).render();
+    if approx_token_count(&message) > COMPLETION_MESSAGE_MAX_TOKENS {
+        Some(truncate_text(
+            &message,
+            TruncationPolicy::Tokens(ERROR_MAX_TOKENS),
+        ))
+    } else {
+        Some(message)
+    }
 }
 
 #[cfg(test)]
