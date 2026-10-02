@@ -10,6 +10,8 @@ Spawned subagents inherit a 272,000-token Shake and compaction cap by default, t
 
 Interactive MultiAgentV2 roots and eligible V2 child agents at every depth now wake on reports. Exec roots themselves continue polling their direct children. Set `agent_polling = "enabled"` to retain polling throughout the tree. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and the [nested wake release notes](releases/2026-10-02-nested-wake-mode.md).
 
+In `codex exec` and in subagents, `wait_agent` without `timeout_ms` now waits up to 300 seconds (interactive sessions keep 30 seconds), returns as soon as an agent reports, and returns at once when no child is running; a configured `default_wait_timeout_ms` applies everywhere.
+
 ## Subagents on a different model provider
 
 An agent role's `config_file` can now set `model_provider`, so `spawn_agent` runs that role's children against a self-hosted or otherwise alternate provider while the parent keeps its own login. See [subagents on a different model provider](README.md#subagents-on-a-different-model-provider) and its [detailed notes](releases/2026-09-26-subagent-provider.md).
