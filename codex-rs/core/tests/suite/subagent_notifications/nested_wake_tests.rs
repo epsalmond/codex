@@ -572,6 +572,23 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
     assert_eq!(grandchild_report_count, 1);
     assert_ne!(grandchild_thread_id, root_thread_id);
     assert_ne!(grandchild_thread_id, child_thread_id);
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    let root_requests = server
+        .requests()
+        .await
+        .into_iter()
+        .filter_map(|request| serde_json::from_slice::<Value>(&request).ok())
+        .filter(|request| streaming_request_has_thread_id(request, root_thread_id))
+        .collect::<Vec<_>>();
+    assert_eq!(root_requests.len(), 3);
+    let worker_report_count = root_requests
+        .iter()
+        .flat_map(|request| request["input"].as_array().into_iter().flatten())
+        .filter(|item| {
+            item["type"] == "agent_message" && item.to_string().contains("worker result marker")
+        })
+        .count();
+    assert_eq!(worker_report_count, 1);
     let _ = test.codex.shutdown_and_wait().await;
     server.shutdown().await;
     Ok(())
