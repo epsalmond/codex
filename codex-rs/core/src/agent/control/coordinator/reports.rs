@@ -347,6 +347,8 @@ impl AgentWakeCoordinator {
         };
         report.delivery = ReportDeliveryState::Enqueued;
         report.mailbox_inserted = true;
+        drop(state);
+        self.signal_wake_event();
         true
     }
 
@@ -357,6 +359,41 @@ impl AgentWakeCoordinator {
             .is_some_and(|reports| !reports.is_empty())
     }
 
+    /// Waits until non-triggering terminal reports published before a user turn are in its queue.
+    pub(crate) async fn wait_for_queue_only_reports_enqueued(
+        &self,
+        parent: &AgentAssignmentId,
+    ) {
+        loop {
+            let observed_epoch = self.wake_event_epoch();
+            let has_unenqueued_reports = {
+                let state = self.lock_state();
+                if state.current_by_thread.get(&parent.thread_id) != Some(parent)
+                    || !state
+                        .assignments
+                        .get(parent)
+                        .is_some_and(|assignment| assignment.phase.is_open())
+                {
+                    return;
+                }
+                state
+                    .pending_by_parent
+                    .get(parent)
+                    .into_iter()
+                    .flatten()
+                    .any(|id| {
+                        state.reports.get(id).is_some_and(|report| {
+                            !report.communication.trigger_turn && !report.mailbox_inserted
+                        })
+                    })
+            };
+            if !has_unenqueued_reports {
+                return;
+            }
+            self.wait_for_wake_event_after(observed_epoch).await;
+        }
+    }
+
     pub(crate) fn has_recorded_reports(&self, parent: &AgentAssignmentId) -> bool {
         let state = self.lock_state();
         state.pending_by_parent.get(parent).is_some_and(|reports| {
@@ -364,7 +401,10 @@ impl AgentWakeCoordinator {
                 state
                     .reports
                     .get(report_id)
-                    .is_some_and(|report| report.delivery == ReportDeliveryState::Recorded)
+                    .is_some_and(|report| {
+                        report.delivery == ReportDeliveryState::Recorded
+                            && report.communication.trigger_turn
+                    })
             })
         })
     }

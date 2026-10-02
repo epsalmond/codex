@@ -127,7 +127,7 @@ impl AgentWakeCoordinator {
 
     pub(super) fn signal_wake_event(&self) {
         self.wake_event_epoch.fetch_add(1, Ordering::AcqRel);
-        self.wake_events.notify_one();
+        self.wake_events.notify_waiters();
     }
 
     pub(super) async fn wait_for_wake_event_after(&self, observed_epoch: u64) {

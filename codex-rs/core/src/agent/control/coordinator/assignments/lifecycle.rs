@@ -74,7 +74,10 @@ impl AgentWakeCoordinator {
         if !allow_new_generation {
             return Err("assignment is missing; an explicit followup is required");
         }
-        Self::create_assignment(&mut state, thread_id, parent, turn_id)
+        let assignment = Self::create_assignment(&mut state, thread_id, parent, turn_id)?;
+        drop(state);
+        self.signal_wake_event();
+        Ok(assignment)
     }
 
     /// Captures the recorded parent and root for a current child assignment reload.
@@ -273,6 +276,9 @@ impl AgentWakeCoordinator {
             }
         }
         drop(state);
+        if phase.is_terminal() {
+            self.signal_wake_event();
+        }
         if wake_recorded_reports {
             self.request_wake(id.clone());
         }

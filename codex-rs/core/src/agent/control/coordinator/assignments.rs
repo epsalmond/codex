@@ -87,6 +87,8 @@ impl AgentWakeCoordinator {
     pub(crate) fn cancel_assignment(&self, id: &AgentAssignmentId) {
         let mut state = self.lock_state();
         Self::release_assignment(&mut state, id);
+        drop(state);
+        self.signal_wake_event();
     }
 
     pub(crate) fn cancel_subtree(&self, thread_ids: &[ThreadId]) {
@@ -150,6 +152,8 @@ impl AgentWakeCoordinator {
         {
             Self::release_assignment(&mut state, id);
         }
+        drop(state);
+        self.signal_wake_event();
         Ok(true)
     }
 }

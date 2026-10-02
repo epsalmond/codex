@@ -268,6 +268,28 @@ fn recorded_report_after_sampling_snapshot_wakes_without_mailbox_reinsertion() {
     );
 }
 
+#[test]
+fn recorded_queue_only_report_does_not_request_an_automatic_turn() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let parent = new_root(&coordinator);
+    let child = new_child(&coordinator, &parent, "child-turn");
+    let report = terminal_report_with_trigger(
+        &coordinator,
+        &child,
+        "child-turn",
+        /*trigger_turn*/ false,
+    );
+    let report_id = report.id.clone().expect("report has a stable ID");
+    let initial_wake = coordinator
+        .claim_next_wake_request()
+        .expect("delivery still wakes the dispatcher");
+    initial_wake.complete();
+    assert!(coordinator.mark_report_recorded(&report_id));
+
+    assert!(!coordinator.has_recorded_reports(&parent));
+    assert!(coordinator.claim_next_wake_request().is_none());
+}
+
 #[tokio::test]
 async fn child_report_racing_parent_finalization_keeps_parent_waiting_until_resume() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
@@ -332,6 +354,15 @@ fn terminal_report(
     child: &AgentAssignmentId,
     terminal_turn_id: &str,
 ) -> InterAgentCommunication {
+    terminal_report_with_trigger(coordinator, child, terminal_turn_id, /*trigger_turn*/ true)
+}
+
+fn terminal_report_with_trigger(
+    coordinator: &Arc<AgentWakeCoordinator>,
+    child: &AgentAssignmentId,
+    terminal_turn_id: &str,
+    trigger_turn: bool,
+) -> InterAgentCommunication {
     coordinator
         .classify_turn_end(child, terminal_turn_id, TurnEndDisposition::Succeeded)
         .expect("child turn is classified");
@@ -347,7 +378,7 @@ fn terminal_report(
                 AgentPath::root(),
                 Vec::new(),
                 "delegated work finished".to_string(),
-                /*trigger_turn*/ true,
+                trigger_turn,
             ),
         )
         .expect("active parent receives terminal report")
@@ -789,6 +820,68 @@ fn interrupt_resolves_running_assignment_without_a_resident_turn_task() {
             .expect("interruption report is published"),
         TerminalReportPublication::Published(_)
     ));
+}
+
+#[tokio::test]
+async fn interrupting_waiting_assignment_releases_report_delivery_waiters() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let parent = new_root(&coordinator);
+    let child = new_child(&coordinator, &parent, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+    assert_eq!(
+        coordinator.classify_turn_end(
+            &child,
+            "child-turn",
+            TurnEndDisposition::Succeeded,
+        ),
+        Ok(AssignmentPhase::Waiting)
+    );
+    coordinator
+        .classify_turn_end(
+            &grandchild,
+            "grandchild-turn",
+            TurnEndDisposition::Succeeded,
+        )
+        .expect("grandchild turn is classified");
+    assert!(matches!(
+        coordinator.publish_terminal_report(
+            &grandchild,
+            "grandchild-turn",
+            InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker/grandchild").expect("valid grandchild path"),
+                AgentPath::try_from("/root/worker").expect("valid child path"),
+                Vec::new(),
+                "grandchild finished".to_string(),
+                /*trigger_turn*/ false,
+            ),
+        ),
+        Some(TerminalReportPublication::Published(_))
+    ));
+
+    let mut report_waiter = Box::pin(coordinator.wait_for_queue_only_reports_enqueued(&child));
+    let mut second_report_waiter =
+        Box::pin(coordinator.wait_for_queue_only_reports_enqueued(&child));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut report_waiter)
+            .await
+            .is_err(),
+        "queue-only report remains outstanding before mailbox insertion"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut second_report_waiter)
+            .await
+            .is_err(),
+        "concurrent callers wait for the same queue-only report"
+    );
+    assert!(coordinator
+        .interrupt_idle_assignment(&child, "child-interrupted")
+        .expect("waiting assignment can be interrupted"));
+    tokio::time::timeout(Duration::from_secs(1), &mut report_waiter)
+        .await
+        .expect("interruption signals blocked report delivery waiters");
+    tokio::time::timeout(Duration::from_secs(1), &mut second_report_waiter)
+        .await
+        .expect("interruption broadcasts to every report delivery waiter");
 }
 
 #[tokio::test]

@@ -219,6 +219,20 @@ impl LocalAgentRuntime {
         self.wake_coordinator.has_recorded_reports(assignment)
     }
 
+    pub(crate) async fn wait_for_queue_only_wake_reports_enqueued_for_thread(
+        &self,
+        thread_id: ThreadId,
+    ) {
+        if !self.wake_mode_enabled() {
+            return;
+        }
+        if let Some(assignment) = self.wake_coordinator.current_assignment(thread_id) {
+            self.wake_coordinator
+                .wait_for_queue_only_reports_enqueued(&assignment)
+                .await;
+        }
+    }
+
     pub(crate) fn is_current_waiting_assignment(&self, assignment: &AgentAssignmentId) -> bool {
         self.wake_coordinator
             .is_current_waiting_assignment(assignment)
