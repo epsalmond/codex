@@ -60,24 +60,43 @@ impl StreamingSseServer {
 pub async fn start_streaming_sse_server(
     responses: Vec<Vec<StreamingSseChunk>>,
 ) -> (StreamingSseServer, Vec<oneshot::Receiver<i64>>) {
+    start_routed_streaming_sse_server(vec![responses], |_, _| Some(0)).await
+}
+
+/// Starts a streaming SSE server that selects a response queue from each request.
+///
+/// The matcher receives the request headers and decoded body and returns the route index. Each
+/// route owns an ordered queue of responses; per-chunk oneshot gates can hold specific turns until
+/// the test releases them.
+pub async fn start_routed_streaming_sse_server<F>(
+    responses: Vec<Vec<Vec<StreamingSseChunk>>>,
+    matcher: F,
+) -> (StreamingSseServer, Vec<oneshot::Receiver<i64>>)
+where
+    F: Fn(&str, &[u8]) -> Option<usize> + Send + Sync + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind streaming SSE server");
     let addr = listener.local_addr().expect("streaming SSE server address");
     let uri = format!("http://{addr}");
 
-    let mut completion_senders = Vec::with_capacity(responses.len());
-    let mut completion_receivers = Vec::with_capacity(responses.len());
-    for _ in 0..responses.len() {
-        let (tx, rx) = oneshot::channel();
-        completion_senders.push(tx);
-        completion_receivers.push(rx);
+    let mut completion_receivers = Vec::new();
+    let mut response_routes = Vec::with_capacity(responses.len());
+    for route in responses {
+        let mut route_responses = VecDeque::with_capacity(route.len());
+        for chunks in route {
+            let (completion_tx, completion_rx) = oneshot::channel();
+            route_responses.push_back((chunks, completion_tx));
+            completion_receivers.push(completion_rx);
+        }
+        response_routes.push(route_responses);
     }
 
     let state = Arc::new(TokioMutex::new(StreamingSseState {
-        responses: VecDeque::from(responses),
-        completions: VecDeque::from(completion_senders),
+        response_routes,
     }));
+    let matcher: Arc<dyn Fn(&str, &[u8]) -> Option<usize> + Send + Sync> = Arc::new(matcher);
     let requests = Arc::new(TokioMutex::new(Vec::new()));
     let request_notify = Arc::new(Notify::new());
     let requests_for_task = Arc::clone(&requests);
@@ -93,6 +112,7 @@ pub async fn start_streaming_sse_server(
                     let state = Arc::clone(&state);
                     let requests = Arc::clone(&requests_for_task);
                     let request_notify = Arc::clone(&request_notify_for_task);
+                    let matcher = Arc::clone(&matcher);
                     tokio::spawn(async move {
                         let (request, body_prefix) = read_http_request(&mut stream).await;
                         let Some((method, path)) = parse_request_line(&request) else {
@@ -133,9 +153,14 @@ pub async fn start_streaming_sse_server(
                                     return;
                                 }
                             };
-                            requests.lock().await.push(body);
+                            let body = decode_request_body(&request, &body);
+                            requests.lock().await.push(body.clone());
                             request_notify.notify_one();
-                            let Some((chunks, completion)) = take_next_stream(&state).await else {
+                            let Some(route_index) = matcher(&request, &body) else {
+                                let _ = write_http_response(&mut stream, /*status*/ 500, "no response route matched", "text/plain").await;
+                                return;
+                            };
+                            let Some((chunks, completion)) = take_next_stream(&state, route_index).await else {
                                 let _ = write_http_response(&mut stream, /*status*/ 500, "no responses queued", "text/plain").await;
                                 return;
                             };
@@ -180,17 +205,23 @@ pub async fn start_streaming_sse_server(
 }
 
 struct StreamingSseState {
-    responses: VecDeque<Vec<StreamingSseChunk>>,
-    completions: VecDeque<oneshot::Sender<i64>>,
+    response_routes: Vec<VecDeque<(Vec<StreamingSseChunk>, oneshot::Sender<i64>)>>,
 }
 
 async fn take_next_stream(
     state: &TokioMutex<StreamingSseState>,
+    route_index: usize,
 ) -> Option<(Vec<StreamingSseChunk>, oneshot::Sender<i64>)> {
     let mut guard = state.lock().await;
-    let chunks = guard.responses.pop_front()?;
-    let completion = guard.completions.pop_front()?;
-    Some((chunks, completion))
+    guard.response_routes.get_mut(route_index)?.pop_front()
+}
+
+fn decode_request_body(headers: &str, body: &[u8]) -> Vec<u8> {
+    if headers.to_ascii_lowercase().contains("content-encoding: zstd") {
+        zstd::stream::decode_all(std::io::Cursor::new(body)).unwrap_or_else(|_| body.to_vec())
+    } else {
+        body.to_vec()
+    }
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
@@ -324,6 +355,18 @@ mod tests {
                 None
             }
         })
+    }
+
+    #[test]
+    fn request_decoder_passes_plain_json_to_routed_matchers() {
+        let body = br#"{"route":"nested-wake"}"#;
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(body), 0)
+            .expect("compress request body");
+
+        assert_eq!(
+            decode_request_body("content-encoding: zstd", &compressed),
+            body
+        );
     }
 
     async fn connect(uri: &str) -> TcpStream {
@@ -682,34 +725,56 @@ data: {"type":"response.completed","response":{"id":"resp-1"}}
     async fn take_next_stream_consumes_in_lockstep() {
         let (first_tx, first_rx) = oneshot::channel();
         let (second_tx, second_rx) = oneshot::channel();
+        let (other_route_tx, other_route_rx) = oneshot::channel();
         let state = TokioMutex::new(StreamingSseState {
-            responses: VecDeque::from(vec![
-                vec![StreamingSseChunk {
-                    gate: None,
-                    body: "first".to_string(),
-                }],
-                vec![StreamingSseChunk {
-                    gate: None,
-                    body: "second".to_string(),
-                }],
-            ]),
-            completions: VecDeque::from(vec![first_tx, second_tx]),
+            response_routes: vec![
+                VecDeque::from(vec![
+                    (
+                        vec![StreamingSseChunk {
+                            gate: None,
+                            body: "first".to_string(),
+                        }],
+                        first_tx,
+                    ),
+                    (
+                        vec![StreamingSseChunk {
+                            gate: None,
+                            body: "second".to_string(),
+                        }],
+                        second_tx,
+                    ),
+                ]),
+                VecDeque::from(vec![(
+                    vec![StreamingSseChunk {
+                        gate: None,
+                        body: "other route".to_string(),
+                    }],
+                    other_route_tx,
+                )]),
+            ],
         });
 
         let (first_chunks, first_completion) =
-            take_next_stream(&state).await.expect("first stream");
+            take_next_stream(&state, 0).await.expect("first stream");
         assert_eq!(first_chunks[0].body, "first");
         let _ = first_completion.send(11);
         assert_eq!(first_rx.await.expect("first completion"), 11);
 
+        let (other_route_chunks, other_route_completion) = take_next_stream(&state, 1)
+            .await
+            .expect("other route stream");
+        assert_eq!(other_route_chunks[0].body, "other route");
+        let _ = other_route_completion.send(33);
+        assert_eq!(other_route_rx.await.expect("other route completion"), 33);
+
         let (second_chunks, second_completion) =
-            take_next_stream(&state).await.expect("second stream");
+            take_next_stream(&state, 0).await.expect("second stream");
         assert_eq!(second_chunks[0].body, "second");
         let _ = second_completion.send(22);
         assert_eq!(second_rx.await.expect("second completion"), 22);
 
-        let third = take_next_stream(&state).await;
-        assert!(third.is_none());
+        assert!(take_next_stream(&state, 0).await.is_none());
+        assert!(take_next_stream(&state, 2).await.is_none());
     }
 
     #[tokio::test]

@@ -1079,6 +1079,67 @@ async fn wake_mode_blocked_prompt_keeps_held_report() -> Result<()> {
     Ok(())
 }
 
+/// A report delivered after a wake request was sampled is included once in the next accepted
+/// request, even when the current turn finishes before that report can be sampled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn report_arriving_after_sampling_snapshot_is_accepted_once_on_following_request() {
+    let (release_first_response_tx, release_first_response_rx) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![
+            chunk(ev_response_created("late-report-first")),
+            gated_chunk(
+                release_first_response_rx,
+                vec![ev_completed("late-report-first")],
+            ),
+        ],
+        final_answer_chunks("late-report-followup", "processed the late report"),
+    ])
+    .await;
+    let codex = build_streaming_wake_mode(&server).await;
+
+    submit_child_mail(
+        &codex,
+        "/root/worker_a",
+        "first report",
+        /*trigger_turn*/ true,
+    )
+    .await;
+    server.wait_for_request_count(1).await;
+    let first_request = streaming_request_bodies(&server).await.remove(0);
+    assert_eq!(deliveries(&[first_request], "first report"), 1);
+
+    // The first request body has already crossed its sampling boundary. Queue the second report
+    // while its response remains open, then wait for the session to process that mailbox item.
+    deliver_child_mail(
+        &codex,
+        "/root/worker_b",
+        "late report",
+        /*trigger_turn*/ true,
+    )
+    .await;
+    assert_eq!(server.requests().await.len(), 1);
+
+    let _ = release_first_response_tx.send(());
+    timeout_at(
+        Instant::now() + Duration::from_secs(10),
+        server.wait_for_request_count(2),
+    )
+    .await
+    .expect("the late report should be delivered by another accepted request");
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "processed the late report"),
+    )
+    .await;
+    wait_for_turn_complete(&codex).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    let bodies = streaming_request_bodies(&server).await;
+    assert_eq!(deliveries(&bodies[1..2], "late report"), 1);
+    assert_eq!(deliveries(&bodies, "late report"), 1);
+    server.shutdown().await;
+}
+
 /// Builds a wake-mode root whose next turn runs pre-turn compaction after a 500k-token response.
 async fn build_compacting_wake_mode(server: &StreamingSseServer) -> Arc<CodexThread> {
     test_codex()
