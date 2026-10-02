@@ -209,8 +209,7 @@ impl PendingInputPreview {
                 width,
                 Line::from(vec![
                     "Subagents are working".cyan(),
-                    " — each result starts a new turn automatically; keep chatting meanwhile"
-                        .dim(),
+                    " — each result starts a new turn automatically; keep chatting meanwhile".dim(),
                 ]),
             );
         }

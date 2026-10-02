@@ -2870,12 +2870,13 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let configured_default_wait_timeout_ms = base.and_then(|config| config.default_wait_timeout_ms);
     let default_wait_timeout_ms =
         configured_default_wait_timeout_ms.unwrap_or(default.default_wait_timeout_ms);
-    let noninteractive_default_wait_timeout_ms = configured_default_wait_timeout_ms.unwrap_or_else(|| {
-        default
-            .noninteractive_default_wait_timeout_ms
-            .max(min_wait_timeout_ms)
-            .min(max_wait_timeout_ms)
-    });
+    let noninteractive_default_wait_timeout_ms =
+        configured_default_wait_timeout_ms.unwrap_or_else(|| {
+            default
+                .noninteractive_default_wait_timeout_ms
+                .max(min_wait_timeout_ms)
+                .min(max_wait_timeout_ms)
+        });
     let usage_hint_text = base
         .and_then(|config| config.usage_hint_text.as_ref())
         .cloned()

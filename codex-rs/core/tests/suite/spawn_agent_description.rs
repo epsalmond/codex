@@ -403,8 +403,7 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
 ) -> Result<()> {
     let resumed_root_agent_usage_hint_text = resumed_root_agent_usage_hint_text.map(str::to_string);
     let legacy_root_agent_usage_hint_text = "Legacy root instructions.";
-    let wait_guidance =
-        "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
+    let wait_guidance = "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
     let config_toml =
         format!("[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{agent_polling}\"\n");
     let server = start_mock_server().await;
@@ -579,8 +578,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
     initial_agent_polling: &str,
     resumed_agent_polling: &str,
 ) -> Result<()> {
-    let wait_guidance =
-        "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
+    let wait_guidance = "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
     let initial_config_toml = format!(
         "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{initial_agent_polling}\"\n"
     );
