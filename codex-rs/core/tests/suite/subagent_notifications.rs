@@ -2901,6 +2901,10 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
 
 #[path = "subagent_notifications/nested_wake_tests.rs"]
 mod nested_wake_tests;
+#[path = "subagent_notifications/exec_nested_wake_tests.rs"]
+mod exec_nested_wake_tests;
+#[path = "subagent_notifications/code_mode_wake_tests.rs"]
+mod code_mode_wake_tests;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> Result<()> {
