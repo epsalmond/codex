@@ -32,8 +32,18 @@ impl LocalAgentRuntime {
         &self,
         agent_id: ThreadId,
     ) -> CodexResult<Vec<ThreadId>> {
+        let mut seen = std::collections::HashSet::from([agent_id]);
         let mut thread_ids = vec![agent_id];
-        thread_ids.extend(self.live_thread_spawn_descendants(agent_id).await?);
+        for descendant_id in self
+            .live_thread_spawn_descendants(agent_id)
+            .await?
+            .into_iter()
+            .chain(self.registry.descendant_thread_ids(agent_id))
+        {
+            if seen.insert(descendant_id) {
+                thread_ids.push(descendant_id);
+            }
+        }
         Ok(thread_ids)
     }
 

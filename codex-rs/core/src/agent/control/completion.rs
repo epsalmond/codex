@@ -4,6 +4,8 @@
 //! Delivery remains best effort, with tracing recorded only after the parent accepts it.
 
 use super::LocalAgentControl;
+use super::coordinator::AgentAssignmentId;
+use super::coordinator::TerminalReportPublication;
 use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent_communication::AgentCommunicationContext;
@@ -22,6 +24,52 @@ use tracing::debug;
 use tracing::warn;
 
 impl LocalAgentControl {
+    pub(crate) fn publish_idle_interrupted_assignment(
+        &self,
+        assignment: &AgentAssignmentId,
+        turn_id: &str,
+        child_agent_path: AgentPath,
+    ) -> bool {
+        let Some(_parent_assignment) = self.runtime.wake_coordinator.parent_assignment(assignment)
+        else {
+            return true;
+        };
+        let Some(parent_agent_path) = child_agent_path
+            .as_str()
+            .rsplit_once('/')
+            .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
+        else {
+            return false;
+        };
+        let status = AgentStatus::Interrupted;
+        let Some(message) = format_inter_agent_completion_message(
+            parent_agent_path.clone(),
+            child_agent_path.clone(),
+            &status,
+        ) else {
+            return false;
+        };
+        let trigger_turn = !parent_agent_path.is_root() || !self.runtime.root_waits_for_children();
+        let communication = InterAgentCommunication::new(
+            child_agent_path,
+            parent_agent_path,
+            Vec::new(),
+            message,
+            trigger_turn,
+        );
+        matches!(
+            self.runtime.wake_coordinator.publish_terminal_report(
+                assignment,
+                turn_id,
+                communication
+            ),
+            Some(
+                TerminalReportPublication::Published(_)
+                    | TerminalReportPublication::AlreadyPublished(_)
+            )
+        )
+    }
+
     /// Routes a captured terminal outcome without retaining the child's live turn context.
     pub(crate) async fn notify_parent_of_terminal_turn(
         &self,
@@ -93,6 +141,60 @@ impl LocalAgentControl {
         ) else {
             return;
         };
+        if self.runtime.wake_mode_enabled() {
+            let Some(assignment) = self
+                .runtime
+                .terminal_wake_assignment_for_turn(outcome.thread_id, &outcome.turn_id)
+            else {
+                debug!(
+                    "terminal turn {} has no current wake assignment",
+                    outcome.turn_id
+                );
+                return;
+            };
+            let trace_message = trace.is_enabled().then(|| message.clone());
+            let trigger_turn =
+                !parent_agent_path.is_root() || !self.runtime.root_waits_for_children();
+            let communication = InterAgentCommunication::new(
+                child_agent_path.clone(),
+                parent_agent_path.clone(),
+                Vec::new(),
+                message,
+                trigger_turn,
+            );
+            let publication = self.runtime.wake_coordinator.publish_terminal_report(
+                &assignment,
+                &outcome.turn_id,
+                communication,
+            );
+            match publication {
+                Some(TerminalReportPublication::Published(report_id)) => {
+                    debug!("published terminal report {report_id}");
+                }
+                Some(TerminalReportPublication::AlreadyPublished(report_id)) => {
+                    debug!("terminal report {report_id} was already published");
+                }
+                None => {
+                    warn!(
+                        "failed to publish terminal result for agent {} turn {}",
+                        outcome.thread_id, outcome.turn_id
+                    );
+                    return;
+                }
+            }
+            if let Some(message) = trace_message {
+                trace.record_agent_result_interaction(
+                    outcome.turn_id.as_str(),
+                    parent_thread_id,
+                    &AgentResultTracePayload {
+                        child_agent_path: child_agent_path.as_str(),
+                        message: &message,
+                        status: &status,
+                    },
+                );
+            }
+            return;
+        }
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());

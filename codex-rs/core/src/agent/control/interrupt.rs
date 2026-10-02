@@ -10,6 +10,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
+use uuid::Uuid;
 
 impl LocalAgentControl {
     /// Interrupts a spawned agent's current task, preserving the status observed before dispatch.
@@ -43,8 +44,26 @@ impl LocalAgentControl {
             Err(err)
                 if matches!(
                     err.details(),
-                    CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
-                ) => {}
+                    CodexErrorDetails::ThreadNotFound(_)
+                        | CodexErrorDetails::InternalAgentDied
+                ) =>
+            {
+                if self.runtime.wake_mode_enabled()
+                    && let Some(child_agent_path) = receiver_agent.agent_path
+                {
+                    let turn_id = Uuid::now_v7().to_string();
+                    if let Some(assignment) = self
+                        .runtime
+                        .interrupt_idle_wake_assignment(target, &turn_id)
+                    {
+                        self.publish_idle_interrupted_assignment(
+                            &assignment,
+                            &turn_id,
+                            child_agent_path,
+                        );
+                    }
+                }
+            }
             Err(err) => return Err(err),
         }
         Ok(snapshot)
