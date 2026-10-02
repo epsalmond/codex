@@ -45,6 +45,15 @@ struct SpawnAgentThreadInheritance {
     exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
 }
 
+struct SpawnForkedThreadArgs<'a> {
+    config: Config,
+    session_source: SessionSource,
+    options: &'a SpawnAgentOptions,
+    inheritance: SpawnAgentThreadInheritance,
+    multi_agent_version: MultiAgentVersion,
+    reserved_thread_id: Option<ThreadId>,
+}
+
 struct SpawnedThreadResult {
     new_thread: crate::thread_manager::NewThread,
     fork_context: Option<Duration>,
@@ -611,7 +620,12 @@ impl LocalAgentControl {
                     self.validate_loaded_v2_child(&reloaded_thread.thread, parent_thread_id)?;
                 }
                 self.runtime.registry.clear_evicted_environments(thread_id);
+                reloaded_thread
+                    .thread
+                    .session
+                    .restore_wake_assignment_status();
                 residency_slot.commit(reloaded_thread.thread_id);
+                self.runtime.wake_coordinator.notify_residency_available();
                 state.notify_thread_created(reloaded_thread.thread_id);
                 Ok(())
             }
@@ -708,6 +722,15 @@ impl LocalAgentControl {
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
+        let wake_assignment_reservation = self.reserve_wake_assignment(
+            multi_agent_version,
+            config.multi_agent_v2.agent_polling,
+            notification_source.as_ref(),
+            options.parent_turn_id.as_deref(),
+        )?;
+        let reserved_thread_id = wake_assignment_reservation
+            .as_ref()
+            .map(super::wake_spawn::WakeAssignmentReservation::thread_id);
 
         // The same `LocalAgentControl` is sent to spawn the thread.
         let SpawnedThreadResult {
@@ -718,11 +741,14 @@ impl LocalAgentControl {
             (Some(session_source), Some(_), inheritance) => {
                 Box::pin(self.spawn_forked_thread(
                     &state,
-                    config,
-                    session_source,
-                    &options,
-                    inheritance,
-                    multi_agent_version,
+                    SpawnForkedThreadArgs {
+                        config,
+                        session_source,
+                        options: &options,
+                        inheritance,
+                        multi_agent_version,
+                        reserved_thread_id,
+                    },
                 ))
                 .await?
             }
@@ -751,6 +777,7 @@ impl LocalAgentControl {
                     inheritance.environments,
                     inheritance.exec_policy,
                     options.environments.clone(),
+                    reserved_thread_id,
                 ))
                 .await?;
                 SpawnedThreadResult {
@@ -833,6 +860,10 @@ impl LocalAgentControl {
         }
         let durability_wait = durability_wait_started_at.elapsed();
 
+        let assignment_id = wake_assignment_reservation
+            .map(|reservation| reservation.commit(new_thread.thread_id))
+            .transpose()?;
+
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
             turn_trigger: options.turn_trigger,
@@ -841,10 +872,10 @@ impl LocalAgentControl {
             ..Default::default()
         };
         let input_admission_started_at = Instant::now();
-        match initial_input {
+        let input_result = match initial_input {
             SpawnInitialInput::UserInput(input) => {
                 self.send_input(new_thread.thread_id, input, start_options)
-                    .await?;
+                    .await
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
@@ -854,13 +885,22 @@ impl LocalAgentControl {
                     context,
                     start_options,
                 )
-                .await?;
+                .await
             }
+        };
+        if let Err(error) = input_result {
+            if let Some(assignment_id) = assignment_id.as_ref() {
+                self.runtime
+                    .wake_coordinator
+                    .cancel_assignment(assignment_id);
+            }
+            return Err(error);
         }
         let input_admission = input_admission_started_at.elapsed();
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
+            self.runtime.wake_coordinator.notify_residency_available();
         }
         pending_spawn.disarm();
 
@@ -912,12 +952,16 @@ impl LocalAgentControl {
     async fn spawn_forked_thread(
         &self,
         state: &Arc<ThreadManagerState>,
-        config: Config,
-        session_source: SessionSource,
-        options: &SpawnAgentOptions,
-        inheritance: SpawnAgentThreadInheritance,
-        multi_agent_version: MultiAgentVersion,
+        args: SpawnForkedThreadArgs<'_>,
     ) -> CodexResult<SpawnedThreadResult> {
+        let SpawnForkedThreadArgs {
+            config,
+            session_source,
+            options,
+            inheritance,
+            multi_agent_version,
+            reserved_thread_id,
+        } = args;
         let SpawnAgentThreadInheritance {
             environments: inherited_environments,
             exec_policy: inherited_exec_policy,
@@ -1008,6 +1052,7 @@ impl LocalAgentControl {
                 let root_polling_enabled = ChildReportMode::for_thread(
                     &parent_config.multi_agent_v2,
                     &parent_thread.session_source,
+                    self.runtime.wake_mode_enabled(),
                 ) == ChildReportMode::WaitAgent;
                 let parent_usage_hints = resolve_usage_hints_with_root_polling(
                     &parent_config.multi_agent_v2,
@@ -1239,6 +1284,7 @@ impl LocalAgentControl {
                 inherited_exec_policy,
                 options.environments.clone(),
                 thread_extension_init,
+                reserved_thread_id,
             )
             .await?;
         let child_create = child_create_started_at.elapsed();

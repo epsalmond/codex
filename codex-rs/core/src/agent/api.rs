@@ -98,14 +98,13 @@ pub trait AgentControl: Send + Sync {
         source: &SessionSource,
     ) -> Result<()>;
 
-    /// Track a turn's execution until its guard drops. Local admission keeps the existing
-    /// separate capacity check and running count; it does not atomically reserve capacity.
+    /// Atomically acquire execution capacity and track the turn until its guard drops.
     /// Root and non-V2 turns return no guard.
-    fn admit_turn(
-        &self,
+    fn admit_turn<'a>(
+        &'a self,
         version: MultiAgentVersion,
-        source: &SessionSource,
-    ) -> Option<AgentExecutionGuard>;
+        source: &'a SessionSource,
+    ) -> BoxFuture<'a, Option<AgentExecutionGuard>>;
 
     /// Account for one inference response, including compaction. Each call records usage;
     /// callers report it once. `SessionBudgetExceeded` means the usage was recorded and

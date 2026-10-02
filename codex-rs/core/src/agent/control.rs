@@ -57,6 +57,9 @@ use std::sync::Weak;
 use tracing::warn;
 use uuid::Uuid;
 
+pub(crate) use self::coordinator::AgentAssignmentId;
+pub(crate) use self::coordinator::AssignmentPhase;
+pub(crate) use self::coordinator::TurnEndDisposition;
 pub(crate) use self::runtime::AgentControlInit;
 pub(crate) use self::runtime::LocalAgentRuntime;
 pub(crate) use self::watch::StatusSubscription;
@@ -66,6 +69,7 @@ mod budget;
 mod completion;
 mod coordinator;
 mod delivery;
+mod dispatcher;
 mod execution;
 mod inspection;
 mod interrupt;
@@ -81,6 +85,7 @@ mod spawn_guard;
 mod spawn_telemetry;
 mod target;
 mod user_authorization;
+mod wake_spawn;
 mod watch;
 
 /// Per-session controller handle for a local agent tree.
@@ -164,12 +169,39 @@ impl LocalAgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        if agent_communication_context.kind() == AgentCommunicationKind::Followup {
+            state
+                .get_thread(agent_id)
+                .await?
+                .session
+                .resume_paused_wakeups()
+                .await;
+        }
         if communication.trigger_turn {
             let thread = state.get_thread(agent_id).await?;
             thread
                 .ensure_execution_capacity_for_turn_start(self)
                 .await?;
         }
+        self.send_inter_agent_communication_after_capacity_check(
+            agent_id,
+            &state,
+            communication,
+            agent_communication_context,
+            start_options,
+        )
+        .await
+    }
+
+    /// Enqueues an already-published terminal report before deciding whether its target can run.
+    pub(crate) async fn enqueue_terminal_report(
+        &self,
+        agent_id: ThreadId,
+        communication: InterAgentCommunication,
+        agent_communication_context: AgentCommunicationContext,
+        start_options: TurnStartOptions,
+    ) -> CodexResult<String> {
+        let state = self.runtime.upgrade()?;
         self.send_inter_agent_communication_after_capacity_check(
             agent_id,
             &state,
