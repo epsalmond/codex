@@ -9,18 +9,18 @@ use crate::agent::control::LocalAgentControl;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::future::Future;
-use tokio::sync::Notify;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::Notify;
 
 fn new_root(coordinator: &AgentWakeCoordinator) -> AgentAssignmentId {
     coordinator
@@ -175,31 +175,29 @@ async fn report_arrival_during_deferred_dispatch_retries_without_resource_event(
     let attempts = Arc::new(AtomicUsize::default());
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     let (attempt_tx, mut attempt_rx) = tokio::sync::mpsc::unbounded_channel();
-    let worker = tokio::spawn(
-        Arc::clone(&coordinator).run_wake_dispatcher(shutdown_rx, {
+    let worker = tokio::spawn(Arc::clone(&coordinator).run_wake_dispatcher(shutdown_rx, {
+        let dispatch_started = Arc::clone(&dispatch_started);
+        let release_first_attempt = Arc::clone(&release_first_attempt);
+        let attempts = Arc::clone(&attempts);
+        move |assignment| {
+            let attempt_tx = attempt_tx.clone();
             let dispatch_started = Arc::clone(&dispatch_started);
             let release_first_attempt = Arc::clone(&release_first_attempt);
             let attempts = Arc::clone(&attempts);
-            move |assignment| {
-                let attempt_tx = attempt_tx.clone();
-                let dispatch_started = Arc::clone(&dispatch_started);
-                let release_first_attempt = Arc::clone(&release_first_attempt);
-                let attempts = Arc::clone(&attempts);
-                async move {
-                    attempt_tx
-                        .send(assignment)
-                        .expect("test receiver remains open");
-                    if attempts.fetch_add(1, Ordering::AcqRel) == 0 {
-                        dispatch_started.notify_one();
-                        release_first_attempt.notified().await;
-                        WakeDispatchResult::Defer
-                    } else {
-                        WakeDispatchResult::Complete
-                    }
+            async move {
+                attempt_tx
+                    .send(assignment)
+                    .expect("test receiver remains open");
+                if attempts.fetch_add(1, Ordering::AcqRel) == 0 {
+                    dispatch_started.notify_one();
+                    release_first_attempt.notified().await;
+                    WakeDispatchResult::Defer
+                } else {
+                    WakeDispatchResult::Complete
                 }
             }
-        }),
-    );
+        }
+    }));
 
     assert_eq!(attempt_rx.recv().await, Some(target.clone()));
     dispatch_started.notified().await;
@@ -230,7 +228,11 @@ fn sibling_terminal_reports_are_each_included_once_in_the_accepted_prompt() {
     assert!(coordinator.mark_report_recorded(&first_id));
     assert!(coordinator.mark_report_recorded(&second_id));
 
-    let prompt_input = [input_with_report(&first_report), input_with_report(&second_report)].concat();
+    let prompt_input = [
+        input_with_report(&first_report),
+        input_with_report(&second_report),
+    ]
+    .concat();
     let candidates = coordinator.report_ids_in_prompt(&parent, &prompt_input);
 
     assert_eq!(candidates, vec![first_id, second_id]);
@@ -246,7 +248,7 @@ fn recorded_report_after_sampling_snapshot_wakes_without_mailbox_reinsertion() {
     let parent = new_root(&coordinator);
     let child = new_child(&coordinator, &parent, "child-turn");
     let report = terminal_report(&coordinator, &child, "child-turn");
-    let report_id = report.id.clone().expect("report has a stable ID");
+    let report_id = report.id.expect("report has a stable ID");
     let initial_wake = coordinator
         .claim_next_wake_request()
         .expect("child report requests a wake");
@@ -279,7 +281,7 @@ fn recorded_queue_only_report_does_not_request_an_automatic_turn() {
         "child-turn",
         /*trigger_turn*/ false,
     );
-    let report_id = report.id.clone().expect("report has a stable ID");
+    let report_id = report.id.expect("report has a stable ID");
     let initial_wake = coordinator
         .claim_next_wake_request()
         .expect("delivery still wakes the dispatcher");
@@ -303,11 +305,7 @@ async fn child_report_racing_parent_finalization_keeps_parent_waiting_until_resu
         let parent = parent.clone();
         tokio::spawn(async move {
             gate.wait().await;
-            coordinator.classify_turn_end(
-                &parent,
-                "root-turn",
-                TurnEndDisposition::Succeeded,
-            )
+            coordinator.classify_turn_end(&parent, "root-turn", TurnEndDisposition::Succeeded)
         })
     };
     let child_task = {
@@ -320,7 +318,9 @@ async fn child_report_racing_parent_finalization_keeps_parent_waiting_until_resu
     };
 
     assert_eq!(
-        parent_task.await.expect("parent classification task completes"),
+        parent_task
+            .await
+            .expect("parent classification task completes"),
         Ok(AssignmentPhase::Waiting)
     );
     let report = child_task.await.expect("child report task completes");
@@ -329,7 +329,10 @@ async fn child_report_racing_parent_finalization_keeps_parent_waiting_until_resu
     let prompt_input = input_with_report(&report);
     let accepted = coordinator.report_ids_in_prompt(&parent, &prompt_input);
     assert_eq!(coordinator.accept_reports(&parent, &accepted), 1);
-    assert_eq!(coordinator.assignment_status(parent.thread_id), Some(AgentStatus::Waiting));
+    assert_eq!(
+        coordinator.assignment_status(parent.thread_id),
+        Some(AgentStatus::Waiting)
+    );
 
     coordinator
         .begin_or_continue_assignment(
@@ -340,11 +343,7 @@ async fn child_report_racing_parent_finalization_keeps_parent_waiting_until_resu
         )
         .expect("report starts a distinct resumed turn");
     assert_eq!(
-        coordinator.classify_turn_end(
-            &parent,
-            "root-resumed-turn",
-            TurnEndDisposition::Succeeded,
-        ),
+        coordinator.classify_turn_end(&parent, "root-resumed-turn", TurnEndDisposition::Succeeded,),
         Ok(AssignmentPhase::Completed)
     );
 }
@@ -354,7 +353,12 @@ fn terminal_report(
     child: &AgentAssignmentId,
     terminal_turn_id: &str,
 ) -> InterAgentCommunication {
-    terminal_report_with_trigger(coordinator, child, terminal_turn_id, /*trigger_turn*/ true)
+    terminal_report_with_trigger(
+        coordinator,
+        child,
+        terminal_turn_id,
+        /*trigger_turn*/ true,
+    )
 }
 
 fn terminal_report_with_trigger(
@@ -424,7 +428,9 @@ async fn handler_cancelled_waiting_for_mailbox_lock_requeues_claim() {
     assert!(claim.mark_enqueued());
 
     let mailbox_lock = Arc::new(AsyncMutex::new(()));
-    let mailbox_guard = mailbox_lock.lock().await;
+    let mailbox_guard = Arc::clone(&mailbox_lock)
+        .try_lock_owned()
+        .expect("mailbox mutex is initially available");
     let handler_guard = coordinator.delivery_guard(report_id.clone());
     let handler_lock = Arc::clone(&mailbox_lock);
     let lock_waiting = Arc::new(Notify::new());
@@ -660,9 +666,7 @@ fn mailbox_recording_does_not_consume_a_report_without_prompt_acceptance() {
     assert_eq!(failed_send.id, report_id);
     drop(failed_send);
     let report = claim_report(&coordinator, &parent, &report_id);
-    assert!(coordinator
-        .claim_next_mailbox_report(&parent)
-        .is_none());
+    assert!(coordinator.claim_next_mailbox_report(&parent).is_none());
     assert!(!coordinator.release_mailbox_claim(&report_id));
     assert!(matches!(
         coordinator.publish_terminal_report(
@@ -829,11 +833,7 @@ async fn interrupting_waiting_assignment_releases_report_delivery_waiters() {
     let child = new_child(&coordinator, &parent, "child-turn");
     let grandchild = new_child(&coordinator, &child, "grandchild-turn");
     assert_eq!(
-        coordinator.classify_turn_end(
-            &child,
-            "child-turn",
-            TurnEndDisposition::Succeeded,
-        ),
+        coordinator.classify_turn_end(&child, "child-turn", TurnEndDisposition::Succeeded,),
         Ok(AssignmentPhase::Waiting)
     );
     coordinator
@@ -873,9 +873,11 @@ async fn interrupting_waiting_assignment_releases_report_delivery_waiters() {
             .is_err(),
         "concurrent callers wait for the same queue-only report"
     );
-    assert!(coordinator
-        .interrupt_idle_assignment(&child, "child-interrupted")
-        .expect("waiting assignment can be interrupted"));
+    assert!(
+        coordinator
+            .interrupt_idle_assignment(&child, "child-interrupted")
+            .expect("waiting assignment can be interrupted")
+    );
     tokio::time::timeout(Duration::from_secs(1), &mut report_waiter)
         .await
         .expect("interruption signals blocked report delivery waiters");

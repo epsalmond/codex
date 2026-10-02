@@ -93,9 +93,7 @@ where
         response_routes.push(route_responses);
     }
 
-    let state = Arc::new(TokioMutex::new(StreamingSseState {
-        response_routes,
-    }));
+    let state = Arc::new(TokioMutex::new(StreamingSseState { response_routes }));
     let matcher: Arc<dyn Fn(&str, &[u8]) -> Option<usize> + Send + Sync> = Arc::new(matcher);
     let requests = Arc::new(TokioMutex::new(Vec::new()));
     let request_notify = Arc::new(Notify::new());
@@ -217,7 +215,10 @@ async fn take_next_stream(
 }
 
 fn decode_request_body(headers: &str, body: &[u8]) -> Vec<u8> {
-    if headers.to_ascii_lowercase().contains("content-encoding: zstd") {
+    if headers
+        .to_ascii_lowercase()
+        .contains("content-encoding: zstd")
+    {
         zstd::stream::decode_all(std::io::Cursor::new(body)).unwrap_or_else(|_| body.to_vec())
     } else {
         body.to_vec()
@@ -360,8 +361,8 @@ mod tests {
     #[test]
     fn request_decoder_passes_plain_json_to_routed_matchers() {
         let body = br#"{"route":"nested-wake"}"#;
-        let compressed = zstd::stream::encode_all(std::io::Cursor::new(body), 0)
-            .expect("compress request body");
+        let compressed =
+            zstd::stream::encode_all(std::io::Cursor::new(body), 0).expect("compress request body");
 
         assert_eq!(
             decode_request_body("content-encoding: zstd", &compressed),

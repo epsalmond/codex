@@ -33,8 +33,8 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
 use core_test_support::hooks::trust_discovered_hooks;
-use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ResponseMock;
+use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::assert_parent_turn;
 use core_test_support::responses::assert_root_turn;
 use core_test_support::responses::ev_assistant_message;
@@ -53,10 +53,10 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::responses::strip_response_item_ids_from_json;
+use core_test_support::skip_if_no_network;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::StreamingSseServer;
 use core_test_support::streaming_sse::start_routed_streaming_sse_server;
-use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -458,9 +458,9 @@ fn streaming_request_has_input_type_with_text(
     text: &str,
 ) -> bool {
     request["input"].as_array().is_some_and(|items| {
-        items.iter().any(|item| {
-            item["type"] == item_type && item.to_string().contains(text)
-        })
+        items
+            .iter()
+            .any(|item| item["type"] == item_type && item.to_string().contains(text))
     })
 }
 
@@ -1904,10 +1904,13 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
         // current child's wake-mode instructions. Both fragments are needed: the latter
         // is the mode delta for this assignment, not a duplicate to remove from history.
         assert_eq!(retained_role_messages.len(), 2);
-        assert!(retained_role_messages[0]
-            .contains("When calling `wait_agent`, prefer longer waits"));
-        assert!(retained_role_messages[1]
-            .contains("When delegated work remains and you have no independent task"));
+        assert!(
+            retained_role_messages[0].contains("When calling `wait_agent`, prefer longer waits")
+        );
+        assert!(
+            retained_role_messages[1]
+                .contains("When delegated work remains and you have no independent task")
+        );
     }
     assert!(!child_developer_messages.iter().any(|message| {
         message.contains(&format!("{INHERITED_MODEL} root role."))
@@ -1962,9 +1965,14 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
             .collect::<Vec<_>>();
         assert_eq!(shared_hint_messages.len(), 2);
-        assert_eq!(shared_hint_messages[0].as_str(), FULL_HISTORY_SHARED_USAGE_HINT);
-        assert!(shared_hint_messages[1]
-            .contains("When delegated work remains and you have no independent task"));
+        assert_eq!(
+            shared_hint_messages[0].as_str(),
+            FULL_HISTORY_SHARED_USAGE_HINT
+        );
+        assert!(
+            shared_hint_messages[1]
+                .contains("When delegated work remains and you have no independent task")
+        );
     }
     if matches!(selection, FullHistoryV2ModelSelection::CurrentTimeReminders) {
         let notice_count = |request: &ResponsesRequest, marker: &str| {
@@ -2506,7 +2514,8 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
             );
         }
         assert!(
-            namespace_child_tool(&catalog_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_none(),
+            namespace_child_tool(&catalog_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent")
+                .is_none(),
             "V2 wake-mode child should resume automatically instead of polling"
         );
     }
@@ -2932,12 +2941,12 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     Ok(())
 }
 
-#[path = "subagent_notifications/nested_wake_tests.rs"]
-mod nested_wake_tests;
-#[path = "subagent_notifications/exec_nested_wake_tests.rs"]
-mod exec_nested_wake_tests;
 #[path = "subagent_notifications/code_mode_wake_tests.rs"]
 mod code_mode_wake_tests;
+#[path = "subagent_notifications/exec_nested_wake_tests.rs"]
+mod exec_nested_wake_tests;
+#[path = "subagent_notifications/nested_wake_tests.rs"]
+mod nested_wake_tests;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> Result<()> {

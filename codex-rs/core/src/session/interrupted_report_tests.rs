@@ -79,12 +79,21 @@ async fn interrupted_wake_attempt_reports_to_its_parent_once() {
     let report = runtime
         .claim_next_report_for_delivery(&root_assignment)
         .expect("interrupted report can be claimed through the delivery path");
-    assert!(report.communication.content.to_lowercase().contains("interrupted"));
+    assert!(
+        report
+            .communication
+            .content
+            .to_lowercase()
+            .contains("interrupted")
+    );
     let report_id = report.id.clone();
     assert!(report.mark_enqueued());
-    assert!(runtime
-        .acknowledge_terminal_report_mailbox_delivery(&report_id, root_assignment.thread_id));
-    assert!(runtime
-        .claim_next_report_for_delivery(&root_assignment)
-        .is_none());
+    assert!(
+        runtime.acknowledge_terminal_report_mailbox_delivery(&report_id, root_assignment.thread_id)
+    );
+    assert!(
+        runtime
+            .claim_next_report_for_delivery(&root_assignment)
+            .is_none()
+    );
 }

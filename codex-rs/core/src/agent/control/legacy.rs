@@ -74,7 +74,11 @@ impl LocalAgentControl {
         let metadata = self.get_agent_metadata(agent_id);
         let known_agent = metadata.is_some();
         if let Some(agent_graph_store) = state.agent_graph_store() {
-            for descendant_id in subtree_thread_ids.iter().copied().filter(|id| *id != agent_id) {
+            for descendant_id in subtree_thread_ids
+                .iter()
+                .copied()
+                .filter(|id| *id != agent_id)
+            {
                 if let Err(err) = agent_graph_store
                     .set_thread_spawn_edge_status(
                         descendant_id,
@@ -82,7 +86,9 @@ impl LocalAgentControl {
                     )
                     .await
                 {
-                    warn!("failed to persist descendant thread-spawn edge closure for {descendant_id}: {err}");
+                    warn!(
+                        "failed to persist descendant thread-spawn edge closure for {descendant_id}: {err}"
+                    );
                 }
             }
         }

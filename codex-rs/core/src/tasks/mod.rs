@@ -63,12 +63,12 @@ use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 pub(crate) use compact::CompactTask;
+pub(crate) use recorded_report_wake::RecordedReportWakeResult;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
-pub(crate) use recorded_report_wake::RecordedReportWakeResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingWorkStartResult {
@@ -355,10 +355,14 @@ impl Session {
         )
         .await;
 
-        let agent_execution_guard = self.services.agent_control.admit_turn(
-            turn_context.multi_agent_version,
-            &turn_context.session_source,
-        ).await;
+        let agent_execution_guard = self
+            .services
+            .agent_control
+            .admit_turn(
+                turn_context.multi_agent_version,
+                &turn_context.session_source,
+            )
+            .await;
         let mut active = self.active_turn.lock().await;
         let turn = active
             .as_mut()
@@ -369,16 +373,11 @@ impl Session {
                 .input_queue
                 .take_pending_input_for_turn_state(&turn_state)
                 .await;
-            self.input_queue
-                .return_to_mailbox(&mut pending_input)
-                .await;
+            self.input_queue.return_to_mailbox(&mut pending_input).await;
             let reason = TurnAbortReason::Interrupted;
             self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
                 .await;
-            let started_at = turn_context
-                .turn_timing_state
-                .started_at_unix_secs()
-                .await;
+            let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
             let (completed_at, duration_ms, profile) = turn_context
                 .turn_timing_state
                 .complete_profile_and_duration_ms()

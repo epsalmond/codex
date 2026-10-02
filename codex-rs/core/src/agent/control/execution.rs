@@ -54,19 +54,17 @@ impl LocalAgentControl {
         }
     }
 
-    pub(crate) fn execution_guard<'a>(
+    pub(crate) async fn execution_guard<'a>(
         &'a self,
         multi_agent_version: MultiAgentVersion,
         session_source: &'a SessionSource,
-    ) -> impl std::future::Future<Output = Option<AgentExecutionGuard>> + Send + 'a {
-        async move {
-            if !is_execution_limited(multi_agent_version, session_source) {
-                return None;
-            }
-            Arc::clone(&self.runtime.agent_execution_limiter)
-                .guard(Arc::downgrade(&self.runtime.wake_coordinator))
-                .await
+    ) -> Option<AgentExecutionGuard> {
+        if !is_execution_limited(multi_agent_version, session_source) {
+            return None;
         }
+        Arc::clone(&self.runtime.agent_execution_limiter)
+            .guard(Arc::downgrade(&self.runtime.wake_coordinator))
+            .await
     }
 }
 

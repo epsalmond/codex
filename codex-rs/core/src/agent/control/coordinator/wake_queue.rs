@@ -62,10 +62,7 @@ impl AgentWakeCoordinator {
             if !is_current_and_wakeable(&state, &assignment) {
                 (false, false)
             } else if state.wake_queue.in_flight.contains(&assignment) {
-                let first_in_flight_request = state
-                    .wake_queue
-                    .requested_again
-                    .insert(assignment);
+                let first_in_flight_request = state.wake_queue.requested_again.insert(assignment);
                 (false, first_in_flight_request)
             } else {
                 let queued = push_if_current_and_open(&mut state, assignment);

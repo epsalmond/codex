@@ -23,139 +23,139 @@ async fn nested_wake_reloads_waiting_parent_after_grandchild_report() -> Result<
     let child_id = Arc::new(Mutex::new(None::<String>));
     let root_id_for_matcher = Arc::clone(&root_id);
     let child_id_for_matcher = Arc::clone(&child_id);
-    let (server, _completions) = start_routed_streaming_sse_server(vec![
-        vec![vec![
-            streaming_event_chunk(ev_response_created("nested-root-start")),
-            streaming_event_chunk(ev_function_call_with_namespace(
-                "nested-root-spawn",
-                MULTI_AGENT_V2_NAMESPACE,
-                "spawn_agent",
-                &root_spawn_args,
-            )),
-            streaming_event_chunk(ev_completed("nested-root-start")),
-        ]],
+    let (server, _completions) = start_routed_streaming_sse_server(
         vec![
-            vec![
-                streaming_event_chunk(ev_response_created("nested-root-after-spawn")),
-                streaming_event_chunk(ev_assistant_message(
-                    "nested-root-waiting",
-                    "root yielded for child results",
-                )),
-                streaming_event_chunk(ev_completed("nested-root-after-spawn")),
-            ],
-            vec![
-                streaming_event_chunk(ev_response_created("nested-root-pressure")),
+            vec![vec![
+                streaming_event_chunk(ev_response_created("nested-root-start")),
                 streaming_event_chunk(ev_function_call_with_namespace(
-                    "nested-root-spawn-pressure",
+                    "nested-root-spawn",
                     MULTI_AGENT_V2_NAMESPACE,
                     "spawn_agent",
-                    &pressure_spawn_args,
+                    &root_spawn_args,
                 )),
-                streaming_event_chunk(ev_completed("nested-root-pressure")),
-            ],
+                streaming_event_chunk(ev_completed("nested-root-start")),
+            ]],
             vec![
-                streaming_event_chunk(ev_response_created("nested-root-pressure-done")),
-                streaming_event_chunk(ev_assistant_message(
-                    "nested-root-pressure-yield",
-                    "root delegated pressure task",
+                vec![
+                    streaming_event_chunk(ev_response_created("nested-root-after-spawn")),
+                    streaming_event_chunk(ev_assistant_message(
+                        "nested-root-waiting",
+                        "root yielded for child results",
+                    )),
+                    streaming_event_chunk(ev_completed("nested-root-after-spawn")),
+                ],
+                vec![
+                    streaming_event_chunk(ev_response_created("nested-root-pressure")),
+                    streaming_event_chunk(ev_function_call_with_namespace(
+                        "nested-root-spawn-pressure",
+                        MULTI_AGENT_V2_NAMESPACE,
+                        "spawn_agent",
+                        &pressure_spawn_args,
+                    )),
+                    streaming_event_chunk(ev_completed("nested-root-pressure")),
+                ],
+                vec![
+                    streaming_event_chunk(ev_response_created("nested-root-pressure-done")),
+                    streaming_event_chunk(ev_assistant_message(
+                        "nested-root-pressure-yield",
+                        "root delegated pressure task",
+                    )),
+                    streaming_event_chunk(ev_completed("nested-root-pressure-done")),
+                ],
+            ],
+            vec![vec![
+                streaming_event_chunk(ev_response_created("nested-child-start")),
+                streaming_event_chunk(ev_function_call_with_namespace(
+                    "nested-child-spawn",
+                    MULTI_AGENT_V2_NAMESPACE,
+                    "spawn_agent",
+                    &child_spawn_args,
                 )),
-                streaming_event_chunk(ev_completed("nested-root-pressure-done")),
-            ],
-        ],
-        vec![vec![
-            streaming_event_chunk(ev_response_created("nested-child-start")),
-            streaming_event_chunk(ev_function_call_with_namespace(
-                "nested-child-spawn",
-                MULTI_AGENT_V2_NAMESPACE,
-                "spawn_agent",
-                &child_spawn_args,
-            )),
-            streaming_event_chunk(ev_completed("nested-child-start")),
-        ]],
-        vec![
+                streaming_event_chunk(ev_completed("nested-child-start")),
+            ]],
             vec![
-                streaming_event_chunk(ev_response_created("nested-child-after-spawn")),
-                streaming_event_chunk(ev_assistant_message(
-                    "nested-child-waiting",
-                    "child yielded for grandchild result",
-                )),
-                streaming_event_chunk(ev_completed("nested-child-after-spawn")),
+                vec![
+                    streaming_event_chunk(ev_response_created("nested-child-after-spawn")),
+                    streaming_event_chunk(ev_assistant_message(
+                        "nested-child-waiting",
+                        "child yielded for grandchild result",
+                    )),
+                    streaming_event_chunk(ev_completed("nested-child-after-spawn")),
+                ],
+                vec![
+                    streaming_event_chunk(ev_response_created("nested-child-resume")),
+                    streaming_event_chunk(ev_assistant_message(
+                        "nested-child-final",
+                        "worker result marker",
+                    )),
+                    gated_streaming_chunk(
+                        child_resume_release_rx,
+                        vec![ev_completed("nested-child-resume")],
+                    ),
+                ],
             ],
-            vec![
-                streaming_event_chunk(ev_response_created("nested-child-resume")),
+            vec![vec![
+                streaming_event_chunk(ev_response_created("nested-grandchild-start")),
                 streaming_event_chunk(ev_assistant_message(
-                    "nested-child-final",
-                    "worker result marker",
+                    "nested-grandchild-message",
+                    "grandchild result marker",
                 )),
                 gated_streaming_chunk(
-                    child_resume_release_rx,
-                    vec![ev_completed("nested-child-resume")],
+                    grandchild_release_rx,
+                    vec![ev_completed("nested-grandchild-start")],
                 ),
-            ],
+            ]],
+            vec![vec![
+                streaming_event_chunk(ev_response_created("nested-pressure-child-start")),
+                streaming_event_chunk(ev_assistant_message(
+                    "nested-pressure-child-progress",
+                    "pressure child is holding its slot",
+                )),
+                gated_streaming_chunk(
+                    pressure_release_rx,
+                    vec![
+                        ev_assistant_message("nested-pressure-child-result", "pressure child done"),
+                        ev_completed("nested-pressure-child-start"),
+                    ],
+                ),
+            ]],
         ],
-        vec![vec![
-            streaming_event_chunk(ev_response_created("nested-grandchild-start")),
-            streaming_event_chunk(ev_assistant_message(
-                "nested-grandchild-message",
-                "grandchild result marker",
-            )),
-            gated_streaming_chunk(
-                grandchild_release_rx,
-                vec![ev_completed("nested-grandchild-start")],
-            ),
-        ]],
-        vec![vec![
-            streaming_event_chunk(ev_response_created("nested-pressure-child-start")),
-            streaming_event_chunk(ev_assistant_message(
-                "nested-pressure-child-progress",
-                "pressure child is holding its slot",
-            )),
-            gated_streaming_chunk(
-                pressure_release_rx,
-                vec![
-                    ev_assistant_message(
-                        "nested-pressure-child-result",
-                        "pressure child done",
-                    ),
-                    ev_completed("nested-pressure-child-start"),
-                ],
-            ),
-        ]],
-    ], move |_headers, body| {
-        let body: Value = serde_json::from_slice(body).ok()?;
-        let request_thread_id = body["client_metadata"]["thread_id"].as_str()?;
-        let body_text = body.to_string();
-        let mut root_id = root_id_for_matcher
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if root_id.is_none() && body_text.contains("start the nested wake assignment") {
-            *root_id = Some(request_thread_id.to_string());
-            return Some(0);
-        }
-        if root_id.as_deref() == Some(request_thread_id) {
-            return Some(1);
-        }
-        drop(root_id);
-        if body_text.contains("capacity pressure task marker") {
-            return Some(5);
-        }
-        let mut child_id = child_id_for_matcher
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if child_id.as_deref() == Some(request_thread_id) {
-            return Some(3);
-        }
-        if body_text.contains("child task marker")
-            && !body_text.contains("grandchild task marker")
-        {
-            *child_id = Some(request_thread_id.to_string());
-            return Some(2);
-        }
-        if body_text.contains("grandchild task marker") {
-            return Some(4);
-        }
-        None
-    })
+        move |_headers, body| {
+            let body: Value = serde_json::from_slice(body).ok()?;
+            let request_thread_id = body["client_metadata"]["thread_id"].as_str()?;
+            let body_text = body.to_string();
+            let mut root_id = root_id_for_matcher
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if root_id.is_none() && body_text.contains("start the nested wake assignment") {
+                *root_id = Some(request_thread_id.to_string());
+                return Some(0);
+            }
+            if root_id.as_deref() == Some(request_thread_id) {
+                return Some(1);
+            }
+            drop(root_id);
+            if body_text.contains("capacity pressure task marker") {
+                return Some(5);
+            }
+            let mut child_id = child_id_for_matcher
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if child_id.as_deref() == Some(request_thread_id) {
+                return Some(3);
+            }
+            if body_text.contains("child task marker")
+                && !body_text.contains("grandchild task marker")
+            {
+                *child_id = Some(request_thread_id.to_string());
+                return Some(2);
+            }
+            if body_text.contains("grandchild task marker") {
+                return Some(4);
+            }
+            None
+        },
+    )
     .await;
     let test = test_codex()
         .with_model("koffing")
@@ -195,7 +195,9 @@ async fn nested_wake_reloads_waiting_parent_after_grandchild_report() -> Result<
     test.submit_turn("start the nested wake assignment").await?;
     let _root_initial_request = wait_for_streaming_request_matching(&server, |request| {
         streaming_request_has_thread_id(request, root_thread_id)
-            && request.to_string().contains("start the nested wake assignment")
+            && request
+                .to_string()
+                .contains("start the nested wake assignment")
     })
     .await
     .context("waiting for the initial root request")?;
@@ -219,12 +221,8 @@ async fn nested_wake_reloads_waiting_parent_after_grandchild_report() -> Result<
     )?;
     assert_ne!(child_thread_id, root_thread_id);
     let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
-    let child_spawn_tool_exposed = namespace_child_tool(
-        &child_request,
-        MULTI_AGENT_V2_NAMESPACE,
-        "spawn_agent",
-    )
-    .is_some();
+    let child_spawn_tool_exposed =
+        namespace_child_tool(&child_request, MULTI_AGENT_V2_NAMESPACE, "spawn_agent").is_some();
     assert!(child_spawn_tool_exposed);
 
     let _child_yield_request = wait_for_streaming_request_matching(&server, |request| {
@@ -271,9 +269,7 @@ async fn nested_wake_reloads_waiting_parent_after_grandchild_report() -> Result<
 
     assert!(namespace_child_tool(&child_request, "clock", "curr_time").is_some());
     assert!(namespace_child_tool(&child_request, "clock", "sleep").is_none());
-    assert!(
-        namespace_child_tool(&child_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_none()
-    );
+    assert!(namespace_child_tool(&child_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_none());
 
     test.submit_text_turn("start capacity pressure nested wake")
         .await?;
@@ -307,11 +303,19 @@ async fn nested_wake_reloads_waiting_parent_after_grandchild_report() -> Result<
     assert_eq!(pressure_child.agent_status().await, AgentStatus::Running);
     assert_eq!(grandchild_thread.agent_status().await, AgentStatus::Running);
     assert!(
-        test.thread_manager.get_thread(child_thread_id).await.is_err(),
+        test.thread_manager
+            .get_thread(child_thread_id)
+            .await
+            .is_err(),
         "capacity pressure should evict the idle Waiting parent"
     );
     test.thread_manager.remove_thread(&root_thread_id).await;
-    assert!(test.thread_manager.get_thread(root_thread_id).await.is_err());
+    assert!(
+        test.thread_manager
+            .get_thread(root_thread_id)
+            .await
+            .is_err()
+    );
     let _ = grandchild_release_tx.send(());
 
     let child_final_request = wait_for_streaming_request_matching(&server, |request| {
@@ -334,13 +338,17 @@ async fn nested_wake_reloads_waiting_parent_after_grandchild_report() -> Result<
         .expect("child resumed request has model input")
         .iter()
         .filter(|item| {
-            item["type"] == "agent_message"
-                && item.to_string().contains("grandchild result marker")
+            item["type"] == "agent_message" && item.to_string().contains("grandchild result marker")
         })
         .count();
     assert_eq!(child_report_count, 1);
 
-    assert!(test.thread_manager.get_thread(root_thread_id).await.is_err());
+    assert!(
+        test.thread_manager
+            .get_thread(root_thread_id)
+            .await
+            .is_err()
+    );
     timeout(Duration::from_secs(5), async {
         loop {
             if reloaded_child.agent_status().await
@@ -500,8 +508,11 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
     let root_thread_id = test.session_configured.thread_id;
     test.submit_turn("start nested upward report").await?;
     let child_request = wait_for_streaming_request_matching(&server, |request| {
-        streaming_request_has_input_type_with_text(request, "agent_message", "upward child task marker")
-            && !streaming_request_has_thread_id(request, root_thread_id)
+        streaming_request_has_input_type_with_text(
+            request,
+            "agent_message",
+            "upward child task marker",
+        ) && !streaming_request_has_thread_id(request, root_thread_id)
     })
     .await
     .context("waiting for the nested child request")?;
@@ -573,7 +584,10 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
     assert_eq!(grandchild_report_count, 1);
     assert_ne!(grandchild_thread_id, root_thread_id);
     assert_ne!(grandchild_thread_id, child_thread_id);
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     let root_requests = server
         .requests()
         .await
@@ -597,9 +611,7 @@ async fn nested_wake_reports_final_child_result_to_root_once() -> Result<()> {
             item["type"] == "agent_message" && item.to_string().contains("worker result marker")
         })
         .expect("root request contains the worker report");
-    assert!(
-        codex_utils_output_truncation::approx_token_count(&worker_report.to_string()) <= 1_000
-    );
+    assert!(codex_utils_output_truncation::approx_token_count(&worker_report.to_string()) <= 1_000);
     let _ = test.codex.shutdown_and_wait().await;
     server.shutdown().await;
     Ok(())

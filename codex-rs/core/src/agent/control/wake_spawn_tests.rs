@@ -67,7 +67,10 @@ fn assignment_limit_rejects_spawn_before_any_child_thread_is_created() {
             .contains("outstanding delegated assignment limit reached")
     );
     assert_eq!(
-        control.runtime.wake_coordinator.assignment_status(root_thread_id),
+        control
+            .runtime
+            .wake_coordinator
+            .assignment_status(root_thread_id),
         Some(AgentStatus::Running)
     );
 }

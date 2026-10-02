@@ -39,11 +39,7 @@ async fn wake_mode_code_mode_child_request_keeps_wait_and_clock_but_hides_pollin
     let _root_resume = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_has_input_type_with_text(
-                request,
-                "agent_message",
-                "code-mode result marker",
-            )
+            request_has_input_type_with_text(request, "agent_message", "code-mode result marker")
         },
         sse(vec![
             ev_response_created("code-mode-wake-root-resume"),
@@ -90,8 +86,8 @@ async fn wake_mode_code_mode_child_request_keeps_wait_and_clock_but_hides_pollin
     let root_request = wait_for_request_matching(&root_initial, |request| {
         request.body_contains_text("spawn the code-mode wake child")
     })
-        .await
-        .context("wait for root spawn request")?;
+    .await
+    .context("wait for root spawn request")?;
     let root_thread_id = test.session_configured.thread_id;
     assert!(
         namespace_child_tool(
@@ -106,8 +102,8 @@ async fn wake_mode_code_mode_child_request_keeps_wait_and_clock_but_hides_pollin
             && request.body_contains_text("code mode child task marker")
             && !response_request_has_thread_id(request, root_thread_id)
     })
-        .await
-        .context("wait for code-mode child request")?;
+    .await
+    .context("wait for code-mode child request")?;
     let child_thread_id = ThreadId::from_string(
         child_request.body_json()["client_metadata"]["thread_id"]
             .as_str()

@@ -67,15 +67,13 @@ impl Session {
 
         let turn_id = uuid::Uuid::new_v4().to_string();
         let mut turn_context = self
-            .new_turn_with_default_settings(
-                turn_id,
-                NewTurnContextOptions::default(),
-            )
+            .new_turn_with_default_settings(turn_id, NewTurnContextOptions::default())
             .await;
         // Bind before draining input. A concurrent interruption or close can invalidate the
         // waiting assignment while turn context is being prepared; in that case its queued mail
         // must remain available for an explicit followup or shutdown recovery.
-        if let Err(error) = self.bind_wake_assignment(&turn_context, /*allow_new_generation*/ false)
+        if let Err(error) =
+            self.bind_wake_assignment(&turn_context, /*allow_new_generation*/ false)
         {
             self.clear_reserved_idle_turn(&turn_state).await;
             warn!("failed to bind recorded-report wake turn: {error}");
@@ -83,6 +81,10 @@ impl Session {
         }
 
         let (input, start_options) = self.input_queue.get_pending_input(&self.active_turn).await;
+        #[expect(
+            clippy::expect_used,
+            reason = "the new turn context is not shared until start_task"
+        )]
         let turn_context_mut = Arc::get_mut(&mut turn_context)
             .expect("turn context stays uniquely owned until its task starts");
         turn_context_mut.final_output_json_schema = start_options.final_output_json_schema;

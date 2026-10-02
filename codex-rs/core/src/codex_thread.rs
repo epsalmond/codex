@@ -535,10 +535,7 @@ impl CodexThread {
             TurnInput::UserInput { content, .. } if !content.is_empty()
         ) || matches!(
             &request.input,
-            TurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
-                call_id: None,
-                ..
-            })
+            TurnInput::ResponseItem(ResponseItem::FunctionCallOutput { call_id: None, .. })
         );
         if explicit_input
             && matches!(

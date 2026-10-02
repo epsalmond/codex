@@ -6,6 +6,7 @@ use super::coordinator::WakeDispatchResult;
 use crate::TurnStartOptions;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::tasks::PendingWorkStartResult;
 use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
@@ -16,7 +17,6 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_thread_store::ReadThreadParams;
-use crate::tasks::PendingWorkStartResult;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -103,8 +103,7 @@ impl LocalAgentControl {
         }
 
         loop {
-            let Some(report) = self.runtime.claim_next_report_for_delivery(assignment)
-            else {
+            let Some(report) = self.runtime.claim_next_report_for_delivery(assignment) else {
                 break;
             };
             let report_id = report.id.clone();
@@ -171,10 +170,7 @@ impl LocalAgentControl {
             {
                 return WakeDispatchResult::Defer;
             }
-            let start_result = target
-                .session
-                .maybe_start_turn_for_pending_work()
-                .await;
+            let start_result = target.session.maybe_start_turn_for_pending_work().await;
             let trigger_mail_pending = target
                 .session
                 .input_queue
@@ -187,15 +183,13 @@ impl LocalAgentControl {
                     trigger_mail_pending,
                     wakeups_paused,
                 },
-            ) == WakeDispatchResult::Defer {
+            ) == WakeDispatchResult::Defer
+            {
                 return WakeDispatchResult::Defer;
             }
         }
 
-        if self
-            .runtime
-            .has_recorded_wake_reports(assignment)
-        {
+        if self.runtime.has_recorded_wake_reports(assignment) {
             let state = match self.runtime.upgrade() {
                 Ok(state) => state,
                 Err(err) => {
@@ -219,9 +213,7 @@ impl LocalAgentControl {
                 | crate::tasks::RecordedReportWakeResult::NoLongerNeeded => {
                     WakeDispatchResult::Complete
                 }
-                crate::tasks::RecordedReportWakeResult::Busy => {
-                    WakeDispatchResult::Defer
-                }
+                crate::tasks::RecordedReportWakeResult::Busy => WakeDispatchResult::Defer,
             };
         }
 

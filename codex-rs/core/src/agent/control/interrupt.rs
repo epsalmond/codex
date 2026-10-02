@@ -44,8 +44,7 @@ impl LocalAgentControl {
             Err(err)
                 if matches!(
                     err.details(),
-                    CodexErrorDetails::ThreadNotFound(_)
-                        | CodexErrorDetails::InternalAgentDied
+                    CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
                 ) =>
             {
                 if self.runtime.wake_mode_enabled()

@@ -30,8 +30,8 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use tokio::sync::oneshot;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 enum BoardClock {
     Available,
@@ -536,15 +536,10 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
         .map(|body| serde_json::from_slice::<Value>(&body))
         .collect::<serde_json::Result<Vec<_>>>()?;
     let notification = format!("Message ID: {}", post.message_id);
-    let next_turn = requests
-        .last()
-        .context("next root request")?["client_metadata"]["turn_id"]
+    let next_turn = requests.last().context("next root request")?["client_metadata"]["turn_id"]
         .as_str()
         .context("next root turn ID")?;
-    for (turn, notified) in [
-        (target_turn.as_str(), false),
-        (next_turn, !after_final),
-    ] {
+    for (turn, notified) in [(target_turn.as_str(), false), (next_turn, !after_final)] {
         let requests = requests
             .iter()
             .filter(|request| request["client_metadata"]["turn_id"] == turn)
@@ -950,7 +945,8 @@ async fn board_clock_failure_does_not_fall_back_or_create_a_channel() -> anyhow:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queue_only_report_arriving_after_user_op_does_not_block_the_session_loop() -> anyhow::Result<()> {
+async fn queue_only_report_arriving_after_user_op_does_not_block_the_session_loop()
+-> anyhow::Result<()> {
     let (release_child, child_gate) = oneshot::channel();
     let root_thread_id = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let root_thread_id_for_matcher = std::sync::Arc::clone(&root_thread_id);
@@ -1037,6 +1033,9 @@ async fn queue_only_report_arriving_after_user_op_does_not_block_the_session_loo
     ));
 
     wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    wait_for_event(&root.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&root.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }

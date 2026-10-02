@@ -360,10 +360,7 @@ impl AgentWakeCoordinator {
     }
 
     /// Waits until non-triggering terminal reports published before a user turn are in its queue.
-    pub(crate) async fn wait_for_queue_only_reports_enqueued(
-        &self,
-        parent: &AgentAssignmentId,
-    ) {
+    pub(crate) async fn wait_for_queue_only_reports_enqueued(&self, parent: &AgentAssignmentId) {
         loop {
             let observed_epoch = self.wake_event_epoch();
             let has_unenqueued_reports = {
@@ -398,13 +395,10 @@ impl AgentWakeCoordinator {
         let state = self.lock_state();
         state.pending_by_parent.get(parent).is_some_and(|reports| {
             reports.iter().any(|report_id| {
-                state
-                    .reports
-                    .get(report_id)
-                    .is_some_and(|report| {
-                        report.delivery == ReportDeliveryState::Recorded
-                            && report.communication.trigger_turn
-                    })
+                state.reports.get(report_id).is_some_and(|report| {
+                    report.delivery == ReportDeliveryState::Recorded
+                        && report.communication.trigger_turn
+                })
             })
         })
     }

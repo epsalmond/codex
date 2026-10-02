@@ -183,11 +183,7 @@ fn subtree_close_cancels_grandchildren_after_parent_interruption_detaches_them()
     let grandchild = new_child(&coordinator, &child, "grandchild-turn");
 
     assert_eq!(
-        coordinator.classify_turn_end(
-            &child,
-            "child-turn",
-            TurnEndDisposition::Interrupted,
-        ),
+        coordinator.classify_turn_end(&child, "child-turn", TurnEndDisposition::Interrupted,),
         Ok(AssignmentPhase::Interrupted)
     );
     assert_eq!(coordinator.parent_assignment(&grandchild), None);
@@ -195,7 +191,11 @@ fn subtree_close_cancels_grandchildren_after_parent_interruption_detaches_them()
     coordinator.cancel_subtree(&[child.thread_id, grandchild.thread_id]);
 
     assert!(coordinator.current_assignment(child.thread_id).is_none());
-    assert!(coordinator.current_assignment(grandchild.thread_id).is_none());
+    assert!(
+        coordinator
+            .current_assignment(grandchild.thread_id)
+            .is_none()
+    );
     assert!(coordinator.is_current_open_assignment(&root));
 }
 
@@ -237,9 +237,7 @@ fn production_report_claim_retries_after_failed_send_and_stops_after_enqueue() {
     assert_eq!(retry.id, report_id);
     assert!(retry.mark_enqueued());
     assert!(coordinator.acknowledge_report_mailbox_delivery(&report_id, parent.thread_id));
-    assert!(coordinator
-        .claim_next_mailbox_report(&parent)
-        .is_none());
+    assert!(coordinator.claim_next_mailbox_report(&parent).is_none());
     assert!(!coordinator.release_mailbox_claim(&report_id));
     assert_eq!(direct_children(&coordinator, &parent), 1);
 

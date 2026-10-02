@@ -1,7 +1,7 @@
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::AgentStatus;
-use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 
 use crate::context::ContextualUserFragment;

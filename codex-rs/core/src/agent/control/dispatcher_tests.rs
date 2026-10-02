@@ -1,7 +1,7 @@
-use super::validate_coordinator_reload_target;
-use super::classify_pending_wake_after_start;
-use super::PendingWakeState;
 use super::super::coordinator::WakeDispatchResult;
+use super::PendingWakeState;
+use super::classify_pending_wake_after_start;
+use super::validate_coordinator_reload_target;
 use crate::tasks::PendingWorkStartResult;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;

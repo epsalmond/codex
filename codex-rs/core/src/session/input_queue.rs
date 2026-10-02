@@ -688,15 +688,15 @@ mod tests {
 
         assert!(
             !input_queue
-                .enqueue_mailbox_communication_if(
-                    rejected_mail,
-                    Default::default(),
-                    || false,
-                )
+                .enqueue_mailbox_communication_if(rejected_mail, Default::default(), || false,)
                 .await
         );
         assert!(!input_queue.has_pending_mailbox_items().await);
-        assert!(!activity_rx.has_changed().expect("queue sender remains open"));
+        assert!(
+            !activity_rx
+                .has_changed()
+                .expect("queue sender remains open")
+        );
 
         let mut accepted_mail = make_mail(
             AgentPath::try_from("/root/worker").expect("agent path"),
@@ -710,15 +710,15 @@ mod tests {
         ));
         assert!(
             input_queue
-                .enqueue_mailbox_communication_if(
-                    accepted_mail,
-                    Default::default(),
-                    || true,
-                )
+                .enqueue_mailbox_communication_if(accepted_mail, Default::default(), || true,)
                 .await
         );
         assert_eq!(input_queue.trigger_turn_mailbox_count().await, 1);
-        assert!(activity_rx.has_changed().expect("queue sender remains open"));
+        assert!(
+            activity_rx
+                .has_changed()
+                .expect("queue sender remains open")
+        );
     }
 
     #[tokio::test]

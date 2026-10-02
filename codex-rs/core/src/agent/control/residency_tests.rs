@@ -287,20 +287,30 @@ async fn evicted_waiting_wake_agent_reports_interruption_once() {
         .runtime
         .claim_next_report_for_delivery(&root_assignment)
         .expect("evicted interruption report can be claimed through delivery");
-    assert!(report.communication.content.to_lowercase().contains("interrupted"));
+    assert!(
+        report
+            .communication
+            .content
+            .to_lowercase()
+            .contains("interrupted")
+    );
     let report_id = report.id.clone();
     assert!(report.mark_enqueued());
-    assert!(control
-        .runtime
-        .acknowledge_terminal_report_mailbox_delivery(&report_id, root_assignment.thread_id));
+    assert!(
+        control
+            .runtime
+            .acknowledge_terminal_report_mailbox_delivery(&report_id, root_assignment.thread_id)
+    );
     control
         .interrupt_spawned_agent(root.thread_id, first.thread_id)
         .await
         .expect("duplicate evicted interruption remains idempotent");
-    assert!(control
-        .runtime
-        .claim_next_report_for_delivery(&root_assignment)
-        .is_none());
+    assert!(
+        control
+            .runtime
+            .claim_next_report_for_delivery(&root_assignment)
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -323,7 +333,10 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         .expect("start root thread");
     let control = manager.agent_control();
     let state = control.runtime.upgrade().expect("thread manager is live");
-    control.runtime.registry.register_root_thread(root.thread_id);
+    control
+        .runtime
+        .registry
+        .register_root_thread(root.thread_id);
 
     let child_path = AgentPath::try_from("/root/worker").expect("child path");
     let grandchild_path = AgentPath::try_from("/root/worker/helper").expect("grandchild path");
@@ -400,7 +413,13 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         .expect("third reservation evicts the least-recently-used grandchild");
     drop(eviction_slot);
     assert!(manager.get_thread(grandchild.thread_id).await.is_err());
-    assert!(control.runtime.registry.agent_metadata_for_thread(grandchild.thread_id).is_some());
+    assert!(
+        control
+            .runtime
+            .registry
+            .agent_metadata_for_thread(grandchild.thread_id)
+            .is_some()
+    );
 
     let coordinator = &control.runtime.wake_coordinator;
     let root_assignment = coordinator
@@ -445,9 +464,11 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         ),
         Ok(AssignmentPhase::Waiting)
     );
-    assert!(coordinator
-        .interrupt_idle_assignment(&child_assignment, "close-tree-interrupt")
-        .expect("interrupted child is still current"));
+    assert!(
+        coordinator
+            .interrupt_idle_assignment(&child_assignment, "close-tree-interrupt")
+            .expect("interrupted child is still current")
+    );
 
     let _ = control
         .close_agent(child.thread_id)
@@ -455,8 +476,18 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         .expect("close cancels the full registered subtree");
 
     assert!(manager.get_thread(grandchild.thread_id).await.is_err());
-    assert!(control.runtime.registry.agent_metadata_for_thread(grandchild.thread_id).is_none());
-    assert!(coordinator.current_assignment(grandchild.thread_id).is_none());
+    assert!(
+        control
+            .runtime
+            .registry
+            .agent_metadata_for_thread(grandchild.thread_id)
+            .is_none()
+    );
+    assert!(
+        coordinator
+            .current_assignment(grandchild.thread_id)
+            .is_none()
+    );
     assert_eq!(
         coordinator.assignment_status(child.thread_id),
         None,
@@ -487,7 +518,10 @@ async fn internal_agent_died_interrupt_publishes_one_upward_report() {
     let control = manager.agent_control();
     let state = control.runtime.upgrade().expect("thread manager is live");
     control.runtime.enable_wake_mode();
-    control.runtime.registry.register_root_thread(root.thread_id);
+    control
+        .runtime
+        .registry
+        .register_root_thread(root.thread_id);
 
     let child_path = AgentPath::try_from("/root/worker").expect("child path");
     let child_slot = control
@@ -562,11 +596,19 @@ async fn internal_agent_died_interrupt_publishes_one_upward_report() {
     assert_eq!(report.sender_thread_id, child.thread_id);
     assert_eq!(report.communication.author, child_path);
     assert_eq!(report.communication.recipient, AgentPath::root());
-    assert!(report.communication.content.to_lowercase().contains("interrupted"));
-    assert!(control
-        .runtime
-        .claim_next_report_for_delivery(&root_assignment)
-        .is_none());
+    assert!(
+        report
+            .communication
+            .content
+            .to_lowercase()
+            .contains("interrupted")
+    );
+    assert!(
+        control
+            .runtime
+            .claim_next_report_for_delivery(&root_assignment)
+            .is_none()
+    );
     drop(report);
 
     let _ = control.shutdown_live_agent(root.thread_id).await;

@@ -160,20 +160,20 @@ async fn exec_root_keeps_polling_while_thread_spawn_descendants_wake() -> Result
         .await?;
     let root_request = wait_for_streaming_request_matching(&server, |request| {
         streaming_request_has_thread_id(request, root_thread_id)
-            && request.to_string().contains("start the Exec nested wake assignment")
+            && request
+                .to_string()
+                .contains("start the Exec nested wake assignment")
     })
     .await
     .context("waiting for the Exec root spawn request")?;
-    assert!(namespace_child_tool(
-        &root_request,
-        MULTI_AGENT_V2_NAMESPACE,
-        "wait_agent"
-    )
-    .is_some());
+    assert!(namespace_child_tool(&root_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_some());
 
     let child_request = wait_for_streaming_request_matching(&server, |request| {
-        streaming_request_has_input_type_with_text(request, "agent_message", "exec child task marker")
-            && !streaming_request_has_thread_id(request, root_thread_id)
+        streaming_request_has_input_type_with_text(
+            request,
+            "agent_message",
+            "exec child task marker",
+        ) && !streaming_request_has_thread_id(request, root_thread_id)
     })
     .await
     .context("waiting for the nested child request")?;
@@ -182,12 +182,7 @@ async fn exec_root_keeps_polling_while_thread_spawn_descendants_wake() -> Result
             .as_str()
             .expect("child thread ID"),
     )?;
-    assert!(namespace_child_tool(
-        &child_request,
-        MULTI_AGENT_V2_NAMESPACE,
-        "wait_agent"
-    )
-    .is_none());
+    assert!(namespace_child_tool(&child_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_none());
     assert!(namespace_child_tool(&child_request, "clock", "curr_time").is_some());
     assert!(namespace_child_tool(&child_request, "clock", "sleep").is_none());
 
@@ -202,7 +197,9 @@ async fn exec_root_keeps_polling_while_thread_spawn_descendants_wake() -> Result
         streaming_request_has_thread_id(request, child_thread_id)
             && request.to_string().contains("exec-nested-child-spawn")
             && request.to_string().contains("exec grandchild task marker")
-            && !request.to_string().contains("exec grandchild result marker")
+            && !request
+                .to_string()
+                .contains("exec grandchild result marker")
     })
     .await
     .context("waiting for the nested child to yield")?;
@@ -262,6 +259,9 @@ async fn exec_root_keeps_polling_while_thread_spawn_descendants_wake() -> Result
         report_count(&root_final_request, "exec worker result marker"),
         1
     );
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }

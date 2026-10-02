@@ -44,9 +44,10 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
 
 #[test]
 fn subagent_guidance_reflects_its_polling_mode() {
-    assert!(SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT.contains(
-        "A child report resumes your assignment in a new turn"
-    ));
+    assert!(
+        SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT
+            .contains("A child report resumes your assignment in a new turn")
+    );
     let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
     let wait = DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT;
     let polling_body = format!(
