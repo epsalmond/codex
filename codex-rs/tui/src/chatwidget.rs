@@ -560,6 +560,8 @@ pub(crate) struct ChatWidget {
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     last_response_clock: Option<DateTime<Local>>,
+    /// Requests-per-turn history that converts `/shake` payback into turns.
+    request_pace: shake_cost::RequestPace,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
     pending_rate_limit_reset_request_id: Option<u64>,
@@ -1110,6 +1112,7 @@ impl ChatWidget {
                 self.bottom_pane
                     .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                 self.token_info = None;
+                self.request_pace.forget_total_tokens();
             }
         }
     }

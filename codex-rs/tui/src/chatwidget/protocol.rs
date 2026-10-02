@@ -45,6 +45,12 @@ impl ChatWidget {
         }
         match notification {
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
+                if replay_kind.is_none() {
+                    self.request_pace.observe_total_tokens(
+                        notification.token_usage.total.total_tokens,
+                        self.turn_lifecycle.agent_turn_running,
+                    );
+                }
                 self.set_token_info(Some(token_usage_info_from_app_server(
                     notification.token_usage,
                 )));
@@ -467,6 +473,7 @@ impl ChatWidget {
                 }
                 self.last_non_retry_error = None;
                 if replay_kind.is_none() {
+                    self.request_pace.complete_turn();
                     self.last_response_clock = notification
                         .turn
                         .completed_at

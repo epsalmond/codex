@@ -80,6 +80,7 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start = false;
         self.reset_safety_buffering_for_turn_start();
         self.turn_lifecycle.start(Instant::now());
+        self.request_pace.start_turn();
         self.transcript.reset_turn_flags();
         self.adaptive_chunking.reset();
         if self.plan_stream_controller.take().is_some() {
@@ -525,6 +526,20 @@ impl ChatWidget {
 
     pub(super) fn on_warning(&mut self, message: impl Into<String>) {
         let message = message.into();
+        // Auto-shake is routine context maintenance, not a problem: render
+        // its result as info without the marker. Markers are emitted by
+        // core's `handlers::apply_shake`. Auto-shake never set the `/shake`
+        // input gate, so it is left alone.
+        for (marker, label) in [
+            ("⛭ shake (auto): ", "Auto-shake"),
+            ("⛭ shake (auto, cold resume): ", "Auto-shake (cold resume)"),
+            ("⛭ shake (auto, escalated): ", "Auto-shake (escalated)"),
+        ] {
+            if let Some(summary) = message.strip_prefix(marker) {
+                self.add_info_message(format!("{label}: {summary}"), /*hint*/ None);
+                return;
+            }
+        }
         // A `/shake` completion notice arrived: release the pending input gate
         // set by `handle_shake_slash_command`. Strip the marker prefix before
         // rendering; the gate must open even if display dedupe suppresses the
