@@ -617,9 +617,9 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
 
     let mut feature_config = match configured_subagent_developer_instructions {
         Some(instructions) => format!(
-            "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {instructions:?}"
+            "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"enabled\"\nsubagent_developer_instructions = {instructions:?}"
         ),
-        None => "[features.multi_agent_v2]\nenabled = true".to_string(),
+        None => "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"enabled\"".to_string(),
     };
     let codex_home = TempDir::new()?;
     let role_path = codex_home.path().join("worker.toml");
