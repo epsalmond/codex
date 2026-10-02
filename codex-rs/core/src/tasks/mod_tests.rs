@@ -557,6 +557,9 @@ async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
                 },
             )
             .await;
+        if mode == ChildReportMode::WakeOnReport {
+            session.services.local_agent_runtime.enable_wake_mode();
+        }
         for communication in unread {
             session
                 .input_queue
