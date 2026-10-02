@@ -17,7 +17,7 @@ platforms, use [upstream Codex CLI](#installing-upstream-codex-cli).
 
 ### Installing codex-shake
 
-Install or update to the latest fork release with:
+Install the latest fork release with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
@@ -68,8 +68,8 @@ official `codex`.
 
   See [Shake](codex-rs/docs/shake.md#auto-shake) for triggers, per-model
   thresholds, and manual `/shake`.
-- **Subagent context reduction** gives each subagent its own context budget;
-  a child shakes, then compacts, when it reaches the cap. See
+- **Subagent context reduction** keeps each subagent under a context cap: a
+  child shakes, then compacts, when it reaches the cap. See
   [subagents](codex-rs/docs/shake.md#subagents).
 - **Wake mode** delivers each child result to an interactive root as a new
   turn. See [wake mode](#wake-mode-for-multi-agent-orchestrators).
