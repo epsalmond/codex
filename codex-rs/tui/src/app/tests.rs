@@ -61,6 +61,8 @@ mod permission_selection_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 
+#[path = "tests/agent_picker_requests_tests.rs"]
+mod agent_picker_requests_tests;
 #[path = "tests/history_hydration_tests.rs"]
 mod history_hydration_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
