@@ -290,10 +290,7 @@ impl AutoShakeConfig {
     }
 
     /// Resolve the prompt-cache TTL using the shared provider policy.
-    pub(crate) fn resolved_cache_ttl_for_provider(
-        &self,
-        provider_id: Option<&str>,
-    ) -> ResolvedCacheTtl {
+    pub fn resolved_cache_ttl_for_provider(&self, provider_id: Option<&str>) -> ResolvedCacheTtl {
         resolve_cache_ttl(CacheTtlInputs {
             provider_id,
             provider_override: provider_id

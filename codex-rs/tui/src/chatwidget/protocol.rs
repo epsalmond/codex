@@ -45,12 +45,11 @@ impl ChatWidget {
         }
         match notification {
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
-                if replay_kind.is_none() {
-                    self.request_pace.observe_total_tokens(
-                        notification.token_usage.total.total_tokens,
-                        self.turn_lifecycle.agent_turn_running,
-                    );
-                }
+                // Replayed totals only set the baseline for the next live update.
+                self.request_pace.observe_total_tokens(
+                    notification.token_usage.total.total_tokens,
+                    replay_kind.is_none() && self.turn_lifecycle.agent_turn_running,
+                );
                 self.set_token_info(Some(token_usage_info_from_app_server(
                     notification.token_usage,
                 )));
@@ -103,6 +102,8 @@ impl ChatWidget {
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) {
                     self.warning_display_state.startup_complete = true;
                     self.on_task_started();
+                    self.request_pace
+                        .start_turn(/*started_live*/ replay_kind.is_none());
                 }
             }
             ServerNotification::TurnCompleted(notification) => {

@@ -1,5 +1,9 @@
 //! Confirmation UI for a measured, non-mutating shake preview.
 
+use std::time::Duration;
+
+use codex_model_provider_info::CacheStaleness;
+use codex_model_provider_info::classify_cache_staleness;
 use codex_protocol::ThreadId;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::ShakeMode;
@@ -73,6 +77,22 @@ fn compact_tokens(tokens: i64) -> String {
 }
 
 impl ChatWidget {
+    /// The provider's prompt-cache TTL when the time since the last response
+    /// has reached it, using the same TTL policy as the cold-resume auto-shake.
+    fn expired_cache_ttl(&self) -> Option<Duration> {
+        let ttl = self
+            .config
+            .auto_shake
+            .resolved_cache_ttl_for_provider(Some(self.config.model_provider_id.as_str()))
+            .ttl;
+        let idle = self
+            .last_response_clock
+            .and_then(|at| chrono::Local::now().signed_duration_since(at).to_std().ok());
+        (classify_cache_staleness(idle, ttl) == CacheStaleness::LikelyExpired)
+            .then_some(ttl)
+            .flatten()
+    }
+
     pub(crate) fn show_shake_preview(
         &mut self,
         thread_id: ThreadId,
@@ -196,6 +216,7 @@ impl ChatWidget {
                             .scenarios(request_before, request_after)
                             .warm_break_even_requests,
                         &self.request_pace,
+                        self.expired_cache_ttl(),
                     )
                 }
                 None => "Payback unavailable for this model or billing route.".to_string(),

@@ -497,6 +497,14 @@ fn token_usage_breakdown(usage: TokenUsage) -> codex_app_server_protocol::TokenU
 }
 
 pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageInfo>) {
+    handle_token_count_from(chat, info, /*replay_kind*/ None);
+}
+
+pub(super) fn handle_token_count_from(
+    chat: &mut ChatWidget,
+    info: Option<TokenUsageInfo>,
+    replay_kind: Option<ReplayKind>,
+) {
     match info {
         Some(info) => {
             chat.handle_server_notification(
@@ -515,7 +523,7 @@ pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageI
                         },
                     },
                 ),
-                /*replay_kind*/ None,
+                replay_kind,
             );
         }
         None => chat.set_token_info(/*info*/ None),
