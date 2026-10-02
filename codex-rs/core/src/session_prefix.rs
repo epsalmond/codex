@@ -29,11 +29,9 @@ pub(crate) fn format_inter_agent_completion_message(
             format!("Agent errored: {error}\n\n{ERROR_NEXT_ACTION}")
         }
         AgentStatus::Shutdown => "Agent shut down.".to_string(),
+        AgentStatus::Interrupted => "Agent was interrupted.".to_string(),
         AgentStatus::NotFound => "Agent was not found.".to_string(),
-        AgentStatus::PendingInit
-        | AgentStatus::Running
-        | AgentStatus::Waiting
-        | AgentStatus::Interrupted => return None,
+        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Waiting => return None,
     };
     Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
 }

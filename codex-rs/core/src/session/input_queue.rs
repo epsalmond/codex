@@ -172,19 +172,35 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
+        self.enqueue_mailbox_communication_if(communication, start_options, || true)
+            .await;
+    }
+
+    /// Inserts mail and synchronously commits its delivery while the queue is locked.
+    /// Rejected handoffs are removed before any consumer can observe them.
+    pub(crate) async fn enqueue_mailbox_communication_if(
+        &self,
+        communication: InterAgentCommunication,
+        start_options: TurnStartOptions,
+        accept: impl FnOnce() -> bool,
+    ) -> bool {
         let held = communication.trigger_turn && self.wakeups_paused();
-        self.mailbox_pending_mails
-            .lock()
-            .await
-            .push_back(PendingMailboxCommunication {
-                communication,
-                start_options,
-                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
-            });
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        pending.push_back(PendingMailboxCommunication {
+            communication,
+            start_options,
+            _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+        });
+        if !accept() {
+            pending.pop_back();
+            return false;
+        }
+        drop(pending);
         // Held mail has nothing to deliver yet, so it must not interrupt a `sleep`.
         if !held {
             self.activity_tx.send_replace(InputQueueActivity::Mailbox);
         }
+        true
     }
 
     /// Returns whether mail is ready for delivery. Paused wakeups hold trigger-turn mail.
@@ -650,6 +666,59 @@ mod tests {
             *activity_rx.borrow_and_update(),
             InputQueueActivity::Mailbox
         );
+    }
+
+    #[tokio::test]
+    async fn mailbox_report_commit_removes_rejected_delivery_before_notification() {
+        let input_queue = InputQueue::new();
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending_activity, None);
+        activity_rx.borrow_and_update();
+        let mut rejected_mail = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "terminal report",
+            /*trigger_turn*/ true,
+        );
+        rejected_mail.id = Some(codex_protocol::ResponseItemId::with_suffix(
+            "amsg",
+            uuid::Uuid::now_v7(),
+        ));
+
+        assert!(
+            !input_queue
+                .enqueue_mailbox_communication_if(
+                    rejected_mail,
+                    Default::default(),
+                    || false,
+                )
+                .await
+        );
+        assert!(!input_queue.has_pending_mailbox_items().await);
+        assert!(!activity_rx.has_changed().expect("queue sender remains open"));
+
+        let mut accepted_mail = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "terminal report",
+            /*trigger_turn*/ true,
+        );
+        accepted_mail.id = Some(codex_protocol::ResponseItemId::with_suffix(
+            "amsg",
+            uuid::Uuid::now_v7(),
+        ));
+        assert!(
+            input_queue
+                .enqueue_mailbox_communication_if(
+                    accepted_mail,
+                    Default::default(),
+                    || true,
+                )
+                .await
+        );
+        assert_eq!(input_queue.trigger_turn_mailbox_count().await, 1);
+        assert!(activity_rx.has_changed().expect("queue sender remains open"));
     }
 
     #[tokio::test]

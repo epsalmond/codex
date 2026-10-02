@@ -21,13 +21,16 @@ impl Session {
         };
         if let Some(stream) = effects.transcript_stream {
             if let Some(item) = stream.started_item {
-                self.deliver_event_raw(event(RealtimeEvent::HistoryItemStarted(item)))
+                self.deliver_event_raw(event(RealtimeEvent::HistoryItemStarted(item)), None)
                     .await;
             }
-            self.deliver_event_raw(event(RealtimeEvent::HistoryTranscriptDelta {
-                item_id: stream.item_id,
-                delta: stream.delta,
-            }))
+            self.deliver_event_raw(
+                event(RealtimeEvent::HistoryTranscriptDelta {
+                    item_id: stream.item_id,
+                    delta: stream.delta,
+                }),
+                None,
+            )
             .await;
         }
         if effects.items.is_empty() {
@@ -45,10 +48,13 @@ impl Session {
             .await?;
         for item in effects.items {
             if !matches!(&item.content, RealtimeItemContent::TranscriptSegment { .. }) {
-                self.deliver_event_raw(event(RealtimeEvent::HistoryItemStarted(item.clone())))
-                    .await;
+                self.deliver_event_raw(
+                    event(RealtimeEvent::HistoryItemStarted(item.clone())),
+                    None,
+                )
+                .await;
             }
-            self.deliver_event_raw(event(RealtimeEvent::HistoryItemCompleted(item)))
+            self.deliver_event_raw(event(RealtimeEvent::HistoryItemCompleted(item)), None)
                 .await;
         }
         Ok(())
