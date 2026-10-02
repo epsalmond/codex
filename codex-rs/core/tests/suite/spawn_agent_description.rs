@@ -382,7 +382,8 @@ async fn multi_agent_v2_wait_guidance_uses_overridable_developer_instructions(
         wait_agent_tool
             .pointer("/parameters/properties/timeout_ms/description")
             .and_then(Value::as_str),
-        Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
+        // `test_codex` runs as an Exec session, which uses the non-interactive default.
+        Some("Timeout in milliseconds. Defaults to 300000, min 10000, max 3600000.")
     );
 
     Ok(())

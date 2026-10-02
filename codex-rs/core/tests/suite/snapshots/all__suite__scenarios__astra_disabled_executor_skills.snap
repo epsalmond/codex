@@ -16,7 +16,7 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=e33e09a2c1478914):
+00:additional_tools/developer (3; hash=a064899ea0d1456c):
         - namespace/functions; hash=99a630cff25563aa
           - custom/exec
           - function/wait
@@ -24,7 +24,7 @@ Settings:
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=b263e3c84ad07c37
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2b40903290d500bb
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -105,7 +105,7 @@ Settings:
     - All agents use the same current working directory.
     - As a result, edits made by one agent are immediately visible to all other agents.
 
-    When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.
+    When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.
 
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 

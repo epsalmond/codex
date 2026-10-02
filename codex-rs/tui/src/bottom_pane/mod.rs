@@ -1640,6 +1640,11 @@ impl BottomPane {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn wake_mode_hint_visible(&self) -> bool {
+        self.pending_input_preview.wake_mode_hint
+    }
+
     pub(crate) fn set_wake_mode_hint(&mut self, visible: bool) {
         if self.pending_input_preview.wake_mode_hint != visible {
             self.pending_input_preview.wake_mode_hint = visible;

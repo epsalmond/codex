@@ -2006,6 +2006,11 @@ impl ChatWidget {
             .map(crate::terminal_hyperlinks::visible_lines)
     }
 
+    #[cfg(test)]
+    pub(crate) fn wake_mode_hint_visible(&self) -> bool {
+        self.bottom_pane.wake_mode_hint_visible()
+    }
+
     /// Shows or hides the wake-mode explanation above the composer.
     pub(crate) fn set_wake_mode_hint(&mut self, visible: bool) {
         self.bottom_pane.set_wake_mode_hint(visible);
