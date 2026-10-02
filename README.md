@@ -71,27 +71,25 @@ official `codex`.
 - **Subagent context reduction** keeps each subagent under a context cap: a
   child shakes, then compacts, when it reaches the cap. See
   [subagents](codex-rs/docs/shake.md#subagents).
-- **Wake mode** delivers each child result to an interactive root as a new
-  turn. See [wake mode](#wake-mode-for-multi-agent-orchestrators).
+- **Wake mode** lets an agent wait for its subagents without polling: each
+  child report starts a new turn on its parent. This covers interactive roots
+  and MultiAgentV2 child agents at every depth; a `codex-shake exec` root
+  still polls its direct children. See
+  [wake mode](#wake-mode-for-multi-agent-orchestrators).
 
 For prompts that put these to work, see
 [Getting the most out of codex-shake](RELEASE_NOTES.md#getting-the-most-out-of-codex-shake).
 
-### Local statusline build
+### Statusline items
 
-This local fork carries two TUI-only status-line items: `weekly-reset` (an
-absolute local reset time) and `last-response-clock` (the latest successful
-live response in the current TUI session). `codex-update` updates the official
-npm install, fetches the matching `rust-v<version>` tag, rebases this branch
-onto that exact tag, and only then builds and atomically switches the local
-binary. It deliberately stops on a missing tag or rebase conflict.
-
-`codex` launches the managed local build; `codex-official` launches the npm
-installation directly as an escape hatch.
+codex-shake adds two TUI status-line items: `weekly-reset` (the local time
+your weekly usage window resets) and `last-response-clock` (when the latest
+live response in this session completed). Turn them on with `/statusline`, or
+list them in `tui.status_line` in `~/.codex/config.toml`.
 
 ### Identifying Shake feature support
 
-Run `codex --version` (or `codex-shake --version`) to see both the upstream
+Run `codex-shake --version` to see both the upstream
 Codex version and the Shake feature version and exact fork release tag. `-V`
 continues to show only the upstream Codex version. Binaries reporting Shake
 feature version `0.3.0` include event-driven wakeups for interactive CLI and
@@ -122,7 +120,7 @@ To keep polling throughout the agent tree, set:
 agent_polling = "enabled"
 ```
 
-or for a single run, `codex -c 'features.multi_agent_v2.agent_polling="enabled"'`.
+or for a single run, `codex-shake -c 'features.multi_agent_v2.agent_polling="enabled"'`.
 
 Esc pauses automatic wakeups and holds child results arriving at the root; the TUI
 shows "N child results queued — delivered with your next message". A child
@@ -252,9 +250,16 @@ Each archive contains a single entry with the platform baked into the name (e.g.
 
 ### Using Codex with your ChatGPT plan
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+Run `codex-shake` (or `codex` for the upstream CLI) and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
 You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+
+## Maintainer notes
+
+The maintainer's local build workflow (`codex-update`, `codex-official`, and a
+`codex` command that launches a local build) is described in
+[Maintainer-local build](./docs/maintainer-local-build.md). Using codex-shake
+requires none of it.
 
 ## Docs
 
