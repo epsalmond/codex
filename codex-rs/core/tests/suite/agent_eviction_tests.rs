@@ -110,6 +110,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         .with_config(|config| {
             config.features.enable(Feature::Collab).unwrap();
             config.features.enable(Feature::MultiAgentV2).unwrap();
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
         })
         .build_with_auto_env(&server)

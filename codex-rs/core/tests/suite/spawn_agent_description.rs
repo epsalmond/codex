@@ -433,10 +433,10 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
     let initial_request = initial_response.single_request();
     assert!(
         initial_request
-            .message_input_text_groups("developer")
+            .message_input_texts("developer")
             .iter()
-            .any(|group| { group.len() == 1 && group[0] == legacy_root_agent_usage_hint_text }),
-        "legacy usage hint should be its own developer message"
+            .any(|message| message.contains(legacy_root_agent_usage_hint_text)),
+        "legacy usage hint should remain visible in developer context"
     );
     assert!(
         !initial_request
@@ -706,7 +706,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
 #[test_case("enabled", false; "polling remains available without clock sleep")]
 #[test_case("enabled", true; "polling remains available with clock sleep")]
 #[test_case("disabled", false; "polling can be disabled without clock sleep")]
-#[test_case("disabled", true; "polling can be disabled with clock sleep")]
+#[test_case("disabled", true; "wake mode suppresses sleep")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_wait_agent_tool_follows_configuration(
     agent_polling: &str,
@@ -752,9 +752,10 @@ agent_polling = "{agent_polling}"
         namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_some(),
         agent_polling == "enabled"
     );
+    let expected_sleep_tool = sleep_tool_enabled && agent_polling == "enabled";
     assert_eq!(
         namespace_child_tool(&body, "clock", "sleep").is_some(),
-        sleep_tool_enabled
+        expected_sleep_tool
     );
     assert_eq!(
         request
