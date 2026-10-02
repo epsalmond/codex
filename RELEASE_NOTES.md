@@ -32,7 +32,7 @@ Ask for delegation, hand off long waits, and turn repeated work into scripts:
 
 - "Delegate the flaky-test investigation to a subagent and keep going; its result arrives as a new turn."
 - "Give each failing package to its own subagent and summarize their reports as they arrive."
-- "For CI or a long build, have a subagent run a script that waits for it to finish, then end your turn." In an interactive session, the subagent's report starts your next turn.
+- "For CI or a long build, have a subagent run a script that waits for it to finish, then end your turn." In an interactive session, the report starts the next turn.
 - When a sequence of commands repeats, ask for a script: "Turn these steps into a script and use it from now on."
 - Give each subagent one self-contained task and ask for a short report; it shakes and compacts within its own context budget.
 - Press Esc to steer while subagents run; their results are held and arrive with your next message.
