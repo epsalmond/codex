@@ -1,4 +1,5 @@
 use super::*;
+use crate::client::ModelClientSession;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesWsRequest;
@@ -285,6 +286,84 @@ fn websocket_budget_uses_the_actual_delta_and_does_not_mutate_logical_history() 
     assert_eq!(bounded_ordinary, ordinary);
     assert_eq!(request.input[1], self::request().input[0]);
     assert_eq!(bounded_input(&full, &bounded), None);
+}
+
+#[test]
+fn websocket_full_bound_must_reject_metadata_loss_inside_the_sealed_prefix() {
+    let mut request = request();
+    let mut old_output = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+        call_id: "sealed-large-output".to_string(),
+        output: FunctionCallOutputPayload::from_text("small visible output".to_string()),
+    });
+    let mut old_call = ExecutedToolCall::new("mcp__apps__read".to_string(), json!({}));
+    old_call.set_tool_result_metadata(ToolResultMetadata::new(&json!({
+        "large": "x".repeat(MAX_RESPONSE_MESSAGE_BYTES)
+    })));
+    old_output.append_executed_tool_calls(vec![old_call]);
+    old_output.mark_tool_calls_complete();
+    request.input.insert(0, old_output);
+    let delta = &request.input[1..];
+    let delta_message = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+        previous_response_id: Some("previous-response".to_string()),
+        input: delta,
+        ..ResponseCreateWsRequest::from(&request)
+    });
+    assert!(serialized_json_bytes(&delta_message).unwrap() < 32 * 1024);
+    assert_eq!(bounded_input(&delta_message, delta), None);
+
+    let full = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest::from(&request));
+    let ResponsesWsRequest::ResponseCreate(full_payload) = &full;
+    assert!(serialized_json_bytes(&full).unwrap() > MAX_RESPONSE_MESSAGE_BYTES);
+    let sealed_prefix = vec![request.input[0].clone()];
+    let request_check = crate::shake::request::ShakeRequestCheck {
+        history_state: codex_history::ShakeHistoryState {
+            epoch_id: "media-seal-1".to_string(),
+            watermark: 1,
+            sealed_prefix_digest: "0".repeat(40),
+        },
+        prefix_items: sealed_prefix,
+        base_instructions: request.instructions.clone(),
+        provider_id: "openai".to_string(),
+        input_modalities: Vec::new(),
+        use_responses_lite: false,
+    };
+    assert!(
+        crate::shake::request::shake_wire_prefix_matches(full_payload.input, Some(&request_check))
+            .unwrap()
+    );
+
+    let divergent_input = vec![ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+        call_id: "sealed-large-output".to_string(),
+        output: FunctionCallOutputPayload::from_text("small visible output".to_string()),
+    })];
+    assert!(
+        ModelClientSession::validate_ws_shake_wire_prefix(
+            &divergent_input,
+            Some(&request_check),
+            /*full_send*/ true,
+        )
+        .is_err()
+    );
+    assert!(
+        ModelClientSession::validate_ws_shake_wire_prefix(
+            &divergent_input,
+            Some(&request_check),
+            /*full_send*/ false,
+        )
+        .is_ok()
+    );
+
+    let bounded = bounded_input(&full, full_payload.input)
+        .expect("the full WebSocket message sheds its oversized tool metadata");
+    assert_ne!(bounded[0], request.input[0]);
+    assert!(
+        ModelClientSession::validate_ws_shake_wire_prefix(
+            &bounded,
+            Some(&request_check),
+            /*full_send*/ true,
+        )
+        .is_err()
+    );
 }
 
 #[test]

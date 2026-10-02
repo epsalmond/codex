@@ -385,6 +385,41 @@ async fn default_turn_context_assigns_missing_response_item_ids() {
     );
 }
 
+#[tokio::test]
+async fn rejected_shake_does_not_advance_the_auto_compact_window() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let history = vec![
+        ResponseItemEnvelope::new(user_message("sealed user")),
+        ResponseItemEnvelope::new(assistant_message("sealed answer")),
+    ];
+    assert!(
+        session
+            .replace_history_and_persist_after_shake(
+                history.clone(),
+                "initial shake".to_string(),
+                /*watermark_index*/ 1,
+            )
+            .await
+    );
+    let window_before_rejected_shake = session.current_window().await;
+
+    let rejected_history = vec![
+        ResponseItemEnvelope::new(user_message("changed sealed user")),
+        ResponseItemEnvelope::new(assistant_message("sealed answer")),
+    ];
+    assert!(
+        !session
+            .replace_history_and_persist_after_shake(
+                rejected_history,
+                "rejected shake".to_string(),
+                /*watermark_index*/ 1,
+            )
+            .await
+    );
+
+    assert_eq!(session.current_window().await, window_before_rejected_shake);
+}
+
 fn assistant_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -2307,6 +2342,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         window_id: Some(window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     })];
 
@@ -3245,6 +3281,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record,
+            shake_history_state: None,
             resume_metadata: None,
         })
     };
@@ -5700,6 +5737,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
                 window_ids,
                 compaction_response_id: None,
                 compaction_model_hash: None,
+                shake_watermark_index: None,
                 reviewer_compaction_hash: None,
             },
         ),
@@ -5833,6 +5871,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
                 window_ids,
                 compaction_response_id: None,
                 compaction_model_hash: None,
+                shake_watermark_index: None,
                 reviewer_compaction_hash: None,
             },
         )
@@ -5964,6 +6003,7 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
                     window_ids,
                     compaction_response_id: None,
                     compaction_model_hash: None,
+                    shake_watermark_index: None,
                     reviewer_compaction_hash: None,
                 },
             )
@@ -12908,6 +12948,7 @@ async fn sample_rollout(
         window_id: Some(window_ids.window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     }));
 
@@ -12943,6 +12984,7 @@ async fn sample_rollout(
         window_id: Some(window_ids.window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        shake_history_state: None,
         resume_metadata: None,
     }));
 

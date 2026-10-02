@@ -82,6 +82,7 @@ pub(crate) struct CompactedHistoryMetadata {
     pub(crate) compaction_response_id: Option<String>,
     pub(crate) compaction_model_hash: Option<String>,
     pub(crate) reviewer_compaction_hash: Option<String>,
+    pub(crate) shake_watermark_index: Option<usize>,
 }
 
 pub(crate) async fn build_compaction_initial_context(
@@ -255,6 +256,12 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    if !history.shake_history_state_is_valid() {
+        return Err(CodexErr::Stream(
+            "Shake sealed history state is invalid; refusing to dispatch a compaction request"
+                .to_string(),
+        ));
+    }
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info().truncation_policy.into(),
@@ -386,6 +393,7 @@ async fn run_compact_task_inner_impl(
             window_ids,
             compaction_response_id: Some(compaction_response.response_id),
             compaction_model_hash: turn_context.model_info().comp_hash.clone(),
+            shake_watermark_index: None,
             reviewer_compaction_hash: None,
         },
     )

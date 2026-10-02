@@ -34,10 +34,13 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 
 pub(crate) mod auto;
+mod elide;
 pub(crate) mod preview;
 pub(crate) mod protection;
 mod recovery;
-use self::protection::protected_output_flags;
+pub(crate) mod request;
+pub(crate) mod watermark;
+pub(crate) use self::elide::shake_elide_watermarked;
 use self::recovery::is_artifact_recovery_output;
 use self::recovery::recovery_placeholder;
 
@@ -523,105 +526,14 @@ pub(crate) fn shake_thinking(items: &mut Vec<ResponseItemEnvelope>) -> ShakeResu
 ///
 /// Outputs of the tools in [`protection::PROTECTED_TOOLS`] are skipped on both
 /// paths, however large or old they are.
-pub(crate) fn shake_elide_with_recovery(
+#[cfg(test)]
+fn shake_elide_with_recovery(
     items: &mut [ResponseItemEnvelope],
     protect_tokens: usize,
     save: &mut dyn FnMut(&str, &str) -> Option<String>,
 ) -> ShakeResult {
-    let mut result = ShakeResult::default();
-    if items.is_empty() {
-        return result;
-    }
-
-    // Tokens of all envelopes strictly more recent than index i.
-    let mut accumulated_after = vec![0usize; items.len()];
-    let mut acc = 0usize;
-    for i in (0..items.len()).rev() {
-        accumulated_after[i] = acc;
-        acc += envelope_tokens(&items[i]);
-    }
-
-    // Tool-identity protection, resolved in a read-only pass because it has to
-    // pair each output with its `call_id`'s tool call.
-    let protected_output = protected_output_flags(items);
-
-    let mut block_regions: Vec<BlockRegion> = Vec::new();
-
-    for (i, envelope) in items.iter_mut().enumerate() {
-        if accumulated_after[i] < protect_tokens {
-            continue;
-        }
-        if protected_output[i] {
-            continue;
-        }
-        match &mut envelope.item {
-            ResponseItem::FunctionCallOutput { output, .. }
-            | ResponseItem::CustomToolCallOutput { output, .. } => {
-                let Some((original, tokens)) = tool_output_text(output) else {
-                    continue;
-                };
-                if tokens < FENCE_MIN_TOKENS || is_artifact_recovery_output(&original) {
-                    continue;
-                }
-                let Some(placeholder) =
-                    recovery_placeholder(save, &original, tokens, "tool output")
-                else {
-                    continue;
-                };
-                let freed = elide_tool_output(output, &placeholder);
-                result.tool_outputs_elided += 1;
-                result.tokens_freed += freed as i64;
-            }
-            ResponseItem::Message { role, content, .. } => {
-                for (content_index, part) in content.iter().enumerate() {
-                    if let ContentItem::InputText { text } | ContentItem::OutputText { text } = part
-                    {
-                        push_block_regions(i, content_index, text, role, &mut block_regions);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Apply block regions inside-out (highest byte-offset start first) so
-    // splicing one region never shifts the byte offsets of another in the same
-    // text block.
-    block_regions.sort_by(|a, b| {
-        (b.message_index, b.content_index, b.start).cmp(&(
-            a.message_index,
-            a.content_index,
-            a.start,
-        ))
-    });
-    for region in &block_regions {
-        let Some(envelope) = items.get_mut(region.message_index) else {
-            continue;
-        };
-        let ResponseItem::Message { content, .. } = &mut envelope.item else {
-            continue;
-        };
-        let Some(ContentItem::InputText { text } | ContentItem::OutputText { text }) =
-            content.get_mut(region.content_index)
-        else {
-            continue;
-        };
-        let original = &text[region.start..region.end];
-        let Some(placeholder) = recovery_placeholder(
-            save,
-            original,
-            region.tokens,
-            &format!("{} block", region.label),
-        ) else {
-            continue;
-        };
-        text.replace_range(region.start..region.end, &placeholder);
-        result.blocks_elided += 1;
-        result.tokens_freed += region
-            .tokens
-            .saturating_sub(approx_token_count(&placeholder)) as i64;
-    }
-
+    let end = items.len();
+    let (result, _) = shake_elide_watermarked(items, 0, end, protect_tokens, save);
     result
 }
 

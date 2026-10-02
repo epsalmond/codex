@@ -674,6 +674,7 @@ mod tests {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
+            shake_history_state: None,
             resume_metadata: None,
         });
 

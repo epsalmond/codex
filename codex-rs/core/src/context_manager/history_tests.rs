@@ -1814,6 +1814,122 @@ fn drop_last_n_user_turns_trims_context_updates_above_rolled_back_turn() {
 }
 
 #[test]
+fn shake_watermark_survives_rollbacks_after_its_boundary_and_rebases_before_it() {
+    let initial_items = vec![
+        assistant_msg("session prefix"),
+        user_input_text_msg("turn one"),
+        assistant_msg("answer one"),
+        user_input_text_msg("turn two"),
+        assistant_msg("answer two"),
+    ];
+    let mut history = create_history_with_items(initial_items.clone());
+    let unchanged_items = history.annotated_items().to_vec();
+    history
+        .replace_shaken(unchanged_items, /*watermark_index*/ 1)
+        .expect("initial shake preserves the empty seal");
+    let sealed_state = history.shake_history_state().clone();
+    history.drop_last_n_user_turns(/*num_turns*/ 1);
+    assert_eq!(history.shake_history_state(), &sealed_state);
+    assert!(watermark::matches_history(
+        history.shake_history_state(),
+        history.annotated_items()
+    ));
+
+    let mut history = create_history_with_items(initial_items);
+    let unchanged_items = history.annotated_items().to_vec();
+    history
+        .replace_shaken(unchanged_items, /*watermark_index*/ 3)
+        .expect("initial shake preserves the empty seal");
+    let prior_epoch = history.shake_history_state().epoch_id.clone();
+    history.drop_last_n_user_turns(/*num_turns*/ 2);
+    assert_eq!(history.shake_history_state().watermark, 0);
+    assert_ne!(history.shake_history_state().epoch_id, prior_epoch);
+
+    let prior_epoch = history.shake_history_state().epoch_id.clone();
+    let unchanged_items = history.annotated_items().to_vec();
+    history.replace_compacted(unchanged_items, /*reviewer_compaction_hash*/ None);
+    assert_eq!(history.shake_history_state().watermark, 0);
+    assert_ne!(history.shake_history_state().epoch_id, prior_epoch);
+}
+
+#[test]
+fn unsealed_replay_epoch_is_stable_and_live_activation_mints_unique_epochs() {
+    let mut first_replay = ContextManager::new();
+    first_replay.restore_shake_history_state(None);
+    let mut second_replay = ContextManager::new();
+    second_replay.restore_shake_history_state(None);
+
+    assert_eq!(
+        first_replay.shake_history_state(),
+        second_replay.shake_history_state()
+    );
+    assert_eq!(
+        first_replay.shake_history_state().epoch_id,
+        watermark::UNSEALED_REPLAY_EPOCH_ID
+    );
+
+    first_replay.activate_reconstructed_shake_history_state();
+    second_replay.activate_reconstructed_shake_history_state();
+    assert_ne!(
+        first_replay.shake_history_state().epoch_id,
+        second_replay.shake_history_state().epoch_id
+    );
+    assert_eq!(first_replay.shake_history_state().watermark, 0);
+    assert_eq!(second_replay.shake_history_state().watermark, 0);
+}
+
+#[test]
+fn shake_replacement_rejects_drift_inside_the_sealed_prefix() {
+    let initial_items = vec![
+        user_input_text_msg("sealed user"),
+        assistant_msg("sealed answer"),
+        user_input_text_msg("mutable tail"),
+    ];
+    let mut history = create_history_with_items(initial_items);
+    let unchanged_items = history.annotated_items().to_vec();
+    history
+        .replace_shaken(unchanged_items, /*watermark_index*/ 2)
+        .expect("first shake seals the requested prefix");
+    let before_items = history.annotated_items().to_vec();
+    let before_state = history.shake_history_state().clone();
+
+    let mut changed_items = before_items.clone();
+    changed_items[0] = ResponseItemEnvelope::new(user_input_text_msg("changed sealed user"));
+    assert!(
+        history
+            .replace_shaken(changed_items, /*watermark_index*/ 3)
+            .is_err()
+    );
+    assert_eq!(history.annotated_items(), before_items);
+    assert_eq!(history.shake_history_state(), &before_state);
+}
+
+#[test]
+fn invalid_restored_shake_seal_stays_invalid_until_explicit_compaction() {
+    let items = vec![user_input_text_msg("sealed user"), assistant_msg("answer")];
+    let mut history = create_history_with_items(items.clone());
+    history.restore_shake_history_state(Some(&codex_history::ShakeHistoryState {
+        epoch_id: "persisted-epoch".to_string(),
+        watermark: 1,
+        sealed_prefix_digest: "0".repeat(40),
+    }));
+    assert!(!history.shake_history_state_is_valid());
+    assert!(
+        history
+            .for_prompt_prefix(/*watermark*/ 1, &default_input_modalities())
+            .is_none()
+    );
+
+    history.replace_annotated(items.into_iter().map(ResponseItemEnvelope::new).collect());
+    assert!(!history.shake_history_state_is_valid());
+
+    let compacted_items = history.annotated_items().to_vec();
+    history.replace_compacted(compacted_items, /*reviewer_compaction_hash*/ None);
+    assert!(history.shake_history_state_is_valid());
+    assert_eq!(history.shake_history_state().watermark, 0);
+}
+
+#[test]
 fn drop_last_n_user_turns_preserves_annotations_for_surviving_developer_fragments() {
     let turn_id = "rolled-back-turn";
     let model_switch = ModelSwitchInstructions::new("switched model instructions").render();

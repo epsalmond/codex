@@ -262,6 +262,8 @@ pub(super) struct CompactedItemWire<'a> {
     #[serde(default)]
     latest_token_usage_record: Option<Cow<'a, TokenUsageRecord>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    shake_history_state: Option<Cow<'a, crate::ShakeHistoryState>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     resume_metadata: Option<Cow<'a, crate::CompactionResumeMetadata>>,
 }
 
@@ -302,6 +304,7 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
                 .map(|window_id| WindowIdWire::Id(Cow::Borrowed(window_id))),
             compaction_response_id: item.compaction_response_id.as_deref().map(Cow::Borrowed),
             latest_token_usage_record: item.latest_token_usage_record.as_ref().map(Cow::Borrowed),
+            shake_history_state: item.shake_history_state.as_ref().map(Cow::Borrowed),
             resume_metadata: item.resume_metadata.as_ref().map(Cow::Borrowed),
         }
     }
@@ -311,7 +314,7 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
     type Error = String;
 
     fn try_from(item: CompactedItemWire<'_>) -> Result<Self, Self::Error> {
-        let replacement_history = match (
+        let replacement_history: Option<Vec<ResponseItemEnvelope>> = match (
             item.replacement_history,
             item.replacement_history_metadata,
         ) {
@@ -346,6 +349,35 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
             (None, None) => None,
         };
 
+        let shake_history_state = item.shake_history_state.map(Cow::into_owned);
+        if let Some(state) = &shake_history_state {
+            let Some(replacement_history) = replacement_history.as_ref() else {
+                return Err("shake_history_state requires replacement_history".to_string());
+            };
+            let history_len = u64::try_from(replacement_history.len())
+                .map_err(|_| "replacement_history is too long for shake_history_state")?;
+            if state.watermark > history_len {
+                return Err(format!(
+                    "shake_history_state watermark {} exceeds replacement_history length {history_len}",
+                    state.watermark
+                ));
+            }
+            if state.epoch_id.is_empty() || state.epoch_id.len() > 64 {
+                return Err("shake_history_state epoch_id must contain 1 to 64 bytes".to_string());
+            }
+            if state.sealed_prefix_digest.len() != 40
+                || !state
+                    .sealed_prefix_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(
+                    "shake_history_state sealed_prefix_digest must be a SHA-1 hex digest"
+                        .to_string(),
+                );
+            }
+        }
+
         let mut window_number = item.window_number;
         let window_id = match item.window_id {
             Some(WindowIdWire::Id(window_id)) => Some(window_id.into_owned()),
@@ -368,6 +400,7 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
             window_id,
             compaction_response_id: item.compaction_response_id.map(Cow::into_owned),
             latest_token_usage_record: item.latest_token_usage_record.map(Cow::into_owned),
+            shake_history_state,
             resume_metadata: item.resume_metadata.map(Cow::into_owned),
         })
     }

@@ -184,10 +184,14 @@ impl SessionState {
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
     ) {
-        self.replace_annotated_history(
-            items.into_iter().map(ResponseItemEnvelope::new).collect(),
-            reference_context_item,
-            HistoryReplacement::Reset,
+        assert!(
+            self.replace_annotated_history(
+                items.into_iter().map(ResponseItemEnvelope::new).collect(),
+                reference_context_item,
+                HistoryReplacement::Reset,
+            )
+            .is_ok(),
+            "reset history replacement is infallible"
         );
     }
 
@@ -196,15 +200,19 @@ impl SessionState {
         items: Vec<ResponseItemEnvelope>,
         reference_context_item: Option<TurnContextItem>,
         replacement: HistoryReplacement,
-    ) {
+    ) -> Result<(), &'static str> {
         let invalidate_reviews = match replacement {
             HistoryReplacement::Compaction {
                 reviewer_compaction_hash,
             } => self
                 .history
                 .replace_compacted(items, reviewer_compaction_hash.as_deref()),
+            HistoryReplacement::Shake { watermark_index } => {
+                self.history.replace_shaken(items, watermark_index)?
+            }
             HistoryReplacement::Reset => {
                 self.history.replace_annotated(items);
+                self.history.reset_shake_history_state();
                 true
             }
         };
@@ -214,6 +222,7 @@ impl SessionState {
         self.history
             .set_reference_context_item(reference_context_item);
         self.auto_compact_window.clear_prefill();
+        Ok(())
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
