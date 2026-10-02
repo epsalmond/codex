@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/guardian.rs
-assertion_line: 210
 expression: popup
 ---
   Auto-review Denials

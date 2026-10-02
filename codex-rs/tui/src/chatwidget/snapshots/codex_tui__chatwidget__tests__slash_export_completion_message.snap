@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/slash_commands.rs
-assertion_line: 2193
 expression: "cells.iter().map(|cell|\nlines_to_single_string(cell).trim().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
 Worked for [duration] • [completion time]

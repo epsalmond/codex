@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/exec_flow.rs
-assertion_line: 1068
 expression: combined
 ---
 • Waited for background terminal · cargo test -p codex-core

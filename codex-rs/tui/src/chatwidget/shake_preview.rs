@@ -215,7 +215,10 @@ impl ChatWidget {
             }
             payback
         } else {
-            advice.push("Compact headroom unavailable; conversation counts alone cannot establish it.".to_string());
+            advice.push(
+                "Compact headroom unavailable; conversation counts alone cannot establish it."
+                    .to_string(),
+            );
             "Payback unavailable until a model request reports full-request usage.".to_string()
         };
         advice

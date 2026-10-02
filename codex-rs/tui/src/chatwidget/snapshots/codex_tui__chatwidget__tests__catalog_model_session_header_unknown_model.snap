@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/app_server.rs
-assertion_line: 99
 expression: rendered
 ---
 OpenAI Codex (v<VERSION>)

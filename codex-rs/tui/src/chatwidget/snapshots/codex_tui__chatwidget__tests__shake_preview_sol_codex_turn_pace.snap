@@ -1,17 +1,17 @@
 ---
 source: tui/src/chatwidget/tests/shake_preview_tests.rs
-expression: "render_bottom_popup(&chat, 90)"
+expression: rendered
 ---
   Shake (elide): frees ~100k of 280k (36%), 24 tool outputs + 8 text blocks recoverable.
-  Pays back after ~18 requests.
+  Pays back after ~5 requests ≈ 2 turns at this session's pace.
 
   Recent ~4k tokens stay protected.
-  Idle: 45m since last response. Cache expiry is not observed.
+  Idle: 0m since last response. Cache expiry is not observed.
   Request estimate: 300,000 → 200,000 (latest context minus reduction; overhead may
   differ).
-  Codex: Astra has no >272k surcharge.
-  Cold cache: next input ~33% cheaper.
-  Warm cache, full invalidation: next input ~567% more.
+  Codex: May leave >272k tier (2x input, 1.5x output); ~72,000 tokens margin.
+  Cold cache: next input ~67% cheaper.
+  Warm cache, full invalidation: next input ~233% more.
   Assumes standard rates, fixed sizes and subsequent cache hits.
   Configured compact budget: 290,000. Estimated headroom 0 → 90,000 tokens (model may
   compact earlier).

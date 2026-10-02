@@ -65,10 +65,7 @@ fn large_reduction_can_pay_back_on_first_warm_request() {
 fn turns_clause_is_omitted_without_turn_pace_history() {
     let pace = RequestPace::default();
     assert_eq!(pace.turns_for(/*requests*/ 5), None);
-    assert_eq!(
-        payback_line(Some(5), &pace),
-        "Pays back after ~5 requests."
-    );
+    assert_eq!(payback_line(Some(5), &pace), "Pays back after ~5 requests.");
 }
 
 #[test]
@@ -93,7 +90,10 @@ fn turn_pace_converts_requests_to_turns() {
         payback_line(Some(2), &pace),
         "Pays back after ~2 requests ≈ 1 turn at this session's pace."
     );
-    assert_eq!(payback_line(Some(1), &pace), "Pays back on the first request.");
+    assert_eq!(
+        payback_line(Some(1), &pace),
+        "Pays back on the first request."
+    );
     assert_eq!(
         payback_line(/*break_even*/ None, &pace),
         "No payback at unchanged sizes."

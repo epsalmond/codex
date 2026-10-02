@@ -1174,6 +1174,9 @@ async fn shake_notice_releases_input_gate() {
 async fn auto_shake_success_renders_as_info_without_marker() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
+    // Auto-shake runs at a turn's pre-sampling point, after startup completes.
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
     for message in [
         "⛭ shake (auto): Shook 24 tool outputs (~100000 tokens freed).",
         "⛭ shake (auto, cold resume): Shook 3 tool outputs (~9000 tokens freed).",
