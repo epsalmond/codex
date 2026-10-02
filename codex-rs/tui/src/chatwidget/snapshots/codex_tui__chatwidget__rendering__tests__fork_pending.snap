@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/rendering_tests.rs
+assertion_line: 281
 expression: "rows.join(\"\\n\")"
 ---
 
