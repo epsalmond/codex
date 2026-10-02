@@ -10,6 +10,8 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
 use tokio::sync::oneshot;
 
+type StreamingSseMatcher = dyn Fn(&str, &[u8]) -> Option<usize> + Send + Sync;
+
 /// Streaming SSE chunk payload gated by a per-chunk signal.
 #[derive(Debug)]
 pub struct StreamingSseChunk {
@@ -94,7 +96,7 @@ where
     }
 
     let state = Arc::new(TokioMutex::new(StreamingSseState { response_routes }));
-    let matcher: Arc<dyn Fn(&str, &[u8]) -> Option<usize> + Send + Sync> = Arc::new(matcher);
+    let matcher: Arc<StreamingSseMatcher> = Arc::new(matcher);
     let requests = Arc::new(TokioMutex::new(Vec::new()));
     let request_notify = Arc::new(Notify::new());
     let requests_for_task = Arc::clone(&requests);
