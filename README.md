@@ -11,59 +11,71 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
-### Installing and running Codex CLI
+This fork ships Codex CLI as `codex-shake`, installed beside the official
+`codex`. Fork builds cover Apple Silicon macOS and x86_64 Linux; for other
+platforms, use [upstream Codex CLI](#installing-upstream-codex-cli).
 
-Run the following on Mac or Linux to install Codex CLI:
+### Installing codex-shake
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+Install or update to the latest fork release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
+The script installs releases under `~/.local/share/codex-shake` and adds
+`codex-shake` and `codex-shake-update` to `~/.local/bin`. Homebrew is also
+available:
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```sh
+brew install epsalmond/codex-shake/codex-shake
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+On Debian or Ubuntu x86_64, download the latest `.deb` from the
+[GitHub releases](https://github.com/epsalmond/codex/releases) and install it
+with `sudo dpkg -i ./codex-shake_<version>_amd64.deb`.
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
+To update, run `codex-shake-update` (script install),
+`brew upgrade epsalmond/codex-shake/codex-shake` (Homebrew), or install the
+newest `.deb`. The [fork release notes](https://github.com/epsalmond/codex/releases)
+list the changes in each build.
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
+Run `codex-shake` and sign in as described in
+[Using Codex with your ChatGPT plan](#using-codex-with-your-chatgpt-plan).
+`codex-shake` shares `~/.codex` (config, sign-in, and sessions) with the
+official `codex`.
 
-Codex CLI can also be installed via the following package managers:
+### What codex-shake does by default
 
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
+- **Auto-shake** frees context before compaction is needed. When a session
+  reaches its model's threshold, or resumes after the prompt cache has
+  expired, it replaces older tool outputs with short placeholders, without
+  asking a model to summarize. Each removed output is saved under
+  `~/.codex/artifacts/<thread-id>/`, and its placeholder names that file so
+  the model can search it. To turn auto-shake off for every model, add this to
+  `~/.codex/config.toml`:
 
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
+  ```toml
+  [auto_shake]
+  threshold = "off"
 
-Then simply run `codex` to get started.
+  [auto_shake.models."gpt-5.6"]
+  threshold = "inherit"
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+  [auto_shake.models."gpt-6-astra"]
+  threshold = "inherit"
+  ```
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+  See [Shake](codex-rs/docs/shake.md#auto-shake) for triggers, per-model
+  thresholds, and manual `/shake`.
+- **Subagent context reduction** gives each subagent its own context budget;
+  a child shakes, then compacts, when it reaches the cap. See
+  [subagents](codex-rs/docs/shake.md#subagents).
+- **Wake mode** delivers each child result to an interactive root as a new
+  turn. See [wake mode](#wake-mode-for-multi-agent-orchestrators).
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
+For prompts that put these to work, see
+[Getting the most out of codex-shake](RELEASE_NOTES.md#getting-the-most-out-of-codex-shake).
 
 ### Local statusline build
 
@@ -76,33 +88,6 @@ binary. It deliberately stops on a missing tag or rebase conflict.
 
 `codex` launches the managed local build; `codex-official` launches the npm
 installation directly as an escape hatch.
-
-Fork test builds are published as `codex-shake` beside the official `codex`.
-See [Installing codex-shake](#installing-codex-shake) for install and update
-commands, and the [fork release notes](https://github.com/epsalmond/codex/releases)
-for changes in each build.
-
-### Installing codex-shake
-
-Install the latest fork build on macOS or Linux with:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
-```
-
-Homebrew is also available on macOS and Linux x86_64:
-
-```sh
-brew install epsalmond/codex-shake/codex-shake
-```
-
-Debian and Ubuntu x86_64 users can download the latest `.deb` from the
-[GitHub releases](https://github.com/epsalmond/codex/releases) and install it
-with `sudo dpkg -i ./codex-shake_<version>_amd64.deb`. The script installer
-adds `codex-shake` and `codex-shake-update` alongside the official `codex`.
-Run `codex-shake-update` to install a newer fork release. Homebrew users can
-run `brew upgrade epsalmond/codex-shake/codex-shake`. Debian and Ubuntu users
-can download and reinstall the newest `.deb`.
 
 ### Identifying Shake feature support
 
@@ -122,8 +107,8 @@ recognize the `agent_polling` string setting.
 
 ### Wake mode for multi-agent orchestrators
 
-In wake mode, an interactive MultiAgentV2 root sleeps until a child subagent
-reports back instead of polling `wait_agent` in a loop. MultiAgentV2 is enabled
+Wake mode lets an orchestrator delegate work and spend no requests while it
+waits: each child report starts a new turn on its parent. MultiAgentV2 is enabled
 by default, and `agent_polling` defaults to `"disabled"`, so interactive CLI
 and app-server roots use wake mode without extra configuration. A V2 child
 created with `ThreadSpawn` also wakes when its own children report, at any
@@ -208,6 +193,62 @@ independent of the parent's ChatGPT login. See the
 rules and current limitations.
 A provider-switching role cannot fork the parent's history; spawn it with
 `fork_turns = "none"` (the default).
+
+### Installing upstream Codex CLI
+
+The official OpenAI release installs as `codex`.
+
+Run the following on Mac or Linux to install Codex CLI:
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
+
+Run the following on Windows to install Codex CLI:
+
+```shell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```
+
+The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+```
+
+```powershell
+$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+```
+
+Codex CLI can also be installed via the following package managers:
+
+```shell
+# Install using npm
+npm install -g @openai/codex
+```
+
+```shell
+# Install using Homebrew
+brew install --cask codex
+```
+
+Then simply run `codex` to get started.
+
+<details>
+<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
+
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+
+Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+
+</details>
 
 ### Using Codex with your ChatGPT plan
 
