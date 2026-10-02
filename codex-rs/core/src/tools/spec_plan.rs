@@ -81,6 +81,8 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
@@ -678,8 +680,15 @@ fn collab_tools_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> b
             turn_context.config.agent_max_depth,
         ),
         MultiAgentVersion::V2 => {
+            // Wake-enabled V2 trees must allow a ThreadSpawn child to delegate at any depth,
+            // even when the model catalog only marks the root as V2-capable.
             turn_context.session_source.get_agent_path().is_none()
                 || model_info.multi_agent_version == Some(MultiAgentVersion::V2)
+                || (turn_context.wake_mode_active
+                    && matches!(
+                        turn_context.session_source,
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                    ))
         }
     }
 }
@@ -727,9 +736,13 @@ fn required_child_management_tool_names(
 }
 
 fn child_report_mode(turn_context: &TurnContext) -> ChildReportMode {
+    if turn_context.multi_agent_version != MultiAgentVersion::V2 {
+        return ChildReportMode::WaitAgent;
+    }
     ChildReportMode::for_thread(
         &turn_context.config.multi_agent_v2,
         &turn_context.session_source,
+        turn_context.wake_mode_active,
     )
 }
 
@@ -1241,6 +1254,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(CurrentTimeHandler);
     }
     if features.enabled(Feature::SleepTool)
+        && child_report_mode(turn_context) == ChildReportMode::WaitAgent
         && match turn_context.config.sleep_tool_mode {
             SleepToolMode::AlwaysOn => true,
             SleepToolMode::ModelDriven => {
