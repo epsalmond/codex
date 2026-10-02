@@ -2938,6 +2938,8 @@ async fn multi_agent_v2_can_disable_wait_agent() {
 #[tokio::test]
 async fn v1_child_keeps_polling_tools_under_a_wake_enabled_v2_runtime() {
     let plan = probe(|turn| {
+        set_feature(turn, Feature::Collab, /*enabled*/ true);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
         set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
         turn.multi_agent_version = MultiAgentVersion::V1;
         turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -2953,11 +2955,23 @@ async fn v1_child_keeps_polling_tools_under_a_wake_enabled_v2_runtime() {
                 sleep_tool: true,
                 ..CurrentTimeReminderConfig::default()
             });
+            config.agent_max_depth = 2;
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
         });
     })
     .await;
 
+    assert_eq!(
+        plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
+    plan.assert_visible_lacks(&[MULTI_AGENT_V2_NAMESPACE]);
     assert!(
         plan.namespace_function_names("clock")
             .iter()

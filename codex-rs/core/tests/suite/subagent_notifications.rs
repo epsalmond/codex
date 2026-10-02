@@ -1896,13 +1896,18 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
         FullHistoryV2ModelSelection::MultiAgentModeTransitions
     ) {
         assert!(child_request.has_content_kinds(&["multi_agent.role_instructions"]));
-        assert_eq!(
-            child_developer_messages
-                .iter()
-                .filter(|message| message.contains(&format!("{expected_model} subagent role.")))
-                .count(),
-            1
-        );
+        let retained_role_messages = child_developer_messages
+            .iter()
+            .filter(|message| message.contains(&format!("{expected_model} subagent role.")))
+            .collect::<Vec<_>>();
+        // A full-history fork keeps the parent's polling instructions and appends the
+        // current child's wake-mode instructions. Both fragments are needed: the latter
+        // is the mode delta for this assignment, not a duplicate to remove from history.
+        assert_eq!(retained_role_messages.len(), 2);
+        assert!(retained_role_messages[0]
+            .contains("When calling `wait_agent`, prefer longer waits"));
+        assert!(retained_role_messages[1]
+            .contains("When delegated work remains and you have no independent task"));
     }
     assert!(!child_developer_messages.iter().any(|message| {
         message.contains(&format!("{INHERITED_MODEL} root role."))
@@ -1950,8 +1955,16 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
                     .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
                     .count(),
             ),
-            (1, 1, 0, 1)
+            (1, 1, 0, 2)
         );
+        let shared_hint_messages = child_developer_messages
+            .iter()
+            .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
+            .collect::<Vec<_>>();
+        assert_eq!(shared_hint_messages.len(), 2);
+        assert_eq!(shared_hint_messages[0].as_str(), FULL_HISTORY_SHARED_USAGE_HINT);
+        assert!(shared_hint_messages[1]
+            .contains("When delegated work remains and you have no independent task"));
     }
     if matches!(selection, FullHistoryV2ModelSelection::CurrentTimeReminders) {
         let notice_count = |request: &ResponsesRequest, marker: &str| {
@@ -2315,8 +2328,8 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 
 #[test_case(None, false; "encrypted")]
 #[test_case(None, true; "plaintext")]
-#[test_case(Some("gpt-5.6-luna"), false; "luna encrypted leaf")]
-#[test_case(Some("gpt-5.5"), false; "legacy encrypted leaf")]
+#[test_case(Some("gpt-5.6-luna"), false; "luna encrypted child")]
+#[test_case(Some("gpt-5.5"), false; "legacy encrypted child")]
 #[tokio::test]
 async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     model: Option<&str>,
@@ -2469,12 +2482,32 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     );
     if let Some(model) = model {
         assert_eq!(child_request.body_json()["model"], json!(model));
+        let body = child_request.body_json();
+        let mut catalog = body["tools"].as_array().cloned().unwrap_or_default();
+        catalog.extend(
+            child_request
+                .input()
+                .into_iter()
+                .filter_map(|item| item["tools"].as_array().cloned())
+                .flatten(),
+        );
+        let catalog_request = json!({ "tools": catalog });
+        for tool_name in [
+            "spawn_agent",
+            "send_message",
+            "followup_task",
+            "interrupt_agent",
+            "list_agents",
+        ] {
+            assert!(
+                namespace_child_tool(&catalog_request, MULTI_AGENT_V2_NAMESPACE, tool_name)
+                    .is_some(),
+                "V2 wake-mode child should receive collaboration tool {tool_name}"
+            );
+        }
         assert!(
-            !child_request
-                .body_json()
-                .to_string()
-                .contains("\"name\":\"collaboration\""),
-            "leaf workers must not receive collaboration tools",
+            namespace_child_tool(&catalog_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_none(),
+            "V2 wake-mode child should resume automatically instead of polling"
         );
     }
     if plaintext {
