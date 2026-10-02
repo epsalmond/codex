@@ -2,6 +2,7 @@ use super::step_settings::ResolvedStepSettings;
 use super::token_budget::has_explicit_settings;
 use super::token_budget::resolve_token_budget;
 use super::*;
+use crate::agent::control::AgentAssignmentId;
 use crate::config::TokenBudgetConfig;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -304,6 +305,12 @@ pub(crate) struct NewTurnContextOptions {
 #[derive(Debug)]
 pub struct TurnContext {
     pub(crate) sub_id: String,
+    /// The root-owned assignment generation captured when this turn starts.
+    pub(crate) agent_assignment: std::sync::OnceLock<AgentAssignmentId>,
+    /// A successful turn with unresolved descendants is still an unfinished assignment.
+    pub(crate) agent_assignment_waiting: std::sync::OnceLock<bool>,
+    /// Whether this local agent tree enables event-driven child report delivery.
+    pub(crate) wake_mode_active: bool,
     pub(crate) trace_id: Option<String>,
     /// Call state at turn creation; model requests use the `StepContext` snapshot.
     pub(crate) realtime_active: bool,
@@ -679,9 +686,20 @@ impl TurnContext {
         ));
         config.service_tier = step_settings.service_tier.clone();
         let session_telemetry = step_settings.telemetry(&self.session_telemetry);
+        let agent_assignment = std::sync::OnceLock::new();
+        if let Some(assignment) = self.agent_assignment.get() {
+            let _ = agent_assignment.set(assignment.clone());
+        }
+        let agent_assignment_waiting = std::sync::OnceLock::new();
+        if let Some(waiting) = self.agent_assignment_waiting.get() {
+            let _ = agent_assignment_waiting.set(*waiting);
+        }
 
         Self {
             sub_id: self.sub_id.clone(),
+            agent_assignment,
+            agent_assignment_waiting,
+            wake_mode_active: self.wake_mode_active,
             trace_id: self.trace_id.clone(),
             realtime_active: self.realtime_active,
             code_mode_available: self.code_mode_available,
@@ -1001,6 +1019,9 @@ impl Session {
         extension_data.insert(skills_snapshot);
         TurnContext {
             sub_id,
+            agent_assignment: std::sync::OnceLock::new(),
+            agent_assignment_waiting: std::sync::OnceLock::new(),
+            wake_mode_active: false,
             trace_id: current_span_trace_id(),
             realtime_active: false,
             code_mode_available: true,
@@ -1262,6 +1283,7 @@ impl Session {
             sub_id,
             skills_snapshot,
         );
+        turn_context.wake_mode_active = self.services.local_agent_runtime.wake_mode_enabled();
         turn_context.code_mode_available = self.services.code_mode_service.is_available();
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.active_host_plugin_identities = Some(
