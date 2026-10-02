@@ -328,6 +328,10 @@ impl ChatWidget {
         self.bottom_pane.selected_index_for_active_view(view_id)
     }
 
+    pub(crate) fn active_view_id(&self) -> Option<&'static str> {
+        self.bottom_pane.active_view_id()
+    }
+
     pub(crate) fn replace_selection_view_if_present(
         &mut self,
         view_id: &'static str,
@@ -335,6 +339,15 @@ impl ChatWidget {
     ) -> bool {
         self.bottom_pane
             .replace_selection_view_if_present(view_id, params)
+    }
+
+    pub(crate) fn update_selection_items_if_present(
+        &mut self,
+        view_id: &'static str,
+        items: Vec<crate::bottom_pane::SelectionItem>,
+    ) -> bool {
+        self.bottom_pane
+            .update_selection_items_if_present(view_id, items)
     }
 
     pub(crate) fn shortcut_overlay_visible(&self) -> bool {

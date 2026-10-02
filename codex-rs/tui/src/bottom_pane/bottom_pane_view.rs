@@ -1,6 +1,7 @@
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
+use crate::bottom_pane::SelectionItem;
 use crate::keymap::KeymapContextSet;
 use crate::render::renderable::Renderable;
 use codex_app_server_protocol::ToolRequestUserInputParams;
@@ -54,6 +55,11 @@ pub(crate) trait BottomPaneView: Renderable {
     /// across external refreshes.
     fn selected_index(&self) -> Option<usize> {
         None
+    }
+
+    /// Replace rows in place when the view can preserve its current interaction state.
+    fn update_selection_items(&mut self, _items: Vec<SelectionItem>) -> bool {
+        false
     }
 
     /// Apply a matching background suggestion when this view supports text prefills.

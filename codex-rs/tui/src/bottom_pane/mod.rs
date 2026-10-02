@@ -1493,6 +1493,26 @@ impl BottomPane {
         true
     }
 
+    /// Update a matching selection view's rows without rebuilding its filter or scroll state.
+    pub(crate) fn update_selection_items_if_present(
+        &mut self,
+        view_id: &'static str,
+        items: Vec<list_selection_view::SelectionItem>,
+    ) -> bool {
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|view| view.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+        let updated = self.view_stack[index].update_selection_items(items);
+        if updated {
+            self.request_redraw();
+        }
+        updated
+    }
+
     pub(crate) fn replace_view_if_present(
         &mut self,
         view_id: &'static str,
@@ -1747,7 +1767,6 @@ impl BottomPane {
                 .is_some_and(|view| view.will_interrupt_turn_on_key_event(key_event))
     }
 
-    #[cfg(test)]
     pub(crate) fn active_view_id(&self) -> Option<&'static str> {
         self.view_stack.last().and_then(|view| view.view_id())
     }
