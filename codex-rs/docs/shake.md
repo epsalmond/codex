@@ -596,11 +596,18 @@ Keep the threshold triggers but never shake just because the thread went idle:
 cold_resume = false
 ```
 
-Disable auto-shake entirely:
+Disable auto-shake entirely. `gpt-5.6` and `gpt-6-astra` have built-in family
+thresholds that win over the global value, so point them back at it:
 
 ```toml
 [auto_shake]
 threshold = "off"
+
+[auto_shake.models."gpt-5.6"]
+threshold = "inherit"
+
+[auto_shake.models."gpt-6-astra"]
+threshold = "inherit"
 ```
 
 Lower the subagent cap so children shake and compact earlier than the

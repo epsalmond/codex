@@ -8,8 +8,6 @@ Spawned subagents inherit a 272,000-token Shake and compaction cap by default, t
 
 ## Wake mode for multi-agent orchestrators
 
-Orchestrators delegate work and spend no requests while they wait: each child report starts a new turn on its parent.
-
 Interactive MultiAgentV2 roots and eligible V2 child agents at every depth now wake on reports. Exec roots themselves continue polling their direct children with `wait_agent`. Set `agent_polling = "enabled"` to retain polling throughout the tree. Esc pauses root wakeups and holds reports for the next user message. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and the [nested wake release notes](releases/2026-10-02-nested-wake-mode.md).
 
 ## Subagents on a different model provider
