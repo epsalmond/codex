@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
@@ -5,6 +6,7 @@ use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::CurrentTimeReminderConfig;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_models_manager::bundled_models_response;
@@ -17,6 +19,7 @@ use codex_protocol::openai_models::MultiAgentMessages;
 use codex_protocol::openai_models::MultiAgentRoleMessages;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -30,6 +33,7 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
 use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::assert_parent_turn;
 use core_test_support::responses::assert_root_turn;
@@ -50,6 +54,9 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::responses::strip_response_item_ids_from_json;
 use core_test_support::skip_if_no_network;
+use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::StreamingSseServer;
+use core_test_support::streaming_sse::start_routed_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -61,9 +68,11 @@ use serde_json::Value;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use test_case::test_case;
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout;
@@ -123,6 +132,18 @@ fn request_has_input_type(req: &wiremock::Request, ty: &str) -> bool {
             items
                 .iter()
                 .any(|item| item.get("type").and_then(Value::as_str) == Some(ty))
+        })
+}
+
+fn request_has_input_type_with_text(req: &wiremock::Request, item_type: &str, text: &str) -> bool {
+    decoded_body(req)
+        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        .and_then(|body| body.get("input").and_then(Value::as_array).cloned())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some(item_type)
+                    && item.to_string().contains(text)
+            })
         })
 }
 
@@ -388,6 +409,88 @@ async fn wait_for_requests(
         }
         sleep(Duration::from_millis(10)).await;
     }
+}
+
+async fn wait_for_request_matching(
+    mock: &ResponseMock,
+    predicate: impl Fn(&ResponsesRequest) -> bool,
+) -> Result<ResponsesRequest> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(request) = mock.requests().into_iter().find(&predicate) {
+            return Ok(request);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("no captured request matched the expected predicate");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn response_request_has_input_type(request: &ResponsesRequest, item_type: &str) -> bool {
+    request.body_json()["input"]
+        .as_array()
+        .is_some_and(|input| input.iter().any(|item| item["type"] == item_type))
+}
+
+fn response_request_has_thread_id(request: &ResponsesRequest, thread_id: ThreadId) -> bool {
+    request.body_json()["client_metadata"]["thread_id"]
+        .as_str()
+        .is_some_and(|actual| actual == thread_id.to_string())
+}
+
+fn streaming_event_chunk(event: Value) -> StreamingSseChunk {
+    StreamingSseChunk {
+        gate: None,
+        body: sse(vec![event]),
+    }
+}
+
+fn streaming_request_has_thread_id(request: &Value, thread_id: ThreadId) -> bool {
+    request["client_metadata"]["thread_id"]
+        .as_str()
+        .is_some_and(|actual| actual == thread_id.to_string())
+}
+
+fn streaming_request_has_input_type_with_text(
+    request: &Value,
+    item_type: &str,
+    text: &str,
+) -> bool {
+    request["input"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item["type"] == item_type && item.to_string().contains(text))
+    })
+}
+
+fn gated_streaming_chunk(gate: oneshot::Receiver<()>, events: Vec<Value>) -> StreamingSseChunk {
+    StreamingSseChunk {
+        gate: Some(gate),
+        body: sse(events),
+    }
+}
+
+async fn wait_for_streaming_request_matching(
+    server: &StreamingSseServer,
+    predicate: impl Fn(&Value) -> bool,
+) -> Result<Value> {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let requests = server.requests().await;
+            let observed_count = requests.len();
+            for request in requests {
+                if let Ok(request) = serde_json::from_slice::<Value>(&request)
+                    && predicate(&request)
+                {
+                    return request;
+                }
+            }
+            server.wait_for_request_count(observed_count + 1).await;
+        }
+    })
+    .await
+    .context("timed out waiting for a matching streaming request")
 }
 
 async fn wait_for_request_with_model(
@@ -1793,12 +1896,20 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
         FullHistoryV2ModelSelection::MultiAgentModeTransitions
     ) {
         assert!(child_request.has_content_kinds(&["multi_agent.role_instructions"]));
-        assert_eq!(
-            child_developer_messages
-                .iter()
-                .filter(|message| message.contains(&format!("{expected_model} subagent role.")))
-                .count(),
-            1
+        let retained_role_messages = child_developer_messages
+            .iter()
+            .filter(|message| message.contains(&format!("{expected_model} subagent role.")))
+            .collect::<Vec<_>>();
+        // A full-history fork keeps the parent's polling instructions and appends the
+        // current child's wake-mode instructions. Both fragments are needed: the latter
+        // is the mode delta for this assignment, not a duplicate to remove from history.
+        assert_eq!(retained_role_messages.len(), 2);
+        assert!(
+            retained_role_messages[0].contains("When calling `wait_agent`, prefer longer waits")
+        );
+        assert!(
+            retained_role_messages[1]
+                .contains("When delegated work remains and you have no independent task")
         );
     }
     assert!(!child_developer_messages.iter().any(|message| {
@@ -1847,7 +1958,20 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
                     .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
                     .count(),
             ),
-            (1, 1, 0, 1)
+            (1, 1, 0, 2)
+        );
+        let shared_hint_messages = child_developer_messages
+            .iter()
+            .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
+            .collect::<Vec<_>>();
+        assert_eq!(shared_hint_messages.len(), 2);
+        assert_eq!(
+            shared_hint_messages[0].as_str(),
+            FULL_HISTORY_SHARED_USAGE_HINT
+        );
+        assert!(
+            shared_hint_messages[1]
+                .contains("When delegated work remains and you have no independent task")
         );
     }
     if matches!(selection, FullHistoryV2ModelSelection::CurrentTimeReminders) {
@@ -2212,8 +2336,8 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 
 #[test_case(None, false; "encrypted")]
 #[test_case(None, true; "plaintext")]
-#[test_case(Some("gpt-5.6-luna"), false; "luna encrypted leaf")]
-#[test_case(Some("gpt-5.5"), false; "legacy encrypted leaf")]
+#[test_case(Some("gpt-5.6-luna"), false; "luna encrypted child")]
+#[test_case(Some("gpt-5.5"), false; "legacy encrypted child")]
 #[tokio::test]
 async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     model: Option<&str>,
@@ -2366,12 +2490,33 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     );
     if let Some(model) = model {
         assert_eq!(child_request.body_json()["model"], json!(model));
+        let body = child_request.body_json();
+        let mut catalog = body["tools"].as_array().cloned().unwrap_or_default();
+        catalog.extend(
+            child_request
+                .input()
+                .into_iter()
+                .filter_map(|item| item["tools"].as_array().cloned())
+                .flatten(),
+        );
+        let catalog_request = json!({ "tools": catalog });
+        for tool_name in [
+            "spawn_agent",
+            "send_message",
+            "followup_task",
+            "interrupt_agent",
+            "list_agents",
+        ] {
+            assert!(
+                namespace_child_tool(&catalog_request, MULTI_AGENT_V2_NAMESPACE, tool_name)
+                    .is_some(),
+                "V2 wake-mode child should receive collaboration tool {tool_name}"
+            );
+        }
         assert!(
-            !child_request
-                .body_json()
-                .to_string()
-                .contains("\"name\":\"collaboration\""),
-            "leaf workers must not receive collaboration tools",
+            namespace_child_tool(&catalog_request, MULTI_AGENT_V2_NAMESPACE, "wait_agent")
+                .is_none(),
+            "V2 wake-mode child should resume automatically instead of polling"
         );
     }
     if plaintext {
@@ -2578,6 +2723,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     .await;
     let test = test_codex()
         .with_model("koffing")
+        .with_session_source(SessionSource::Cli)
         .with_config(|config| {
             config
                 .features
@@ -2587,6 +2733,8 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            // This case exercises the legacy wait_agent notification path.
+            config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
@@ -2793,6 +2941,13 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     Ok(())
 }
 
+#[path = "subagent_notifications/code_mode_wake_tests.rs"]
+mod code_mode_wake_tests;
+#[path = "subagent_notifications/exec_nested_wake_tests.rs"]
+mod exec_nested_wake_tests;
+#[path = "subagent_notifications/nested_wake_tests.rs"]
+mod nested_wake_tests;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> Result<()> {
     const SPAWN_WORKER_PROMPT: &str = "spawn the completion-routing worker";
@@ -2815,6 +2970,8 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> R
                     .enable(feature)
                     .expect("test config should allow feature update");
             }
+            // Automation roots retain polling, including for their V2 descendants.
+            config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;

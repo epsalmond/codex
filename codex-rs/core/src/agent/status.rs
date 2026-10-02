@@ -26,6 +26,13 @@ pub(crate) fn agent_status_from_event(msg: &EventMsg) -> Option<AgentStatus> {
 pub(crate) fn is_final(status: &AgentStatus) -> bool {
     !matches!(
         status,
-        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted
+        AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Waiting
+            | AgentStatus::Interrupted
     )
 }
+
+#[cfg(test)]
+#[path = "status_tests.rs"]
+mod tests;

@@ -948,6 +948,19 @@ impl Session {
                         .effective_agent_max_threads(MultiAgentVersion::V2)
                         .unwrap_or(usize::MAX),
                 );
+                if parent_thread_id.is_none()
+                    && multi_agent_version.get() == Some(&MultiAgentVersion::V2)
+                    && config.multi_agent_v2.agent_polling == codex_features::AgentPolling::Disabled
+                    && !matches!(
+                        &session_configuration.session_source,
+                        SessionSource::Internal(_)
+                    )
+                {
+                    control.start_wake_dispatcher(matches!(
+                        &session_configuration.session_source,
+                        SessionSource::Exec
+                    ));
+                }
                 if parent_thread_id.is_none() {
                     control.propagate_config_update(AgentConfigUpdate::ServiceTier(
                         session_configuration
@@ -1810,6 +1823,14 @@ impl Session {
                 next_internal_sub_id: AtomicU64::new(0),
                 prompt_cache_clock: Default::default(),
             });
+            if sess.services.local_agent_runtime.wake_mode_enabled()
+                && let Some(status) = sess
+                    .services
+                    .local_agent_runtime
+                    .wake_assignment_status(thread_id)
+            {
+                sess.agent_status.send_replace(status);
+            }
             if let Some(last_activity_at) = resumed_last_activity_at {
                 sess.prompt_cache_clock
                     .seed_from_last_activity(last_activity_at);

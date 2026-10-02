@@ -72,7 +72,14 @@ async fn clock_tools_emit_control_tool_analytics() -> Result<()> {
     MockResponsesConfig::new(&server.uri())
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .with_provider_config("supports_websockets = false")
-        .with_extra_config("[features.current_time_reminder]\nenabled = true\nsleep_tool = true")
+        .with_extra_config(
+            r#"[features.multi_agent_v2]
+enabled = true
+agent_polling = "enabled"
+[features.current_time_reminder]
+enabled = true
+sleep_tool = true"#,
+        )
         .write(codex_home.path())?;
     mount_analytics_capture(&server, codex_home.path()).await?;
     let mut app_server = TestAppServer::builder()
@@ -202,6 +209,9 @@ async fn external_sleep_polls_current_time_and_emits_items(
         .with_extra_config(&format!(
             r#"[features]
 nonfatal_clock_read_errors = {read_fails}
+[features.multi_agent_v2]
+enabled = true
+agent_polling = "enabled"
 [features.current_time_reminder]
 enabled = true
 sleep_tool = true

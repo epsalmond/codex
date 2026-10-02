@@ -375,9 +375,10 @@ against their own parent's already-capped config, so the cap only ever
 tightens further down the tree. The root session's config is never touched by
 `[subagent_context_reduction]`.
 
-This child context policy is independent from parent scheduling. See
-[wake mode for multi-agent orchestrators](../../README.md#wake-mode-for-multi-agent-orchestrators)
-for the interactive-root default and the Exec/child polling scope.
+This child context policy is independent from parent scheduling. See the
+[nested wake release notes](../../releases/2026-10-02-nested-wake-mode.md) for
+which MultiAgentV2 child sessions wake on reports and why Exec roots continue
+to poll.
 
 The mid-turn roll-over order also differs for subagents (see
 `codex-rs/core/src/session/mid_turn_reduction.rs`). At the point where a

@@ -12,7 +12,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
-const SPAWN_AGENT_WAKE_ON_REPORT_TEXT: &str = "Delegation is asynchronous. While children work, continue with any independent work. When you have nothing left to do until a child reports back, end your turn with a short status. A new turn starts for you when a child finishes or asks a question, and that turn's input carries the child's message. Results also arrive mid-turn while you are still working.";
+const SPAWN_AGENT_WAKE_ON_REPORT_TEXT: &str = "Delegation is asynchronous. Continue with independent work while children work. When no independent work remains, end your turn; a child report starts another turn and includes the result. Results may also arrive during your turn.";
 const LIST_AGENTS_DESCRIPTION: &str =
     "List live agents in the current root thread tree. Optionally filter by task-path prefix.";
 const LIST_AGENTS_WAKE_ON_REPORT_DESCRIPTION: &str = "Look up the names and task paths of live agents in the current root thread tree, to address them with `send_message` or `followup_task`. Optionally filter by task-path prefix.";
@@ -24,21 +24,42 @@ pub enum ChildReportMode {
     #[default]
     WaitAgent,
     /// The thread ends its turn while children work, and a child's final answer starts its
-    /// next turn. Only the root thread uses this mode, when `wait_agent` is disabled.
+    /// next turn when a child reports back.
     WakeOnReport,
 }
 
 impl ChildReportMode {
-    pub(crate) fn for_thread(config: &MultiAgentV2Config, session_source: &SessionSource) -> Self {
-        // `codex exec` exits when the root turn completes, even if children are still running.
-        // Keep polling there until the exec lifecycle can remain alive for child reports.
-        if config.agent_polling == AgentPolling::Enabled
-            || session_source.is_non_root_agent()
-            || matches!(session_source, SessionSource::Exec)
-        {
+    pub(crate) fn for_thread(
+        config: &MultiAgentV2Config,
+        session_source: &SessionSource,
+        wake_mode_active: bool,
+    ) -> Self {
+        if config.agent_polling == AgentPolling::Enabled || !wake_mode_active {
             Self::WaitAgent
         } else {
+            match session_source {
+                SessionSource::Exec | SessionSource::Internal(_) => Self::WaitAgent,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                | SessionSource::Cli
+                | SessionSource::VSCode
+                | SessionSource::Mcp
+                | SessionSource::Custom(_)
+                | SessionSource::Unknown => Self::WakeOnReport,
+                SessionSource::SubAgent(
+                    SubAgentSource::Review
+                    | SubAgentSource::Compact
+                    | SubAgentSource::MemoryConsolidation
+                    | SubAgentSource::Other(_),
+                ) => Self::WaitAgent,
+            }
+        }
+    }
+
+    pub(crate) fn for_spawned_thread(config: &MultiAgentV2Config, wake_mode_active: bool) -> Self {
+        if config.agent_polling == AgentPolling::Disabled && wake_mode_active {
             Self::WakeOnReport
+        } else {
+            Self::WaitAgent
         }
     }
 
@@ -68,12 +89,18 @@ pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRo
     let root_polling_enabled = ChildReportMode::for_thread(
         &turn_context.config.multi_agent_v2,
         &turn_context.session_source,
+        turn_context.wake_mode_active,
     ) == ChildReportMode::WaitAgent;
-    let snapshot = resolve_usage_hints_with_root_polling(
+    let subagent_polling_enabled = ChildReportMode::for_spawned_thread(
+        &turn_context.config.multi_agent_v2,
+        turn_context.wake_mode_active,
+    ) == ChildReportMode::WaitAgent;
+    let snapshot = resolve_usage_hints_with_polling_modes(
         &turn_context.config.multi_agent_v2,
         multi_agent_messages,
         !turn_context.config.update_plan_enabled && turn_context.config.model_catalog.is_none(),
         root_polling_enabled,
+        subagent_polling_enabled,
     );
     match &turn_context.session_source {
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => snapshot.subagent,
@@ -106,11 +133,41 @@ pub(crate) fn resolve_usage_hints_with_root_polling(
     omit_update_plan_instructions: bool,
     root_polling_enabled: bool,
 ) -> ResolvedMultiAgentV2UsageHints {
-    let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>, is_root: bool| {
+    resolve_usage_hints_with_polling_modes(
+        config,
+        multi_agent_messages,
+        omit_update_plan_instructions,
+        root_polling_enabled,
+        /*subagent_polling_enabled*/ true,
+    )
+}
+
+pub(crate) fn resolve_usage_hints_with_polling_modes(
+    config: &MultiAgentV2Config,
+    multi_agent_messages: ResolvedMultiAgentMessages<'_>,
+    omit_update_plan_instructions: bool,
+    root_polling_enabled: bool,
+    subagent_polling_enabled: bool,
+) -> ResolvedMultiAgentV2UsageHints {
+    let resolve_role = |configured: Option<&str>,
+                        message: ResolvedMessage<'_>,
+                        agent_polling_enabled: bool,
+                        is_root: bool| {
         // Configured roles take precedence; empty configured or catalog roles suppress fallback.
         if let Some(configured) = configured {
-            return (!configured.is_empty())
-                .then(|| MultiAgentRoleInstructions::Configured(configured.to_owned()));
+            return (!configured.is_empty()).then(|| {
+                let text = if agent_polling_enabled {
+                    configured.to_owned()
+                } else if is_root {
+                    format!("{configured}\n\n{SPAWN_AGENT_WAKE_ON_REPORT_TEXT}")
+                } else {
+                    format!(
+                        "{configured}\n\n{}",
+                        codex_prompts::SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT
+                    )
+                };
+                MultiAgentRoleInstructions::Configured(text)
+            });
         }
 
         let base = message.text();
@@ -122,7 +179,7 @@ pub(crate) fn resolve_usage_hints_with_root_polling(
             marked: message.catalog_override().is_some(),
             omit_update_plan_instructions,
             max_concurrency: config.max_concurrent_threads_per_session,
-            root_agent_polling_enabled: root_polling_enabled,
+            agent_polling_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
             is_root,
         })
@@ -132,11 +189,13 @@ pub(crate) fn resolve_usage_hints_with_root_polling(
         root: resolve_role(
             config.root_agent_usage_hint_text.as_deref(),
             multi_agent_messages.root,
+            root_polling_enabled,
             /*is_root*/ true,
         ),
         subagent: resolve_role(
             config.subagent_usage_hint_text.as_deref(),
             multi_agent_messages.subagent,
+            subagent_polling_enabled,
             /*is_root*/ false,
         ),
     }

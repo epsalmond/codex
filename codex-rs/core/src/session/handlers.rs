@@ -380,11 +380,65 @@ pub async fn inter_agent_communication(
     mut communication: InterAgentCommunication,
     start_options: codex_protocol::turn_input::TurnStartOptions,
 ) {
+    let report_id = communication
+        .id
+        .clone()
+        .filter(|report_id| report_id.as_str().starts_with("amsg_"));
+    let mut delivery_guard = report_id.clone().map(|report_id| {
+        sess.services
+            .local_agent_runtime
+            .terminal_report_delivery_guard(report_id)
+    });
     sess.apply_child_report_mode(&mut communication).await;
+    if communication.trigger_turn
+        && start_options.parent_turn_id.is_some()
+        && sess.input_queue.wakeups_paused()
+    {
+        // Only an explicit followup carries a parent turn ID. Automatic terminal reports use
+        // default start options, so they remain held until the user or an agent follows up.
+        sess.resume_paused_wakeups().await;
+    }
+    if let Some(report_id) = communication
+        .id
+        .as_ref()
+        .filter(|report_id| report_id.as_str().starts_with("amsg_"))
+        && !sess
+            .services
+            .local_agent_runtime
+            .terminal_report_is_current(report_id, sess.thread_id)
+    {
+        sess.services
+            .local_agent_runtime
+            .discard_stale_terminal_report(report_id);
+        return;
+    }
     let trigger_turn = communication.trigger_turn;
-    sess.input_queue
-        .enqueue_mailbox_communication(communication, start_options)
-        .await;
+    let accepted = if report_id.is_some() {
+        sess.input_queue
+            .enqueue_mailbox_communication_if(communication, start_options, || {
+                delivery_guard
+                    .as_ref()
+                    .is_some_and(|guard| guard.acknowledge(sess.thread_id))
+            })
+            .await
+    } else {
+        sess.input_queue
+            .enqueue_mailbox_communication(communication, start_options)
+            .await;
+        true
+    };
+    if !accepted {
+        let Some(report_id) = report_id.as_ref() else {
+            return;
+        };
+        sess.services
+            .local_agent_runtime
+            .discard_stale_terminal_report(report_id);
+        return;
+    }
+    if let Some(delivery_guard) = delivery_guard.as_mut() {
+        delivery_guard.commit();
+    }
     crate::agent_communication::emit_agent_communication_receive(&sub_id);
     if trigger_turn && sess.input_queue.wakeups_paused() {
         sess.emit_agent_wakeups_updated().await;
@@ -675,7 +729,7 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     sess.services
         .rollout_thread_trace
         .record_protocol_event(&event.msg);
-    sess.deliver_event_raw(event).await;
+    sess.deliver_event_raw(event, None).await;
     sess.services
         .rollout_thread_trace
         .record_ended(codex_rollout_trace::RolloutStatus::Completed);

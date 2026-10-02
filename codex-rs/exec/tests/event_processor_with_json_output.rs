@@ -817,17 +817,26 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::Completed,
                 sender_thread_id: "thread-parent".to_string(),
-                receiver_thread_ids: vec!["thread-child".to_string()],
+                receiver_thread_ids: vec!["thread-child".to_string(), "thread-waiting".to_string()],
                 prompt: Some("draft a plan".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: None,
-                agents_states: std::collections::HashMap::from([(
-                    "thread-child".to_string(),
-                    ApiCollabAgentState {
-                        status: ApiCollabAgentStatus::Running,
-                        message: None,
-                    },
-                )]),
+                agents_states: std::collections::HashMap::from([
+                    (
+                        "thread-child".to_string(),
+                        ApiCollabAgentState {
+                            status: ApiCollabAgentStatus::Running,
+                            message: None,
+                        },
+                    ),
+                    (
+                        "thread-waiting".to_string(),
+                        ApiCollabAgentState {
+                            status: ApiCollabAgentStatus::Waiting,
+                            message: None,
+                        },
+                    ),
+                ]),
             },
             thread_id: "thread-parent".to_string(),
             turn_id: "turn-1".to_string(),
@@ -863,15 +872,27 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
                         tool: CollabTool::SpawnAgent,
                         sender_thread_id: "thread-parent".to_string(),
-                        receiver_thread_ids: vec!["thread-child".to_string()],
-                        prompt: Some("draft a plan".to_string()),
-                        agents_states: std::collections::HashMap::from([(
+                        receiver_thread_ids: vec![
                             "thread-child".to_string(),
-                            CollabAgentState {
-                                status: CollabAgentStatus::Running,
-                                message: None,
-                            },
-                        )]),
+                            "thread-waiting".to_string(),
+                        ],
+                        prompt: Some("draft a plan".to_string()),
+                        agents_states: std::collections::HashMap::from([
+                            (
+                                "thread-child".to_string(),
+                                CollabAgentState {
+                                    status: CollabAgentStatus::Running,
+                                    message: None,
+                                },
+                            ),
+                            (
+                                "thread-waiting".to_string(),
+                                CollabAgentState {
+                                    status: CollabAgentStatus::Waiting,
+                                    message: None,
+                                },
+                            ),
+                        ]),
                         status: CollabToolCallStatus::Completed,
                     },),
                 },

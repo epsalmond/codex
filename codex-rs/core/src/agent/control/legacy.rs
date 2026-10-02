@@ -44,12 +44,54 @@ impl LocalAgentControl {
         result
     }
 
-    /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
-    /// agent and any live descendants reached from the in-memory tree.
+    /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down its
+    /// registered and persisted descendants, including agents that are currently evicted.
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<AgentInfo> {
         let state = self.runtime.upgrade()?;
+        let mut subtree_thread_ids = self
+            .runtime
+            .list_live_agent_subtree_thread_ids(agent_id)
+            .await?;
+        if let Some(agent_graph_store) = state.agent_graph_store() {
+            for descendant_id in agent_graph_store
+                .list_thread_spawn_descendants(
+                    agent_id,
+                    Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!("failed to load thread-spawn descendants: {err}"))
+                })?
+            {
+                if !subtree_thread_ids.contains(&descendant_id) {
+                    subtree_thread_ids.push(descendant_id);
+                }
+            }
+        }
+        self.runtime
+            .wake_coordinator
+            .cancel_subtree(&subtree_thread_ids);
         let metadata = self.get_agent_metadata(agent_id);
         let known_agent = metadata.is_some();
+        if let Some(agent_graph_store) = state.agent_graph_store() {
+            for descendant_id in subtree_thread_ids
+                .iter()
+                .copied()
+                .filter(|id| *id != agent_id)
+            {
+                if let Err(err) = agent_graph_store
+                    .set_thread_spawn_edge_status(
+                        descendant_id,
+                        codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
+                    )
+                    .await
+                {
+                    warn!(
+                        "failed to persist descendant thread-spawn edge closure for {descendant_id}: {err}"
+                    );
+                }
+            }
+        }
         let snapshot = match state.get_thread(agent_id).await {
             Ok(thread) => {
                 let agent = LiveAgent {
@@ -90,7 +132,7 @@ impl LocalAgentControl {
             }
             Err(err) => return Err(err),
         };
-        match Box::pin(self.shutdown_agent_tree(agent_id)).await {
+        match Box::pin(self.shutdown_agent_tree_with_ids(&subtree_thread_ids)).await {
             Err(err)
                 if known_agent
                     && matches!(
@@ -104,11 +146,27 @@ impl LocalAgentControl {
         }
     }
 
-    /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
+    /// Shut down `agent_id` and every registered descendant, including evicted agents.
+    #[cfg(test)]
     pub(crate) async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
-        let descendant_ids = self.runtime.live_thread_spawn_descendants(agent_id).await?;
+        let subtree_thread_ids = self
+            .runtime
+            .list_live_agent_subtree_thread_ids(agent_id)
+            .await?;
+        self.shutdown_agent_tree_with_ids(&subtree_thread_ids).await
+    }
+
+    async fn shutdown_agent_tree_with_ids(
+        &self,
+        subtree_thread_ids: &[ThreadId],
+    ) -> CodexResult<String> {
+        let Some((&agent_id, descendant_ids)) = subtree_thread_ids.split_first() else {
+            return Err(CodexErr::InvalidRequest(
+                "cannot shut down an empty agent subtree".to_string(),
+            ));
+        };
         let result = self.shutdown_live_agent(agent_id).await;
-        for descendant_id in descendant_ids {
+        for descendant_id in descendant_ids.iter().copied() {
             match self.shutdown_live_agent(descendant_id).await {
                 Ok(_) => {}
                 Err(err)

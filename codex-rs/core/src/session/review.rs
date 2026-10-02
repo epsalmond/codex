@@ -152,6 +152,9 @@ pub(super) async fn spawn_review_thread(
 
     let review_turn_context = TurnContext {
         sub_id: review_turn_id.clone(),
+        agent_assignment: std::sync::OnceLock::new(),
+        agent_assignment_waiting: std::sync::OnceLock::new(),
+        wake_mode_active: parent_turn_context.wake_mode_active,
         trace_id: current_span_trace_id(),
         realtime_active: parent_turn_context.realtime_active,
         code_mode_available: parent_turn_context.code_mode_available,

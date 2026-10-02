@@ -13,5 +13,6 @@ expression: snapshot
 • Finished waiting
   └ Robie [explorer]: Completed - 39916800
     Bob [worker]: Error - tool timeout
+    Sage [reviewer]: Waiting for delegated work
 
 • Closed Robie [explorer]

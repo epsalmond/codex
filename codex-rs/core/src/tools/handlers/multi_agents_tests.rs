@@ -193,6 +193,8 @@ model_reasoning_effort = "minimal"
 }
 
 fn set_turn_config(turn: &mut TurnContext, config: crate::config::Config) {
+    let mut config = config;
+    config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
     turn.multi_agent_version = config.multi_agent_version_from_features();
     turn.config = Arc::new(config);
 }
@@ -319,7 +321,9 @@ async fn spawn_agent_limit_failure_emits_bounded_metric() {
     turn.session_telemetry = turn.session_telemetry.clone().with_metrics(metrics.clone());
     let mut config = (*turn.config).clone();
     config.agent_max_threads = Some(0);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 1;
     config.apps_mcp_product_sku = Some("codex".to_string());
+    config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
     turn.config = Arc::new(config);
     let manager = thread_manager();
     set_agent_control(&mut session, manager.agent_control());
@@ -614,6 +618,7 @@ async fn spawn_agent_service_tier_inheritance_uses_root_preference_and_child_mod
         let mut config = (*turn.config).clone();
         config.model_catalog = Some(service_tier_test_catalog());
         config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+        config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
         turn.config = Arc::new(config);
         let manager = thread_manager();
         let root = manager
@@ -667,6 +672,7 @@ async fn spawn_agent_service_tier_inheritance_uses_root_preference_and_child_mod
         let mut config = (*turn.config).clone();
         config.model_catalog = Some(service_tier_test_catalog());
         config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+        config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
         turn.config = Arc::new(config);
         let manager = thread_manager();
         let root = manager
@@ -741,6 +747,7 @@ service_tier = "priority"
                 nickname_candidates: None,
             },
         );
+        config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
         turn.config = Arc::new(config);
         let manager = thread_manager();
         let root = manager
@@ -811,6 +818,7 @@ service_tier = "turbo"
             nickname_candidates: None,
         },
     );
+    config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
     turn.config = Arc::new(config);
     let manager = thread_manager();
     let root = manager
@@ -868,6 +876,7 @@ async fn spawn_agent_full_history_fork_inherits_root_service_tier() {
         .await;
     let mut config = (*turn.config).clone();
     config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
     turn.config = Arc::new(config);
     let manager = thread_manager();
     let root = manager
@@ -4399,6 +4408,15 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
 async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed() {
     let (_session, turn) = make_session_and_context().await;
     let mut config = turn.config.as_ref().clone();
+    config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .enable(Feature::Collab)
+        .expect("test config should allow feature update");
     config.agent_max_depth = 3;
     config
         .permissions
@@ -4531,7 +4549,7 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
             function_payload(json!({"id": child_thread_id.to_string()})),
         ))
         .await
-        .expect("resume_agent should reopen the child subtree");
+        .expect("resume_agent should reopen the child");
     let (child_resume_content, child_resume_success) = expect_text_output(child_resume_output);
     let child_resume_result: resume_agent::ResumeAgentResult =
         serde_json::from_str(&child_resume_content).expect("resume result should be json");
@@ -4551,7 +4569,7 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
             .permission_profile,
         owner_permission_profile
     );
-    assert_ne!(
+    assert_eq!(
         manager
             .agent_control()
             .get_status(grandchild_thread_id)

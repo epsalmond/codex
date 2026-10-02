@@ -1,5 +1,6 @@
 use super::LocalAgentControl;
 use super::LocalAgentRuntime;
+use super::coordinator::AgentWakeCoordinator;
 use crate::agent::AgentStatus;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -15,9 +16,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tracing::warn;
 
-#[derive(Default)]
 pub(super) struct V2Residency {
     state: Mutex<V2ResidencyState>,
+    wake_coordinator: Arc<AgentWakeCoordinator>,
 }
 
 #[derive(Default)]
@@ -42,6 +43,7 @@ impl Drop for V2ResidencySlot {
     fn drop(&mut self) {
         if self.active {
             self.residency.release_pending_slot();
+            self.residency.wake_coordinator.notify_residency_available();
         }
     }
 }
@@ -68,10 +70,11 @@ impl LocalAgentControl {
     ) {
         if let Ok(thread) = state.get_thread(thread_id).await {
             let _ = self.runtime.pin_v2_residency(state, &thread).await;
+            self.runtime.wake_coordinator.notify_residency_available();
         }
     }
 
-    pub(super) fn forget_v2_residency(&self, thread_id: ThreadId) {
+    pub(crate) fn forget_v2_residency(&self, thread_id: ThreadId) {
         self.runtime.residency.remove(thread_id);
     }
 }
@@ -97,6 +100,13 @@ impl LocalAgentRuntime {
 }
 
 impl V2Residency {
+    pub(super) fn new(wake_coordinator: Arc<AgentWakeCoordinator>) -> Self {
+        Self {
+            state: Mutex::default(),
+            wake_coordinator,
+        }
+    }
+
     async fn reserve_slot(
         self: Arc<Self>,
         manager: &Arc<ThreadManagerState>,
@@ -174,6 +184,21 @@ impl V2Residency {
             {
                 continue;
             }
+            if let Some(assignment) = candidate_thread
+                .session
+                .services
+                .local_agent_runtime
+                .wake_coordinator
+                .current_assignment(candidate_thread_id)
+            {
+                let config = candidate_thread.session.get_config().await.as_ref().clone();
+                candidate_thread
+                    .session
+                    .services
+                    .local_agent_runtime
+                    .wake_coordinator
+                    .store_reload_config(&assignment, config);
+            }
             // Once shutdown is submitted, cancellation cannot revoke it. The eviction task
             // must keep delivery excluded and capacity reserved through registry removal.
             let manager = Arc::clone(manager);
@@ -229,6 +254,7 @@ impl V2Residency {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .residents
             .retain(|resident_thread_id| *resident_thread_id != thread_id);
+        self.wake_coordinator.notify_residency_available();
     }
 
     fn commit_slot(&self, thread_id: ThreadId) {
@@ -266,7 +292,10 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
 async fn is_unloadable(thread: &CodexThread) -> bool {
     matches!(
         thread.agent_status().await,
-        AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
+        AgentStatus::Waiting
+            | AgentStatus::Completed(_)
+            | AgentStatus::Errored(_)
+            | AgentStatus::Interrupted
     ) && thread.session.active_turn.lock().await.is_none()
         && !thread.session.input_queue.has_pending_mailbox_items().await
 }

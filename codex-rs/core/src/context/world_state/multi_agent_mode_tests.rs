@@ -96,7 +96,7 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
         marked: true,
         omit_update_plan_instructions: false,
         max_concurrency: 2,
-        root_agent_polling_enabled: false,
+        agent_polling_enabled: false,
         expose_model_overrides: false,
         is_root: true,
     };

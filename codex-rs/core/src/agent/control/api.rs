@@ -252,12 +252,12 @@ impl AgentControl for LocalAgentControl {
         self.ensure_execution_capacity(version, source)
     }
 
-    fn admit_turn(
-        &self,
+    fn admit_turn<'a>(
+        &'a self,
         version: MultiAgentVersion,
-        source: &SessionSource,
-    ) -> Option<AgentExecutionGuard> {
-        self.execution_guard(version, source)
+        source: &'a SessionSource,
+    ) -> BoxFuture<'a, Option<AgentExecutionGuard>> {
+        Box::pin(self.execution_guard(version, source))
     }
 
     fn record_usage(&self, usage: TokenUsage) -> BoxFuture<'_, Result<()>> {

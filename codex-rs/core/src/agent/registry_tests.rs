@@ -193,6 +193,35 @@ fn release_is_idempotent_for_registered_threads() {
 }
 
 #[test]
+fn registered_path_descendants_include_evicted_agents_and_respect_segments() {
+    let registry = AgentRegistry::default();
+    let parent = ThreadId::new();
+    let child = ThreadId::new();
+    let grandchild = ThreadId::new();
+    let sibling = ThreadId::new();
+    registry.register_root_thread(parent);
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(child),
+        agent_path: Some(agent_path("/root/worker")),
+        ..Default::default()
+    });
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(grandchild),
+        agent_path: Some(agent_path("/root/worker/helper")),
+        ..Default::default()
+    });
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(sibling),
+        agent_path: Some(agent_path("/root/worker_2")),
+        ..Default::default()
+    });
+
+    let mut descendants = registry.descendant_thread_ids(child);
+    descendants.sort_by_key(ToString::to_string);
+    assert_eq!(descendants, vec![grandchild]);
+}
+
+#[test]
 fn failed_spawn_keeps_nickname_marked_used() {
     let registry = Arc::new(AgentRegistry::default());
     let mut reservation = registry

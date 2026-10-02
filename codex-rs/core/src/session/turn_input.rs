@@ -346,6 +346,7 @@ async fn start_or_steer(
             else {
                 unreachable!("explicit user input can enter Plan mode");
             };
+            session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)?;
             if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
                 turn_context
                     .turn_metadata_state
@@ -497,6 +498,16 @@ async fn start_if_idle(
             return Err(error);
         }
     };
+    let allow_new_generation = kind != TurnStartKind::Automatic
+        || !matches!(
+            &input,
+            SubmittedTurnInput::InterAgentCommunication(communication)
+                if communication.id.as_ref().is_some_and(|id| id.as_str().starts_with("amsg_"))
+        );
+    if let Err(error) = session.bind_wake_assignment(&turn_context, allow_new_generation) {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Err(error);
+    }
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
         turn_context
             .turn_metadata_state
@@ -633,7 +644,10 @@ impl Session {
         Ok(())
     }
 
-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+    pub(crate) async fn clear_reserved_idle_turn(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) {
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
             && active_turn.task.is_none()

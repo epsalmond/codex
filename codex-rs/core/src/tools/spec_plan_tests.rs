@@ -1447,7 +1447,7 @@ async fn sleep_tool_stays_direct_and_outside_code_mode() {
             plan.exposure(&sleep_tool_name),
             ToolExposure::DirectModelOnly
         );
-        plan.assert_registered_lacks(&[wait_agent_tool_name.as_str()]);
+        plan.assert_registered_contains(&[wait_agent_tool_name.as_str()]);
 
         let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
             panic!("expected code mode exec tool");
@@ -2913,6 +2913,7 @@ async fn multi_agent_v2_can_disable_wait_agent() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
         turn.session_source = SessionSource::Cli;
+        turn.wake_mode_active = true;
         update_config(turn, |config| {
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
         });
@@ -2932,6 +2933,50 @@ async fn multi_agent_v2_can_disable_wait_agent() {
     plan.assert_visible_lacks(&["clock"]);
     plan.assert_registered_lacks(&["collaboration.wait_agent", "clock.sleep"]);
     assert!(plan.can_manage_children);
+}
+
+#[tokio::test]
+async fn v1_child_keeps_polling_tools_under_a_wake_enabled_v2_runtime() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::Collab, /*enabled*/ true);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
+        turn.multi_agent_version = MultiAgentVersion::V1;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+            agent_nickname: None,
+            agent_role: None,
+        });
+        turn.wake_mode_active = true;
+        update_config(turn, |config| {
+            config.current_time_reminder = Some(CurrentTimeReminderConfig {
+                sleep_tool: true,
+                ..CurrentTimeReminderConfig::default()
+            });
+            config.agent_max_depth = 2;
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
+        });
+    })
+    .await;
+
+    assert_eq!(
+        plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
+    plan.assert_visible_lacks(&[MULTI_AGENT_V2_NAMESPACE]);
+    assert!(
+        plan.namespace_function_names("clock")
+            .iter()
+            .any(|name| name == "sleep")
+    );
 }
 
 #[tokio::test]
@@ -2968,8 +3013,8 @@ fn collaboration_tool_description(plan: &ToolPlanProbe, tool_name: &str) -> Stri
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wake_mode_is_root_only_with_exec_polling_fallback() {
-    const WAKE_TEXT: &str = "A new turn starts for you when a child finishes or asks a question";
+async fn multi_agent_v2_wake_mode_applies_to_thread_spawn_and_preserves_exec_polling() {
+    const WAKE_TEXT: &str = "a child report starts another turn and includes the result";
     const LIST_AGENTS_WAKE_TEXT: &str = "to address them with `send_message` or `followup_task`";
     let subagent_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: ThreadId::new(),
@@ -2978,35 +3023,53 @@ async fn multi_agent_v2_wake_mode_is_root_only_with_exec_polling_fallback() {
         agent_nickname: None,
         agent_role: None,
     });
-    for (agent_polling, session_source, expect_wake) in [
+    for (agent_polling, session_source, wake_mode_active, expect_wake) in [
         (
             codex_features::AgentPolling::Disabled,
             SessionSource::Cli,
+            true,
+            true,
+        ),
+        (
+            codex_features::AgentPolling::Disabled,
+            subagent_source.clone(),
+            true,
             true,
         ),
         (
             codex_features::AgentPolling::Disabled,
             subagent_source.clone(),
             false,
+            false,
         ),
         (
             codex_features::AgentPolling::Disabled,
             SessionSource::Exec,
+            true,
+            false,
+        ),
+        (
+            codex_features::AgentPolling::Disabled,
+            SessionSource::SubAgent(SubAgentSource::Other("internal-child".to_string())),
+            true,
             false,
         ),
         (
             codex_features::AgentPolling::Enabled,
             SessionSource::Cli,
+            true,
             false,
         ),
         (
             codex_features::AgentPolling::Enabled,
             subagent_source,
+            true,
             false,
         ),
         (
             codex_features::AgentPolling::Enabled,
             SessionSource::Exec,
+            true,
             false,
         ),
     ] {
@@ -3021,6 +3084,7 @@ async fn multi_agent_v2_wake_mode_is_root_only_with_exec_polling_fallback() {
                     Some(MultiAgentVersion::V2);
             });
             turn.session_source = session_source.clone();
+            turn.wake_mode_active = wake_mode_active;
         })
         .await;
 
@@ -3039,6 +3103,54 @@ async fn multi_agent_v2_wake_mode_is_root_only_with_exec_polling_fallback() {
             "agent_polling={agent_polling:?}, session_source={session_source:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn wake_mode_child_keeps_clock_and_code_mode_wait_tools() {
+    let plan = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::MultiAgentV2,
+                Feature::CurrentTimeReminder,
+                Feature::SleepTool,
+                Feature::CodeMode,
+            ],
+        );
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/worker").expect("valid path")),
+            agent_nickname: None,
+            agent_role: None,
+        });
+        turn.wake_mode_active = true;
+        update_config(turn, |config| {
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
+            config.current_time_reminder = Some(CurrentTimeReminderConfig {
+                sleep_tool: true,
+                ..CurrentTimeReminderConfig::default()
+            });
+            config.sleep_tool_mode = codex_features::SleepToolMode::AlwaysOn;
+        });
+        update_turn_settings_for_test(turn, |settings| {
+            Arc::make_mut(&mut settings.model_info).tool_mode = Some(ToolMode::CodeMode);
+            Arc::make_mut(&mut settings.model_info).multi_agent_version =
+                Some(MultiAgentVersion::V2);
+        });
+    })
+    .await;
+
+    plan.assert_registered_lacks(&["collaboration.wait_agent", "clock.sleep"]);
+    plan.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+    assert!(
+        plan.code_mode_tool_names
+            .values()
+            .any(|tool_name| { tool_name == &ToolName::namespaced("clock", "curr_time") })
+    );
 }
 
 #[tokio::test]

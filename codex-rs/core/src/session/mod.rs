@@ -147,6 +147,7 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -269,6 +270,8 @@ pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
 mod turn_suspension;
+mod wake_assignments;
+mod wake_reports;
 mod wakeups;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
@@ -1388,6 +1391,17 @@ impl Session {
         self.agent_status.send_replace(AgentStatus::Interrupted);
     }
 
+    pub(crate) fn restore_wake_assignment_status(&self) {
+        if self.services.local_agent_runtime.wake_mode_enabled()
+            && let Some(status) = self
+                .services
+                .local_agent_runtime
+                .wake_assignment_status(self.thread_id)
+        {
+            self.agent_status.send_replace(status);
+        }
+    }
+
     pub(crate) fn is_interrupted(&self) -> bool {
         matches!(*self.agent_status.borrow(), AgentStatus::Interrupted)
     }
@@ -2477,9 +2491,23 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+        let agent_status_override = (turn_context.agent_assignment_waiting.get() == Some(&true)
+            && matches!(&legacy_source, EventMsg::TurnComplete(_)))
+        .then_some(AgentStatus::Waiting);
+        let has_wake_assignment = turn_context.agent_assignment.get().is_some();
+        if has_wake_assignment {
+            // Publish and enqueue terminal reports before the child status event can release a
+            // parent's wait_agent call. The coordinator already classified this turn in
+            // tasks/mod.rs, so this cannot report a turn that is still waiting on descendants.
+            self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+                .await;
+        }
+        self.send_event_raw_with_persistence(event, /*persist*/ true, agent_status_override)
             .await;
+        if !has_wake_assignment {
+            self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+                .await;
+        }
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2508,6 +2536,15 @@ impl Session {
             return;
         }
 
+        if turn_context.agent_assignment_waiting.get() == Some(&true) {
+            return;
+        }
+        if self.services.local_agent_runtime.wake_mode_enabled()
+            && turn_context.agent_assignment.get().is_none()
+        {
+            return;
+        }
+
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
             return;
         }
@@ -2533,7 +2570,13 @@ impl Session {
                 status
             }
         };
-        if !is_final(&status) {
+        let interrupted_wake_attempt = matches!(status, AgentStatus::Interrupted)
+            && self
+                .services
+                .local_agent_runtime
+                .terminal_wake_assignment_for_turn(self.thread_id, &turn_context.sub_id)
+                .is_some();
+        if !is_final(&status) && !interrupted_wake_attempt {
             return;
         }
 
@@ -2617,7 +2660,7 @@ impl Session {
     }
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
-        self.send_event_raw_with_persistence(event, /*persist*/ true)
+        self.send_event_raw_with_persistence(event, /*persist*/ true, None)
             .await;
     }
 
@@ -2631,10 +2674,16 @@ impl Session {
                 true
             }
         };
-        self.send_event_raw_with_persistence(event, persist).await;
+        self.send_event_raw_with_persistence(event, persist, None)
+            .await;
     }
 
-    async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+    async fn send_event_raw_with_persistence(
+        &self,
+        event: Event,
+        persist: bool,
+        agent_status_override: Option<AgentStatus>,
+    ) {
         let flush_guardian_completion = persist
             && matches!(event.msg, EventMsg::TurnComplete(_))
             && self.is_private_guardian_reviewer().await;
@@ -2682,12 +2731,13 @@ impl Session {
         if flush_guardian_completion && let Err(err) = self.flush_rollout().await {
             warn!("failed to flush completed Guardian review: {err}");
         }
-        self.deliver_event_raw(event).await;
+        self.deliver_event_raw(event, agent_status_override).await;
     }
 
-    async fn deliver_event_raw(&self, event: Event) {
+    async fn deliver_event_raw(&self, event: Event, agent_status_override: Option<AgentStatus>) {
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
+        if let Some(status) = agent_status_override.or_else(|| agent_status_from_event(&event.msg))
+        {
             self.agent_status.send_replace(status);
         }
         if let Err(e) = self.tx_event.send(event).await {
@@ -4095,6 +4145,7 @@ impl Session {
             )
             .await;
         let items = items.as_ref();
+        let response_item_id = items[0].id().cloned();
         let mut response_item = ResponseItemEnvelope::new(items[0].clone());
         // A send confirmed after the pending snapshot must not reach the rollout
         // before this boundary; older readers assign deliveries by physical order.
@@ -4108,6 +4159,14 @@ impl Session {
         // communication boundary, so persist earlier confirmed sends first.
         let (order, pending) = {
             let mut state = self.state.lock().await;
+            if response_item_id.as_ref().is_some_and(|response_item_id| {
+                state
+                    .history
+                    .raw_items()
+                    .any(|item| item.id() == Some(response_item_id))
+            }) {
+                return;
+            }
             (
                 state.history.reserve_input_order(),
                 self.pending_code_mode_message_recordings(),
@@ -4122,6 +4181,14 @@ impl Session {
         }
         {
             let mut state = self.state.lock().await;
+            if response_item_id.as_ref().is_some_and(|response_item_id| {
+                state
+                    .history
+                    .raw_items()
+                    .any(|item| item.id() == Some(response_item_id))
+            }) {
+                return;
+            }
             state.current_time_reminder.note_recorded_items(items);
             state.history.record_annotated_items(
                 std::slice::from_mut(&mut response_item),
@@ -4353,6 +4420,15 @@ impl Session {
 
     pub(crate) fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
         self.multi_agent_version.get().copied()
+    }
+
+    pub(crate) async fn session_source(&self) -> SessionSource {
+        self.state
+            .lock()
+            .await
+            .session_configuration
+            .session_source
+            .clone()
     }
 
     pub(crate) fn set_multi_agent_version_if_unset(
@@ -5178,10 +5254,37 @@ impl Session {
         info!("interrupt received: abort current task, if any");
         // Pause before aborting so the post-abort restart sees held mail.
         self.pause_wakeups_for_interrupt().await;
-        let had_active_turn = self.active_turn.lock().await.is_some();
+        let had_active_task = self
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|active_turn| active_turn.task.is_some());
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
-        if !had_active_turn {
+        if !had_active_task {
             self.cancel_mcp_startup();
+            if self.services.local_agent_runtime.wake_mode_enabled() {
+                let turn_context = self.new_default_turn().await;
+                if let Some(assignment) = self
+                    .services
+                    .local_agent_runtime
+                    .interrupt_idle_wake_assignment(self.thread_id, &turn_context.sub_id)
+                {
+                    let _ = turn_context.agent_assignment.set(assignment);
+                    self.send_event(
+                        turn_context.as_ref(),
+                        EventMsg::TurnAborted(TurnAbortedEvent {
+                            turn_id: Some(turn_context.sub_id.clone()),
+                            reason: TurnAbortReason::Interrupted,
+                            error: None,
+                            started_at: None,
+                            completed_at: None,
+                            duration_ms: None,
+                        }),
+                    )
+                    .await;
+                }
+            }
         }
     }
 
@@ -5336,6 +5439,10 @@ async fn build_hooks_config(
 #[cfg(test)]
 #[path = "elicitation_holders_tests.rs"]
 mod elicitation_holders_tests;
+
+#[cfg(test)]
+#[path = "interrupted_report_tests.rs"]
+mod interrupted_report_tests;
 
 #[cfg(test)]
 pub(crate) mod tests;

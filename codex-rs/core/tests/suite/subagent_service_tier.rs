@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_core::TurnInputRequest;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::Config;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::protocol::EventMsg;
@@ -163,6 +164,7 @@ async fn root_service_tier_change_updates_existing_subagent(
         .with_model("gpt-5.6-sol")
         .with_config(move |config| {
             config.service_tier = initial_service_tier_owned;
+            config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
             configure_priority_role(config);
         });
     let test = builder.build_with_auto_env(&server).await?;

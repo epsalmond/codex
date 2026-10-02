@@ -1,8 +1,7 @@
-//! Esc pause for a root thread in wake mode.
+//! Esc pause for a wake-mode assignment.
 //!
-//! In wake mode, a direct child's final answer starts the root's next turn. Interrupting the root
-//! pauses those automatic wakeups: results stay queued until the next user message, which clears
-//! the pause and starts one turn carrying both the user's text and the queued results.
+//! In wake mode, a direct child's final answer starts another turn for its parent. Interrupting a
+//! wake-mode assignment pauses those automatic wakeups until explicit followup.
 
 use super::multi_agents::ChildReportMode;
 use super::session::Session;
@@ -30,10 +29,11 @@ impl Session {
         Some(ChildReportMode::for_thread(
             &config.multi_agent_v2,
             &session_source,
+            self.services.local_agent_runtime.wake_mode_enabled(),
         ))
     }
 
-    /// Pauses automatic wakeups when this is a root thread in wake mode.
+    /// Pauses automatic wakeups for this wake-mode assignment when interrupted.
     pub(super) async fn pause_wakeups_for_interrupt(&self) {
         if self.child_report_mode().await == Some(ChildReportMode::WakeOnReport) {
             self.input_queue.pause_wakeups();
@@ -41,7 +41,7 @@ impl Session {
         }
     }
 
-    /// Lets the root decide whether a child's report wakes it.
+    /// Keeps explicit-polling parents on their existing queue-only report path.
     ///
     /// Children mark every completion sent to the root with `trigger_turn`. No other agent mail
     /// triggers the root: `followup_task` cannot target it and `send_message` is queue-only. A
@@ -71,7 +71,7 @@ impl Session {
     /// Clears a pause before a user turn starts. `start_task` then moves the held mail into that
     /// turn's pending input, which the turn records with the user's input and a replacement
     /// returns to the mailbox.
-    pub(super) async fn resume_paused_wakeups(&self) {
+    pub(crate) async fn resume_paused_wakeups(&self) {
         if self.input_queue.resume_wakeups() {
             self.emit_agent_wakeups_updated().await;
         }

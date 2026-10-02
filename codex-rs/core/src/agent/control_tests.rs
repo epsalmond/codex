@@ -37,6 +37,7 @@ use codex_extension_api::LoadInstructionsFuture;
 use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_extension_api::empty_extension_registry;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_history::CompactedItem;
 use codex_history::InitialHistory;
@@ -242,7 +243,8 @@ struct AgentControlHarness {
 
 impl AgentControlHarness {
     async fn new() -> Self {
-        let (home, config) = test_config().await;
+        let (home, mut config) = test_config().await;
+        config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
         Self::new_with_config(home, config).await
     }
 
@@ -834,10 +836,16 @@ async fn ensure_v2_child_loaded_preserves_evicted_parent_authority() {
     check_v2_agent_reload(V2ReloadRoute::NestedParent).await;
 }
 
+#[tokio::test]
+async fn coordinator_wake_reload_loads_an_evicted_target_without_its_parent() {
+    check_v2_agent_reload(V2ReloadRoute::Coordinator).await;
+}
+
 #[derive(Clone, Copy)]
 enum V2ReloadRoute {
     Sender,
     NestedParent,
+    Coordinator,
 }
 
 async fn spawn_v2_reload_test_child(
@@ -871,7 +879,10 @@ async fn spawn_v2_reload_test_child(
 async fn check_v2_agent_reload(route: V2ReloadRoute) {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
-    let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
+    if !matches!(route, V2ReloadRoute::Coordinator) {
+        let _ = config.features.enable(Feature::Sqlite);
+    }
     config.model = Some("gpt-5.6-sol".to_string());
     config.multi_agent_v2.max_concurrent_threads_per_session = 3;
     config.permissions.allow_login_shell = true;
@@ -910,7 +921,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .control(root.thread.session.session_id());
     let parent_thread = match route {
         V2ReloadRoute::Sender => root.thread,
-        V2ReloadRoute::NestedParent => {
+        V2ReloadRoute::NestedParent | V2ReloadRoute::Coordinator => {
             let parent = spawn_v2_reload_test_child(
                 &control,
                 harness.config.clone(),
@@ -931,6 +942,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
     assert!(inherited_instructions.thread.is_some());
     let mut child_config = harness.config.clone();
     child_config.model = Some("gpt-5.6-luna".to_string());
+    let coordinator_reload_config = child_config.clone();
     let spawned_agent =
         spawn_v2_reload_test_child(&control, child_config, &parent_thread, "worker").await;
     let agent_path = spawned_agent
@@ -994,6 +1006,102 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .expect("ollama provider should be configured");
 
     let mut parent_turn = parent_thread.session.new_default_turn().await;
+
+    if matches!(route, V2ReloadRoute::Coordinator) {
+        parent_thread
+            .inject_response_items(vec![assistant_message(
+                "parent persisted before target reload",
+                Some(MessagePhase::FinalAnswer),
+            )])
+            .await
+            .expect("parent rollout persists before eviction");
+        parent_thread
+            .shutdown_and_wait()
+            .await
+            .expect("idle parent can be unloaded");
+        assert!(
+            harness
+                .manager
+                .remove_thread(&parent_thread_id)
+                .await
+                .is_some()
+        );
+        control.forget_v2_residency(parent_thread_id);
+    }
+
+    let coordinator_target_assignment = if matches!(route, V2ReloadRoute::Coordinator) {
+        control.runtime.enable_wake_mode();
+        let coordinator = &control.runtime.wake_coordinator;
+        let root_assignment = coordinator
+            .begin_or_continue_assignment(
+                root.thread_id,
+                None,
+                "coordinator-reload-root-turn",
+                /*allow_new_generation*/ true,
+            )
+            .expect("root assignment starts");
+        let parent_assignment = coordinator
+            .reserve_child_assignment(root_assignment.clone(), parent_thread_id)
+            .expect("parent assignment is admitted")
+            .commit()
+            .expect("parent assignment commits");
+        coordinator
+            .begin_or_continue_assignment(
+                parent_thread_id,
+                Some(root_assignment),
+                "coordinator-reload-parent-turn",
+                /*allow_new_generation*/ false,
+            )
+            .expect("parent assignment starts");
+        let target_assignment = coordinator
+            .reserve_child_assignment(parent_assignment.clone(), spawned_agent.thread_id)
+            .expect("target assignment is admitted")
+            .commit()
+            .expect("target assignment commits");
+        coordinator
+            .begin_or_continue_assignment(
+                spawned_agent.thread_id,
+                Some(parent_assignment.clone()),
+                "coordinator-reload-target-turn",
+                /*allow_new_generation*/ false,
+            )
+            .expect("target assignment starts");
+        let _leaf_assignment = coordinator
+            .reserve_child_assignment(target_assignment.clone(), ThreadId::new())
+            .expect("target retains an unresolved descendant obligation")
+            .commit()
+            .expect("leaf assignment commits");
+        coordinator
+            .store_reload_config(&target_assignment, coordinator_reload_config)
+            .then_some(target_assignment.clone())
+            .expect("target reload configuration is retained");
+        assert_eq!(
+            coordinator.classify_turn_end(
+                &target_assignment,
+                "coordinator-reload-target-turn",
+                crate::agent::control::TurnEndDisposition::Succeeded,
+            ),
+            Ok(crate::agent::control::AssignmentPhase::Waiting)
+        );
+        assert_eq!(
+            control
+                .runtime
+                .wake_assignment_status(spawned_agent.thread_id),
+            Some(AgentStatus::Waiting)
+        );
+        assert_eq!(
+            coordinator.classify_turn_end(
+                &parent_assignment,
+                "coordinator-reload-parent-turn",
+                crate::agent::control::TurnEndDisposition::Succeeded,
+            ),
+            Ok(crate::agent::control::AssignmentPhase::Waiting)
+        );
+        Some(target_assignment)
+    } else {
+        None
+    };
+
     match route {
         V2ReloadRoute::Sender => control
             .ensure_v2_agent_loaded(sender_config, spawned_agent.thread_id, /*parent*/ None)
@@ -1035,6 +1143,15 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             parent_turn = parent_thread.session.new_default_turn().await;
             assert!(harness.manager.get_thread(parent_thread_id).await.is_err());
         }
+        V2ReloadRoute::Coordinator => {
+            control
+                .ensure_coordinator_target_loaded(
+                    &coordinator_target_assignment.expect("coordinator assignment exists"),
+                )
+                .await
+                .expect("coordinator reload uses root-owned target authority");
+            assert!(harness.manager.get_thread(parent_thread_id).await.is_err());
+        }
     }
     let reloaded_child = harness
         .manager
@@ -1042,11 +1159,28 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .await
         .expect("reloaded child thread should exist");
     let reloaded_instructions = reloaded_child.session.inherited_instructions().await;
-    assert_eq!(
-        (reloaded_instructions.user, reloaded_instructions.thread),
-        (inherited_instructions.user, inherited_instructions.thread),
-        "reloading a child must retain both parent snapshots, even if residency evicts the parent",
-    );
+    if !matches!(route, V2ReloadRoute::Coordinator) {
+        assert_eq!(
+            (reloaded_instructions.user, reloaded_instructions.thread),
+            (inherited_instructions.user, inherited_instructions.thread),
+            "reloading a child must retain both parent snapshots, even if residency evicts the parent",
+        );
+    } else {
+        assert!(
+            reloaded_child
+                .session
+                .services
+                .local_agent_runtime
+                .wake_mode_enabled()
+        );
+        assert_eq!(
+            control
+                .runtime
+                .wake_assignment_status(spawned_agent.thread_id),
+            Some(AgentStatus::Waiting)
+        );
+        assert_eq!(reloaded_child.agent_status().await, AgentStatus::Waiting);
+    }
     if matches!(route, V2ReloadRoute::NestedParent) {
         let reloaded_turn = reloaded_child.session.new_default_turn().await;
         assert_eq!(
@@ -1125,6 +1259,7 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
     let worker_path = AgentPath::root().join("worker").expect("worker path");
@@ -1288,6 +1423,7 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let parent = harness
         .manager
@@ -1464,6 +1600,7 @@ async fn v2_sibling_reload_preserves_shared_instructions_after_root_unloads(shar
         .features
         .enable(Feature::Sqlite)
         .expect("enable SQLite");
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let provider = Arc::new(TestThreadInstructionsProvider {
         text: "initial thread instructions".into(),
@@ -2553,7 +2690,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
         marked: true,
         omit_update_plan_instructions: false,
         max_concurrency: 2,
-        root_agent_polling_enabled: false,
+        agent_polling_enabled: false,
         expose_model_overrides: false,
         is_root: true,
     };
@@ -4792,7 +4929,10 @@ async fn resume_agent_from_paginated_rollout_loads_model_context() {
 
 #[tokio::test]
 async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants() {
-    let harness = AgentControlHarness::new().await;
+    let (home, mut config) = test_config().await;
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
+    config.multi_agent_v2.max_concurrent_threads_per_session = 8;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let worker_path = AgentPath::root().join("worker").expect("worker path");
     let reviewer_path = AgentPath::root().join("reviewer").expect("reviewer path");

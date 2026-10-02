@@ -271,6 +271,9 @@ impl EventProcessorWithJsonOutput {
                                         codex_app_server_protocol::CollabAgentStatus::Running => {
                                             CollabAgentStatus::Running
                                         }
+                                        codex_app_server_protocol::CollabAgentStatus::Waiting => {
+                                            CollabAgentStatus::Waiting
+                                        }
                                         codex_app_server_protocol::CollabAgentStatus::Interrupted => {
                                             CollabAgentStatus::Interrupted
                                         }

@@ -816,6 +816,7 @@
       "enum": [
         "pendingInit",
         "running",
+        "waiting",
         "interrupted",
         "completed",
         "errored",

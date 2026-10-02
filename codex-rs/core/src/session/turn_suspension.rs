@@ -115,10 +115,13 @@ pub(super) async fn suspend_turn_and_shutdown(
     // Announce completion only after extension cleanup and writer closure so a
     // replacement worker cannot write the same thread concurrently.
     session
-        .deliver_event_raw(Event {
-            id: submission_id,
-            msg: EventMsg::ShutdownComplete,
-        })
+        .deliver_event_raw(
+            Event {
+                id: submission_id,
+                msg: EventMsg::ShutdownComplete,
+            },
+            None,
+        )
         .await;
     Ok(SuspendTurnOutcome::Suspended { turn_id })
 }

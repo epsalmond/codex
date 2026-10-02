@@ -221,6 +221,31 @@ impl AgentRegistry {
             .collect()
     }
 
+    /// Return registered descendants by path so evicted agents remain part of close-time trees.
+    pub(crate) fn descendant_thread_ids(&self, thread_id: ThreadId) -> Vec<ThreadId> {
+        let Some(root_path) = self
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.agent_path)
+        else {
+            return Vec::new();
+        };
+        let prefix = format!("{root_path}/");
+        let mut descendants = self
+            .live_agents()
+            .into_iter()
+            .filter_map(|metadata| {
+                metadata
+                    .agent_path
+                    .as_ref()
+                    .is_some_and(|path| path.as_str().starts_with(&prefix))
+                    .then_some(metadata.agent_id)
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        descendants.sort_by_key(ToString::to_string);
+        descendants
+    }
+
     fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
         let Some(thread_id) = agent_metadata.agent_id else {
             return;

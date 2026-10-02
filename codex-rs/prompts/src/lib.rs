@@ -21,6 +21,7 @@ pub use model_messages::ResolvedMessage;
 pub use model_messages::ResolvedModelMessages;
 pub use model_messages::ResolvedMultiAgentMessages;
 pub use multi_agent_instructions::MultiAgentRoleInstructions;
+pub use multi_agent_instructions::SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT;
 pub use permissions_instructions::ApprovalPromptContext;
 pub use permissions_instructions::PermissionsInstructions;
 pub use realtime::BACKEND_PROMPT;

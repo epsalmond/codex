@@ -101,11 +101,13 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkAccess;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
 use tempfile::tempdir;
@@ -12234,11 +12236,45 @@ fn multi_agent_v2_default_agent_polling_is_disabled() {
 #[test]
 fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
     let config = resolve_multi_agent_v2_config(&ConfigToml::default());
-    let cli_mode = ChildReportMode::for_thread(&config, &SessionSource::Cli);
-    let exec_mode = ChildReportMode::for_thread(&config, &SessionSource::Exec);
+    let cli_mode = ChildReportMode::for_thread(&config, &SessionSource::Cli, true);
+    let exec_mode = ChildReportMode::for_thread(&config, &SessionSource::Exec, true);
 
     assert_eq!(cli_mode, ChildReportMode::WakeOnReport);
     assert_eq!(exec_mode, ChildReportMode::WaitAgent);
+    let thread_spawn_mode = ChildReportMode::for_thread(
+        &config,
+        &SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: codex_protocol::ThreadId::new(),
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        true,
+    );
+    assert_eq!(thread_spawn_mode, ChildReportMode::WakeOnReport);
+    assert_eq!(
+        ChildReportMode::for_thread(
+            &config,
+            &SessionSource::Internal(InternalSessionSource::Guardian),
+            true,
+        ),
+        ChildReportMode::WaitAgent
+    );
+    assert_eq!(
+        ChildReportMode::for_thread(
+            &config,
+            &SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: codex_protocol::ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            false,
+        ),
+        ChildReportMode::WaitAgent
+    );
 
     let messages = ResolvedModelMessages::bundled().multi_agent();
     for (mode, expect_polling_guidance) in [(cli_mode, false), (exec_mode, true)] {
@@ -12345,7 +12381,8 @@ expose_spawn_agent_model_overrides = true
     )
     .expect("multi-agent v2 config should parse");
 
-    let config = resolve_multi_agent_v2_config(&config_toml);
+    let mut config = resolve_multi_agent_v2_config(&config_toml);
+    config.agent_polling = AgentPolling::Enabled;
     assert!(config.expose_spawn_agent_model_overrides);
     assert_eq!(
         config.root_agent_usage_hint_text.as_deref(),

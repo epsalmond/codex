@@ -8,6 +8,7 @@ use codex_protocol::models::ContentItemKind;
 const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
+pub const SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT: &str = "When delegated work remains and you have no independent task, end your turn. A child report resumes your assignment in a new turn; do not poll for it.";
 const SUBAGENT_BLOCKED_USAGE_HINT_TEXT: &str = "If you are blocked, end your turn with your question; your parent will reply with a follow-up.";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
@@ -28,10 +29,9 @@ pub enum MultiAgentRoleInstructions {
         marked: bool,
         omit_update_plan_instructions: bool,
         max_concurrency: usize,
-        root_agent_polling_enabled: bool,
+        agent_polling_enabled: bool,
         expose_model_overrides: bool,
-        /// True for the root's role text, false for a subagent's. The root loses `wait_agent`
-        /// when its effective polling mode is disabled; subagents always keep it.
+        /// True for the root's role text, false for a subagent's.
         is_root: bool,
     },
 }
@@ -67,7 +67,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 base,
                 omit_update_plan_instructions,
                 max_concurrency,
-                root_agent_polling_enabled,
+                agent_polling_enabled,
                 expose_model_overrides,
                 is_root,
                 ..
@@ -77,27 +77,22 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 } else {
                     base.clone()
                 };
-                // Subagents always keep `wait_agent`; only the root loses it in wake mode.
                 let wait_agent_guidance =
                     format!("{DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT}\n\n");
-                let (shared, role_guidance): (String, String) = if *is_root {
-                    if *root_agent_polling_enabled {
-                        (
-                            DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string(),
-                            wait_agent_guidance,
-                        )
-                    } else {
-                        (
-                            DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT
-                                .replace("`wait_agent`, ", ""),
-                            String::new(),
-                        )
-                    }
+                let shared = if *agent_polling_enabled {
+                    DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string()
                 } else {
-                    (
-                        DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string(),
-                        format!("{wait_agent_guidance}{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\n"),
-                    )
+                    DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.replace("`wait_agent`, ", "")
+                };
+                let role_guidance = match (*is_root, *agent_polling_enabled) {
+                    (true, true) => wait_agent_guidance,
+                    (true, false) => String::new(),
+                    (false, true) => {
+                        format!("{wait_agent_guidance}{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\n")
+                    }
+                    (false, false) => format!(
+                        "{SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\n"
+                    ),
                 };
                 let mut text = format!(
                     "{base}\n{shared}\n{role_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."

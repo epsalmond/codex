@@ -7,6 +7,8 @@ use codex_features::Feature;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::Op;
+use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -20,6 +22,7 @@ use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
 use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::start_routed_streaming_sse_server;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -27,6 +30,7 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 enum BoardClock {
@@ -286,10 +290,10 @@ async fn board_is_shared_with_children_and_skips_idle_notices(
     let post: Value =
         serde_json::from_str(&output).with_context(|| format!("child post result: {output}"))?;
     assert_eq!(post["author"], "/root/worker");
-    assert!(matches!(
+    assert_eq!(
         root.codex.agent_status().await,
-        codex_protocol::protocol::AgentStatus::Completed(_)
-    ));
+        codex_protocol::protocol::AgentStatus::Waiting
+    );
     let read = responses::mount_sse_sequence(
         &server,
         vec![
@@ -358,6 +362,7 @@ async fn board_is_shared_with_children_and_skips_idle_notices(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> anyhow::Result<()> {
     let response = |body| vec![StreamingSseChunk { gate: None, body }];
+    let (release_initial_child, initial_child_gate) = oneshot::channel();
     let (release_final, final_gate) = oneshot::channel();
     let (release_child, child_gate) = oneshot::channel();
     let final_phase = |mut event: Value| {
@@ -379,41 +384,65 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
     } else {
         (vec![started], vec![finished])
     };
-    let (streaming, _) = start_streaming_sse_server(vec![
-        response(tool(
-            "create",
-            "create_channel",
-            json!({"channel_name":"design"}),
-        )),
-        response(tool(
-            "spawn",
-            "spawn_agent",
-            json!({"task_name":"worker","message":"Say ready.","fork_turns":"none"}),
-        )),
-        response(done()),
-        response(done()),
+    let root_thread_id = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let root_thread_id_for_matcher = std::sync::Arc::clone(&root_thread_id);
+    let (streaming, _) = start_routed_streaming_sse_server(
         vec![
-            StreamingSseChunk {
-                gate: None,
-                body: sse([vec![ev_response_created("root")], before_gate].concat()),
-            },
-            StreamingSseChunk {
-                gate: Some(final_gate),
-                body: sse([after_gate, vec![ev_completed("root")]].concat()),
-            },
+            vec![
+                response(tool(
+                    "create",
+                    "create_channel",
+                    json!({"channel_name":"design"}),
+                )),
+                response(tool(
+                    "spawn",
+                    "spawn_agent",
+                    json!({"task_name":"worker","message":"Say ready.","fork_turns":"none"}),
+                )),
+                response(done()),
+                vec![
+                    StreamingSseChunk {
+                        gate: None,
+                        body: sse([vec![ev_response_created("root")], before_gate].concat()),
+                    },
+                    StreamingSseChunk {
+                        gate: Some(final_gate),
+                        body: sse([after_gate, vec![ev_completed("root")]].concat()),
+                    },
+                ],
+                response(done()),
+            ],
+            vec![
+                vec![StreamingSseChunk {
+                    gate: Some(initial_child_gate),
+                    body: done(),
+                }],
+                response(tool(
+                    "worker-post",
+                    "post",
+                    json!({"channel_name":"design","text":"Late update."}),
+                )),
+                vec![StreamingSseChunk {
+                    gate: Some(child_gate),
+                    body: done(),
+                }],
+            ],
         ],
-        response(tool(
-            "worker-post",
-            "post",
-            json!({"channel_name":"design","text":"Late update."}),
-        )),
-        vec![StreamingSseChunk {
-            gate: Some(child_gate),
-            body: done(),
-        }],
-        response(done()),
-        response(done()),
-    ])
+        move |_headers, body| {
+            let body: Value = serde_json::from_slice(body).ok()?;
+            let thread_id = body["client_metadata"]["thread_id"].as_str()?;
+            let mut root_thread_id = root_thread_id_for_matcher
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match root_thread_id.as_deref() {
+                Some(root_thread_id) => Some(usize::from(root_thread_id != thread_id)),
+                None => {
+                    *root_thread_id = Some(thread_id.to_string());
+                    Some(0)
+                }
+            }
+        },
+    )
     .await;
     let server = responses::start_mock_server().await;
     let base_url = format!("{}/v1", streaming.uri());
@@ -441,6 +470,9 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
         .find(|id| *id != root.session_configured.thread_id)
         .context("child runtime")?;
     let child = root.thread_manager.get_thread(child_id).await?;
+    release_initial_child
+        .send(())
+        .expect("release child initial response");
     wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     root.codex
@@ -512,10 +544,25 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
             .iter()
             .filter(|request| request["client_metadata"]["turn_id"] == turn)
             .collect::<Vec<_>>();
+        let request_inputs = requests
+            .iter()
+            .map(|request| {
+                request["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.pointer("/content/0/text").and_then(Value::as_str))
+                    .filter(|text| {
+                        text.contains(&notification) || text.contains("Start another turn")
+                    })
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
             requests.len(),
             1,
-            "recipient must not sample again after its final"
+            "recipient must not sample again after its final: turn {turn}, input markers {request_inputs:#?}"
         );
         assert_eq!(
             requests[0]["input"].to_string().contains(&notification),
@@ -894,5 +941,101 @@ async fn board_clock_failure_does_not_fall_back_or_create_a_channel() -> anyhow:
         result,
         json!({"results":[],"n_returned":0,"has_more":false,"next_cursor":null})
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queue_only_report_arriving_after_user_op_does_not_block_the_session_loop()
+-> anyhow::Result<()> {
+    let (release_child, child_gate) = oneshot::channel();
+    let root_thread_id = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let root_thread_id_for_matcher = std::sync::Arc::clone(&root_thread_id);
+    let response = |body| vec![StreamingSseChunk { gate: None, body }];
+    let (streaming, _) = start_routed_streaming_sse_server(
+        vec![
+            vec![
+                response(tool(
+                    "spawn",
+                    "spawn_agent",
+                    json!({"task_name":"worker","message":"Say ready.","fork_turns":"none"}),
+                )),
+                response(done()),
+                response(done()),
+            ],
+            vec![vec![StreamingSseChunk {
+                gate: Some(child_gate),
+                body: done(),
+            }]],
+        ],
+        move |_headers, body| {
+            let body: Value = serde_json::from_slice(body).ok()?;
+            let thread_id = body["client_metadata"]["thread_id"].as_str()?;
+            let mut root_thread_id = root_thread_id_for_matcher
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match root_thread_id.as_deref() {
+                Some(root_thread_id) => Some(usize::from(root_thread_id != thread_id)),
+                None => {
+                    *root_thread_id = Some(thread_id.to_string());
+                    Some(0)
+                }
+            }
+        },
+    )
+    .await;
+    let server = responses::start_mock_server().await;
+    let base_url = format!("{}/v1", streaming.uri());
+    let root = test_codex()
+        .with_config(move |config| {
+            configure(config);
+            config.model_provider.base_url = Some(base_url);
+            config
+                .features
+                .disable(Feature::EnableRequestCompression)
+                .expect("read raw requests");
+        })
+        .with_model_info_override("gpt-5.5", |model| {
+            model.multi_agent_version = Some(MultiAgentVersion::V2);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    root.submit_turn("Spawn a worker and finish.").await?;
+    let child_id = root
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .find(|id| *id != root.session_configured.thread_id)
+        .context("child runtime")?;
+    let child = root.thread_manager.get_thread(child_id).await?;
+
+    // Queue the user op first, then let the child publish its queue-only terminal report.
+    // Waiting for report insertion inside this handler would block the report op behind it.
+    let (reply_tx, reply_rx) = oneshot::channel();
+    root.codex
+        .submit(Op::TurnInput {
+            request: Box::new(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Continue while the child finishes.".into(),
+                text_elements: vec![],
+            }])),
+            mode: TurnInputMode::StartOrSteer,
+            reply: reply_tx,
+        })
+        .await?;
+    release_child.send(()).expect("release child response");
+    let submission = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+        .await
+        .context("user turn handler waited behind its own report delivery")?
+        .context("user turn submission reply")??;
+    assert!(matches!(
+        submission,
+        codex_protocol::turn_input::TurnInputSubmission::Started { .. }
+    ));
+
+    wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&root.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }

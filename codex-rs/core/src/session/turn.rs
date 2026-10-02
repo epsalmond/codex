@@ -910,15 +910,33 @@ pub(crate) async fn run_hooks_and_record_inputs(
         .get::<crate::guardian::PendingReviewContext>()
         .is_some()
     {
+        sess.return_coordinator_reports_to_mailbox(input).await;
         return false;
     }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
+    let mut deferred_reports = Vec::new();
     for input_item in input {
+        if let Some(report_id) = Session::coordinator_report_id(input_item)
+            && !sess.coordinator_report_is_current(report_id)
+        {
+            sess.services
+                .local_agent_runtime
+                .release_terminal_report_claim(report_id);
+            sess.services
+                .local_agent_runtime
+                .discard_stale_terminal_report(report_id);
+            continue;
+        }
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
+            if Session::coordinator_report_id(input_item).is_some()
+                && let Some(input_item) = Session::deferred_coordinator_report(input_item)
+            {
+                deferred_reports.push(input_item);
+            }
         } else {
             if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
                 accepted_user_input = true;
@@ -940,7 +958,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 input_persist_context,
             )
             .await;
+            if let Some(report_id) = Session::coordinator_report_id(input_item) {
+                sess.mark_coordinator_report_recorded(report_id);
+            }
         }
+    }
+    if !deferred_reports.is_empty() {
+        sess.input_queue
+            .return_to_mailbox(&mut deferred_reports)
+            .await;
     }
     blocked_input && !accepted_user_input
 }
@@ -2058,6 +2084,7 @@ async fn run_sampling_request(
                 input_modalities: step_context.settings.model_info.input_modalities.clone(),
             }));
         }
+        let report_candidates = sess.coordinator_report_candidates(&turn_context, &prompt.input);
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
@@ -2067,6 +2094,7 @@ async fn run_sampling_request(
             &responses_metadata,
             Arc::clone(&turn_diff_tracker),
             &prompt,
+            &report_candidates,
             cancellation_token.child_token(),
         )
         .await
@@ -2909,6 +2937,7 @@ async fn try_run_sampling_request(
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
+    report_candidates: &[ResponseItemId],
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
@@ -3067,6 +3096,7 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created { response_id } => {
+                sess.accept_coordinator_report_candidates(&turn_context, report_candidates);
                 if let Some(response_id) = response_id {
                     turn_context
                         .extension_data
@@ -3335,6 +3365,7 @@ async fn try_run_sampling_request(
                 usage_metadata,
                 end_turn,
             } => {
+                sess.accept_coordinator_report_candidates(&turn_context, report_candidates);
                 sess.services
                     .analytics_events_client
                     .track_code_mode_tool_call(

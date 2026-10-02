@@ -141,12 +141,12 @@ impl AgentControl for TestAgentControl {
         Ok(())
     }
 
-    fn admit_turn(
-        &self,
+    fn admit_turn<'a>(
+        &'a self,
         _version: MultiAgentVersion,
-        _source: &SessionSource,
-    ) -> Option<AgentExecutionGuard> {
-        None
+        _source: &'a SessionSource,
+    ) -> BoxFuture<'a, Option<AgentExecutionGuard>> {
+        Box::pin(async { None })
     }
 
     fn record_usage(&self, _usage: TokenUsage) -> BoxFuture<'_, CodexResult<()>> {

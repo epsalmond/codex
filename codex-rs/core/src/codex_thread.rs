@@ -57,6 +57,7 @@ use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::SuspendTurnOutcome;
+use codex_protocol::turn_input::TurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
@@ -523,11 +524,32 @@ impl CodexThread {
         request: TurnInputRequest,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
-        if !matches!(mode, TurnInputMode::Steer { .. }) {
+        if !matches!(&mode, TurnInputMode::Steer { .. }) {
             self.ensure_execution_capacity_for_turn_start(
                 self.session.services.agent_control.as_ref(),
             )
             .await?;
+        }
+        let explicit_input = matches!(
+            &request.input,
+            TurnInput::UserInput { content, .. } if !content.is_empty()
+        ) || matches!(
+            &request.input,
+            TurnInput::ResponseItem(ResponseItem::FunctionCallOutput { call_id: None, .. })
+        );
+        if explicit_input
+            && matches!(
+                &mode,
+                TurnInputMode::StartOrSteer | TurnInputMode::StartIfIdle
+            )
+        {
+            // The report operation is processed by this same serial session loop, so this
+            // ordering wait must finish before the user turn is submitted to that loop.
+            self.session
+                .services
+                .local_agent_runtime
+                .wait_for_queue_only_wake_reports_enqueued_for_thread(self.session.thread_id)
+                .await;
         }
         self.io.submit_turn_input(request, mode).await
     }
