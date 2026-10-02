@@ -362,8 +362,17 @@ pub(crate) enum AppEvent {
     AgentPickerThreadsLoaded {
         primary_thread_id: ThreadId,
         request_id: Uuid,
+        status_revisions: std::collections::HashMap<ThreadId, u64>,
         result: Result<Vec<Thread>, String>,
     },
+    /// Merge one-shot final-response previews fetched for tracked picker children.
+    AgentPickerPreviewsLoaded {
+        primary_thread_id: ThreadId,
+        generation: Uuid,
+        results: Vec<(ThreadId, u64, Result<Option<String>, String>)>,
+    },
+    /// Backfill a missing preview after a completed child turn if the picker is still visible.
+    AgentPickerPreviewNeeded(ThreadId),
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
