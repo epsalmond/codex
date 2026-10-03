@@ -154,6 +154,8 @@ async fn visible_picker_refreshes_a_nonselected_child_row_in_place() -> Result<(
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
     let before = render_bottom_popup(&app.chat_widget, /*width*/ 96);
     assert!(before.contains("Selected") && before.contains("Other"));
@@ -318,6 +320,18 @@ async fn picker_rows_show_status_context_and_preview_at_normal_and_narrow_widths
         /*is_closed*/ false,
     );
     app.agent_navigation.set_error(error_id, /*is_error*/ true);
+    app.upsert_agent_picker_thread(
+        ThreadId::from_u128(/*value*/ 3),
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        ThreadId::from_u128(/*value*/ 6),
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
 
     app.chat_widget
         .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
@@ -330,9 +344,148 @@ async fn picker_rows_show_status_context_and_preview_at_normal_and_narrow_widths
         "agent_picker_narrow_width",
         render_bottom_popup(&app.chat_widget, /*width*/ 48)
     );
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Char('/')));
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Char('p')));
+    insta::assert_snapshot!(
+        "agent_picker_search_normal_width",
+        render_bottom_popup(&app.chat_widget, /*width*/ 96)
+    );
+    insta::assert_snapshot!(
+        "agent_picker_search_narrow_width",
+        render_bottom_popup(&app.chat_widget, /*width*/ 48)
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Esc));
     let narrow = render_bottom_popup(&app.chat_widget, /*width*/ 48);
     for status in ["idle", "mid-turn", "closed", "error"] {
         assert!(narrow.contains(status), "narrow picker omitted {status}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn archives_reconcile_visibility_without_forgetting_closed_history() -> Result<()> {
+    use super::super::agent_navigation::AgentPickerThreadVisibility;
+    use crate::app_event::AgentPickerThreadRefresh;
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    app.primary_thread_id = Some(root);
+    for id in [root, child] {
+        app.upsert_agent_picker_thread(
+            id,
+            Some("worker".into()),
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+    }
+    app.ensure_thread_channel(child);
+    app.enqueue_thread_notification(child, thread_closed_notification(child))
+        .await?;
+    assert_eq!(app.agent_navigation.visible_threads().len(), 2);
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Ok(AgentPickerThreadRefresh {
+            threads: vec![],
+            archived_thread_ids: HashSet::from([child]),
+        }),
+    );
+    assert_eq!(app.agent_navigation.visible_threads().len(), 1);
+    assert_eq!(
+        app.thread_event_channels[&child].attachment(),
+        ThreadEventAttachment::ReplayOnly
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: child,
+            agent_path: "/root/late".into(),
+            is_running_hint: true,
+        });
+    assert_eq!(app.agent_navigation.visible_threads().len(), 1);
+    app.handle_agent_picker_visibility_notification(
+        &app_server,
+        &ServerNotification::ThreadUnarchived(
+            codex_app_server_protocol::ThreadUnarchivedNotification {
+                thread_id: child.to_string(),
+            },
+        ),
+    );
+    assert_eq!(app.agent_navigation.visible_threads().len(), 2);
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.handle_agent_picker_visibility_notification(
+        &app_server,
+        &ServerNotification::ThreadArchived(
+            codex_app_server_protocol::ThreadArchivedNotification {
+                thread_id: child.to_string(),
+            },
+        ),
+    );
+    // An older archive listing must not hide an intervening unarchive notification.
+    app.set_agent_picker_thread_visibility(child, AgentPickerThreadVisibility::Visible);
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Ok(AgentPickerThreadRefresh {
+            threads: vec![],
+            archived_thread_ids: HashSet::from([child]),
+        }),
+    );
+    assert_eq!(app.agent_navigation.visible_threads().len(), 2);
+    assert_eq!(
+        app.agent_navigation
+            .adjacent_thread_id(Some(root), AgentNavigationDirection::Next),
+        Some(child)
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn picker_main_shortcut_and_close_keys_respect_search_mode() -> Result<()> {
+    for close_key in [
+        KeyEvent::from(KeyCode::Char('x')),
+        KeyEvent::from(KeyCode::Char('X')),
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::SHIFT),
+    ] {
+        let (mut app, mut rx, _) = make_test_app_with_channels().await;
+        let root = ThreadId::from_u128(/*value*/ 3);
+        let child = ThreadId::from_u128(/*value*/ 1);
+        app.primary_thread_id = Some(root);
+        app.active_thread_id = Some(child);
+        // Main must be row one even when first discovered after a child.
+        for id in [child, root] {
+            app.upsert_agent_picker_thread(
+                id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false,
+            );
+        }
+        app.chat_widget
+            .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Char('/')));
+        app.chat_widget.handle_key_event(close_key);
+        assert!(rx.try_recv().is_err());
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Esc));
+        app.chat_widget.handle_key_event(close_key);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseAgentThread(id)) if id == child));
+        app.chat_widget
+            .show_selection_view(app.agent_picker_selection_view_params(Some(/*value*/ 0)));
+        app.chat_widget.handle_key_event(close_key);
+        assert!(rx.try_recv().is_err(), "Main must never be closable");
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Char('1')));
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::SelectAgentThread(id)) if id == root));
     }
     Ok(())
 }

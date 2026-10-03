@@ -2791,6 +2791,9 @@ impl App {
                     self.refresh_agent_picker_previews(app_server, root, vec![thread_id]);
                 }
             }
+            AppEvent::CloseAgentThread(thread_id) => {
+                self.close_agent_picker_thread(tui, app_server, thread_id).await?;
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;

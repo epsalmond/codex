@@ -1,12 +1,12 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 2137
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Subagents
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
-  Search subagents
 
-› • Main [default] (current)  idle context ?
+› 1. • Main [default] (current)  idle context ?
 
-  enter select · esc back
+  enter select · / search · esc back
