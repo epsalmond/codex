@@ -191,6 +191,7 @@ fn token_count_item(last_model_visible_tokens: i64) -> RolloutItem {
         ..TokenUsage::default()
     };
     RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+        context_usage: None,
         info: Some(TokenUsageInfo {
             total_token_usage: usage.clone(),
             last_token_usage: usage,

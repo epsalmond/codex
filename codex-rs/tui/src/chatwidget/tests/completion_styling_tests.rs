@@ -31,6 +31,7 @@ fn completed_turn(duration_ms: Option<i64>, completed_at: Option<i64>) -> AppSer
 fn complete_turn(chat: &mut ChatWidget, turn: AppServerTurn) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn,
         }),

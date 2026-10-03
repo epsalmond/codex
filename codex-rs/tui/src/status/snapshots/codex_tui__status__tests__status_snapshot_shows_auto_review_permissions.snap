@@ -9,11 +9,12 @@ expression: sanitized
   Visit https://chatgpt.com/codex/settings/usage for up-to-date
   information on rate limits and credits
 
-  Model:           gpt-5.1-codex-max (reasoning none, summaries auto)
-  Directory:       [[workspace]]
-  Permissions:     Workspace (Approve for me)
-  Agents.md:       <none>
+  Model:            gpt-5.1-codex-max (reasoning none, summaries auto)
+  Directory:        [[workspace]]
+  Permissions:      Workspace (Approve for me)
+  Agents.md:        <none>
 
-  Token usage:     0 total  (0 input + 0 output)
-  Context window:  100% left (0 used / 272K)
-  Limits:          data not available yet
+  Token usage:      0 total  (0 input + 0 output)
+  Context window:   100% left (0 used / 272K)
+  Shake watermark:  unavailable
+  Limits:           data not available yet

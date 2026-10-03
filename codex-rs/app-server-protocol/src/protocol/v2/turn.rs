@@ -549,6 +549,7 @@ pub struct Usage {
 pub struct TurnCompletedNotification {
     pub thread_id: String,
     pub turn: Turn,
+    pub context_usage: Option<super::ThreadContextUsage>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

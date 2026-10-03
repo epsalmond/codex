@@ -190,6 +190,14 @@ impl AgentNavigationState {
             .set_context_usage(thread_id, context_usage);
     }
 
+    pub(crate) fn set_context_snapshot(
+        &mut self,
+        thread_id: ThreadId,
+        snapshot: codex_app_server_protocol::ThreadContextUsage,
+    ) {
+        self.picker_state.set_context_snapshot(thread_id, snapshot);
+    }
+
     pub(crate) fn set_error(&mut self, thread_id: ThreadId, is_error: bool) {
         if self.threads.contains_key(&thread_id) {
             self.picker_state.set_error(thread_id, is_error);

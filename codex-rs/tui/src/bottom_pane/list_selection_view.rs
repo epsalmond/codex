@@ -177,6 +177,8 @@ pub(crate) struct SelectionItem {
     pub category_tag: Option<String>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
+    /// Wrapped content below the list for the highlighted row.
+    pub details: Option<Box<dyn Renderable>>,
     pub is_current: bool,
     pub is_default: bool,
     pub is_disabled: bool,
@@ -1035,6 +1037,13 @@ impl ListSelectionView {
     }
 
     fn stacked_side_content(&self) -> &dyn Renderable {
+        if let Some(details) = self
+            .selected_actual_idx()
+            .and_then(|idx| self.active_items().get(idx))
+            .and_then(|item| item.details.as_deref())
+        {
+            return details;
+        }
         self.stacked_side_content
             .as_deref()
             .unwrap_or_else(|| self.side_content.as_ref())

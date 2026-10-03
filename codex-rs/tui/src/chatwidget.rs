@@ -558,6 +558,7 @@ pub(crate) struct ChatWidget {
     #[cfg(any(target_os = "windows", test))]
     pub(crate) windows_sandbox_elevated_setup_complete: bool,
     token_info: Option<TokenUsageInfo>,
+    context_snapshot: Option<codex_app_server_protocol::ThreadContextUsage>,
     token_usage_pending: bool,
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
@@ -1118,6 +1119,7 @@ impl ChatWidget {
                 self.bottom_pane
                     .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                 self.token_info = None;
+                self.context_snapshot = None;
                 self.request_pace.forget_total_tokens();
             }
         }
@@ -1156,6 +1158,7 @@ impl ChatWidget {
                     self.bottom_pane
                         .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                     self.token_info = None;
+                    self.context_snapshot = None;
                 }
             }
         }
@@ -2046,6 +2049,7 @@ impl ChatWidget {
 
     pub(crate) fn clear_token_usage(&mut self) {
         self.token_info = None;
+        self.context_snapshot = None;
     }
 }
 

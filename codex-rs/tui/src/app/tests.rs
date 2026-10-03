@@ -7149,6 +7149,7 @@ fn turn_completed_notification(
     status: TurnStatus,
 ) -> ServerNotification {
     ServerNotification::TurnCompleted(TurnCompletedNotification {
+        context_usage: None,
         thread_id: thread_id.to_string(),
         turn: Turn {
             completed_at: Some(0),
@@ -7170,6 +7171,7 @@ fn token_usage_notification(
     model_context_window: Option<i64>,
 ) -> ServerNotification {
     ServerNotification::ThreadTokenUsageUpdated(ThreadTokenUsageUpdatedNotification {
+        context_usage: None,
         thread_id: thread_id.to_string(),
         turn_id: turn_id.to_string(),
         token_usage: ThreadTokenUsage {

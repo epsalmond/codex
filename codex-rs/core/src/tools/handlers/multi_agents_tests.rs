@@ -1661,9 +1661,17 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
     let active_tokens = context
         .as_object_mut()
         .and_then(|context| context.remove("active_tokens"));
+    let observed_at = context
+        .as_object_mut()
+        .and_then(|context| context.remove("observed_at"));
     assert_eq!(
-        (active_tokens.is_some_and(|tokens| tokens.is_i64()), context),
         (
+            active_tokens.is_some_and(|tokens| tokens.is_i64()),
+            observed_at.is_some_and(|at| at.is_i64()),
+            context
+        ),
+        (
+            true,
             true,
             json!({
                 "basis": "estimate",

@@ -295,6 +295,7 @@ async fn switching_agent_threads_preserves_backend_voice_and_routes_pending_spee
     );
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: source.to_string(),
             turn: Turn {
                 id: turn_id.into(),
@@ -925,6 +926,7 @@ async fn unrendered_buffered_items_do_not_consume_retained_captions() {
     let completion = |turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>| {
         ThreadBufferedEvent::Notification(Box::new(ServerNotification::TurnCompleted(
             TurnCompletedNotification {
+                context_usage: None,
                 thread_id: source.to_string(),
                 turn: Turn {
                     id: turn_id.into(),
@@ -1139,6 +1141,7 @@ async fn inactive_caption_precedes_later_buffered_turn_without_start_event() {
             .events
             .push(ThreadBufferedEvent::Notification(Box::new(
                 ServerNotification::TurnCompleted(TurnCompletedNotification {
+                    context_usage: None,
                     thread_id: source.to_string(),
                     turn: test_turn(
                         "later-turn",
@@ -1208,6 +1211,7 @@ async fn rejected_realtime_speech_restores_the_delegated_final_answer() -> Resul
     );
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: thread_id.to_string(),
             turn: Turn {
                 id: "rejected-turn".to_string(),
@@ -1307,6 +1311,7 @@ async fn switching_threads_retains_undelivered_voice_answer_after_replay_evictio
     );
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: original.to_string(),
             turn: Turn {
                 id: "switched-turn".to_string(),
@@ -1589,6 +1594,7 @@ async fn delegated_final_speech_reaches_app_server_once_and_stale_speech_is_reje
     );
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: thread_id.to_string(),
             turn: Turn {
                 id: turn_id.to_string(),
@@ -1666,6 +1672,7 @@ async fn delegated_final_speech_reaches_app_server_once_and_stale_speech_is_reje
     );
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: thread_id.to_string(),
             turn: Turn {
                 id: second_turn.to_string(),
