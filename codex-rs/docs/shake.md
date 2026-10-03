@@ -446,6 +446,18 @@ compaction reports `after_tokens: null`.
 
 ### Observability
 
+`/subagents` shows captured active context, child policy cap, usable model window,
+selected model, accounting basis, snapshot age, provider-measurement age and the
+last automatic reduction. Highlight a row to read the full metadata below the
+list. Existing usage and turn-completion events update these rows; unavailable
+metadata stays unknown, including when an old rollout is replayed.
+
+`/status` shows `Shake watermark:` immediately below `Context window:`. The value
+is the persisted exclusive history-item boundary: `42 items sealed` means those
+42 history items are protected from further Shake. It is not a token count or
+removable-context estimate. An invalid or unavailable seal shows `unavailable`;
+`0 items sealed` requires a verified unsealed epoch.
+
 A shake that changed anything emits:
 
 - the persisted `CompactedItem` message, `[shake] context reduced surgically`
@@ -523,9 +535,9 @@ This cap controls child context reduction, not whether a parent polls for child
 results. The separate root polling setting and its default are documented in
 [wake mode](../../README.md#wake-mode-for-multi-agent-orchestrators).
 
-Under `model_auto_compact_token_limit_scope = "body_after_prefix"` the
-compaction cap applies to body tokens while the shake cap applies to total
-tokens.
+Under `model_auto_compact_token_limit_scope = "body_after_prefix"`, the
+inherited auto-compaction limit applies to body tokens. The independent child
+active-context cap still applies to the complete prepared request.
 
 ### Precedence
 

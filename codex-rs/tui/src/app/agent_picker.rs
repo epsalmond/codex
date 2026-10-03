@@ -1,5 +1,7 @@
 //! Root-scoped background refresh for the agent picker.
 
+use super::agent_context_display::AgentContextDetails;
+use super::agent_context_display::snapshot_summary;
 use super::agent_navigation::AgentPickerThreadVisibility;
 use super::agent_picker_status::context_description;
 use super::agent_picker_status::picker_status_label;
@@ -409,9 +411,14 @@ impl App {
                 let details = self.agent_navigation.picker_details(&thread_id);
                 let is_error = details.is_some_and(|details| details.is_error);
                 let status = picker_status_label(entry.is_closed, entry.is_running, is_error);
-                let mut description = vec![context_description(
-                    details.and_then(|details| details.context_usage.as_ref()),
-                )];
+                let mut description = vec![match details
+                    .and_then(|details| details.context_snapshot.as_ref())
+                {
+                    Some(snapshot) => snapshot_summary(snapshot),
+                    None => context_description(
+                        details.and_then(|details| details.context_usage.as_ref()),
+                    ),
+                }];
                 if status == "idle"
                     && let Some(preview) =
                         details.and_then(|details| details.response_preview.as_ref())
@@ -424,6 +431,13 @@ impl App {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed, is_error),
                     description: Some(description.join(" · ")),
+                    details: details
+                        .and_then(|details| details.context_snapshot.as_ref())
+                        .map(|snapshot| {
+                            Box::<dyn crate::render::renderable::Renderable>::from(
+                                AgentContextDetails(snapshot.clone()),
+                            )
+                        }),
                     category_tag: Some(status.to_string()),
                     is_current: self.active_thread_id == Some(thread_id),
                     actions: vec![Box::new(move |tx| {
@@ -466,6 +480,10 @@ impl App {
                     .set_error(thread_id, /*is_error*/ false);
             }
             ServerNotification::TurnCompleted(completed) => {
+                if let Some(snapshot) = &completed.context_usage {
+                    self.agent_navigation
+                        .set_context_snapshot(thread_id, snapshot.clone());
+                }
                 self.agent_navigation.set_error(
                     thread_id,
                     matches!(completed.turn.status, TurnStatus::Failed),
@@ -512,6 +530,10 @@ impl App {
                 ThreadStatus::NotLoaded => {}
             },
             ServerNotification::ThreadTokenUsageUpdated(usage) => {
+                if let Some(snapshot) = &usage.context_usage {
+                    self.agent_navigation
+                        .set_context_snapshot(thread_id, snapshot.clone());
+                }
                 let context_usage = (usage.token_usage.last.total_tokens >= 0).then_some(
                     crate::multi_agents::AgentPickerContextUsage {
                         last_tokens: usage.token_usage.last.total_tokens,

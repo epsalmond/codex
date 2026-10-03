@@ -285,6 +285,8 @@ mod replay_render_tests;
 mod review_mode;
 #[path = "tests/shake_preview_tests.rs"]
 mod shake_preview;
+#[path = "tests/shake_watermark_tests.rs"]
+mod shake_watermark;
 
 #[path = "tests/review_picker_tests.rs"]
 mod review_picker_tests;
