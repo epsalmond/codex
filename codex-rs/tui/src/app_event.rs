@@ -382,6 +382,8 @@ pub(crate) enum AppEvent {
     AgentPickerPreviewNeeded(ThreadId),
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Close and archive a child and its descendants while retaining saved history.
+    CloseAgentThread(ThreadId),
 
     /// Fork the current thread into a transient side conversation.
     StartSide {

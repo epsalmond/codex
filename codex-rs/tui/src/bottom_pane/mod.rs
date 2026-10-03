@@ -165,6 +165,7 @@ pub(crate) use list_selection_view::OnSelectionChangedCallback;
 pub(crate) use list_selection_view::PickerSurface;
 pub(crate) use list_selection_view::SelectionDescriptionLayout;
 pub(crate) use list_selection_view::SelectionRowDisplay;
+pub(crate) use list_selection_view::SelectionSearchActivation;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
 pub(crate) use list_selection_view::SideContentWidth;
@@ -1413,11 +1414,13 @@ impl BottomPane {
         // Configured list actions take precedence over optional row shortcuts.
         for item in &mut params.items {
             if item.secondary_action.as_ref().is_some_and(|secondary| {
-                let (code, modifiers) = secondary.key.parts();
-                self.keymap
-                    .list
-                    .action_for(KeyEvent::new(code, modifiers))
-                    .is_some()
+                secondary.keys.iter().any(|key| {
+                    let (code, modifiers) = key.parts();
+                    self.keymap
+                        .list
+                        .action_for(KeyEvent::new(code, modifiers))
+                        .is_some()
+                })
             }) {
                 item.secondary_action = None;
             }

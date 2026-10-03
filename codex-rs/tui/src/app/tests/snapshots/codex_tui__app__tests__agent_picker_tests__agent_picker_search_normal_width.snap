@@ -1,0 +1,13 @@
+---
+source: tui/src/app/tests/agent_picker_tests.rs
+assertion_line: 341
+expression: "render_bottom_popup(&app.chat_widget, 96)"
+---
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+  p
+
+› • Planner [worker] (current)  idle context 4800 / 32000 (15%) · Finished the dependency revie…
+
+  enter select · esc exit search · ctrl+c close

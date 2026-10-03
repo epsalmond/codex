@@ -5,6 +5,39 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::*;
 
 impl App {
+    pub(super) async fn close_agent_picker_thread(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        let Some(root) = self.primary_thread_id else {
+            return Ok(());
+        };
+        if thread_id == root || self.agent_navigation.get(&thread_id).is_none() {
+            return Ok(());
+        }
+        // Switching first respects permission/setup blockers and keeps the displayed
+        // transcript outside the subtree before the backend stops it.
+        self.select_agent_thread_and_discard_side(tui, app_server, root)
+            .await?;
+        if self.active_thread_id != Some(root) || self.current_displayed_thread_id() != Some(root) {
+            return Ok(());
+        }
+        if let Err(error) = app_server.thread_archive(thread_id).await {
+            self.chat_widget
+                .add_error_message(format!("Failed to close agent: {error:#}"));
+            return Ok(());
+        }
+        self.set_agent_picker_thread_visibility(thread_id, AgentPickerThreadVisibility::Hidden);
+        if !self.agent_navigation.queue_picker_refresh(root) {
+            self.refresh_agent_picker_threads(app_server, root);
+        }
+        self.chat_widget
+            .show_selection_view(self.agent_picker_selection_view_params(/*selected*/ None));
+        Ok(())
+    }
+
     pub(super) fn set_agent_picker_thread_visibility(
         &mut self,
         thread_id: ThreadId,
