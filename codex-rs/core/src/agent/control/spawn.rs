@@ -25,6 +25,7 @@ use crate::session::multi_agents::ChildReportMode;
 use crate::session::multi_agents::resolve_subagent_context_token_cap;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::session::multi_agents::resolve_usage_hints_with_root_polling;
+use crate::shake::watermark;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
@@ -1216,12 +1217,26 @@ impl LocalAgentControl {
                     if let Some(replacement_history) = compacted.replacement_history.as_mut() {
                         // Matches before this checkpoint cannot survive its replacement history.
                         replaced_parent_developer_instructions = false;
+                        if compacted.shake_history_state.as_ref().is_some_and(|state| {
+                            !watermark::matches_history(state, replacement_history)
+                        }) {
+                            // Keep invalid source bytes and their seal together. Filtering first
+                            // could remove the corruption and accidentally accept that seal.
+                            return true;
+                        }
                         replacement_history.retain_mut(|response_item| {
                             retain_forked_item(
                                 response_item,
                                 &mut replaced_parent_developer_instructions,
                             )
                         });
+                        if let Some(state) = &mut compacted.shake_history_state
+                            && !watermark::matches_history(state, replacement_history)
+                        {
+                            // Fork sanitization changed a verified prefix. Only this child starts
+                            // an unsealed epoch; never rewrite the digest under the parent's epoch.
+                            *state = watermark::fresh_epoch();
+                        }
                     }
                     true
                 }
