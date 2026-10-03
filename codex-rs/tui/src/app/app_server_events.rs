@@ -84,6 +84,11 @@ impl App {
                 self.agents_overview.last_messages.clear();
                 self.agents_overview.usage.clear();
                 self.agents_overview.pending_usage = None;
+                if let Some(root) = self.primary_thread_id
+                    && !self.agent_navigation.queue_picker_refresh(root)
+                {
+                    self.refresh_agent_picker_threads(app_server_client, root);
+                }
                 self.agents_overview.usage_disabled = false;
                 self.repaint_agents_overview();
                 self.refresh_agents_overview_threads(app_server_client);
@@ -220,6 +225,7 @@ impl App {
                 .entry(thread_id)
                 .or_default();
         }
+        self.handle_agent_picker_visibility_notification(app_server_client, &notification);
         self.track_agents_overview_notification(&notification);
         // Retained blank sessions stay subscribed after their event channels are cleared.
         if let ServerNotification::ThreadSettingsUpdated(settings) = &notification

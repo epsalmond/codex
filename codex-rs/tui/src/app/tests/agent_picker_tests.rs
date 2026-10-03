@@ -336,3 +336,88 @@ async fn picker_rows_show_status_context_and_preview_at_normal_and_narrow_widths
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn archives_reconcile_visibility_without_forgetting_closed_history() -> Result<()> {
+    use super::super::agent_navigation::AgentPickerThreadVisibility;
+    use crate::app_event::AgentPickerThreadRefresh;
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    app.primary_thread_id = Some(root);
+    for id in [root, child] {
+        app.upsert_agent_picker_thread(
+            id,
+            Some("worker".into()),
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+    }
+    app.ensure_thread_channel(child);
+    app.enqueue_thread_notification(child, thread_closed_notification(child))
+        .await?;
+    assert_eq!(app.agent_navigation.visible_threads().len(), 2);
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Ok(AgentPickerThreadRefresh {
+            threads: vec![],
+            archived_thread_ids: HashSet::from([child]),
+        }),
+    );
+    assert_eq!(app.agent_navigation.visible_threads().len(), 1);
+    assert_eq!(
+        app.thread_event_channels[&child].attachment(),
+        ThreadEventAttachment::ReplayOnly
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: child,
+            agent_path: "/root/late".into(),
+            is_running_hint: true,
+        });
+    assert_eq!(app.agent_navigation.visible_threads().len(), 1);
+    app.handle_agent_picker_visibility_notification(
+        &app_server,
+        &ServerNotification::ThreadUnarchived(
+            codex_app_server_protocol::ThreadUnarchivedNotification {
+                thread_id: child.to_string(),
+            },
+        ),
+    );
+    assert_eq!(app.agent_navigation.visible_threads().len(), 2);
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.handle_agent_picker_visibility_notification(
+        &app_server,
+        &ServerNotification::ThreadArchived(
+            codex_app_server_protocol::ThreadArchivedNotification {
+                thread_id: child.to_string(),
+            },
+        ),
+    );
+    // An older archive listing must not hide an intervening unarchive notification.
+    app.set_agent_picker_thread_visibility(child, AgentPickerThreadVisibility::Visible);
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Ok(AgentPickerThreadRefresh {
+            threads: vec![],
+            archived_thread_ids: HashSet::from([child]),
+        }),
+    );
+    assert_eq!(app.agent_navigation.visible_threads().len(), 2);
+    assert_eq!(
+        app.agent_navigation
+            .adjacent_thread_id(Some(root), AgentNavigationDirection::Next),
+        Some(child)
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
