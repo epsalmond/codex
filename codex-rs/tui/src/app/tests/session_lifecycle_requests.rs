@@ -4534,11 +4534,12 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                 })
                 .await??;
                 if let AppEvent::AgentPickerThreadsLoaded {
-                    result: Ok(threads),
+                    result: Ok(refresh),
                     ..
                 } = &mut completion
                 {
-                    let child = threads
+                    let child = refresh
+                        .threads
                         .iter_mut()
                         .find(|thread| thread.id == child_thread_id.to_string())
                         .expect("root-scoped response includes the cached child");
@@ -4551,8 +4552,8 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     live_error.status = ThreadStatus::Active {
                         active_flags: Vec::new(),
                     };
-                    threads.push(discovered);
-                    threads.push(live_error);
+                    refresh.threads.push(discovered);
+                    refresh.threads.push(live_error);
                 }
                 Box::pin(app.handle_event(&mut tui, &mut app_server, completion)).await?;
                 if preview_events < 2 {

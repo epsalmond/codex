@@ -370,7 +370,7 @@ pub(crate) enum AppEvent {
         primary_thread_id: ThreadId,
         request_id: Uuid,
         status_revisions: std::collections::HashMap<ThreadId, u64>,
-        result: Result<Vec<Thread>, String>,
+        result: Result<AgentPickerThreadRefresh, String>,
     },
     /// Merge one-shot final-response previews fetched for tracked picker children.
     AgentPickerPreviewsLoaded {
@@ -1665,4 +1665,10 @@ pub(crate) enum FeedbackCategory {
     Bug,
     SafetyCheck,
     Other,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AgentPickerThreadRefresh {
+    pub(crate) threads: Vec<Thread>,
+    pub(crate) archived_thread_ids: std::collections::HashSet<ThreadId>,
 }
