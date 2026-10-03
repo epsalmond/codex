@@ -12152,6 +12152,10 @@ max_concurrent_threads_per_session = 9
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 120000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 30000);
     assert_eq!(
+        config.multi_agent_v2.noninteractive_default_wait_timeout_ms,
+        30000
+    );
+    assert_eq!(
         (
             config.agent_max_threads,
             config.effective_agent_max_threads(MultiAgentVersion::V2)
@@ -12283,13 +12287,14 @@ fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
             messages,
             /*omit_update_plan_instructions*/ false,
             mode == ChildReportMode::WaitAgent,
+            /*subagent_context_token_cap*/ None,
         );
         let root = usage_hints
             .root
             .expect("root usage hint should be present")
             .body();
         assert_eq!(
-            root.contains("When calling `wait_agent`, prefer longer waits"),
+            root.contains("When calling `wait_agent`, use long timeouts"),
             expect_polling_guidance
         );
     }
@@ -12342,6 +12347,7 @@ max_concurrent_threads_per_session = 17
         config.agent_polling = agent_polling;
         let usage_hints = resolve_usage_hints(
             &config, messages, /*omit_update_plan_instructions*/ false,
+            /*subagent_context_token_cap*/ None,
         );
         let [root, subagent] = [usage_hints.root, usage_hints.subagent]
             .map(|hint| hint.expect("default usage hints should be present").body());
@@ -12351,7 +12357,7 @@ max_concurrent_threads_per_session = 17
         assert_eq!(
             (
                 root.contains("wait_agent"),
-                subagent.contains("When calling `wait_agent`, prefer longer waits"),
+                subagent.contains("When calling `wait_agent`, use long timeouts"),
                 subagent.contains("If you are blocked, end your turn with your question"),
             ),
             (agent_polling == AgentPolling::Enabled, true, true,)
@@ -12365,6 +12371,7 @@ max_concurrent_threads_per_session = 17
         &config,
         empty_messages,
         /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
     assert!(usage_hints.root.is_none() && usage_hints.subagent.is_none());
 }
@@ -12397,6 +12404,7 @@ expose_spawn_agent_model_overrides = true
     messages.subagent = ResolvedMessage::Catalog("Catalog subagent base.");
     let usage_hints = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ true,
+        /*subagent_context_token_cap*/ None,
     );
     assert_eq!(
         (
@@ -12420,10 +12428,12 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
     let messages = ResolvedModelMessages::bundled().multi_agent();
     let usage_hints = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
     config.expose_spawn_agent_model_overrides = false;
     let usage_hints_without_model_overrides = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
 
     for (hint, hint_without_model_overrides) in [
@@ -12515,6 +12525,31 @@ subagent_developer_instructions = "  \t  "
     assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
 }
 
+#[test]
+fn multi_agent_v2_noninteractive_wait_default_is_longer_and_bounded() {
+    let default = resolve_multi_agent_v2_config(&ConfigToml::default());
+    assert_eq!(
+        [
+            SessionSource::Cli,
+            SessionSource::Exec,
+            SessionSource::SubAgent(SubAgentSource::Review),
+        ]
+        .map(|source| default.default_wait_timeout_ms_for(&source)),
+        [30_000, 300_000, 300_000],
+    );
+
+    let bounded: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+max_wait_timeout_ms = 60000
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    assert_eq!(
+        resolve_multi_agent_v2_config(&bounded).default_wait_timeout_ms_for(&SessionSource::Exec),
+        60_000,
+    );
+}
+
 #[tokio::test]
 async fn multi_agent_v2_empty_usage_hint_overrides_are_preserved() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
@@ -12540,6 +12575,7 @@ subagent_usage_hint_text = ""
         &config.multi_agent_v2,
         messages,
         /*omit_update_plan_instructions*/ false,
+        /*subagent_context_token_cap*/ None,
     );
     assert_eq!(
         (

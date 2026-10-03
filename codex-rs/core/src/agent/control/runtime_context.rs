@@ -2,6 +2,7 @@
 //! These use the same local registry and thread manager as lifecycle operations.
 
 use super::LocalAgentRuntime;
+use crate::agent::status::is_final;
 use crate::agent::types::AgentMetadata;
 use crate::session_prefix::format_subagent_context_line;
 use crate::thread_manager::ThreadManagerState;
@@ -66,6 +67,26 @@ impl LocalAgentRuntime {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Whether a direct child of `parent_thread_id` is still running and can report to it.
+    /// Errs on the side of `true` when the thread manager is unavailable.
+    pub(crate) async fn has_reporting_children(&self, parent_thread_id: ThreadId) -> bool {
+        let (Ok(state), Ok(children)) = (
+            self.upgrade(),
+            self.open_thread_spawn_children(parent_thread_id).await,
+        ) else {
+            return true;
+        };
+        for (child_thread_id, _) in children {
+            let Ok(child) = state.get_thread(child_thread_id).await else {
+                continue;
+            };
+            if !is_final(&child.agent_status().await) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(super) async fn open_thread_spawn_children(

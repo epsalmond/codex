@@ -560,6 +560,8 @@ pub(crate) struct ChatWidget {
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     last_response_clock: Option<DateTime<Local>>,
+    /// Requests-per-turn history that converts `/shake` payback into turns.
+    request_pace: shake_cost::RequestPace,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
     pending_rate_limit_reset_request_id: Option<u64>,
@@ -1110,6 +1112,7 @@ impl ChatWidget {
                 self.bottom_pane
                     .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                 self.token_info = None;
+                self.request_pace.forget_total_tokens();
             }
         }
     }
@@ -2004,6 +2007,16 @@ impl ChatWidget {
     pub(crate) fn active_cell_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
         self.active_cell_transcript_hyperlink_lines(width)
             .map(crate::terminal_hyperlinks::visible_lines)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wake_mode_hint_visible(&self) -> bool {
+        self.bottom_pane.wake_mode_hint_visible()
+    }
+
+    /// Shows or hides the wake-mode explanation above the composer.
+    pub(crate) fn set_wake_mode_hint(&mut self, visible: bool) {
+        self.bottom_pane.set_wake_mode_hint(visible);
     }
 
     /// Return a reference to the widget's current config (includes any

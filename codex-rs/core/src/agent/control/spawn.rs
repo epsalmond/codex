@@ -22,6 +22,7 @@ use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::ChildReportMode;
+use crate::session::multi_agents::resolve_subagent_context_token_cap;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::session::multi_agents::resolve_usage_hints_with_root_polling;
 use codex_context_fragments::set_annotated_content;
@@ -1054,11 +1055,17 @@ impl LocalAgentControl {
                     &parent_thread.session_source,
                     self.runtime.wake_mode_enabled(),
                 ) == ChildReportMode::WaitAgent;
+                let parent_subagent_context_token_cap = resolve_subagent_context_token_cap(
+                    &parent_thread.session.services.models_manager,
+                    &parent_config,
+                )
+                .await;
                 let parent_usage_hints = resolve_usage_hints_with_root_polling(
                     &parent_config.multi_agent_v2,
                     ResolvedModelMessages::bundled().multi_agent(),
                     !parent_config.update_plan_enabled,
                     root_polling_enabled,
+                    parent_subagent_context_token_cap,
                 );
                 [parent_usage_hints.root, parent_usage_hints.subagent]
                     .into_iter()
@@ -1245,21 +1252,26 @@ impl LocalAgentControl {
             ));
             forked_rollout_items.push(RolloutItem::ResponseItem(developer_message.into()));
         }
-        if preserve_context_baselines
-            && multi_agent_version == MultiAgentVersion::V2
-            && let Some(subagent_usage_hint) = options
-                .multi_agent_v2_usage_hints
-                .as_ref()
-                .map(|hints| hints.subagent.clone())
-                .unwrap_or_else(|| {
-                    resolve_usage_hints(
-                        &config.multi_agent_v2,
-                        ResolvedModelMessages::bundled().multi_agent(),
-                        !config.update_plan_enabled,
-                    )
-                    .subagent
-                })
-        {
+        let subagent_usage_hint =
+            if !preserve_context_baselines || multi_agent_version != MultiAgentVersion::V2 {
+                None
+            } else if let Some(hints) = options.multi_agent_v2_usage_hints.as_ref() {
+                hints.subagent.clone()
+            } else {
+                let subagent_context_token_cap = resolve_subagent_context_token_cap(
+                    &parent_thread.session.services.models_manager,
+                    &config,
+                )
+                .await;
+                resolve_usage_hints(
+                    &config.multi_agent_v2,
+                    ResolvedModelMessages::bundled().multi_agent(),
+                    !config.update_plan_enabled,
+                    subagent_context_token_cap,
+                )
+                .subagent
+            };
+        if let Some(subagent_usage_hint) = subagent_usage_hint {
             let subagent_usage_hint_message = ContextualUserFragment::into(subagent_usage_hint);
             forked_rollout_items.push(RolloutItem::ResponseItem(
                 subagent_usage_hint_message.into(),

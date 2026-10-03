@@ -73,7 +73,7 @@ Scenario: Astra receives host and handler timings on completed and failed code-m
     - All agents use the same current working directory.
     - As a result, edits made by one agent are immediately visible to all other agents.
 
-    When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.
+    When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.
 
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 

@@ -1,0 +1,9 @@
+---
+source: tui/src/chatwidget/tests/mcp_startup.rs
+expression: rendered
+---
+• Auto-shake: Shook 24 tool outputs (~100000 tokens freed).
+
+• Auto-shake (cold resume): Shook 3 tool outputs (~9000 tokens freed).
+
+• Auto-shake (escalated): Shook 5 tool outputs + 1 block (~20000 tokens freed).

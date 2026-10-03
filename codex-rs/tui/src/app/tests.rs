@@ -2257,6 +2257,39 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
 }
 
 #[tokio::test]
+async fn wake_mode_hint_shows_once_when_root_turn_ends_with_running_children() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.thread_event_channels
+        .insert(root, ThreadEventChannel::new(/*capacity*/ 8));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: child,
+            agent_path: "/root/child".to_string(),
+            is_running_hint: true,
+        });
+
+    let mut visibility = Vec::new();
+    for turn_id in ["turn-1", "turn-2"] {
+        app.enqueue_thread_notification(root, turn_started_notification(root, turn_id))
+            .await?;
+        visibility.push(app.chat_widget.wake_mode_hint_visible());
+        app.enqueue_thread_notification(
+            root,
+            turn_completed_notification(root, turn_id, TurnStatus::Completed),
+        )
+        .await?;
+        visibility.push(app.chat_widget.wake_mode_hint_visible());
+    }
+
+    assert_eq!(visibility, vec![false, true, false, false]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -6026,6 +6059,7 @@ async fn make_test_app() -> Box<App> {
         agents_overview: Default::default(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
+        wake_mode_hint_shown: false,
         active_thread_id: None,
         active_thread_rx: None,
         primary_thread_id: None,
@@ -6141,6 +6175,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             agents_overview: Default::default(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
+            wake_mode_hint_shown: false,
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,

@@ -154,6 +154,27 @@ the same place auto-compaction decides. The intent is that a cheap surgical
 reduction removes the *need* to compact; auto-compaction stays the fallback and
 still fires when auto-shake is disabled, impossible, or would not free enough.
 
+### At a glance
+
+- **What triggers it:** active context reaching the model family's threshold
+  (`160000` tokens for gpt-5.6, `40%` of the window for gpt-6-astra, `60%`
+  otherwise), a prompt cache that has expired since the last request (cold
+  resume), or, after a plain automatic pass, context still above the threshold
+  (escalation). It runs only on persistent threads, and only when the preview
+  frees at least `min_elidable_percent` of the context and `min_savings_tokens`.
+- **Where recoverable content goes:** each elided region is saved under
+  `$CODEX_HOME/artifacts/<thread-id>/`, and its placeholder names that file.
+- **How it shows up:** the TUI renders the result as an info line such as
+  `Auto-shake: Shook 24 tool outputs (~100000 tokens freed).`, with
+  `(cold resume)` or `(escalated)` after `Auto-shake` for those passes. It is
+  not a warning; nothing needs attention.
+- **How to opt out:** set `threshold = "off"` per family, for example
+  `[auto_shake.models."gpt-5.6"] threshold = "off"`. A global
+  `[auto_shake] threshold = "off"` disables only families that inherit the
+  global value; gpt-5.6 and gpt-6-astra keep their built-in thresholds until
+  their own family entry is set to `"off"`. `cold_resume = false` disables
+  only the prompt-cache-expiry trigger. See "Configuration" below.
+
 ### Decision sequence
 
 1. Resolve the effective settings for the turn's model slug (precedence below).
@@ -424,7 +445,8 @@ A shake that changed anything emits:
   keeps existing readers matching, the suffix lets benchmarks separate the four;
 - a transcript `Warning` event, prefixed `⛭ shake:` (manual), `⛭ shake (auto):`
   (automatic), `⛭ shake (auto, cold resume):` (cold resume), or
-  `⛭ shake (auto, escalated):` (escalated);
+  `⛭ shake (auto, escalated):` (escalated). The TUI strips the marker; it
+  renders manual results as warnings and automatic results as info lines;
 - a structured `INFO` log on target `codex_core::shake` with
   `trigger=manual|automatic|automatic_cold_resume|automatic_escalated`, `mode`,
   the per-category counts, and `tokens_freed`.
@@ -596,11 +618,18 @@ Keep the threshold triggers but never shake just because the thread went idle:
 cold_resume = false
 ```
 
-Disable auto-shake entirely:
+Disable auto-shake entirely. `gpt-5.6` and `gpt-6-astra` have built-in family
+thresholds that win over the global value, so point them back at it:
 
 ```toml
 [auto_shake]
 threshold = "off"
+
+[auto_shake.models."gpt-5.6"]
+threshold = "inherit"
+
+[auto_shake.models."gpt-6-astra"]
+threshold = "inherit"
 ```
 
 Lower the subagent cap so children shake and compact earlier than the

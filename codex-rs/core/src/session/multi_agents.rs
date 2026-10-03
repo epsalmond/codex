@@ -1,12 +1,16 @@
 use crate::agent::types::ResolvedMultiAgentV2UsageHints;
+use crate::config::Config;
 use crate::config::MultiAgentV2Config;
 use crate::context::MultiAgentRoleInstructions;
+use crate::session::context_window::auto_compact_scope_limit;
 use crate::session::step_context::StepContext;
 use codex_features::AgentPolling;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_prompts::ResolvedMessage;
 use codex_prompts::ResolvedModelMessages;
 use codex_prompts::ResolvedMultiAgentMessages;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
@@ -78,6 +82,32 @@ impl ChildReportMode {
     }
 }
 
+/// The context budget a subagent's role text states: the token count at which its context
+/// compacts, so the stated budget and the over-limit error quote the same number.
+/// `model_info` must be the subagent's model with `config`'s overrides applied.
+pub(crate) fn subagent_context_token_cap(config: &Config, model_info: &ModelInfo) -> Option<u64> {
+    if !config.subagent_context_reduction.enabled {
+        return None;
+    }
+    auto_compact_scope_limit(config, model_info).and_then(|limit| u64::try_from(limit).ok())
+}
+
+/// [`subagent_context_token_cap`] for a session config whose model info is not at hand,
+/// resolved the way the session resolves it at startup.
+pub(crate) async fn resolve_subagent_context_token_cap(
+    models_manager: &SharedModelsManager,
+    config: &Config,
+) -> Option<u64> {
+    if !config.subagent_context_reduction.enabled {
+        return None;
+    }
+    let model = config.model.as_deref()?;
+    let model_info = models_manager
+        .get_model_info(model, &config.to_models_manager_config())
+        .await;
+    subagent_context_token_cap(config, &model_info)
+}
+
 pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRoleInstructions> {
     let turn_context = step_context.turn.as_ref();
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {
@@ -101,6 +131,7 @@ pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRo
         !turn_context.config.update_plan_enabled && turn_context.config.model_catalog.is_none(),
         root_polling_enabled,
         subagent_polling_enabled,
+        subagent_context_token_cap(&turn_context.config, &step_context.settings.model_info),
     );
     match &turn_context.session_source {
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => snapshot.subagent,
@@ -118,12 +149,14 @@ pub(crate) fn resolve_usage_hints(
     config: &MultiAgentV2Config,
     multi_agent_messages: ResolvedMultiAgentMessages<'_>,
     omit_update_plan_instructions: bool,
+    subagent_context_token_cap: Option<u64>,
 ) -> ResolvedMultiAgentV2UsageHints {
     resolve_usage_hints_with_root_polling(
         config,
         multi_agent_messages,
         omit_update_plan_instructions,
         config.agent_polling == AgentPolling::Enabled,
+        subagent_context_token_cap,
     )
 }
 
@@ -132,6 +165,7 @@ pub(crate) fn resolve_usage_hints_with_root_polling(
     multi_agent_messages: ResolvedMultiAgentMessages<'_>,
     omit_update_plan_instructions: bool,
     root_polling_enabled: bool,
+    subagent_context_token_cap: Option<u64>,
 ) -> ResolvedMultiAgentV2UsageHints {
     resolve_usage_hints_with_polling_modes(
         config,
@@ -139,6 +173,7 @@ pub(crate) fn resolve_usage_hints_with_root_polling(
         omit_update_plan_instructions,
         root_polling_enabled,
         /*subagent_polling_enabled*/ true,
+        subagent_context_token_cap,
     )
 }
 
@@ -148,6 +183,7 @@ pub(crate) fn resolve_usage_hints_with_polling_modes(
     omit_update_plan_instructions: bool,
     root_polling_enabled: bool,
     subagent_polling_enabled: bool,
+    subagent_context_token_cap: Option<u64>,
 ) -> ResolvedMultiAgentV2UsageHints {
     let resolve_role = |configured: Option<&str>,
                         message: ResolvedMessage<'_>,
@@ -182,6 +218,7 @@ pub(crate) fn resolve_usage_hints_with_polling_modes(
             agent_polling_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
             is_root,
+            subagent_context_token_cap,
         })
     };
 

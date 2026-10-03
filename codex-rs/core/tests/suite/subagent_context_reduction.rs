@@ -6,7 +6,6 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::config::SubagentContextReductionConfig;
 use codex_features::Feature;
-use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::protocol::EventMsg;
 use core_test_support::responses::ev_assistant_message;
@@ -148,6 +147,7 @@ fn reduction_test(enabled: bool, threshold_tokens: u64) -> TestCodexBuilder {
             // `wait_agent` waits for new mailbox activity; a child that already finished
             // may have delivered its completion before the call.
             config.multi_agent_v2.default_wait_timeout_ms = 1_000;
+            config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 1_000;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.subagent_context_reduction = SubagentContextReductionConfig {
@@ -398,7 +398,7 @@ async fn child_fails_when_compaction_leaves_it_over_the_limit() -> Result<()> {
     // One sample and one compaction, then the turn stops instead of resampling, and
     // the parent receives the failure as the child's final answer.
     let child = response_bodies(&server, is_child).await;
-    let error = CodexErr::ContextWindowExceeded.to_string();
+    let error = "This subagent's turn ended because its context was still over its 50000-token context limit after compaction. Use `followup_task` to ask it for a brief report of its partial results";
     assert_eq!(
         (
             child.iter().map(is_compaction).collect::<Vec<_>>(),
@@ -406,11 +406,17 @@ async fn child_fails_when_compaction_leaves_it_over_the_limit() -> Result<()> {
                 .iter()
                 .map(|body| {
                     let body = body.to_string();
-                    (body.contains("Agent errored:"), body.contains(&error))
+                    (body.contains("Agent errored:"), body.contains(error))
                 })
                 .collect::<Vec<_>>(),
         ),
         (vec![false, true], vec![(true, true)]),
+    );
+    // The child's role text states the cap it just exceeded.
+    assert!(
+        child[0]
+            .to_string()
+            .contains("Your context budget is 50000 tokens")
     );
     Ok(())
 }

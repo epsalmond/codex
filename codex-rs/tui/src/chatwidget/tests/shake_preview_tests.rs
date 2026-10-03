@@ -188,3 +188,139 @@ async fn shake_preview_withholds_unknown_billing_and_body_budget() {
         render_bottom_popup(&chat, /*width*/ 90)
     );
 }
+
+#[tokio::test]
+async fn shake_preview_converts_payback_to_turns_at_session_pace() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.6-sol")).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.has_codex_backend_auth = true;
+    chat.last_response_clock = Some(chrono::Local::now() - chrono::Duration::minutes(45));
+    chat.config.model_auto_compact_token_limit = Some(290_000);
+    // Two live turns at 3 and 2 model requests: 2.5 requests per turn.
+    let mut total_tokens = 0;
+    for (turn_id, requests) in [("turn-1", 3), ("turn-2", 2)] {
+        handle_turn_started(&mut chat, turn_id);
+        for _ in 0..requests {
+            total_tokens += 100_000;
+            handle_token_count(
+                &mut chat,
+                Some(TokenUsageInfo {
+                    total_token_usage: TokenUsage {
+                        total_tokens,
+                        ..Default::default()
+                    },
+                    last_token_usage: TokenUsage {
+                        total_tokens: 300_000,
+                        ..Default::default()
+                    },
+                    model_context_window: Some(950_000),
+                }),
+            );
+        }
+        handle_turn_completed(&mut chat, turn_id, /*duration_ms*/ None);
+    }
+    let mut preview = preview();
+    preview.tokens_before = 280_000;
+    preview.tokens_after = 180_000;
+    chat.show_shake_preview(thread_id, ShakeMode::Elide, preview);
+    let rendered = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(
+        rendered.contains("Pays back after ~5 requests ≈ 2 turns at this session's pace."),
+        "{rendered}"
+    );
+    assert_chatwidget_snapshot!("shake_preview_sol_codex_turn_pace", rendered);
+}
+
+fn usage_with_total(total_tokens: i64) -> Option<TokenUsageInfo> {
+    Some(TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens,
+            ..Default::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 100_000,
+            ..Default::default()
+        },
+        model_context_window: Some(950_000),
+    })
+}
+
+#[tokio::test]
+async fn turn_pace_ignores_turn_attached_mid_flight() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.6-sol")).await;
+    chat.thread_id = Some(ThreadId::new());
+    // Attaching to a running thread replays its buffered notifications,
+    // including the in-progress turn's start and its cumulative usage.
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            turn: app_server_turn(
+                "turn-attached",
+                AppServerTurnStatus::InProgress,
+                /*duration_ms*/ None,
+                /*error*/ None,
+            ),
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    handle_token_count_from(
+        &mut chat,
+        usage_with_total(/*total_tokens*/ 400_000),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    // Live updates after attach: a repeated total, then one more request.
+    handle_token_count(&mut chat, usage_with_total(/*total_tokens*/ 400_000));
+    handle_token_count(&mut chat, usage_with_total(/*total_tokens*/ 500_000));
+    handle_turn_completed(&mut chat, "turn-attached", /*duration_ms*/ None);
+    assert_eq!(
+        chat.request_pace.turns_for(/*requests*/ 6),
+        None,
+        "a turn whose start was replayed missed earlier requests"
+    );
+
+    // One fully observed turn of three requests sets the pace.
+    handle_turn_started(&mut chat, "turn-live");
+    for total_tokens in [600_000, 700_000, 800_000] {
+        handle_token_count(&mut chat, usage_with_total(total_tokens));
+    }
+    handle_turn_completed(&mut chat, "turn-live", /*duration_ms*/ None);
+    assert_eq!(chat.request_pace.turns_for(/*requests*/ 6), Some(2));
+}
+
+#[tokio::test]
+async fn shake_preview_pays_back_immediately_when_cache_ttl_has_passed() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.6-sol")).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.has_codex_backend_auth = true;
+    chat.last_response_clock = Some(chrono::Local::now() - chrono::Duration::minutes(75));
+    chat.config.model_auto_compact_token_limit = Some(290_000);
+    chat.token_info = usage_with_total(/*total_tokens*/ 0).map(|mut info| {
+        info.last_token_usage.total_tokens = 300_000;
+        info
+    });
+    let show = |chat: &mut ChatWidget| {
+        let mut preview = preview();
+        preview.tokens_before = 280_000;
+        preview.tokens_after = 180_000;
+        chat.show_shake_preview(thread_id, ShakeMode::Elide, preview);
+        render_bottom_popup(chat, /*width*/ 90)
+    };
+    let rendered = show(&mut chat);
+    assert!(
+        rendered.contains("Pays back immediately: idle exceeds the 60m prompt-cache TTL"),
+        "{rendered}"
+    );
+    assert_chatwidget_snapshot!("shake_preview_sol_codex_cold_cache", rendered);
+
+    // A configured TTL longer than the idle time keeps the warm break-even.
+    chat.config.auto_shake.cache_ttl = Some(codex_config::config_toml::AutoShakeDurationToml(
+        /*seconds*/ 7_200,
+    ));
+    let rendered = show(&mut chat);
+    assert!(
+        rendered.contains("Pays back after ~5 requests."),
+        "{rendered}"
+    );
+}
