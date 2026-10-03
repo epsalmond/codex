@@ -167,3 +167,98 @@ async fn connection_failure_pauses_retry_budget_until_provider_is_reachable() ->
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_rechecks_partial_output_before_retry_without_completed_usage() -> anyhow::Result<()>
+{
+    use codex_core::config::SubagentContextReductionConfig;
+    use codex_protocol::context_usage::ContextReductionOutcome;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+
+    skip_if_no_network!(Ok(()));
+    let partial = "partial ".repeat(/*n*/ 1_000);
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("seed", "done"),
+                responses::ev_completed_with_tokens("seed", /*total_tokens*/ 49_000),
+            ]),
+            // A real item is retained, but the stream closes without measuring it.
+            responses::sse(vec![responses::ev_assistant_message("partial", &partial)]),
+            responses::sse(vec![
+                serde_json::json!({"type": "response.output_item.done", "item": {
+                    "type": "compaction", "encrypted_content": "retained-retry-task-summary"
+                }}),
+                responses::ev_completed("compact"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("final", "done"),
+                responses::ev_completed("final"),
+            ]),
+        ],
+    )
+    .await;
+    let fixture = test_codex()
+        .with_model("gpt-5.6-sol")
+        .with_session_source(SessionSource::SubAgent(SubAgentSource::Other(
+            "retry-budget".to_string(),
+        )))
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.supports_websockets = false;
+            config.subagent_context_reduction = SubagentContextReductionConfig {
+                enabled: true,
+                threshold_tokens: 50_000,
+            };
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    fixture
+        .submit_text_turn("Keep the retry task constraint.")
+        .await?;
+    fixture
+        .submit_text_turn("Validate the remaining work.")
+        .await?;
+    let requests = mock.requests();
+    assert!(
+        requests.len() >= 3,
+        "seed, partial stream and rebuilt retry requests"
+    );
+    let before_partial = requests[1].body_json();
+    let retry = requests[2].body_json();
+    assert!(
+        before_partial.to_string().len() + partial.len() < 50_000 * 4,
+        "the complete local request estimate stays below the cap"
+    );
+    assert!(
+        retry["input"].as_array().is_some_and(|items| items
+            .iter()
+            .any(|item| item["type"] == "compaction_trigger")),
+        "provider usage plus retained partial output must reduce before retrying"
+    );
+    assert!(retry["input"].to_string().contains(&partial));
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[3].body_json()["input"]
+            .to_string()
+            .contains("retained-retry-task-summary")
+    );
+    let snapshot = fixture
+        .codex
+        .context_usage_snapshot()
+        .await
+        .expect("captured context");
+    assert_eq!(
+        snapshot
+            .last_reduction
+            .as_ref()
+            .map(|record| record.outcome),
+        Some(ContextReductionOutcome::Compacted)
+    );
+    fixture.codex.shutdown_and_wait().await?;
+    Ok(())
+}

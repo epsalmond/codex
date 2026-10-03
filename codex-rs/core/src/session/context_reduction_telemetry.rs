@@ -96,6 +96,7 @@ impl Session {
             .saturating_add(changed_overhead);
         let mut active = request_tokens.max(status.active_context_tokens.saturating_add(additions));
         // A response without usage must not discard already estimated newer context.
+        // Partial output retained by an early-close stream also grows this floor on retry.
         // Actual measurements and history rewrites clear this derived floor.
         {
             let state = self.state.lock().await;
