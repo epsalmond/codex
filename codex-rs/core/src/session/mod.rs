@@ -236,6 +236,9 @@ mod daemon_recovery;
 mod environment;
 mod extension_interruption;
 pub(crate) mod extension_metrics;
+#[cfg(test)]
+#[path = "failed_start_tests.rs"]
+mod failed_start_tests;
 mod guardian_checkpoint;
 mod handlers;
 mod inject;
