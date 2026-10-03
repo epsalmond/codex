@@ -6,6 +6,9 @@ use super::agent_picker_status::picker_status_label;
 use super::*;
 use crate::app_event::AgentPickerThreadRefresh;
 use crate::bottom_pane::SelectionDescriptionLayout;
+use crate::bottom_pane::SelectionRowDisplay;
+use crate::bottom_pane::SelectionSearchActivation;
+use crate::bottom_pane::SelectionSecondaryAction;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListParams;
@@ -342,10 +345,12 @@ impl App {
             view_id: Some(AGENT_PICKER_VIEW_ID),
             title: Some("Subagents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(agent_picker_hint(AgentPickerHint::Select)),
             items,
             initial_selected_idx,
             is_searchable: true,
+            search_activation: SelectionSearchActivation::Slash,
+            row_display: SelectionRowDisplay::SingleLine,
             search_placeholder: Some("Search subagents".to_string()),
             description_layout: SelectionDescriptionLayout::Columns,
             ..SelectionViewParams::picker()
@@ -356,15 +361,22 @@ impl App {
         &self,
         mut on_row: impl FnMut(usize, ThreadId),
     ) -> Vec<SelectionItem> {
-        self.agent_navigation
-            .visible_threads()
+        let mut threads = self.agent_navigation.visible_threads();
+        if let Some(primary_idx) = threads
+            .iter()
+            .position(|(id, _)| self.primary_thread_id == Some(*id))
+        {
+            let primary = threads.remove(primary_idx);
+            threads.insert(/*index*/ 0, primary);
+        }
+        threads
             .into_iter()
             .enumerate()
             .map(|(idx, (thread_id, entry))| {
                 on_row(idx, thread_id);
                 let id = thread_id;
                 let is_primary = self.primary_thread_id == Some(thread_id);
-                let name = entry
+                let mut name = entry
                     .agent_path
                     .as_deref()
                     .map(str::trim)
@@ -377,6 +389,23 @@ impl App {
                             is_primary,
                         )
                     });
+                if !is_primary
+                    && entry
+                        .agent_nickname
+                        .as_deref()
+                        .is_none_or(|name| name.trim().is_empty())
+                    && entry
+                        .agent_role
+                        .as_deref()
+                        .is_none_or(|role| role.trim().is_empty())
+                    && entry
+                        .agent_path
+                        .as_deref()
+                        .is_none_or(|path| path.trim().is_empty())
+                {
+                    let uuid = thread_id.to_string();
+                    name = format!("Agent {}", &uuid[uuid.len() - 8..]);
+                }
                 let details = self.agent_navigation.picker_details(&thread_id);
                 let is_error = details.is_some_and(|details| details.is_error);
                 let status = picker_status_label(entry.is_closed, entry.is_running, is_error);
@@ -400,6 +429,14 @@ impl App {
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
                     })],
+                    secondary_action: (!is_primary).then(|| SelectionSecondaryAction {
+                        keys: vec![
+                            crate::key_hint::plain(KeyCode::Char('x')),
+                            crate::key_hint::shift(KeyCode::Char('x')),
+                        ],
+                        action: Box::new(move |tx| tx.send(AppEvent::CloseAgentThread(id))),
+                        footer_hint: agent_picker_hint(AgentPickerHint::Close),
+                    }),
                     dismiss_on_select: true,
                     search_value: Some(format!("{name} {uuid}")),
                     ..Default::default()
@@ -495,4 +532,26 @@ impl App {
             _ => {}
         }
     }
+}
+
+enum AgentPickerHint {
+    Select,
+    Close,
+}
+
+fn agent_picker_hint(hint: AgentPickerHint) -> ratatui::text::Line<'static> {
+    let mut spans = vec![
+        crate::key_hint::plain(KeyCode::Enter).into(),
+        " select · ".into(),
+        crate::key_hint::plain(KeyCode::Char('/')).into(),
+        " search · ".into(),
+    ];
+    if matches!(hint, AgentPickerHint::Close) {
+        spans.extend([
+            crate::key_hint::plain(KeyCode::Char('x')).into(),
+            " close agent · ".into(),
+        ]);
+    }
+    spans.extend([crate::key_hint::plain(KeyCode::Esc).into(), " back".into()]);
+    spans.into()
 }

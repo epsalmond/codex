@@ -4447,12 +4447,11 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                   Subagents
                   Select an agent to watch. ⌥← previous, ⌥→ next.
 
-                  Search subagents
 
-                › • Main [default] (current)  idle context ?
-                  • /root/worker              idle context ?
+                › 1. • Main [default] (current)  idle context ?
+                  2. • /root/worker              idle context ?
 
-                  enter select · esc back
+                  enter select · / search · esc back
                 "###
                 );
                 assert_eq!(take_backfill_counts(&requests), (0, 0));
