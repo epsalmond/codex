@@ -50,6 +50,17 @@ pub(crate) async fn context_window_token_status_for_model(
     context_window_token_status_with_config(sess, &config, model_info).await
 }
 
+/// Token count at which auto-compaction triggers for `config`'s scope on `model_info`.
+/// `model_info` must already carry `config`'s overrides (see `ModelsManager::get_model_info`).
+pub(crate) fn auto_compact_scope_limit(config: &Config, model_info: &ModelInfo) -> Option<i64> {
+    match config.model_auto_compact_token_limit_scope {
+        AutoCompactTokenLimitScope::Total => model_info.auto_compact_token_limit(),
+        AutoCompactTokenLimitScope::BodyAfterPrefix => config
+            .model_auto_compact_token_limit
+            .or_else(|| model_info.auto_compact_token_limit()),
+    }
+}
+
 async fn context_window_token_status_with_config(
     sess: &Session,
     config: &Config,
@@ -57,24 +68,16 @@ async fn context_window_token_status_with_config(
 ) -> ContextWindowTokenStatus {
     let active_context_tokens = sess.get_total_token_usage().await;
 
+    let auto_compact_scope_limit = auto_compact_scope_limit(config, model_info);
     // Count either the full active context or only the tokens added after the initial prefix.
-    let (auto_compact_scope_tokens, auto_compact_scope_limit, auto_compact_window_prefill_tokens) =
+    let (auto_compact_scope_tokens, auto_compact_window_prefill_tokens) =
         match config.model_auto_compact_token_limit_scope {
-            AutoCompactTokenLimitScope::Total => (
-                active_context_tokens,
-                model_info.auto_compact_token_limit(),
-                None,
-            ),
+            AutoCompactTokenLimitScope::Total => (active_context_tokens, None),
             AutoCompactTokenLimitScope::BodyAfterPrefix => {
                 let window = sess.auto_compact_window_snapshot().await;
                 let baseline = window.prefill_input_tokens.unwrap_or(active_context_tokens);
-
-                let scope_limit = config
-                    .model_auto_compact_token_limit
-                    .or_else(|| model_info.auto_compact_token_limit());
                 (
                     active_context_tokens.saturating_sub(baseline),
-                    scope_limit,
                     window.prefill_input_tokens,
                 )
             }

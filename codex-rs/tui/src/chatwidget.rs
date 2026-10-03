@@ -2009,6 +2009,16 @@ impl ChatWidget {
             .map(crate::terminal_hyperlinks::visible_lines)
     }
 
+    #[cfg(test)]
+    pub(crate) fn wake_mode_hint_visible(&self) -> bool {
+        self.bottom_pane.wake_mode_hint_visible()
+    }
+
+    /// Shows or hides the wake-mode explanation above the composer.
+    pub(crate) fn set_wake_mode_hint(&mut self, visible: bool) {
+        self.bottom_pane.set_wake_mode_hint(visible);
+    }
+
     /// Return a reference to the widget's current config (includes any
     /// runtime overrides applied via TUI, e.g., model or approval policy).
     pub(crate) fn config_ref(&self) -> &Config {

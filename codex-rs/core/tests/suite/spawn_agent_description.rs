@@ -370,7 +370,7 @@ async fn multi_agent_v2_wait_guidance_uses_overridable_developer_instructions(
     let developer_messages = request.message_input_texts("developer");
     let has_wait_guidance = developer_messages.iter().any(|message| {
         message.contains(
-            "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.",
+            "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.",
         )
     });
     assert_eq!(has_wait_guidance, expected_wait_guidance);
@@ -382,7 +382,8 @@ async fn multi_agent_v2_wait_guidance_uses_overridable_developer_instructions(
         wait_agent_tool
             .pointer("/parameters/properties/timeout_ms/description")
             .and_then(Value::as_str),
-        Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
+        // `test_codex` runs as an Exec session, which uses the non-interactive default.
+        Some("Timeout in milliseconds. Defaults to 300000, min 10000, max 3600000.")
     );
 
     Ok(())
@@ -402,8 +403,7 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
 ) -> Result<()> {
     let resumed_root_agent_usage_hint_text = resumed_root_agent_usage_hint_text.map(str::to_string);
     let legacy_root_agent_usage_hint_text = "Legacy root instructions.";
-    let wait_guidance =
-        "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
+    let wait_guidance = "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
     let config_toml =
         format!("[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{agent_polling}\"\n");
     let server = start_mock_server().await;
@@ -578,8 +578,7 @@ async fn multi_agent_v2_resume_refreshes_changed_wait_guidance(
     initial_agent_polling: &str,
     resumed_agent_polling: &str,
 ) -> Result<()> {
-    let wait_guidance =
-        "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
+    let wait_guidance = "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
     let initial_config_toml = format!(
         "[features.multi_agent_v2]\nenabled = true\nagent_polling = \"{initial_agent_polling}\"\n"
     );
@@ -763,7 +762,7 @@ agent_polling = "{agent_polling}"
             .iter()
             .any(|message| {
                 message.contains(
-                "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.",
+                "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.",
             )
             }),
         agent_polling == "enabled"
@@ -833,7 +832,7 @@ async fn exec_resume_of_interactive_multi_agent_thread_uses_wait_agent_fallback(
             .iter()
             .any(|message| {
                 message.contains(
-            "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.",
+            "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.",
         )
             })
     );
@@ -878,7 +877,7 @@ async fn exec_resume_of_interactive_multi_agent_thread_uses_wait_agent_fallback(
     let tui_root_usage_hint = resolved_root_usage_hint(&tui_resumed.config, &tui_request);
     assert!(
         !tui_root_usage_hint.contains(
-            "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling."
+            "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports."
         ),
         "interactive resume should remove prior wait guidance: {tui_root_usage_hint}"
     );

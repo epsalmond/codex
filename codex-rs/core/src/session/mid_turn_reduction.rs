@@ -12,6 +12,7 @@ use std::sync::Arc;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use tracing::warn;
 
@@ -42,7 +43,28 @@ pub(super) enum MidTurnReduction {
     /// Compaction ran and sampling continues (a root session may still be over the limit).
     Compacted,
     /// Compaction ran but a subagent's usage is still at or over the limit.
-    Insufficient,
+    Insufficient { limit_tokens: Option<i64> },
+}
+
+/// Error text for a subagent turn that ended over its context limit. The parent reads it
+/// as the child's status, so it states what happened and the parent's next step.
+/// A subagent inherits its parent's `multi_agent_version`, which names the parent's messaging tool.
+pub(super) fn subagent_context_limit_message(
+    limit_tokens: Option<i64>,
+    multi_agent_version: MultiAgentVersion,
+) -> String {
+    let limit = limit_tokens.map_or_else(
+        || "context limit".to_string(),
+        |limit| format!("{limit}-token context limit"),
+    );
+    let ask = match multi_agent_version {
+        MultiAgentVersion::V2 => "Use `followup_task` to ask it",
+        MultiAgentVersion::V1 => "Use `send_input` to ask it",
+        MultiAgentVersion::Disabled => "Ask it",
+    };
+    format!(
+        "This subagent's turn ended because its context was still over its {limit} after compaction. {ask} for a brief report of its partial results, then delegate the remaining work as smaller tasks."
+    )
 }
 
 pub(super) async fn reduce_mid_turn(
@@ -108,7 +130,11 @@ pub(super) async fn reduce_mid_turn(
             full_context_window_limit = ?after_compact.full_context_window_limit,
             "mid-turn compaction left the subagent context over its limit; failing the turn"
         );
-        return Ok(MidTurnReduction::Insufficient);
+        return Ok(MidTurnReduction::Insufficient {
+            limit_tokens: after_compact
+                .auto_compact_scope_limit
+                .or(after_compact.full_context_window_limit),
+        });
     }
     Ok(MidTurnReduction::Compacted)
 }
@@ -128,3 +154,7 @@ pub(super) async fn record_reduction(
     })
     .await;
 }
+
+#[cfg(test)]
+#[path = "mid_turn_reduction_tests.rs"]
+mod tests;

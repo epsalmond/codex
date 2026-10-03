@@ -129,6 +129,10 @@ and app-server roots use wake mode without extra configuration. A V2 child
 created with `ThreadSpawn` also wakes when its own children report, at any
 depth, including when it was spawned under an Exec root. The Exec root itself
 continues polling its direct children with `wait_agent`.
+In `codex exec` and in subagents, `wait_agent` without `timeout_ms` waits up to
+300 seconds (interactive sessions keep 30 seconds), returns as soon as an agent
+reports, and returns at once when no child is running; a configured
+`default_wait_timeout_ms` applies everywhere.
 
 To keep polling throughout the agent tree, set:
 
