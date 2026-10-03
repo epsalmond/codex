@@ -90,3 +90,49 @@ fn empty_search_esc_returns_to_navigation_and_ctrl_c_dismisses() {
     view.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert_eq!(view.completion, Some(ViewCompletion::Cancelled));
 }
+
+#[test]
+fn vanished_selection_keeps_filtered_row_and_handles_empty_results() {
+    let (mut view, _) = picker();
+    let items = || {
+        [
+            "Main", "Other", "worker-a", "worker-b", "worker-c", "worker-d",
+        ]
+        .into_iter()
+        .map(|name| SelectionItem {
+            selection_key: Some(name.into()),
+            name: name.into(),
+            search_value: Some(name.into()),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>()
+    };
+    view.replace_items_preserving_state(items());
+    view.handle_key_event(KeyCode::Char('/').into());
+    assert!(view.handle_paste("worker".into()));
+    view.handle_key_event(KeyCode::Down.into());
+    assert_eq!(view.selected_actual_idx(), Some(/*value*/ 3));
+
+    let mut updated = items();
+    updated.remove(/*index*/ 3);
+    view.replace_items_preserving_state(updated);
+    assert_eq!(
+        (
+            view.state.selected_idx,
+            view.items[view.selected_actual_idx().unwrap()]
+                .name
+                .as_str()
+        ),
+        (Some(1), "worker-c")
+    );
+    view.replace_items_preserving_state(vec![SelectionItem {
+        selection_key: Some("Main".into()),
+        name: "Main".into(),
+        search_value: Some("Main".into()),
+        ..Default::default()
+    }]);
+    assert_eq!(
+        (view.search_query.as_str(), view.state.selected_idx),
+        ("worker", None)
+    );
+}

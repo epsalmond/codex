@@ -1172,6 +1172,12 @@ impl BottomPaneView for ListSelectionView {
                 self.search_query.clear();
                 self.apply_filter();
             }
+            _ if self.search_active
+                && crate::key_hint::ctrl(KeyCode::Char('u')).is_press(key_event) =>
+            {
+                self.search_query.clear();
+                self.apply_filter();
+            }
             _ if allow_plain_char_navigation && self.keymap.move_up.is_pressed(key_event) => {
                 self.move_up()
             }

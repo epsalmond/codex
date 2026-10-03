@@ -8,7 +8,7 @@ Spawned subagents inherit a 272,000-token Shake and compaction cap by default, t
 
 ## Subagent picker details
 
-The `/subagents` picker shows each child’s status, latest reported context usage, and a short preview of its latest final response when idle. See [monitoring subagents](README.md#monitoring-subagents).
+The `/subagents` picker shows child status, context usage, and final-response previews, with numbered selection, `/` search and Esc to leave search, Ctrl+U to clear the query (Cmd+Delete in Ghostty on macOS), and `X` to archive a child while preserving the selected row. Option/Alt+Left/Right also switch visible agents with an empty prompt and no popup or overlay, including terminals that send Alt+b/f over SSH; see [monitoring subagents](README.md#monitoring-subagents).
 
 ## Wake mode for multi-agent orchestrators
 
