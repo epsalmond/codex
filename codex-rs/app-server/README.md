@@ -6,6 +6,7 @@ model, its usable window, the effective child policy, and the last reduction
 outcome. Unavailable fields stay null; legacy cumulative counters retain their
 meaning. Metadata without provider counters is delivered on `turn/completed`.
 
+`lastReduction.completedAt` records when the reduction attempt finished.
 `observedAt` records the observation time; `providerUsageAt` records the last
 known provider measurement. Resume preserves both timestamps. `shakeWatermark`
 is the exclusive sealed-history-item boundary, never a token count or percent.

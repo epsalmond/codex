@@ -529,7 +529,7 @@ see "Subagents" above for how the cap is applied.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `subagent_context_reduction.enabled` | bool | `true` | Apply the cap to spawned and resumed children. |
-| `subagent_context_reduction.threshold_tokens` | int > 0 | `272000` | Token count at which subagents shake and then compact, when lower than the limits they would otherwise inherit. `0` is rejected with a config error. |
+| `subagent_context_reduction.threshold_tokens` | int > 0 | `272000` | Independent cap on the complete prepared child request; also bounds inherited auto-compaction and auto-shake limits. `0` is rejected with a config error. |
 
 This cap controls child context reduction, not whether a parent polls for child
 results. The separate root polling setting and its default are documented in
