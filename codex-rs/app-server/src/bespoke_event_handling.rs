@@ -1025,8 +1025,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::TokenCount(token_count_event) => {
-            handle_token_count_event(conversation_id, event_turn_id, token_count_event, &outgoing, &thread_state)
-                .await;
+            handle_token_count_event(
+                conversation_id,
+                event_turn_id,
+                token_count_event,
+                &outgoing,
+                &thread_state,
+            )
+            .await;
         }
         EventMsg::Error(ev) => {
             thread_watch_manager
@@ -1601,7 +1607,11 @@ async fn handle_token_count_event(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let TokenCountEvent { info, rate_limits, context_usage } = token_count_event;
+    let TokenCountEvent {
+        info,
+        rate_limits,
+        context_usage,
+    } = token_count_event;
     let context_usage = {
         let mut state = thread_state.lock().await;
         if let Some(context_usage) = context_usage {

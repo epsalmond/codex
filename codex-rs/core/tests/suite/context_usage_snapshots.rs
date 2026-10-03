@@ -1,7 +1,10 @@
 use anyhow::Context;
 use codex_core::config::SubagentContextReductionConfig;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
 use codex_protocol::context_usage::ContextReductionOutcome;
 use codex_protocol::context_usage::ContextTokenBasis;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -14,6 +17,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 
 fn completed_without_usage(id: &str) -> serde_json::Value {
     serde_json::json!({"type": "response.completed", "response": {"id": id}})
@@ -180,5 +184,182 @@ async fn failed_initial_reduction_emits_metadata_before_terminal_without_usage()
         })
         .context("terminal event")?;
     assert!(metadata < terminal);
+    Ok(())
+}
+
+#[test_case::test_case(Some(0), Some(0); "verified unsealed boundary")]
+#[test_case::test_case(Some(17), None; "mismatched saved boundary")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_preserves_captured_observation_and_provider_times(
+    saved_watermark: Option<u64>,
+    restored_watermark: Option<u64>,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("seed", "done"),
+            responses::ev_completed_with_tokens("seed", /*total_tokens*/ 40_000),
+        ]),
+    )
+    .await;
+    let initial = child_builder(/*cap*/ 50_000)
+        .build_with_auto_env(&server)
+        .await?;
+    initial.submit_text_turn("Remember this task.").await?;
+    let mut expected = initial
+        .codex
+        .context_usage_snapshot()
+        .await
+        .context("initial observation")?;
+    expected.observed_at = Some(1_700_000_010);
+    expected.provider_usage_at = Some(1_700_000_000);
+    expected.shake_watermark = saved_watermark;
+    initial.codex.shutdown_and_wait().await?;
+    let mut history = initial
+        .thread_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: initial.session_configured.thread_id,
+            include_archived: true,
+        })
+        .await?;
+    for item in &mut history.items {
+        if let codex_rollout::RolloutItem::EventMsg(EventMsg::TokenCount(event)) = item
+            && event.context_usage.is_some()
+        {
+            event.context_usage = Some(expected.clone());
+        }
+    }
+    let resumed = initial
+        .thread_manager
+        .resume_thread_with_history(
+            initial.config.clone(),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: history.thread_id,
+                history: Arc::new(history.items),
+                rollout_path: initial.session_configured.rollout_path.clone(),
+                last_activity_at: None,
+            }),
+            initial.thread_manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?;
+    expected.shake_watermark = restored_watermark;
+    assert_eq!(
+        resumed.thread.context_usage_snapshot().await,
+        Some(expected)
+    );
+    resumed.thread.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[test_case::test_case(false; "live")]
+#[test_case::test_case(true; "resumed")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_without_usage_keeps_provider_measurement_and_estimated_newer_context(
+    resume: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("seed", "done"),
+            responses::ev_completed_with_tokens("seed", /*total_tokens*/ 48_000),
+        ]),
+    )
+    .await;
+    let mut fixture = child_builder(/*cap*/ 50_000)
+        .build_with_auto_env(&server)
+        .await?;
+    fixture.submit_text_turn("Complete this task.").await?;
+    let measured = fixture
+        .codex
+        .context_usage_snapshot()
+        .await
+        .context("measured observation")?;
+    responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("unmeasured", &"newer output ".repeat(/*n*/ 2_000)),
+            completed_without_usage("unmeasured"),
+        ]),
+    )
+    .await;
+    fixture.submit_text_turn("Continue the task.").await?;
+    let newer = fixture
+        .codex
+        .context_usage_snapshot()
+        .await
+        .context("newer observation")?;
+    assert_eq!(newer.provider_usage_at, measured.provider_usage_at);
+    assert_eq!(newer.basis, ContextTokenBasis::Usage);
+    assert!(newer.active_tokens > 50_000, "{newer:?}");
+    if resume {
+        fixture.codex.shutdown_and_wait().await?;
+        let history = fixture
+            .thread_store
+            .load_latest_model_context(LoadThreadHistoryParams {
+                thread_id: fixture.session_configured.thread_id,
+                include_archived: true,
+            })
+            .await?;
+        let resumed = fixture
+            .thread_manager
+            .resume_thread_with_history(
+                fixture.config.clone(),
+                InitialHistory::Resumed(ResumedHistory {
+                    conversation_id: history.thread_id,
+                    history: Arc::new(history.items),
+                    rollout_path: fixture.session_configured.rollout_path.clone(),
+                    last_activity_at: None,
+                }),
+                fixture.thread_manager.auth_manager(),
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+            )
+            .await?;
+        fixture.codex = resumed.thread;
+        assert_eq!(fixture.codex.context_usage_snapshot().await, Some(newer));
+    }
+    let compact = responses::mount_sse_once(&server, responses::sse(vec![
+        serde_json::json!({"type": "response.output_item.done", "item": {"type": "compaction", "encrypted_content": "newer-output-summary"}}),
+        responses::ev_completed("compact"),
+    ])).await;
+    responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .is_ok_and(|body| body["input"].to_string().contains("newer-output-summary"))
+        },
+        responses::sse(vec![
+            responses::ev_assistant_message("final", "done"),
+            responses::ev_completed("final"),
+        ]),
+    )
+    .await;
+    fixture
+        .submit_text_turn("Preserve the constraint and finish.")
+        .await?;
+    assert!(
+        compact.single_request().body_json()["input"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger"))
+    );
+    let reduced = fixture
+        .codex
+        .context_usage_snapshot()
+        .await
+        .context("reduced observation")?;
+    assert_eq!(
+        reduced.last_reduction.as_ref().map(|record| record.outcome),
+        Some(ContextReductionOutcome::Compacted)
+    );
+    assert!(reduced.active_tokens < 50_000);
+    fixture.codex.shutdown_and_wait().await?;
     Ok(())
 }

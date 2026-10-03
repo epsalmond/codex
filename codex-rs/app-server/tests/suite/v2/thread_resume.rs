@@ -31,6 +31,7 @@ use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::McpToolCallAppContext;
 use codex_app_server_protocol::PatchApplyStatus;
@@ -3900,6 +3901,23 @@ async fn thread_resume_emits_restored_token_usage_before_next_turn() -> Result<(
 
 #[tokio::test]
 async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<()> {
+    let context = codex_protocol::context_usage::AgentContextUsage {
+        active_tokens: 32_000,
+        basis: codex_protocol::context_usage::ContextTokenBasis::Estimate,
+        selected_model: Some("last-selected-model".to_string()),
+        child_policy_enabled: Some(true),
+        child_active_cap_tokens: Some(272_000),
+        model_window_tokens: Some(190_000),
+        observed_at: Some(1_700_000_030),
+        provider_usage_at: Some(1_700_000_000),
+        shake_watermark: None,
+        last_reduction: Some(codex_protocol::context_usage::ContextReductionRecord {
+            at: 1_700_000_020,
+            before_tokens: 300_000,
+            after_tokens: None,
+            outcome: codex_protocol::context_usage::ContextReductionOutcome::Failed,
+        }),
+    };
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
@@ -3928,7 +3946,7 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
     append_rollout_item_to_path(
         &path,
         &RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
-            context_usage: None,
+            context_usage: Some(context.clone()),
             info: Some(TokenUsageInfo {
                 total_token_usage: TokenUsage {
                     input_tokens: 120,
@@ -3969,12 +3987,24 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
         app_server.read_stream_until_notification_message("thread/tokenUsage/updated"),
     )
     .await??;
+    let wire = serde_json::to_value(&notification)?;
+    assert_eq!(wire["params"]["contextUsage"]["observedAt"], 1_700_000_030);
+    assert_eq!(
+        wire["params"]["contextUsage"]["lastReduction"]["afterTokens"],
+        serde_json::Value::Null
+    );
+    assert!(
+        wire["params"]["contextUsage"]
+            .get("active_tokens")
+            .is_none()
+    );
     let ServerNotification::ThreadTokenUsageUpdated(notification) = notification.try_into()? else {
         panic!("expected thread/tokenUsage/updated notification");
     };
     assert_eq!(notification.thread_id, thread.id);
     assert_eq!(notification.turn_id, canonical_turn_id);
     assert_eq!(notification.token_usage.total.total_tokens, 150);
+    assert_eq!(notification.context_usage, Some(context.into()));
 
     let turns_id = app_server
         .send_thread_turns_list_request(ThreadTurnsListParams {
@@ -3989,6 +4019,100 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
         timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(turns_id)).await??;
     assert_eq!(notification.turn_id, turns.data[0].id);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumed_metadata_without_counters_reaches_turn_completion() -> Result<()> {
+    use codex_protocol::context_usage::AgentContextUsage;
+    use codex_protocol::context_usage::ContextReductionOutcome;
+    use codex_protocol::context_usage::ContextReductionRecord;
+    let context = AgentContextUsage {
+        active_tokens: 32_000,
+        observed_at: Some(1_700_000_030),
+        last_reduction: Some(ContextReductionRecord {
+            at: 1_700_000_020,
+            before_tokens: 300_000,
+            after_tokens: None,
+            outcome: ContextReductionOutcome::Failed,
+        }),
+        ..Default::default()
+    };
+    let server =
+        create_mock_responses_server_sequence(vec![core_test_support::responses::sse(vec![
+            core_test_support::responses::ev_assistant_message("done", "Done"),
+            serde_json::json!({"type": "response.completed", "response": {"id": "done"}}),
+        ])])
+        .await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(&server.uri()).write(codex_home.path())?;
+    let conversation_id = create_fake_paginated_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let path = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &conversation_id);
+    append_rollout_item_to_path(
+        &path,
+        &RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: None,
+            rate_limits: None,
+            context_usage: Some(context),
+        })),
+    )
+    .await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let resume_id = app_server
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id,
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let ThreadResumeResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(resume_id)).await??;
+    app_server
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![UserInput::Text {
+                text: "Continue".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    // Consume the public event stream through completion; no unavailable usage is fabricated.
+    let completed = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let JSONRPCMessage::Notification(notification) = app_server.read_next_message().await?
+            else {
+                continue;
+            };
+            assert_ne!(notification.method, "thread/tokenUsage/updated");
+            if notification.method == "turn/completed" {
+                break Ok::<_, anyhow::Error>(notification);
+            }
+        }
+    })
+    .await??;
+    let params = completed.params.expect("turn/completed params");
+    assert_eq!(
+        params["contextUsage"]["providerUsageAt"],
+        serde_json::Value::Null
+    );
+    assert_eq!(params["contextUsage"]["lastReduction"]["outcome"], "failed");
+    assert_eq!(
+        params["contextUsage"]["lastReduction"]["afterTokens"],
+        serde_json::Value::Null
+    );
+    assert!(params["contextUsage"]["activeTokens"].as_i64().is_some());
+    assert!(params["contextUsage"].get("active_tokens").is_none());
     Ok(())
 }
 
@@ -4286,7 +4410,8 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
         json!({
             "timestamp": meta_rfc3339,
             "type": "event_msg",
-            "payload": serde_json::to_value(EventMsg::TokenCount(TokenCountEvent { context_usage: None,
+            "payload": serde_json::to_value(EventMsg::TokenCount(TokenCountEvent {
+                context_usage: None,
                 info: Some(TokenUsageInfo {
                     total_token_usage: TokenUsage {
                         input_tokens: 180,
