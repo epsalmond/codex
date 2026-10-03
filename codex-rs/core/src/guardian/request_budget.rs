@@ -52,14 +52,39 @@ pub(crate) fn estimate_request_tokens(request: &ResponsesApiRequest) -> usize {
         .iter()
         .map(estimate_item_token_count)
         .fold(0i64, i64::saturating_add);
+    usize::try_from(input)
+        .unwrap_or(usize::MAX)
+        .saturating_add(estimate_request_metadata_tokens(request))
+}
+
+/// Prompt-only overhead associated with this exact prepared request, including Lite prefixes.
+pub(crate) fn estimate_request_overhead_tokens(
+    request: &ResponsesApiRequest,
+    prompt: &crate::client_common::Prompt,
+    model: &codex_protocol::openai_models::ModelInfo,
+) -> usize {
+    // build_responses_request prepends AdditionalTools and, when nonempty, base
+    // instructions in Lite mode. They are overhead, not new recorded-history items.
+    let prefix = if model.use_responses_lite {
+        request
+            .input
+            .iter()
+            .take(1 + usize::from(!prompt.base_instructions.text.is_empty()))
+            .map(estimate_item_token_count)
+            .fold(/*init*/ 0i64, i64::saturating_add)
+    } else {
+        0
+    };
+    estimate_request_metadata_tokens(request)
+        .saturating_add(usize::try_from(prefix).unwrap_or(usize::MAX))
+}
+
+fn estimate_request_metadata_tokens(request: &ResponsesApiRequest) -> usize {
     let instructions = TruncationPolicy::Bytes(request.instructions.len()).token_budget();
     let metadata = serde_json::to_vec(&(&request.tools, &request.text))
         .map(|bytes| TruncationPolicy::Bytes(bytes.len()).token_budget())
         .unwrap_or(usize::MAX);
-    usize::try_from(input)
-        .unwrap_or(usize::MAX)
-        .saturating_add(instructions)
-        .saturating_add(metadata)
+    instructions.saturating_add(metadata)
 }
 
 /// Restores originals lost during this review, then checks the complete request.

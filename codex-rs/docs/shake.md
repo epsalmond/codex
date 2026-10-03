@@ -407,6 +407,10 @@ counts only the body after the prefix. Provider usage and local estimates remain
 approximate. Reduction runs in the existing request loop and preserves completed
 tools and running Code Mode work.
 
+When provider usage is available, growth in instructions, tool schemas or output
+schema is added to that accounting. Unknown prior request overhead is counted
+conservatively when reusing a restored provider measurement.
+
 When the prepared request reaches a limit:
 
 - a **subagent** first tries auto-shake; if that brings it back under the

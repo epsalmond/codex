@@ -80,6 +80,9 @@ pub(crate) struct SessionState {
     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
     /// Most recent automatic context reduction, reported by `list_agents`. Runtime-only.
     pub(crate) last_context_reduction: Option<ContextReductionRecord>,
+    /// Estimated prompt overhead associated with the last ordinary provider measurement.
+    /// Unknown on legacy restore and invalidated when that measurement is replaced.
+    pub(crate) last_provider_request_overhead_tokens: Option<i64>,
     /// Explicit child compaction awaiting final prepared-request admission.
     pub(crate) pending_child_reduction: Option<crate::session::ReductionAttempt>,
     /// Content and policy of the last completed but insufficient child reduction.
@@ -141,6 +144,7 @@ impl SessionState {
             last_context_reduction: None,
             insufficient_child_context: None,
             pending_child_reduction: None,
+            last_provider_request_overhead_tokens: None,
             token_usage_estimated: false,
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
@@ -207,6 +211,10 @@ impl SessionState {
         reference_context_item: Option<TurnContextItem>,
         replacement: HistoryReplacement,
     ) -> Result<(), &'static str> {
+        // Advancing a sealed boundary without changing content retains the same
+        // provider measurement and its request overhead.
+        let watermark_only = matches!(&replacement, HistoryReplacement::Shake { .. })
+            && self.history.annotated_items() == items.as_slice();
         let invalidate_reviews = match replacement {
             HistoryReplacement::Compaction {
                 reviewer_compaction_hash,
@@ -228,10 +236,14 @@ impl SessionState {
         self.history
             .set_reference_context_item(reference_context_item);
         self.auto_compact_window.clear_prefill();
+        if !watermark_only {
+            self.last_provider_request_overhead_tokens = None;
+        }
         Ok(())
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
+        self.last_provider_request_overhead_tokens = None;
         self.history.set_token_info(info);
     }
 
@@ -288,6 +300,7 @@ impl SessionState {
         model_context_window: Option<i64>,
     ) {
         self.history.update_token_info(usage, model_context_window);
+        self.last_provider_request_overhead_tokens = None;
         self.token_usage_estimated = false;
     }
 
@@ -367,6 +380,7 @@ impl SessionState {
     }
 
     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
+        self.last_provider_request_overhead_tokens = None;
         self.history.set_token_usage_full(context_window);
     }
 

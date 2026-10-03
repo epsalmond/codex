@@ -3461,6 +3461,28 @@ async fn try_run_sampling_request(
                         token_usage.as_ref(),
                     )
                     .await;
+                if token_usage.is_some() {
+                    let request = sess.services.model_client.build_responses_request(
+                        prompt,
+                        &step_context.settings.model_info,
+                        /*effort*/ None,
+                        step_context.settings.reasoning_summary,
+                        /*service_tier*/ None,
+                        responses_metadata,
+                        /*include_internal*/ true,
+                    )?;
+                    sess.state
+                        .lock()
+                        .await
+                        .last_provider_request_overhead_tokens = Some(
+                        i64::try_from(crate::guardian::estimate_request_overhead_tokens(
+                            &request,
+                            prompt,
+                            &step_context.settings.model_info,
+                        ))
+                        .unwrap_or(i64::MAX),
+                    );
+                }
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
                 if let Err(err) = budget_result {

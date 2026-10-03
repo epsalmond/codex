@@ -120,9 +120,33 @@ impl ChildRequestAdmission {
         )?;
         let history_tokens =
             i64::try_from(crate::guardian::estimate_request_tokens(&baseline)).unwrap_or(i64::MAX);
-        // Retain provider accounting, including invisible reasoning, and add prompt-only
-        // instructions/tool metadata/attachments. Estimates remain estimates.
-        let additions = request_tokens.saturating_sub(history_tokens).max(0);
+        let overhead = i64::try_from(crate::guardian::estimate_request_overhead_tokens(
+            &request,
+            prompt,
+            &step.settings.model_info,
+        ))
+        .unwrap_or(i64::MAX);
+        let changed_overhead = {
+            let state = sess.state.lock().await;
+            if state.token_info().is_some() && !state.token_usage_estimated {
+                overhead
+                    .saturating_sub(
+                        state
+                            .last_provider_request_overhead_tokens
+                            .unwrap_or(/*default*/ 0),
+                    )
+                    .max(0)
+            } else {
+                0
+            }
+        };
+        // The current-history baseline cancels current fixed overhead, including Lite
+        // prefixes. Compare that overhead with the actual provider measurement's request,
+        // then add input-only attachments once. Unknown legacy overhead is conservative.
+        let additions = request_tokens
+            .saturating_sub(history_tokens)
+            .max(0)
+            .saturating_add(changed_overhead);
         let active = request_tokens.max(status.active_context_tokens.saturating_add(additions));
         let child_limit = turn.config.subagent_context_reduction.enabled.then(|| {
             i64::try_from(turn.config.subagent_context_reduction.threshold_tokens)

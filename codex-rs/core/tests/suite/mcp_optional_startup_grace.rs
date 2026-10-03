@@ -299,3 +299,173 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     fixture.codex.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[test_case(false; "native metadata")]
+#[test_case(true; "responses lite prefixes")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refreshed_mcp_schema_is_charged_against_prior_provider_usage(
+    use_responses_lite: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let responses_server = responses::start_mock_server().await;
+    let mcp_server = responses::start_mock_server().await;
+    let tools = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let http_server = AppsTestServer::mount_with_tools(&mcp_server, tools.clone()).await?;
+    let server_url = format!("{}/api/codex/ps/mcp", http_server.chatgpt_base_url);
+    let first = responses::mount_sse_once(
+        &responses_server,
+        responses::sse(vec![
+            responses::ev_response_created("first"),
+            responses::ev_assistant_message("first", "done"),
+            responses::ev_completed_with_tokens("first", /*total_tokens*/ 49_000),
+        ]),
+    )
+    .await;
+    let fixture = test_codex()
+        .with_model("gpt-5.6-sol")
+        .with_model_info_override("gpt-5.6-sol", move |model| {
+            model.supports_search_tool = false;
+            model.use_responses_lite = use_responses_lite;
+        })
+        .with_session_source(codex_protocol::protocol::SessionSource::SubAgent(
+            codex_protocol::protocol::SubAgentSource::Other("schema-budget".to_string()),
+        ))
+        .with_config(move |config| {
+            config.mcp_optional_startup_grace = Duration::ZERO;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+            config.subagent_context_reduction =
+                codex_core::config::SubagentContextReductionConfig {
+                    enabled: true,
+                    threshold_tokens: 50_000,
+                };
+        })
+        .build_with_auto_env(&responses_server)
+        .await?;
+    fixture
+        .submit_turn("Keep the task constraint and validate the remaining work.")
+        .await?;
+    let first_body = first.single_request().body_json();
+    let first_tools = if use_responses_lite {
+        &first_body["input"][0]["tools"]
+    } else {
+        &first_body["tools"]
+    };
+    assert!(!first_tools.to_string().contains(TOOL_NAME));
+    assert!(
+        first_body.to_string().len() < 50_000 * 4,
+        "initial full local estimate is below the cap"
+    );
+
+    // Unchanged overhead is already represented in provider usage and must not
+    // force maintenance on an otherwise admissible continuation.
+    let stable = responses::mount_sse_once(
+        &responses_server,
+        responses::sse(vec![
+            responses::ev_response_created("stable"),
+            responses::ev_assistant_message("stable", "done"),
+            responses::ev_completed_with_tokens("stable", /*total_tokens*/ 49_000),
+        ]),
+    )
+    .await;
+    fixture.submit_turn("Validate the next step.").await?;
+    assert!(
+        !stable.single_request().body_json()["input"]
+            .as_array()
+            .is_some_and(|input| input
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger"))
+    );
+
+    // Expose about 2k tokens of schema after the provider measured the first request.
+    tools.lock().expect("mock tools").push(json!({
+        "name": TOOL_NAME,
+        "description": "Create an event.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"payload": {"type": "string", "enum": ["schema-value-".repeat(/*n*/ 700)]}},
+            "additionalProperties": false,
+        },
+    }));
+    let mut refreshed_config = fixture.config.clone();
+    let mut servers = refreshed_config.mcp_servers.get().clone();
+    servers.insert(
+        SERVER_NAME.to_string(),
+        serde_json::from_value(json!({
+            "url": server_url,
+            "startup_timeout_sec": PENDING_SERVER_TIMEOUT.as_secs(),
+        }))?,
+    );
+    refreshed_config.mcp_servers.set(servers)?;
+    fixture.codex.refresh_mcp_config(refreshed_config).await;
+    let compact = responses::mount_sse_once(&responses_server, responses::sse(vec![
+        responses::ev_response_created("compact"),
+        json!({"type": "response.output_item.done", "item": {"type": "compaction", "encrypted_content": "refreshed-schema-summary"}}),
+        responses::ev_completed("compact"),
+    ])).await;
+    responses::mount_sse_once_match(
+        &responses_server,
+        |request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("request JSON");
+            body["input"]
+                .to_string()
+                .contains("refreshed-schema-summary")
+        },
+        responses::sse(vec![
+            responses::ev_response_created("final"),
+            responses::ev_assistant_message("final", "done"),
+            responses::ev_completed("final"),
+        ]),
+    )
+    .await;
+    fixture.submit_turn("Validate the next step.").await?;
+    let request = compact.single_request().body_json();
+    if !request["input"].as_array().is_some_and(|input| {
+        input
+            .iter()
+            .any(|item| item["type"] == "compaction_trigger")
+    }) {
+        let exposed_tools = if use_responses_lite {
+            &request["input"][0]["tools"]
+        } else {
+            &request["tools"]
+        };
+        assert!(exposed_tools.to_string().contains(TOOL_NAME));
+        assert!(exposed_tools.to_string().len() > first_tools.to_string().len() + 4_000);
+        assert!(request.to_string().len() < 50_000 * 4);
+    }
+    assert!(
+        request["input"].as_array().is_some_and(|input| input
+            .iter()
+            .any(|item| item["type"] == "compaction_trigger")),
+        "the first request after tool exposure must reduce, not sample: {} bytes",
+        request.to_string().len()
+    );
+    let requests = responses_server
+        .received_requests()
+        .await
+        .expect("captured requests");
+    let final_request: serde_json::Value =
+        serde_json::from_slice(&requests.last().expect("final request").body)?;
+    let final_tools = if use_responses_lite {
+        &final_request["input"][0]["tools"]
+    } else {
+        &final_request["tools"]
+    };
+    assert!(final_tools.to_string().contains(TOOL_NAME));
+    assert!(
+        final_request.to_string().len() < 50_000 * 4,
+        "full local estimate alone is below the cap"
+    );
+    // An upper bound that includes the original request, newly exposed schema and
+    // all pre-compaction history also fits. Local estimation cannot catch this case
+    // without retaining the much larger provider measurement and adding schema growth.
+    assert!(
+        first_body.to_string().len() + final_tools.to_string().len() + request.to_string().len()
+            < 50_000 * 4
+    );
+    assert!(final_tools.to_string().len() > first_tools.to_string().len() + 4_000);
+    fixture.codex.shutdown_and_wait().await?;
+    Ok(())
+}
