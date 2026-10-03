@@ -7,6 +7,8 @@
 //! Normalize to the model's standard input rate: cached reads cost 0.1x;
 //! Codex has no write surcharge, while the API write scenario costs 1.25x.
 
+use std::time::Duration;
+
 use codex_protocol::num_format::format_with_separators;
 
 const LONG_CONTEXT_THRESHOLD: i64 = 272_000;
@@ -97,11 +99,6 @@ impl Pricing {
         } else {
             "less"
         };
-        let payback = match costs.warm_break_even_requests {
-            Some(1) => "break-even on request 1".to_string(),
-            Some(n) => format!("break-even by request ~{n}"),
-            None => "no payback at unchanged sizes".to_string(),
-        };
         let billing = match self.billing {
             Billing::Codex => "Codex",
             Billing::Api => "API (1.25x cache writes)",
@@ -126,8 +123,102 @@ impl Pricing {
             )
         };
         format!(
-            "{billing}: {threshold}\nCold cache: next input ~{cold:.0}% cheaper.\nWarm cache, full invalidation: next input ~{warm:.0}% {direction}; {payback}.\nAssumes standard rates, fixed sizes and subsequent cache hits."
+            "{billing}: {threshold}\nCold cache: next input ~{cold:.0}% cheaper.\nWarm cache, full invalidation: next input ~{warm:.0}% {direction}.\nAssumes standard rates, fixed sizes and subsequent cache hits."
         )
+    }
+}
+
+/// Lead payoff line, in model requests, from the warm-cache break-even.
+///
+/// `expired_cache_ttl` is the prompt-cache TTL when the idle time has already
+/// reached it: the next request rebuilds the cache either way, so the shake
+/// adds no rewrite cost to pay back.
+pub(super) fn payback_line(
+    break_even_requests: Option<u64>,
+    pace: &RequestPace,
+    expired_cache_ttl: Option<Duration>,
+) -> String {
+    match (break_even_requests, expired_cache_ttl) {
+        (None, _) => "No payback at unchanged sizes.".to_string(),
+        (Some(_), Some(ttl)) => format!(
+            "Pays back immediately: idle exceeds the {} prompt-cache TTL; cache likely cold.",
+            format_ttl(ttl)
+        ),
+        (Some(1), None) => "Pays back on the first request.".to_string(),
+        (Some(requests), None) => {
+            let turns = pace
+                .turns_for(requests)
+                .map(|turns| {
+                    let unit = if turns == 1 { "turn" } else { "turns" };
+                    format!(" ≈ {turns} {unit} at this session's pace")
+                })
+                .unwrap_or_default();
+            format!("Pays back after ~{requests} requests{turns}.")
+        }
+    }
+}
+
+fn format_ttl(ttl: Duration) -> String {
+    let seconds = ttl.as_secs();
+    if seconds >= 60 && seconds.is_multiple_of(60) {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Model requests per completed user turn, observed live in this session.
+///
+/// Every model response raises the thread's cumulative token total, so each
+/// live usage update that raises it during a turn counts as one request.
+/// Updates that repeat the total (rate-limit refreshes, context re-estimates)
+/// or arrive outside a turn (resume restoring prior totals) do not. Replayed
+/// totals only set the baseline, and a turn attached mid-flight (its start
+/// replayed) is not counted because its earlier requests were never seen.
+#[derive(Debug, Default)]
+pub(crate) struct RequestPace {
+    last_total_tokens: Option<i64>,
+    turn_started_live: bool,
+    requests_this_turn: u64,
+    requests: u64,
+    turns: u64,
+}
+
+impl RequestPace {
+    pub(super) fn start_turn(&mut self, started_live: bool) {
+        self.turn_started_live = started_live;
+        self.requests_this_turn = 0;
+    }
+
+    pub(super) fn observe_total_tokens(&mut self, total_tokens: i64, turn_running: bool) {
+        let previous = self.last_total_tokens.replace(total_tokens).unwrap_or(0);
+        if turn_running && self.turn_started_live && total_tokens > previous {
+            self.requests_this_turn += 1;
+        }
+    }
+
+    pub(super) fn forget_total_tokens(&mut self) {
+        self.last_total_tokens = None;
+    }
+
+    pub(super) fn complete_turn(&mut self) {
+        if self.turn_started_live && self.requests_this_turn > 0 {
+            self.requests += self.requests_this_turn;
+            self.turns += 1;
+        }
+        self.turn_started_live = false;
+        self.requests_this_turn = 0;
+    }
+
+    /// Turns needed for `requests` model requests, or `None` before any
+    /// completed turn has been observed.
+    pub(super) fn turns_for(&self, requests: u64) -> Option<u64> {
+        (self.requests > 0).then(|| {
+            requests
+                .saturating_mul(self.turns)
+                .div_ceil(self.requests)
+                .max(/*other*/ 1)
+        })
     }
 }
 
