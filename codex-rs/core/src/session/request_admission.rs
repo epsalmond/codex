@@ -13,7 +13,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use tokio_util::sync::CancellationToken;
 
-use super::context_window::context_window_token_status_for_model;
+use super::context_reduction_telemetry::PreparedContext;
 use super::mid_turn_reduction::record_reduction;
 use super::session::Session;
 use super::step_context::StepContext;
@@ -21,10 +21,8 @@ use super::turn::maybe_run_auto_shake;
 use super::turn::run_auto_compact;
 use crate::agent::types::ContextReductionOutcome;
 use crate::client::ModelClientSession;
-use crate::client_common::Prompt;
 use crate::compact::InitialContextInjection;
 use crate::context::world_state::WorldState;
-use crate::responses_metadata::CodexResponsesMetadata;
 
 /// A bounded marker based on post-reduction content, rather than turn IDs or generations.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,8 +58,7 @@ impl ChildRequestAdmission {
         step: &Arc<StepContext>,
         world_state: &Arc<WorldState>,
         client: &mut ModelClientSession,
-        prompt: &Prompt,
-        metadata: &CodexResponsesMetadata,
+        context: &PreparedContext,
         cancellation: &CancellationToken,
     ) -> CodexResult<Admission> {
         let turn = &step.turn;
@@ -84,70 +81,9 @@ impl ChildRequestAdmission {
             return Err(err);
         }
         let history = sess.clone_history().await;
-        let status = context_window_token_status_for_model(
-            sess,
-            &turn.config,
-            turn,
-            &step.settings.model_info,
-        )
-        .await;
-        let request = sess.services.model_client.build_responses_request(
-            prompt,
-            &step.settings.model_info,
-            /*effort*/ None,
-            codex_protocol::config_types::ReasoningSummary::None,
-            /*service_tier*/ None,
-            metadata,
-            /*include_internal*/ true,
-        )?;
-        let request_tokens =
-            i64::try_from(crate::guardian::estimate_request_tokens(&request)).unwrap_or(i64::MAX);
-        let baseline = super::turn::build_prompt(
-            history
-                .clone()
-                .for_prompt(&step.settings.model_info.input_modalities),
-            step,
-            prompt.base_instructions.clone(),
-        );
-        let baseline = sess.services.model_client.build_responses_request(
-            &baseline,
-            &step.settings.model_info,
-            /*effort*/ None,
-            codex_protocol::config_types::ReasoningSummary::None,
-            /*service_tier*/ None,
-            metadata,
-            /*include_internal*/ true,
-        )?;
-        let history_tokens =
-            i64::try_from(crate::guardian::estimate_request_tokens(&baseline)).unwrap_or(i64::MAX);
-        let overhead = i64::try_from(crate::guardian::estimate_request_overhead_tokens(
-            &request,
-            prompt,
-            &step.settings.model_info,
-        ))
-        .unwrap_or(i64::MAX);
-        let changed_overhead = {
-            let state = sess.state.lock().await;
-            if state.token_info().is_some() && !state.token_usage_estimated {
-                overhead
-                    .saturating_sub(
-                        state
-                            .last_provider_request_overhead_tokens
-                            .unwrap_or(/*default*/ 0),
-                    )
-                    .max(0)
-            } else {
-                0
-            }
-        };
-        // The current-history baseline cancels current fixed overhead, including Lite
-        // prefixes. Compare that overhead with the actual provider measurement's request,
-        // then add input-only attachments once. Unknown legacy overhead is conservative.
-        let additions = request_tokens
-            .saturating_sub(history_tokens)
-            .max(0)
-            .saturating_add(changed_overhead);
-        let active = request_tokens.max(status.active_context_tokens.saturating_add(additions));
+        let status = &context.status;
+        let additions = context.additions;
+        let active = context.active;
         let child_limit = turn.config.subagent_context_reduction.enabled.then(|| {
             i64::try_from(turn.config.subagent_context_reduction.threshold_tokens)
                 .unwrap_or(i64::MAX)

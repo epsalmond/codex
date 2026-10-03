@@ -1539,7 +1539,9 @@ impl Session {
 
     pub(crate) async fn total_token_usage(&self) -> Option<TokenUsage> {
         let state = self.state.lock().await;
-        state.token_info().map(|info| info.total_token_usage)
+        state
+            .published_token_info()
+            .map(|info| info.total_token_usage)
     }
 
     /// Returns the complete token usage snapshot currently cached for this session.
@@ -1550,7 +1552,7 @@ impl Session {
     /// notification includes both total and last-turn usage.
     pub(crate) async fn token_usage_info(&self) -> Option<TokenUsageInfo> {
         let state = self.state.lock().await;
-        state.token_info()
+        state.published_token_info()
     }
 
     pub(crate) async fn get_estimated_token_count(
@@ -1687,6 +1689,10 @@ impl Session {
                 }
                 self.state.lock().await.latest_token_usage_record =
                     Self::last_token_usage_record_from_rollout(&rollout_items);
+                self.state
+                    .lock()
+                    .await
+                    .restore_context_snapshot(&rollout_items);
 
                 // Checkpoint effective settings even when no turn follows the resume.
                 self.persist_rollout_items(&[RolloutItem::EventMsg(
@@ -1715,6 +1721,10 @@ impl Session {
                 }
                 self.state.lock().await.latest_token_usage_record =
                     Self::last_token_usage_record_from_rollout(&rollout_items);
+                self.state
+                    .lock()
+                    .await
+                    .restore_context_snapshot(&rollout_items);
 
                 let thread_settings_applied =
                     RolloutItem::EventMsg(thread_settings::applied_event(self).await);
@@ -2458,6 +2468,9 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        if matches!(&msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
+            self.publish_context_snapshot().await;
+        }
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
@@ -5084,8 +5097,11 @@ impl Session {
                 info.model_context_window = Some(model_context_window);
             }
 
+            let legacy_available = state.legacy_token_usage_available;
             state.set_token_info(Some(info));
+            state.legacy_token_usage_available = legacy_available;
             state.token_usage_estimated = true;
+            state.refresh_context_snapshot();
         }
         self.set_auto_compact_window_estimated_prefill_for_scope(
             turn_context,
@@ -5130,14 +5146,15 @@ impl Session {
     }
 
     pub(crate) async fn send_token_count_event(&self, turn_context: &TurnContext) {
-        let (info, rate_limits) = {
+        let (info, rate_limits, context_usage) = {
             let state = self.state.lock().await;
-            state.token_info_and_rate_limits()
+            let (info, rate_limits) = state.token_info_and_rate_limits();
+            (info, rate_limits, state.last_context_snapshot.clone())
         };
         let event = EventMsg::TokenCount(TokenCountEvent {
-            context_usage: None,
             info,
             rate_limits,
+            context_usage,
         });
         self.send_event(turn_context, event).await;
     }

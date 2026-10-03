@@ -1,18 +1,29 @@
 //! Explicit v2 projection of captured context data; conversion never refreshes clocks.
 
-use crate::{JsonSchema, TS};
-use serde::{Deserialize, Serialize};
+use crate::JsonSchema;
+use crate::TS;
 use codex_protocol::context_usage as core;
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
-pub enum ThreadContextTokenBasis { Usage, Estimate }
+pub enum ThreadContextTokenBasis {
+    Usage,
+    Estimate,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
-pub enum ThreadContextReductionOutcome { Shaken, Compacted, Insufficient, Failed, Cancelled }
+pub enum ThreadContextReductionOutcome {
+    Shaken,
+    Compacted,
+    Insufficient,
+    Failed,
+    Cancelled,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -55,17 +66,26 @@ impl From<core::AgentContextUsage> for ThreadContextUsage {
     fn from(value: core::AgentContextUsage) -> Self {
         Self {
             active_tokens: value.active_tokens,
-            basis: match value.basis { core::ContextTokenBasis::Usage => ThreadContextTokenBasis::Usage, core::ContextTokenBasis::Estimate => ThreadContextTokenBasis::Estimate },
+            basis: match value.basis {
+                core::ContextTokenBasis::Usage => ThreadContextTokenBasis::Usage,
+                core::ContextTokenBasis::Estimate => ThreadContextTokenBasis::Estimate,
+            },
             last_reduction: value.last_reduction.map(|record| ThreadContextReduction {
                 at: record.at,
                 before_tokens: record.before_tokens,
                 after_tokens: record.after_tokens,
                 outcome: match record.outcome {
                     core::ContextReductionOutcome::Shaken => ThreadContextReductionOutcome::Shaken,
-                    core::ContextReductionOutcome::Compacted => ThreadContextReductionOutcome::Compacted,
-                    core::ContextReductionOutcome::Insufficient => ThreadContextReductionOutcome::Insufficient,
+                    core::ContextReductionOutcome::Compacted => {
+                        ThreadContextReductionOutcome::Compacted
+                    }
+                    core::ContextReductionOutcome::Insufficient => {
+                        ThreadContextReductionOutcome::Insufficient
+                    }
                     core::ContextReductionOutcome::Failed => ThreadContextReductionOutcome::Failed,
-                    core::ContextReductionOutcome::Cancelled => ThreadContextReductionOutcome::Cancelled,
+                    core::ContextReductionOutcome::Cancelled => {
+                        ThreadContextReductionOutcome::Cancelled
+                    }
                 },
             }),
             selected_model: value.selected_model,

@@ -78,11 +78,20 @@ pub(crate) struct SessionState {
     pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
-    /// Most recent automatic context reduction, reported by `list_agents`. Runtime-only.
+    /// Most recent context reduction, persisted as part of captured observations.
     pub(crate) last_context_reduction: Option<ContextReductionRecord>,
     /// Estimated prompt overhead associated with the last ordinary provider measurement.
     /// Unknown on legacy restore and invalidated when that measurement is replaced.
     pub(crate) last_provider_request_overhead_tokens: Option<i64>,
+    pub(crate) last_context_snapshot: Option<codex_protocol::context_usage::AgentContextUsage>,
+    /// Provider-based active floor plus estimated context not yet measured by a provider.
+    pub(crate) prepared_context_tokens: Option<i64>,
+    /// Local request estimate associated with the floor, used to charge only newer growth.
+    pub(crate) prepared_request_tokens: Option<i64>,
+    /// Original provider measurement time, independent from observation and replay times.
+    pub(crate) provider_usage_at: Option<i64>,
+    /// Existing legacy counters, distinct from estimates made before any measurement.
+    pub(crate) legacy_token_usage_available: bool,
     /// Explicit child compaction awaiting final prepared-request admission.
     pub(crate) pending_child_reduction: Option<crate::session::ReductionAttempt>,
     /// Content and policy of the last completed but insufficient child reduction.
@@ -145,6 +154,11 @@ impl SessionState {
             insufficient_child_context: None,
             pending_child_reduction: None,
             last_provider_request_overhead_tokens: None,
+            last_context_snapshot: None,
+            prepared_context_tokens: None,
+            prepared_request_tokens: None,
+            provider_usage_at: None,
+            legacy_token_usage_available: false,
             token_usage_estimated: false,
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
@@ -238,12 +252,17 @@ impl SessionState {
         self.auto_compact_window.clear_prefill();
         if !watermark_only {
             self.last_provider_request_overhead_tokens = None;
+            self.prepared_context_tokens = None;
+            self.prepared_request_tokens = None;
         }
         Ok(())
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         self.last_provider_request_overhead_tokens = None;
+        self.prepared_context_tokens = None;
+        self.prepared_request_tokens = None;
+        self.legacy_token_usage_available = info.is_some();
         self.history.set_token_info(info);
     }
 
@@ -302,6 +321,9 @@ impl SessionState {
         self.history.update_token_info(usage, model_context_window);
         self.last_provider_request_overhead_tokens = None;
         self.token_usage_estimated = false;
+        self.legacy_token_usage_available = true;
+        self.provider_usage_at = Some(chrono::Utc::now().timestamp());
+        self.prepared_context_tokens = None;
     }
 
     pub(crate) fn ensure_auto_compact_window_server_prefill_from_usage(
@@ -376,12 +398,20 @@ impl SessionState {
     pub(crate) fn token_info_and_rate_limits(
         &self,
     ) -> (Option<TokenUsageInfo>, Option<RateLimitSnapshot>) {
-        (self.token_info(), self.latest_rate_limits.clone())
+        (self.published_token_info(), self.latest_rate_limits.clone())
+    }
+
+    pub(crate) fn published_token_info(&self) -> Option<TokenUsageInfo> {
+        self.legacy_token_usage_available
+            .then(|| self.token_info())
+            .flatten()
     }
 
     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
         self.last_provider_request_overhead_tokens = None;
         self.history.set_token_usage_full(context_window);
+        self.token_usage_estimated = true;
+        self.refresh_context_snapshot();
     }
 
     pub(crate) fn get_total_token_usage(&self, server_reasoning_included: bool) -> i64 {

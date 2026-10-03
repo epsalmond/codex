@@ -20,7 +20,18 @@ fn legacy_token_events_without_context_round_trip_without_manufactured_metadata(
 #[test]
 fn older_context_objects_keep_unknown_policy_and_times_unavailable() {
     let legacy = json!({"active_tokens": 42, "basis": "estimate", "last_reduction": null});
-    let context: AgentContextUsage = serde_json::from_value(legacy.clone()).expect("legacy context");
-    assert_eq!(serde_json::to_value(&context).expect("context JSON"), legacy);
-    assert_eq!((context.observed_at, context.provider_usage_at, context.selected_model), (None, None, None));
+    let context: AgentContextUsage =
+        serde_json::from_value(legacy.clone()).expect("legacy context");
+    assert_eq!(
+        serde_json::to_value(&context).expect("context JSON"),
+        legacy
+    );
+    assert_eq!(
+        (
+            context.observed_at,
+            context.provider_usage_at,
+            context.selected_model
+        ),
+        (None, None, None)
+    );
 }

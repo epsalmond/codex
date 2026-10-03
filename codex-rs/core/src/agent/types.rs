@@ -48,9 +48,10 @@ pub struct LiveAgent {
 }
 
 // Preserve the established core paths and legacy serialization names.
-pub use codex_protocol::context_usage::{
-    AgentContextUsage, ContextReductionOutcome, ContextReductionRecord, ContextTokenBasis,
-};
+pub use codex_protocol::context_usage::AgentContextUsage;
+pub use codex_protocol::context_usage::ContextReductionOutcome;
+pub use codex_protocol::context_usage::ContextReductionRecord;
+pub use codex_protocol::context_usage::ContextTokenBasis;
 
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedMultiAgentV2UsageHints {

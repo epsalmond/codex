@@ -2121,14 +2121,16 @@ async fn run_sampling_request(
                 input_modalities: step_context.settings.model_info.input_modalities.clone(),
             }));
         }
+        let context = sess
+            .observe_prepared_context(&step_context, &prompt, &responses_metadata)
+            .await?;
         match admission
             .check(
                 &sess,
                 &step_context,
                 world_state,
                 client_session,
-                &prompt,
-                &responses_metadata,
+                &context,
                 &cancellation_token,
             )
             .await?
@@ -3482,6 +3484,34 @@ async fn try_run_sampling_request(
                         ))
                         .unwrap_or(i64::MAX),
                     );
+                }
+                // Tool outputs can still be pending here. Estimate raw history without
+                // normalizing it or rerunning side-effecting request preparation.
+                let history = sess.clone_history().await;
+                let mut current_prompt = prompt.clone();
+                current_prompt.input = history.raw_items().cloned().collect();
+                let current_request = sess.services.model_client.build_responses_request(
+                    &current_prompt,
+                    &step_context.settings.model_info,
+                    /*effort*/ None,
+                    step_context.settings.reasoning_summary,
+                    /*service_tier*/ None,
+                    responses_metadata,
+                    /*include_internal*/ true,
+                )?;
+                let current_tokens =
+                    i64::try_from(crate::guardian::estimate_request_tokens(&current_request))
+                        .unwrap_or(i64::MAX);
+                {
+                    let mut state = sess.state.lock().await;
+                    let growth = current_tokens
+                        .saturating_sub(state.prepared_request_tokens.unwrap_or(current_tokens))
+                        .max(0);
+                    let previous = state.prepared_context_tokens.unwrap_or(/*default*/ 0);
+                    state.prepared_context_tokens =
+                        Some(current_tokens.max(previous.saturating_add(growth)));
+                    state.prepared_request_tokens = Some(current_tokens);
+                    state.refresh_context_snapshot();
                 }
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
