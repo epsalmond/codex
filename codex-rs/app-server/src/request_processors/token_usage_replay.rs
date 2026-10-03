@@ -181,6 +181,7 @@ mod tests {
                 questions: None,
             })),
             RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+                context_usage: None,
                 info: None,
                 rate_limits: None,
             })),

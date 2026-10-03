@@ -35,6 +35,7 @@ impl Session {
         }
         items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
             TokenCountEvent {
+                context_usage: None,
                 info: history.token_info(),
                 rate_limits: None,
             },

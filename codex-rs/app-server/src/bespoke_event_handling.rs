@@ -1025,7 +1025,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::TokenCount(token_count_event) => {
-            handle_token_count_event(conversation_id, event_turn_id, token_count_event, &outgoing)
+            handle_token_count_event(conversation_id, event_turn_id, token_count_event, &outgoing, &thread_state)
                 .await;
         }
         EventMsg::Error(ev) => {
@@ -1322,6 +1322,7 @@ async fn handle_turn_plan_update(
 }
 
 struct TurnCompletionMetadata {
+    context_usage: Option<codex_app_server_protocol::ThreadContextUsage>,
     status: TurnStatus,
     error: Option<TurnError>,
     last_agent_message: Option<ThreadItem>,
@@ -1341,6 +1342,7 @@ async fn emit_turn_completed_with_status(
         None => (Vec::new(), TurnItemsView::NotLoaded),
     };
     let notification = TurnCompletedNotification {
+        context_usage: turn_completion_metadata.context_usage,
         thread_id: conversation_id.to_string(),
         turn: Turn {
             id: event_turn_id,
@@ -1520,6 +1522,7 @@ async fn handle_turn_complete(
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
     let turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
+    let context_usage = thread_state.lock().await.context_usage.clone();
 
     let (status, error, last_agent_message) = match turn_summary.last_error {
         Some(error) => (TurnStatus::Failed, Some(error), None),
@@ -1530,6 +1533,7 @@ async fn handle_turn_complete(
         conversation_id,
         event_turn_id,
         TurnCompletionMetadata {
+            context_usage,
             status,
             error,
             last_agent_message,
@@ -1550,11 +1554,13 @@ async fn handle_turn_interrupted(
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
     let turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
+    let context_usage = thread_state.lock().await.context_usage.clone();
 
     emit_turn_completed_with_status(
         conversation_id,
         event_turn_id,
         TurnCompletionMetadata {
+            context_usage,
             status: TurnStatus::Interrupted,
             error: turn_aborted_event.error.map(|error| TurnError {
                 message: error.message,
@@ -1593,10 +1599,19 @@ async fn handle_token_count_event(
     turn_id: String,
     token_count_event: TokenCountEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let TokenCountEvent { info, rate_limits } = token_count_event;
+    let TokenCountEvent { info, rate_limits, context_usage } = token_count_event;
+    let context_usage = {
+        let mut state = thread_state.lock().await;
+        if let Some(context_usage) = context_usage {
+            state.context_usage = Some(context_usage.into());
+        }
+        state.context_usage.clone()
+    };
     if let Some(token_usage) = info.map(ThreadTokenUsage::from) {
         let notification = ThreadTokenUsageUpdatedNotification {
+            context_usage,
             thread_id: conversation_id.to_string(),
             turn_id,
             token_usage,
@@ -3711,10 +3726,12 @@ mod tests {
             conversation_id,
             turn_id.clone(),
             TokenCountEvent {
+                context_usage: None,
                 info: Some(info),
                 rate_limits: Some(rate_limits),
             },
             &outgoing,
+            &Arc::new(Mutex::new(ThreadState::default())),
         )
         .await;
 
@@ -3764,10 +3781,12 @@ mod tests {
             conversation_id,
             turn_id.clone(),
             TokenCountEvent {
+                context_usage: None,
                 info: None,
                 rate_limits: None,
             },
             &outgoing,
+            &Arc::new(Mutex::new(ThreadState::default())),
         )
         .await;
 

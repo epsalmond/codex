@@ -201,6 +201,7 @@ async fn terminal_turn_drains_subagents_without_opening_queued_questions() {
         // There is no final answer item; turn termination must settle the stream and activity.
         chat.handle_server_notification(
             ServerNotification::TurnCompleted(TurnCompletedNotification {
+                context_usage: None,
                 thread_id: "thread-1".to_string(),
                 turn: app_server_turn("turn-1", status, /*duration_ms*/ None, error),
             }),

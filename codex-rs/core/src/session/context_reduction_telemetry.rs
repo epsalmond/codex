@@ -23,6 +23,7 @@ impl Session {
             active_tokens: state.get_total_token_usage(state.server_reasoning_included()),
             basis,
             last_reduction: state.last_context_reduction.clone(),
+            ..Default::default()
         }
     }
 }

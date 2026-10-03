@@ -118,6 +118,7 @@ async fn async_question_notification_expires_when_turn_ends() {
         );
         chat.handle_server_notification(
             ServerNotification::TurnCompleted(TurnCompletedNotification {
+                context_usage: None,
                 thread_id: "thread".into(),
                 turn: app_server_turn(
                     "ended-turn",

@@ -115,6 +115,7 @@ fn complete_plan_turn(app: &mut App) {
             },
         }),
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id,
             turn: Turn {
                 status: TurnStatus::Completed,

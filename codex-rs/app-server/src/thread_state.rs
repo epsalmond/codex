@@ -109,6 +109,7 @@ pub(crate) struct ThreadState {
     pub(crate) experimental_raw_events: bool,
     pub(crate) listener_generation: u64,
     last_thread_settings: Option<ThreadSettings>,
+    pub(crate) context_usage: Option<codex_app_server_protocol::ThreadContextUsage>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
     listener_thread: Option<Weak<CodexThread>>,

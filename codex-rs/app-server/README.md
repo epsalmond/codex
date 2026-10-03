@@ -1,3 +1,16 @@
+# Captured context usage
+
+`thread/tokenUsage/updated` and `turn/completed` include nullable `contextUsage`.
+It reports active context with a `usage` or `estimate` basis, the selected request
+model, its usable window, the effective child policy, and the last reduction
+outcome. Unavailable fields stay null; legacy cumulative counters retain their
+meaning. Metadata without provider counters is delivered on `turn/completed`.
+
+`observedAt` records the observation time; `providerUsageAt` records the last
+known provider measurement. Resume preserves both timestamps. `shakeWatermark`
+is the exclusive sealed-history-item boundary, never a token count or percent.
+These updates use existing observer events and do not wake a parent model.
+
 # Guardian circuit-breaker errors
 
 Set `auto_review.circuit_break_action = "strict"` to include `TooManyDenials` in

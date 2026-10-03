@@ -5134,7 +5134,11 @@ impl Session {
             let state = self.state.lock().await;
             state.token_info_and_rate_limits()
         };
-        let event = EventMsg::TokenCount(TokenCountEvent { info, rate_limits });
+        let event = EventMsg::TokenCount(TokenCountEvent {
+            context_usage: None,
+            info,
+            rate_limits,
+        });
         self.send_event(turn_context, event).await;
     }
 

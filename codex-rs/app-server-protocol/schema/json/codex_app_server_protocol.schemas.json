@@ -21348,6 +21348,127 @@
         "title": "ThreadCompactStartResponse",
         "type": "object"
       },
+      "ThreadContextReduction": {
+        "properties": {
+          "afterTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "beforeTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/v2/ThreadContextReductionOutcome"
+          }
+        },
+        "required": [
+          "at",
+          "beforeTokens",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "ThreadContextReductionOutcome": {
+        "enum": [
+          "shaken",
+          "compacted",
+          "insufficient",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ThreadContextTokenBasis": {
+        "enum": [
+          "usage",
+          "estimate"
+        ],
+        "type": "string"
+      },
+      "ThreadContextUsage": {
+        "description": "Context and policy of a captured prepared request, separate from cumulative usage.",
+        "properties": {
+          "activeTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "basis": {
+            "$ref": "#/definitions/v2/ThreadContextTokenBasis"
+          },
+          "childActiveCapTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "childPolicyEnabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "lastReduction": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadContextReduction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modelWindowTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "observedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "providerUsageAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "selectedModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shakeWatermark": {
+            "description": "Exclusive sealed-history-item boundary, not tokens or a percentage.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "activeTokens",
+          "basis"
+        ],
+        "type": "object"
+      },
       "ThreadDeleteParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -25018,6 +25139,16 @@
       "ThreadTokenUsageUpdatedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "contextUsage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadContextUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "threadId": {
             "type": "string"
           },
@@ -25496,6 +25627,16 @@
       "TurnCompletedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "contextUsage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadContextUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "threadId": {
             "type": "string"
           },
