@@ -3,7 +3,7 @@ source: tui/src/app/tests/agent_picker_tests.rs
 expression: "render_bottom_popup(&app.chat_widget, 96)"
 ---
   Subagents
-  Select an agent to watch. ⌥+← previous, ⌥+→ next.
+  Select an agent to watch. ⌥← previous, ⌥→ next.
 
   Search subagents
 
