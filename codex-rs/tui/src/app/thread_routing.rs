@@ -1187,6 +1187,7 @@ impl App {
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
         }
+        self.cache_agent_picker_notification(thread_id, &notification);
         if self.current_displayed_thread_id() == Some(thread_id)
             && let ServerNotification::TurnCompleted(notification) = &notification
         {
@@ -1336,6 +1337,7 @@ impl App {
                 self.show_wake_mode_hint_once();
             }
         }
+        self.update_agent_picker_rows_if_present();
 
         // Settings snapshots do not belong in the transcript queue: apply them in receive order.
         if let Some(ServerNotification::ThreadSettingsUpdated(settings)) = notification.as_ref()

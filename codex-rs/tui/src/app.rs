@@ -197,6 +197,8 @@ use uuid::Uuid;
 mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
+mod agent_picker_state;
+mod agent_picker_status;
 mod agent_status_feed;
 #[cfg(any(unix, windows))]
 mod agents_overview;

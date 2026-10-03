@@ -436,6 +436,9 @@ impl App {
             self.active_thread_id = None;
             self.active_thread_rx = None;
             self.primary_thread_id = None;
+            self.agent_navigation
+                .picker_state
+                .invalidate_preview_generation();
             self.primary_session_configured = None;
             let init = self.chatwidget_init_for_forked_or_resumed_thread(
                 tui,

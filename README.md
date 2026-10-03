@@ -147,6 +147,10 @@ release notes](releases/2026-10-02-nested-wake-mode.md) for behavior and
 boundaries, and the [original root wake rollout](releases/2026-09-26-wake-mode.md)
 for its measurements.
 
+### Monitoring subagents
+
+Run `/subagents` to monitor child runs. Each row shows whether a child is mid-turn, idle, closed, or in error, along with its latest reported context tokens against the model window when available. Idle children also show a short preview of their latest final response.
+
 ### Subagents on a different model provider
 
 An agent role can point its children at a different model provider than the

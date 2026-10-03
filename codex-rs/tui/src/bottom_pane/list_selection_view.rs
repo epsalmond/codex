@@ -53,6 +53,9 @@ use super::selection_tabs::render_tab_bar;
 use super::selection_tabs::tab_bar_height;
 use unicode_width::UnicodeWidthStr;
 
+#[path = "selection_item_updates.rs"]
+mod selection_item_updates;
+
 /// Minimum list width (in content columns) required before the side-by-side
 /// layout is activated. Keeps the list usable even when sharing horizontal
 /// space with the side content panel.
@@ -156,11 +159,14 @@ pub(crate) type OnCancelCallback = Option<Box<dyn Fn(&AppEventSender) + Send + S
 /// be accepted and are skipped by keyboard navigation.
 #[derive(Default)]
 pub(crate) struct SelectionItem {
+    /// Stable identity for rows that are refreshed while a picker remains open.
+    pub selection_key: Option<String>,
     pub name: String,
     pub name_prefix_spans: Vec<Span<'static>>,
     pub toggle: Option<SelectionToggle>,
     pub toggle_placeholder: Option<&'static str>,
     pub display_shortcut: Option<ShortcutHint>,
+    pub category_tag: Option<String>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
     pub is_current: bool,
@@ -700,7 +706,7 @@ impl ListSelectionView {
                     let wrap_indent = (description.is_none() && item.disabled_reason.is_none())
                         .then_some(wrap_prefix_width);
                     GenericDisplayRow {
-                        category_tag: None,
+                        category_tag: item.category_tag.clone(),
                         selection_style: row_selection_style,
                         name: name_with_marker,
                         name_prefix_spans,
@@ -1080,6 +1086,10 @@ impl ListSelectionView {
 }
 
 impl BottomPaneView for ListSelectionView {
+    fn update_selection_items(&mut self, items: Vec<SelectionItem>) -> bool {
+        self.replace_items_preserving_state(items)
+    }
+
     fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
         crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::List)
     }
@@ -1678,6 +1688,64 @@ mod tests {
 
     fn new_view(params: SelectionViewParams, tx: AppEventSender) -> ListSelectionView {
         ListSelectionView::new(params, tx, crate::keymap::RuntimeKeymap::defaults().list)
+    }
+
+    #[test]
+    fn updating_keyed_rows_preserves_search_selection_and_scroll_anchor() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let mut view = new_view(
+            SelectionViewParams {
+                is_searchable: true,
+                max_visible_rows: 3,
+                items: (0..10)
+                    .map(|idx| SelectionItem {
+                        selection_key: Some(format!("thread-{idx}")),
+                        name: format!("Worker {idx}"),
+                        search_value: Some(format!("worker {idx}")),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            AppEventSender::new(tx_raw),
+        );
+        view.search_query = "worker".to_string();
+        view.apply_filter();
+        for _ in 0..7 {
+            view.move_down();
+        }
+        assert_eq!(
+            view.items[view.selected_actual_idx().unwrap()]
+                .selection_key
+                .as_deref(),
+            Some("thread-7")
+        );
+        assert_eq!(view.state.scroll_top, 5);
+
+        let updated_items = (0..11)
+            .map(|idx| SelectionItem {
+                selection_key: Some(format!("thread-{idx}")),
+                name: format!("Worker {idx}"),
+                description: Some("new metadata".to_string()),
+                search_value: Some(format!("worker {idx}")),
+                ..Default::default()
+            })
+            .collect();
+        assert!(view.replace_items_preserving_state(updated_items));
+
+        assert_eq!(view.search_query, "worker");
+        assert_eq!(
+            view.items[view.selected_actual_idx().unwrap()]
+                .selection_key
+                .as_deref(),
+            Some("thread-7")
+        );
+        assert_eq!(
+            view.items[view.filtered_indices[view.state.scroll_top]]
+                .selection_key
+                .as_deref(),
+            Some("thread-5")
+        );
     }
 
     #[test]

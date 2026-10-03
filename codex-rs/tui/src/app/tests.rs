@@ -9,6 +9,8 @@ mod security_setup_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/agent_picker_tests.rs"]
+mod agent_picker_tests;
 #[path = "tests/agents_navigation_tests.rs"]
 mod agents_navigation_tests;
 #[path = "tests/approvals_reviewer_error_tests.rs"]
@@ -63,6 +65,8 @@ mod projectless_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 
+#[path = "tests/agent_picker_requests_tests.rs"]
+mod agent_picker_requests_tests;
 #[path = "tests/history_hydration_tests.rs"]
 mod history_hydration_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
