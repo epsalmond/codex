@@ -231,6 +231,9 @@ use codex_protocol::exec_output::StreamOutput;
 
 mod code_mode_warning;
 mod context_reduction_telemetry;
+mod request_admission;
+pub(crate) use request_admission::InsufficientContext;
+pub(crate) use request_admission::ReductionAttempt;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod environment;

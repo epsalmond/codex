@@ -14,6 +14,7 @@ use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::context::UserVerificationNotice;
+use crate::context::world_state::WorldState;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::feedback_tags;
 use crate::hook_runtime::drain_async_hook_results;
@@ -559,13 +560,32 @@ pub(crate) async fn run_turn(
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 sampling_request_input,
+                &world_state,
                 cancellation_token.child_token(),
             )
             .await
         }
         .await;
         match sampling_request_result {
-            Ok((sampling_request_output, sampling_request_input)) => {
+            Ok(SamplingRequestOutcome::Insufficient { limit_tokens }) => {
+                let err = CodexErr::ContextWindowExceeded;
+                sess.emit_turn_error_lifecycle(
+                    turn_context.as_ref(),
+                    err.to_codex_protocol_error(),
+                    err.details(),
+                )
+                .await;
+                sess.track_turn_codex_error(turn_context.as_ref(), &err);
+                let mut event = err.to_error_event(/*message_prefix*/ None);
+                event.message =
+                    subagent_context_limit_message(limit_tokens, turn_context.multi_agent_version);
+                sess.send_event(&turn_context, EventMsg::Error(event)).await;
+                return Ok(None);
+            }
+            Ok(SamplingRequestOutcome::Sampled(
+                sampling_request_output,
+                sampling_request_input,
+            )) => {
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -631,8 +651,10 @@ pub(crate) async fn run_turn(
 
                 let new_context_window_requested =
                     needs_follow_up && sess.take_new_context_window_request().await;
-                let should_roll_over =
-                    new_context_window_requested || (needs_follow_up && token_limit_reached);
+                let should_roll_over = new_context_window_requested
+                    || (needs_follow_up
+                        && token_limit_reached
+                        && !matches!(turn_context.session_source, SessionSource::SubAgent(_)));
                 let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                 super::token_budget::maybe_record(
                     sess.as_ref(),
@@ -661,26 +683,6 @@ pub(crate) async fn run_turn(
                     {
                         Ok(MidTurnReduction::Shaken) => continue,
                         Ok(MidTurnReduction::Compacted) => {}
-                        // Fail the subagent's turn rather than sampling and compacting in a
-                        // loop. The error event marks the turn failed, which notifies the parent.
-                        Ok(MidTurnReduction::Insufficient { limit_tokens }) => {
-                            let err = CodexErr::ContextWindowExceeded;
-                            sess.emit_turn_error_lifecycle(
-                                turn_context.as_ref(),
-                                err.to_codex_protocol_error(),
-                                err.details(),
-                            )
-                            .await;
-                            sess.track_turn_codex_error(turn_context.as_ref(), &err);
-                            let mut error_event = err.to_error_event(/*message_prefix*/ None);
-                            error_event.message = subagent_context_limit_message(
-                                limit_tokens,
-                                turn_context.multi_agent_version,
-                            );
-                            sess.send_event(&turn_context, EventMsg::Error(error_event))
-                                .await;
-                            return Ok(None);
-                        }
                         Err(err) => {
                             if matches!(err.details(), CodexErrorDetails::TurnAborted) {
                                 return Err(err);
@@ -1407,10 +1409,10 @@ async fn track_turn_resolved_config_analytics(
 /// shake run back-to-back under the same turn with no await on client input in
 /// between, so there is no stale-confirmation window to guard against.
 ///
-/// MID-TURN: `mid_turn_reduction::reduce_mid_turn` also calls this for subagents
-/// after a sampling request and all of its tool futures have finished. The loop keeps no
-/// retained step context at that point and captures the next step only after the
-/// rewrite, so the same "no step context holds this history" precondition holds.
+/// CHILD REQUESTS: `request_admission` calls this after final prompt preparation.
+/// Its retained step context contains settings and tools, rather than a history
+/// snapshot; the loop rebuilds prompt and prefix guards after a history rewrite
+/// while keeping the Code Mode worker alive.
 ///
 /// ESCALATION: when the first (plain automatic) pass leaves the thread still
 /// above the auto-shake threshold — whether that pass applied or was skipped
@@ -1646,7 +1648,7 @@ async fn run_auto_shake_pass(
         escalated,
         "auto-shake triggered"
     );
-    handlers::apply_shake(
+    let result = handlers::apply_shake(
         sess,
         turn_context.as_ref(),
         ShakeMode::Elide,
@@ -1654,7 +1656,7 @@ async fn run_auto_shake_pass(
         trigger,
     )
     .await;
-    true
+    !result.is_noop()
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -1670,6 +1672,9 @@ async fn run_pre_sampling_compact(
     // remove the need to compact at all. Auto-compaction below re-reads token
     // status afterwards and remains the fallback whenever shake is disabled,
     // impossible, or did not free enough.
+    if matches!(turn_context.session_source, SessionSource::SubAgent(_)) {
+        return Ok(());
+    }
     let tokens_before =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await
@@ -1684,7 +1689,7 @@ async fn run_pre_sampling_compact(
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)
             .await?;
-        run_auto_compact(
+        let compact = run_auto_compact(
             sess,
             step_context,
             /*fallback_step_context*/ None,
@@ -1693,7 +1698,11 @@ async fn run_pre_sampling_compact(
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
         )
-        .await?;
+        .await;
+        if let Err(err) = compact {
+            super::mid_turn_reduction::record_reduction_error(sess, tokens_before, &err).await;
+            return Err(err);
+        }
         let after = super::context_window::context_window_token_status(
             sess.as_ref(),
             turn_context.as_ref(),
@@ -2007,8 +2016,9 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     input: Vec<ResponseItem>,
+    world_state: &Arc<WorldState>,
     cancellation_token: CancellationToken,
-) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
+) -> CodexResult<SamplingRequestOutcome> {
     let turn_context = Arc::clone(&step_context.turn);
     let preempt = step_context.preempt.clone().unwrap_or_default();
     let _input_watch = if let Some(preempt) = &step_context.preempt {
@@ -2035,6 +2045,7 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
+    let mut admission = super::request_admission::ChildRequestAdmission::default();
     loop {
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
@@ -2110,6 +2121,24 @@ async fn run_sampling_request(
                 input_modalities: step_context.settings.model_info.input_modalities.clone(),
             }));
         }
+        match admission
+            .check(
+                &sess,
+                &step_context,
+                world_state,
+                client_session,
+                &prompt,
+                &responses_metadata,
+                &cancellation_token,
+            )
+            .await?
+        {
+            super::request_admission::Admission::Proceed => {}
+            super::request_admission::Admission::Rebuild => continue,
+            super::request_admission::Admission::Insufficient { limit_tokens } => {
+                return Ok(SamplingRequestOutcome::Insufficient { limit_tokens });
+            }
+        }
         let report_candidates = sess.coordinator_report_candidates(&turn_context, &prompt.input);
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
@@ -2126,7 +2155,10 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
-                return Ok((output, original_input.unwrap_or(prompt.input)));
+                return Ok(SamplingRequestOutcome::Sampled(
+                    output,
+                    original_input.unwrap_or(prompt.input),
+                ));
             }
             Err(err) => match err.details() {
                 CodexErrorDetails::ContextWindowExceeded => {
@@ -2162,7 +2194,7 @@ async fn run_sampling_request(
             return Err(CodexErr::TurnAborted);
         }
         if preempt.is_cancelled() {
-            return Ok((
+            return Ok(SamplingRequestOutcome::Sampled(
                 SamplingRequestResult {
                     needs_follow_up: true,
                     last_agent_message: None,
@@ -2307,6 +2339,12 @@ pub(crate) async fn built_tools(
         step_store,
         tool_suggest_candidates.as_ref(),
     )?))
+}
+
+#[derive(Debug)]
+enum SamplingRequestOutcome {
+    Sampled(SamplingRequestResult, Vec<ResponseItem>),
+    Insufficient { limit_tokens: Option<i64> },
 }
 
 #[derive(Debug)]

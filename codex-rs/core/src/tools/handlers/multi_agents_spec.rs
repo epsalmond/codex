@@ -478,7 +478,7 @@ fn list_agents_output_schema() -> Value {
                         },
                         "context": {
                             "type": ["object", "null"],
-                            "description": "Active context tokens. basis \"usage\": last model-reported usage plus estimated newer items; \"estimate\": no usage reported since the last history rewrite. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient}) or null. Null when unavailable.",
+                            "description": "Active context tokens. basis \"usage\": last model-reported usage plus estimated newer items; \"estimate\": no usage reported since the last history rewrite. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient|failed|cancelled}) or null. Null when unavailable.",
                             "properties": {
                                 "active_tokens": { "type": "integer" },
                                 "basis": { "type": "string", "enum": ["usage", "estimate"] },

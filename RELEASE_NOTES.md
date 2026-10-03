@@ -4,7 +4,7 @@
 
 ## Subagent context reduction
 
-Spawned subagents inherit a 272,000-token Shake and compaction cap by default, tightened further when the parent has a lower limit. Within a turn, a child shakes first and compacts if needed; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
+Spawned subagents inherit a 272,000-token cap by default, tightened further when the parent has a lower limit. Prepared child requests reduce before sampling when needed and stop if still over their limits, with failed and cancelled attempts reported separately; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
 
 ## Subagent picker details
 

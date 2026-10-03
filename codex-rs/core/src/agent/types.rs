@@ -59,6 +59,10 @@ pub enum ContextReductionOutcome {
     Compacted,
     /// Reduction ran or was attempted but active context stayed above the threshold.
     Insufficient,
+    /// Compaction failed; the post-reduction size is unknown.
+    Failed,
+    /// Cancellation interrupted compaction.
+    Cancelled,
 }
 
 /// The most recent automatic context reduction of an agent. Runtime-only.

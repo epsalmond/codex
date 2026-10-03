@@ -46,7 +46,7 @@ pub(crate) fn observe(telemetry: &SessionTelemetry, request: &ResponsesApiReques
     total
 }
 
-pub(super) fn estimate_request_tokens(request: &ResponsesApiRequest) -> usize {
+pub(crate) fn estimate_request_tokens(request: &ResponsesApiRequest) -> usize {
     let input = request
         .input
         .iter()

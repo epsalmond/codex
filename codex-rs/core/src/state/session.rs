@@ -80,6 +80,10 @@ pub(crate) struct SessionState {
     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
     /// Most recent automatic context reduction, reported by `list_agents`. Runtime-only.
     pub(crate) last_context_reduction: Option<ContextReductionRecord>,
+    /// Explicit child compaction awaiting final prepared-request admission.
+    pub(crate) pending_child_reduction: Option<crate::session::ReductionAttempt>,
+    /// Content and policy of the last completed but insufficient child reduction.
+    pub(crate) insufficient_child_context: Option<crate::session::InsufficientContext>,
     /// True while `token_info` holds a local estimate from `recompute_token_usage`
     /// rather than model-reported usage.
     pub(crate) token_usage_estimated: bool,
@@ -135,6 +139,8 @@ impl SessionState {
             latest_rate_limits: None,
             latest_token_usage_record: None,
             last_context_reduction: None,
+            insufficient_child_context: None,
+            pending_child_reduction: None,
             token_usage_estimated: false,
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),

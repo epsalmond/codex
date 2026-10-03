@@ -15,6 +15,7 @@ pub(crate) use input_budget::finalize as finalize_guardian_input;
 pub(crate) use permissions::for_tool as tool_permission_context;
 mod request_budget;
 pub(crate) use request_budget::ExhaustedReviewBudget;
+pub(crate) use request_budget::estimate_request_tokens;
 pub(crate) use request_budget::observe as observe_guardian_request;
 pub(crate) use request_budget::prepare_prompt as prepare_guardian_prompt;
 mod review;

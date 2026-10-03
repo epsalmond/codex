@@ -380,8 +380,7 @@ window.
 Spawned subagent threads inherit `auto_shake` automatically:
 `build_agent_shared_config` (`codex-rs/core/src/agent/child_config.rs`) clones
 the parent `Config` wholesale and then refreshes only runtime-owned fields,
-and subagent turns run through the same `run_turn` → `run_pre_sampling_compact`
-path. Note that the effective *model* may differ from the parent's, so a
+and subagent turns use the same automatic Shake policy before sampling. Note that the effective *model* may differ from the parent's, so a
 subagent on a family with auto-shake off will not shake even when its parent
 does — which is the intended per-model behavior.
 
@@ -401,16 +400,22 @@ This child context policy is independent from parent scheduling. See the
 which MultiAgentV2 child sessions wake on reports and why Exec roots continue
 to poll.
 
-The mid-turn roll-over order also differs for subagents (see
-`codex-rs/core/src/session/mid_turn_reduction.rs`). At the point where a
-sampling follow-up would exceed the context limit:
+Every fully prepared ordinary child request is checked before dispatch, including
+initial input, tool continuations and rebuilt retries. The independent active
+context cap applies to the complete estimated request even when auto-compaction
+counts only the body after the prefix. Provider usage and local estimates remain
+approximate. Reduction runs in the existing request loop and preserves completed
+tools and running Code Mode work.
+
+When the prepared request reaches a limit:
 
 - a **subagent** first tries auto-shake; if that brings it back under the
   limit, sampling continues without compacting. If auto-shake is skipped or
   insufficient, compaction runs next; if the thread is still at or over the
   limit after compaction, the turn ends with a context-window-exceeded error
   instead of sampling and compacting in a loop. The parent observes this as a
-  failed child turn.
+  failed child turn. An unchanged post-reduction context and policy do not
+  trigger repeated insufficient compaction attempts.
 - a **root** session skips straight to compaction and keeps sampling
   regardless of the post-compaction size, matching the pre-existing behavior.
 - an explicit new-context-window request always compacts directly, for both
@@ -431,7 +436,9 @@ local estimate of items recorded since, `estimate` when no usage has been
 reported since the thread started or history was last rewritten), and
 `last_reduction`, the most recent automatic reduction, or `null`, as `{at,
 before_tokens, after_tokens (nullable), outcome}` where `outcome` is one of
-`shaken`, `compacted`, or `insufficient`.
+`shaken`, `compacted`, `insufficient`, `failed`, or `cancelled`. Success means
+the rebuilt prepared request passed the same admission check; failed or cancelled
+compaction reports `after_tokens: null`.
 
 ### Observability
 
