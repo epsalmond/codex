@@ -25,7 +25,6 @@ impl Session {
         {
             return Ok(());
         }
-        let parent_turn_id = turn_context.turn_metadata_state.parent_turn_id();
         let assignment = self
             .services
             .local_agent_runtime
@@ -33,7 +32,6 @@ impl Session {
                 self.thread_id,
                 &turn_context.session_source,
                 &turn_context.sub_id,
-                parent_turn_id.as_deref(),
                 allow_new_generation,
             )
             .map_err(|message| CodexErr::InvalidRequest(message.to_string()))?;
