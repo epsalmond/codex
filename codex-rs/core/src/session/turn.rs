@@ -2162,20 +2162,24 @@ async fn run_sampling_request(
                     original_input.unwrap_or(prompt.input),
                 ));
             }
-            Err(err) => match err.details() {
-                CodexErrorDetails::ContextWindowExceeded => {
-                    sess.set_total_tokens_full(&turn_context).await;
-                    return Err(err);
-                }
-                CodexErrorDetails::UsageLimitReached(e) => {
-                    let rate_limits = e.rate_limits.clone();
-                    if let Some(rate_limits) = rate_limits {
-                        sess.update_rate_limits(&turn_context, *rate_limits).await;
+            Err(err) => {
+                sess.observe_retained_context(&step_context, &prompt, &responses_metadata)
+                    .await?;
+                match err.details() {
+                    CodexErrorDetails::ContextWindowExceeded => {
+                        sess.set_total_tokens_full(&turn_context).await;
+                        return Err(err);
                     }
-                    return Err(err);
+                    CodexErrorDetails::UsageLimitReached(e) => {
+                        let rate_limits = e.rate_limits.clone();
+                        if let Some(rate_limits) = rate_limits {
+                            sess.update_rate_limits(&turn_context, *rate_limits).await;
+                        }
+                        return Err(err);
+                    }
+                    _ => err,
                 }
-                _ => err,
-            },
+            }
         };
 
         let original_input = original_input.get_or_insert(prompt.input);
@@ -3485,34 +3489,8 @@ async fn try_run_sampling_request(
                         .unwrap_or(i64::MAX),
                     );
                 }
-                // Tool outputs can still be pending here. Estimate raw history without
-                // normalizing it or rerunning side-effecting request preparation.
-                let history = sess.clone_history().await;
-                let mut current_prompt = prompt.clone();
-                current_prompt.input = history.raw_items().cloned().collect();
-                let current_request = sess.services.model_client.build_responses_request(
-                    &current_prompt,
-                    &step_context.settings.model_info,
-                    /*effort*/ None,
-                    step_context.settings.reasoning_summary,
-                    /*service_tier*/ None,
-                    responses_metadata,
-                    /*include_internal*/ true,
-                )?;
-                let current_tokens =
-                    i64::try_from(crate::guardian::estimate_request_tokens(&current_request))
-                        .unwrap_or(i64::MAX);
-                {
-                    let mut state = sess.state.lock().await;
-                    let growth = current_tokens
-                        .saturating_sub(state.prepared_request_tokens.unwrap_or(current_tokens))
-                        .max(0);
-                    let previous = state.prepared_context_tokens.unwrap_or(/*default*/ 0);
-                    state.prepared_context_tokens =
-                        Some(current_tokens.max(previous.saturating_add(growth)));
-                    state.prepared_request_tokens = Some(current_tokens);
-                    state.refresh_context_snapshot();
-                }
+                sess.observe_retained_context(&step_context, prompt, responses_metadata)
+                    .await?;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
                 if let Err(err) = budget_result {

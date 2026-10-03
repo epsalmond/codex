@@ -67,6 +67,7 @@ impl Handler {
             // The sealed-item boundary is human-facing status metadata.
             if let Some(context) = &mut context {
                 context.shake_watermark = None;
+                context.prepared_request_tokens = None;
             }
             listed.push(ListedAgent {
                 agent_name: agent

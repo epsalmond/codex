@@ -4466,11 +4466,11 @@
             "null"
           ]
         },
-        "at": {
+        "beforeTokens": {
           "format": "int64",
           "type": "integer"
         },
-        "beforeTokens": {
+        "completedAt": {
           "format": "int64",
           "type": "integer"
         },
@@ -4479,8 +4479,8 @@
         }
       },
       "required": [
-        "at",
         "beforeTokens",
+        "completedAt",
         "outcome"
       ],
       "type": "object"

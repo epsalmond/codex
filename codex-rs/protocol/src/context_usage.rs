@@ -66,4 +66,8 @@ pub struct AgentContextUsage {
     /// Exclusive sealed-history-item boundary; never a token count or fraction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shake_watermark: Option<u64>,
+    /// Local request estimate paired with active_tokens, retained only for safe replay.
+    /// Inspector and v2 projections omit this accounting baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_request_tokens: Option<i64>,
 }

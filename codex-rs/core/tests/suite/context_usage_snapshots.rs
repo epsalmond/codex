@@ -255,11 +255,13 @@ async fn resume_preserves_captured_observation_and_provider_times(
     Ok(())
 }
 
-#[test_case::test_case(false; "live")]
-#[test_case::test_case(true; "resumed")]
+#[test_case::test_case(false, false; "live")]
+#[test_case::test_case(true, false; "resumed after completion without usage")]
+#[test_case::test_case(true, true; "resumed after exhausted early close")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn response_without_usage_keeps_provider_measurement_and_estimated_newer_context(
     resume: bool,
+    early_close: bool,
 ) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
@@ -271,7 +273,7 @@ async fn response_without_usage_keeps_provider_measurement_and_estimated_newer_c
         ]),
     )
     .await;
-    let mut fixture = child_builder(/*cap*/ 50_000)
+    let mut fixture = child_builder(/*cap*/ 100_000)
         .build_with_auto_env(&server)
         .await?;
     fixture.submit_text_turn("Complete this task.").await?;
@@ -280,14 +282,14 @@ async fn response_without_usage_keeps_provider_measurement_and_estimated_newer_c
         .context_usage_snapshot()
         .await
         .context("measured observation")?;
-    responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_assistant_message("unmeasured", &"newer output ".repeat(/*n*/ 2_000)),
-            completed_without_usage("unmeasured"),
-        ]),
-    )
-    .await;
+    let mut unmeasured = vec![responses::ev_assistant_message(
+        "unmeasured",
+        &"x".repeat(/*n*/ 196_000),
+    )];
+    if !early_close {
+        unmeasured.push(completed_without_usage("unmeasured"));
+    }
+    let unmeasured_request = responses::mount_sse_once(&server, responses::sse(unmeasured)).await;
     fixture.submit_text_turn("Continue the task.").await?;
     let newer = fixture
         .codex
@@ -296,7 +298,22 @@ async fn response_without_usage_keeps_provider_measurement_and_estimated_newer_c
         .context("newer observation")?;
     assert_eq!(newer.provider_usage_at, measured.provider_usage_at);
     assert_eq!(newer.basis, ContextTokenBasis::Usage);
-    assert!(newer.active_tokens > 50_000, "{newer:?}");
+    assert!(
+        (95_000..100_000).contains(&newer.active_tokens),
+        "saved floor must remain below the cap before resumed input: {newer:?}"
+    );
+    // Even the ordinary request plus retained output and new input fits locally.
+    // The provider-based floor, rather than the local estimate, must reject dispatch.
+    assert!(
+        unmeasured_request
+            .single_request()
+            .body_json()
+            .to_string()
+            .len()
+            + 196_000
+            + 16_000
+            < 100_000 * 4
+    );
     if resume {
         fixture.codex.shutdown_and_wait().await?;
         let history = fixture
@@ -340,9 +357,7 @@ async fn response_without_usage_keeps_provider_measurement_and_estimated_newer_c
         ]),
     )
     .await;
-    fixture
-        .submit_text_turn("Preserve the constraint and finish.")
-        .await?;
+    fixture.submit_text_turn(&"y".repeat(/*n*/ 16_000)).await?;
     assert!(
         compact.single_request().body_json()["input"]
             .as_array()

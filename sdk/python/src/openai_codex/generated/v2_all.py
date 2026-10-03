@@ -9833,8 +9833,8 @@ class ThreadContextReduction(BaseModel):
         populate_by_name=True,
     )
     after_tokens: Annotated[int | None, Field(alias="afterTokens")] = None
-    at: int
     before_tokens: Annotated[int, Field(alias="beforeTokens")]
+    completed_at: Annotated[int, Field(alias="completedAt")]
     outcome: ThreadContextReductionOutcome
 
 

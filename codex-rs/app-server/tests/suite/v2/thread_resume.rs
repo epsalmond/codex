@@ -3911,6 +3911,7 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
         observed_at: Some(1_700_000_030),
         provider_usage_at: Some(1_700_000_000),
         shake_watermark: None,
+        prepared_request_tokens: None,
         last_reduction: Some(codex_protocol::context_usage::ContextReductionRecord {
             at: 1_700_000_020,
             before_tokens: 300_000,

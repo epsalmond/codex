@@ -105,7 +105,7 @@ impl Session {
                 && let Some(previous) = state.prepared_context_tokens
             {
                 let growth = request_tokens
-                    .saturating_sub(state.prepared_request_tokens.unwrap_or(request_tokens))
+                    .saturating_sub(state.prepared_request_tokens.unwrap_or(/*default*/ 0))
                     .max(0);
                 active = active.max(previous.saturating_add(growth));
                 additions =
@@ -119,6 +119,7 @@ impl Session {
         state.prepared_request_tokens = Some(request_tokens);
         state.last_context_snapshot = Some(AgentContextUsage {
             active_tokens: active,
+            prepared_request_tokens: Some(request_tokens),
             basis: if state.token_info().is_some() && !state.token_usage_estimated {
                 ContextTokenBasis::Usage
             } else {
@@ -145,6 +146,39 @@ impl Session {
             active,
             additions,
         })
+    }
+
+    /// Charges retained output at both successful and failed stream boundaries.
+    /// Raw history avoids normalization of pending tool calls or request preparation effects.
+    pub(super) async fn observe_retained_context(
+        &self,
+        step: &StepContext,
+        prompt: &Prompt,
+        metadata: &CodexResponsesMetadata,
+    ) -> CodexResult<()> {
+        let history = self.clone_history().await;
+        let mut current_prompt = prompt.clone();
+        current_prompt.input = history.raw_items().cloned().collect();
+        let request = self.services.model_client.build_responses_request(
+            &current_prompt,
+            &step.settings.model_info,
+            /*effort*/ None,
+            step.settings.reasoning_summary,
+            /*service_tier*/ None,
+            metadata,
+            /*include_internal*/ true,
+        )?;
+        let current_tokens =
+            i64::try_from(crate::guardian::estimate_request_tokens(&request)).unwrap_or(i64::MAX);
+        let mut state = self.state.lock().await;
+        let growth = current_tokens
+            .saturating_sub(state.prepared_request_tokens.unwrap_or(/*default*/ 0))
+            .max(0);
+        let previous = state.prepared_context_tokens.unwrap_or(/*default*/ 0);
+        state.prepared_context_tokens = Some(current_tokens.max(previous.saturating_add(growth)));
+        state.prepared_request_tokens = Some(current_tokens);
+        state.refresh_context_snapshot();
+        Ok(())
     }
 
     /// Records a reduction before the terminal event, even without legacy usage counters.
@@ -215,6 +249,7 @@ impl crate::state::SessionState {
             .then(|| self.history.shake_history_state().watermark);
         let snapshot = self.last_context_snapshot.get_or_insert_default();
         snapshot.active_tokens = active;
+        snapshot.prepared_request_tokens = self.prepared_request_tokens;
         snapshot.basis = basis;
         snapshot.last_reduction = self.last_context_reduction.clone();
         snapshot.observed_at = Some(chrono::Utc::now().timestamp());
@@ -249,7 +284,10 @@ impl crate::state::SessionState {
             // Unmeasured output already included in a saved usage-based observation
             // must remain charged when this history is resumed.
             self.prepared_context_tokens = Some(snapshot.active_tokens);
-            self.prepared_request_tokens = None;
+            self.prepared_request_tokens = snapshot
+                .prepared_request_tokens
+                .filter(|tokens| (0..=snapshot.active_tokens).contains(tokens));
+            snapshot.prepared_request_tokens = self.prepared_request_tokens;
             self.last_context_snapshot = Some(snapshot);
         }
     }

@@ -30,7 +30,7 @@ pub enum ThreadContextReductionOutcome {
 #[ts(rename_all = "camelCase", export_to = "v2/")]
 pub struct ThreadContextReduction {
     #[ts(type = "number")]
-    pub at: i64,
+    pub completed_at: i64,
     #[ts(type = "number")]
     pub before_tokens: i64,
     #[ts(type = "number | null")]
@@ -71,7 +71,7 @@ impl From<core::AgentContextUsage> for ThreadContextUsage {
                 core::ContextTokenBasis::Estimate => ThreadContextTokenBasis::Estimate,
             },
             last_reduction: value.last_reduction.map(|record| ThreadContextReduction {
-                at: record.at,
+                completed_at: record.at,
                 before_tokens: record.before_tokens,
                 after_tokens: record.after_tokens,
                 outcome: match record.outcome {
