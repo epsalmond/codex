@@ -11,102 +11,85 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
-### Installing and running Codex CLI
-
-Run the following on Mac or Linux to install Codex CLI:
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
-
-Run the following on Windows to install Codex CLI:
-
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
-
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
-
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
-
-Codex CLI can also be installed via the following package managers:
-
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
-
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
-
-Then simply run `codex` to get started.
-
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Local statusline build
-
-This local fork carries two TUI-only status-line items: `weekly-reset` (an
-absolute local reset time) and `last-response-clock` (the latest successful
-live response in the current TUI session). `codex-update` updates the official
-npm install, fetches the matching `rust-v<version>` tag, rebases this branch
-onto that exact tag, and only then builds and atomically switches the local
-binary. It deliberately stops on a missing tag or rebase conflict.
-
-`codex` launches the managed local build; `codex-official` launches the npm
-installation directly as an escape hatch.
-
-Fork test builds are published as `codex-shake` beside the official `codex`.
-See [Installing codex-shake](#installing-codex-shake) for install and update
-commands, and the [fork release notes](https://github.com/epsalmond/codex/releases)
-for changes in each build.
+This fork ships Codex CLI as `codex-shake`, installed beside the official
+`codex`. Fork builds cover Apple Silicon macOS and x86_64 Linux; for other
+platforms, use [upstream Codex CLI](#installing-upstream-codex-cli).
 
 ### Installing codex-shake
 
-Install the latest fork build on macOS or Linux with:
+Install the latest fork release with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
 ```
 
-Homebrew is also available on macOS and Linux x86_64:
+The script installs releases under `~/.local/share/codex-shake` and adds
+`codex-shake` and `codex-shake-update` to `~/.local/bin`. Homebrew is also
+available:
 
 ```sh
 brew install epsalmond/codex-shake/codex-shake
 ```
 
-Debian and Ubuntu x86_64 users can download the latest `.deb` from the
+On Debian or Ubuntu x86_64, download the latest `.deb` from the
 [GitHub releases](https://github.com/epsalmond/codex/releases) and install it
-with `sudo dpkg -i ./codex-shake_<version>_amd64.deb`. The script installer
-adds `codex-shake` and `codex-shake-update` alongside the official `codex`.
-Run `codex-shake-update` to install a newer fork release. Homebrew users can
-run `brew upgrade epsalmond/codex-shake/codex-shake`. Debian and Ubuntu users
-can download and reinstall the newest `.deb`.
+with `sudo dpkg -i ./codex-shake_<version>_amd64.deb`.
+
+To update, run `codex-shake-update` (script install),
+`brew upgrade epsalmond/codex-shake/codex-shake` (Homebrew), or install the
+newest `.deb`. The [fork release notes](https://github.com/epsalmond/codex/releases)
+list the changes in each build.
+
+Run `codex-shake` and sign in as described in
+[Using Codex with your ChatGPT plan](#using-codex-with-your-chatgpt-plan).
+`codex-shake` shares `~/.codex` (config, sign-in, and sessions) with the
+official `codex`.
+
+### What codex-shake does by default
+
+- **Auto-shake** frees context before compaction is needed. When a session
+  reaches its model's threshold, or resumes after the prompt cache has
+  expired, it replaces older tool outputs with short placeholders, without
+  asking a model to summarize. Each removed output is saved under
+  `~/.codex/artifacts/<thread-id>/`, and its placeholder names that file so
+  the model can search it. To turn auto-shake off for every model, add this to
+  `~/.codex/config.toml`:
+
+  ```toml
+  [auto_shake]
+  threshold = "off"
+
+  [auto_shake.models."gpt-5.6"]
+  threshold = "inherit"
+
+  [auto_shake.models."gpt-6-astra"]
+  threshold = "inherit"
+  ```
+
+  See [Shake](codex-rs/docs/shake.md#auto-shake) for triggers, per-model
+  thresholds, and manual `/shake`.
+- **Subagent context reduction** keeps each subagent under a context cap: a
+  child shakes, then compacts, when it reaches the cap. See
+  [subagents](codex-rs/docs/shake.md#subagents).
+- **Wake mode** lets an agent wait for its subagents without polling: each
+  child report starts a new turn on its parent. This covers interactive roots
+  and MultiAgentV2 child agents at every depth; a `codex-shake exec` root
+  still polls its direct children. See
+  [wake mode](#wake-mode-for-multi-agent-orchestrators).
+
+For prompts that put these to work, see
+[Getting the most out of codex-shake](RELEASE_NOTES.md#getting-the-most-out-of-codex-shake).
+
+### Statusline items
+
+codex-shake adds two TUI status-line items: `weekly-reset` (the local time
+your weekly usage window resets) and `last-response-clock` (when the latest
+live response in this session completed). Turn them on with `/statusline`, or
+list them in `tui.status_line` in `~/.codex/config.toml`.
 
 ### Identifying Shake feature support
 
-Run `codex --version` (or `codex-shake --version`) to see both the upstream
+Run `codex-shake --version` to see both the upstream
 Codex version and the Shake feature version and exact fork release tag. `-V`
 continues to show only the upstream Codex version. Binaries reporting Shake
 feature version `0.3.0` include event-driven wakeups for interactive CLI and
@@ -122,8 +105,8 @@ recognize the `agent_polling` string setting.
 
 ### Wake mode for multi-agent orchestrators
 
-In wake mode, an interactive MultiAgentV2 root sleeps until a child subagent
-reports back instead of polling `wait_agent` in a loop. MultiAgentV2 is enabled
+Wake mode lets an orchestrator delegate work and spend no requests while it
+waits: each child report starts a new turn on its parent. MultiAgentV2 is enabled
 by default, and `agent_polling` defaults to `"disabled"`, so interactive CLI
 and app-server roots use wake mode without extra configuration. A V2 child
 created with `ThreadSpawn` also wakes when its own children report, at any
@@ -141,7 +124,7 @@ To keep polling throughout the agent tree, set:
 agent_polling = "enabled"
 ```
 
-or for a single run, `codex -c 'features.multi_agent_v2.agent_polling="enabled"'`.
+or for a single run, `codex-shake -c 'features.multi_agent_v2.agent_polling="enabled"'`.
 
 Esc pauses automatic wakeups and holds child results arriving at the root; the TUI
 shows "N child results queued — delivered with your next message". A child
@@ -213,11 +196,74 @@ rules and current limitations.
 A provider-switching role cannot fork the parent's history; spawn it with
 `fork_turns = "none"` (the default).
 
+### Installing upstream Codex CLI
+
+The official OpenAI release installs as `codex`.
+
+Run the following on Mac or Linux to install Codex CLI:
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
+
+Run the following on Windows to install Codex CLI:
+
+```shell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```
+
+The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+```
+
+```powershell
+$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+```
+
+Codex CLI can also be installed via the following package managers:
+
+```shell
+# Install using npm
+npm install -g @openai/codex
+```
+
+```shell
+# Install using Homebrew
+brew install --cask codex
+```
+
+Then simply run `codex` to get started.
+
+<details>
+<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
+
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+
+Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+
+</details>
+
 ### Using Codex with your ChatGPT plan
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+Run `codex-shake` (or `codex` for the upstream CLI) and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
 You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+
+## Maintainer notes
+
+The maintainer's local build workflow (`codex-update`, `codex-official`, and a
+`codex` command that launches a local build) is described in
+[Maintainer-local build](./docs/maintainer-local-build.md). Using codex-shake
+requires none of it.
 
 ## Docs
 
