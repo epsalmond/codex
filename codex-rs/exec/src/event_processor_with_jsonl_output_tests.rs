@@ -55,12 +55,26 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
     assert_eq!(status, CodexStatus::InitiateShutdown);
     assert_eq!(processor.final_message(), None);
 
-    EventProcessor::print_final_output(&mut processor);
+    EventProcessor::print_final_output(&mut processor).expect("final output should succeed");
 
     assert_eq!(
         std::fs::read_to_string(&output_path).expect("read output file"),
         "keep existing contents"
     );
+}
+
+#[test]
+fn final_output_reports_last_message_write_failure() {
+    let tempdir = tempdir().expect("create tempdir");
+    let output_path = tempdir.path().join("missing").join("last-message.txt");
+    let mut processor = EventProcessorWithJsonOutput::new(Some(output_path));
+    processor.final_message = Some("final answer".to_string());
+    processor.emit_final_message_on_shutdown = true;
+
+    let error = EventProcessor::print_final_output(&mut processor)
+        .expect_err("missing parent directory should fail the write");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
 }
 
 #[test]
