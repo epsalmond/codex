@@ -3316,3 +3316,41 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         1,
     );
 }
+
+fn resumed_history_from(source: SessionSource) -> InitialHistory {
+    InitialHistory::Resumed(ResumedHistory {
+        conversation_id: ThreadId::new(),
+        history: Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                source,
+                ..SessionMeta::default()
+            },
+            git: None,
+        })]),
+        rollout_path: None,
+        last_activity_at: None,
+    })
+}
+
+/// Exec resuming its own root keeps the default wake mode, so the resumed root drains; an
+/// interactive root resumed by exec cannot be observed, so it falls back to polling.
+#[tokio::test]
+async fn exec_resume_keeps_wake_mode_only_for_exec_roots() {
+    let mut config = test_config().await;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow multi-agent v2");
+    assert_eq!(config.multi_agent_v2.agent_polling, AgentPolling::Disabled);
+
+    let resolved = [SessionSource::Exec, SessionSource::Cli].map(|resumed_source| {
+        let mut config = config.clone();
+        apply_exec_resume_polling_fallback(
+            &SessionSource::Exec,
+            &resumed_history_from(resumed_source),
+            &mut config,
+        );
+        config.multi_agent_v2.agent_polling
+    });
+    assert_eq!(resolved, [AgentPolling::Disabled, AgentPolling::Enabled]);
+}

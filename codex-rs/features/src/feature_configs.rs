@@ -305,7 +305,9 @@ pub struct MultiAgentV2ConfigToml {
     /// corresponding guidance to root and subagent usage hints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expose_spawn_agent_model_overrides: Option<bool>,
-    /// Root child-report polling mode. Defaults to `disabled`; Exec and child sessions still poll.
+    /// Root child-report polling mode. Defaults to `disabled`: roots, including `codex exec`
+    /// roots (which drain the agent tree before exiting), wake on child reports. `enabled` keeps
+    /// `wait_agent` polling throughout the agent tree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_polling: Option<AgentPolling>,
     /// Disable the model's direct-message tools; spawning and automatic child results remain available.

@@ -347,8 +347,8 @@ impl AgentWakeCoordinator {
         };
         report.delivery = ReportDeliveryState::Enqueued;
         report.mailbox_inserted = true;
+        state.signal_wake_event();
         drop(state);
-        self.signal_wake_event();
         true
     }
 

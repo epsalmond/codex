@@ -42,6 +42,7 @@ impl ChildReportMode {
             Self::WaitAgent
         } else {
             match session_source {
+                SessionSource::Exec if config.exec_root_wakes_on_report => Self::WakeOnReport,
                 SessionSource::Exec | SessionSource::Internal(_) => Self::WaitAgent,
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
                 | SessionSource::Cli

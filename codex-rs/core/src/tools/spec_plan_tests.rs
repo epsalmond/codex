@@ -3013,7 +3013,7 @@ fn collaboration_tool_description(plan: &ToolPlanProbe, tool_name: &str) -> Stri
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wake_mode_applies_to_thread_spawn_and_preserves_exec_polling() {
+async fn multi_agent_v2_wake_mode_applies_to_thread_spawn_and_exec_roots() {
     const WAKE_TEXT: &str = "a child report starts another turn and includes the result";
     const LIST_AGENTS_WAKE_TEXT: &str = "to address them with `send_message` or `followup_task`";
     let subagent_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -3046,7 +3046,7 @@ async fn multi_agent_v2_wake_mode_applies_to_thread_spawn_and_preserves_exec_pol
             codex_features::AgentPolling::Disabled,
             SessionSource::Exec,
             true,
-            false,
+            true,
         ),
         (
             codex_features::AgentPolling::Disabled,
@@ -3101,6 +3101,43 @@ async fn multi_agent_v2_wake_mode_applies_to_thread_spawn_and_preserves_exec_pol
             ),
             (expect_wake, expect_wake, expect_wake),
             "agent_polling={agent_polling:?}, session_source={session_source:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exec_root_wake_mode_drops_wait_agent_unless_opted_out() {
+    // `None` keeps the default `agent_polling` (`disabled`).
+    for (agent_polling, wake_mode_active, expect_wake) in [
+        (None, true, true),
+        (None, false, false),
+        (Some(codex_features::AgentPolling::Enabled), true, false),
+    ] {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            if let Some(agent_polling) = agent_polling {
+                update_config(turn, |config| {
+                    config.multi_agent_v2.agent_polling = agent_polling;
+                    config.multi_agent_v2.exec_root_wakes_on_report = false;
+                });
+            }
+            turn.session_source = SessionSource::Exec;
+            turn.wake_mode_active = wake_mode_active;
+        })
+        .await;
+
+        let wait_agent_present = plan
+            .namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
+            .iter()
+            .any(|name| name == "wait_agent");
+        assert_eq!(
+            (
+                !wait_agent_present,
+                collaboration_tool_description(&plan, "spawn_agent")
+                    .contains("a child report starts another turn and includes the result"),
+            ),
+            (expect_wake, expect_wake),
+            "agent_polling={agent_polling:?}, wake_mode_active={wake_mode_active}"
         );
     }
 }

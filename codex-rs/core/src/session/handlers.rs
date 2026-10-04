@@ -476,6 +476,12 @@ pub async fn run_user_shell_command(
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
+    if !sess
+        .admit_root_task_or_emit_error(turn_context.as_ref())
+        .await
+    {
+        return;
+    }
     sess.spawn_task(
         turn_context,
         Vec::new(),
@@ -598,8 +604,23 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+    if let Err(error) = sess.register_root_turn_lifecycle_for_session(&sub_id).await {
+        warn!(%error, "compact task admission rejected by lifecycle coordinator");
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
+                message: "The execution scope is shutting down".to_string(),
+                codex_error_info: Some(CodexErrorInfo::Other),
+            }),
+        })
+        .await;
+        return;
+    }
+
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
@@ -750,6 +771,12 @@ pub async fn review(
     #[allow(deprecated)]
     match resolve_review_request(review_request, &turn_context.cwd) {
         Ok(resolved) => {
+            if !sess
+                .admit_root_task_or_emit_error(turn_context.as_ref())
+                .await
+            {
+                return;
+            }
             spawn_review_thread(
                 Arc::clone(sess),
                 Arc::clone(config),

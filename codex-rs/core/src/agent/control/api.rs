@@ -3,6 +3,7 @@
 
 use super::LocalAgentControl;
 use super::spawn::SpawnInitialInput;
+use super::work_lifecycle::WorkObservation;
 use crate::agent::api::AgentConfigUpdate;
 use crate::agent::api::AgentControl;
 use crate::agent::api::AgentInfo;
@@ -35,6 +36,12 @@ use std::collections::HashSet;
 impl AgentControl for LocalAgentControl {
     fn identity(&self) -> SessionId {
         self.session_id()
+    }
+
+    fn work_observation(&self) -> Option<WorkObservation> {
+        self.runtime
+            .work_observation_enabled()
+            .then(|| self.runtime.work_observation())
     }
 
     fn resolve<'a>(

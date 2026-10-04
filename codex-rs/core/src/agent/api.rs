@@ -4,6 +4,7 @@
 //! and turn contexts stay in the runtime. Implementations own membership, loading,
 //! delivery and shared resources. These Rust contracts do not define a wire protocol.
 
+use crate::WorkObservation;
 use crate::agent::types::AgentExecutionGuard;
 use crate::agent::types::AgentMessage;
 use crate::agent::types::AgentMetadata;
@@ -39,6 +40,12 @@ const _: Option<&dyn AgentControl> = None;
 /// Boxed Send futures allow callers to use `Arc<dyn AgentControl>`.
 pub trait AgentControl: Send + Sync {
     fn identity(&self) -> SessionId;
+
+    /// Return a read-only lifecycle observer only when this backend accounts for every source
+    /// of session work and guarantees terminal output forwarding before shutdown.
+    fn work_observation(&self) -> Option<WorkObservation> {
+        None
+    }
 
     /// Resolve an ID or a name relative to the caller's captured source, without loading.
     /// The local backend lazily registers callers with no parent before resolving, including
