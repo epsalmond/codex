@@ -103,6 +103,9 @@ async fn ignores_unrelated_turn_completion_before_backfilling_primary_turn() -> 
             "features.multi_agent_v2=true",
             "-c",
             "features.enable_request_compression=false",
+            // This script polls with `wait_agent`, so it keeps the pre-drain single root turn.
+            "-c",
+            "features.multi_agent_v2.agent_polling=\"enabled\"",
         ])
         .arg(PARENT_PROMPT)
         .output()?;

@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -30,6 +31,15 @@ pub(crate) trait EventProcessor {
     fn print_final_output(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+pub(crate) async fn print_final_output_before_cleanup<T>(
+    event_processor: &mut dyn EventProcessor,
+    cleanup: impl Future<Output = T>,
+) -> (io::Result<()>, T) {
+    let output_result = event_processor.print_final_output();
+    let cleanup_result = cleanup.await;
+    (output_result, cleanup_result)
 }
 
 pub(crate) fn handle_last_message(

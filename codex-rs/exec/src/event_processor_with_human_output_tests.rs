@@ -313,6 +313,7 @@ fn turn_completed_recovers_final_message_from_turn_items() {
         final_message: None,
         final_message_rendered: false,
         emit_final_message_on_shutdown: false,
+        last_completed_turn: None,
         last_total_token_usage: None,
     };
 
@@ -364,6 +365,7 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
         final_message: Some("stale answer".to_string()),
         final_message_rendered: true,
         emit_final_message_on_shutdown: false,
+        last_completed_turn: None,
         last_total_token_usage: None,
     };
 
@@ -416,6 +418,7 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
         final_message: Some("streamed answer".to_string()),
         final_message_rendered: false,
         emit_final_message_on_shutdown: false,
+        last_completed_turn: None,
         last_total_token_usage: None,
     };
 
@@ -461,6 +464,7 @@ fn turn_failed_clears_stale_final_message() {
         final_message: Some("partial answer".to_string()),
         final_message_rendered: true,
         emit_final_message_on_shutdown: true,
+        last_completed_turn: None,
         last_total_token_usage: None,
     };
 
@@ -507,6 +511,7 @@ fn turn_interrupted_clears_stale_final_message() {
         final_message: Some("partial answer".to_string()),
         final_message_rendered: true,
         emit_final_message_on_shutdown: true,
+        last_completed_turn: None,
         last_total_token_usage: None,
     };
 
@@ -534,4 +539,108 @@ fn turn_interrupted_clears_stale_final_message() {
     assert_eq!(processor.final_message, None);
     assert!(!processor.final_message_rendered);
     assert!(!processor.emit_final_message_on_shutdown);
+}
+
+fn plain_processor() -> EventProcessorWithHumanOutput {
+    EventProcessorWithHumanOutput {
+        bold: Style::new(),
+        cyan: Style::new(),
+        dimmed: Style::new(),
+        green: Style::new(),
+        italic: Style::new(),
+        magenta: Style::new(),
+        red: Style::new(),
+        yellow: Style::new(),
+        show_agent_reasoning: true,
+        show_raw_agent_reasoning: false,
+        last_message_path: None,
+        final_message: None,
+        final_message_rendered: false,
+        emit_final_message_on_shutdown: false,
+        last_completed_turn: None,
+        last_total_token_usage: None,
+    }
+}
+
+fn root_turn_completed(
+    turn_id: &str,
+    status: TurnStatus,
+    message: Option<&str>,
+) -> ServerNotification {
+    ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
+        context_usage: None,
+        thread_id: "thread-1".to_string(),
+        turn: Turn {
+            id: turn_id.to_string(),
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            items: message
+                .map(|text| ThreadItem::AgentMessage {
+                    id: format!("{turn_id}-msg"),
+                    text: text.to_string(),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                })
+                .into_iter()
+                .collect(),
+            status,
+            error: None,
+            started_at: None,
+            completed_at: Some(0),
+            duration_ms: None,
+        },
+    })
+}
+
+/// A drained exec run reports the last completed root turn, even when a later wake turn fails or
+/// is interrupted after streaming partial output.
+#[test]
+fn failed_or_interrupted_wake_turn_keeps_the_last_completed_answer() {
+    for status in [TurnStatus::Failed, TurnStatus::Interrupted] {
+        let mut processor = plain_processor();
+        processor.process_server_notification(root_turn_completed(
+            "turn-1",
+            TurnStatus::Completed,
+            Some("answer A"),
+        ));
+        processor.final_message = Some("partial B".to_string());
+        processor.final_message_rendered = true;
+
+        processor.process_server_notification(root_turn_completed(
+            "turn-2",
+            status.clone(),
+            /*message*/ None,
+        ));
+
+        assert_eq!(
+            (
+                processor.final_message.as_deref(),
+                processor.final_message_rendered,
+                processor.emit_final_message_on_shutdown,
+            ),
+            (Some("answer A"), false, true),
+            "{status:?}"
+        );
+    }
+}
+
+#[test]
+fn completed_wake_turn_replaces_the_earlier_answer() {
+    let mut processor = plain_processor();
+    for (turn_id, message) in [("turn-1", "answer A"), ("turn-2", "answer B")] {
+        processor.process_server_notification(root_turn_completed(
+            turn_id,
+            TurnStatus::Completed,
+            Some(message),
+        ));
+    }
+    processor.process_server_notification(root_turn_completed(
+        "turn-3",
+        TurnStatus::Interrupted,
+        /*message*/ None,
+    ));
+
+    assert_eq!(processor.final_message.as_deref(), Some("answer B"));
+    assert!(processor.emit_final_message_on_shutdown);
 }
