@@ -34,11 +34,17 @@ if (-not (($args -join ' ').StartsWith($expected))) { throw "Unexpected gh argum
 if ($env:UPDATER_TEST_MODE -eq 'download-failure') { exit 24 }
 $download = $args[-1]
 $zip = Join-Path $download 'codex-test.zip'
-if ($env:UPDATER_TEST_ARCHIVE) {
+if ($env:UPDATER_TEST_ARCHIVE -and $env:UPDATER_TEST_MODE -notin @('lf-to-crlf', 'crlf-to-lf')) {
     Copy-Item -LiteralPath $env:UPDATER_TEST_ARCHIVE -Destination $zip
 } else {
     $payload = New-Item -ItemType Directory -Path (Join-Path $download 'payload')
     'updated' | Set-Content -LiteralPath (Join-Path $payload.FullName 'installed.txt')
+    if ($env:UPDATER_TEST_MODE -in @('lf-to-crlf', 'crlf-to-lf')) {
+        Copy-Item (Join-Path $env:UPDATER_TEST_SOURCE 'codex-shake-update.ps1') $payload.FullName
+        $batch = [System.IO.File]::ReadAllText((Join-Path $env:UPDATER_TEST_SOURCE 'codex-shake-update.bat')).Replace("`r`n", "`n")
+        if ($env:UPDATER_TEST_MODE -eq 'lf-to-crlf') { $batch = $batch.Replace("`n", "`r`n") }
+        [System.IO.File]::WriteAllText((Join-Path $payload.FullName 'codex-shake-update.bat'), $batch, [System.Text.Encoding]::ASCII)
+    }
     Compress-Archive -Path (Join-Path $payload.FullName '*') -DestinationPath $zip
     Remove-Item -LiteralPath $payload.FullName -Recurse -Force
 }
@@ -48,13 +54,21 @@ if ($env:UPDATER_TEST_MODE -eq 'bad-checksum') { $hash = '0' * 64 }
 exit 0
 '@ | Set-Content -LiteralPath (Join-Path $mockBin.FullName 'mock-gh.ps1') -Encoding ASCII
 
-    foreach ($mode in @('success', 'bad-checksum', 'list-failure', 'download-failure', 'invalid-metadata', 'invalid-json', 'no-build')) {
+    foreach ($mode in @('success', 'bad-checksum', 'list-failure', 'download-failure', 'invalid-metadata', 'invalid-json', 'no-build', 'lf-to-crlf', 'crlf-to-lf')) {
         $destination = New-Item -ItemType Directory -Path (Join-Path $testDirectory "destination with spaces $mode")
         $sentinel = Join-Path $destination.FullName 'installed.txt'
         'original' | Set-Content -LiteralPath $sentinel
         $start = New-Object System.Diagnostics.ProcessStartInfo
         $start.FileName = $env:ComSpec
         $start.Arguments = '/d /c ""' + (Join-Path $scripts.FullName 'codex-shake-update.bat') + '""'
+        if ($mode -in @('lf-to-crlf', 'crlf-to-lf')) {
+            Copy-Item (Join-Path $scripts.FullName 'codex-shake-update.*') $destination.FullName
+            $batchPath = Join-Path $destination.FullName 'codex-shake-update.bat'
+            $batch = [System.IO.File]::ReadAllText($batchPath).Replace("`r`n", "`n")
+            if ($mode -eq 'crlf-to-lf') { $batch = $batch.Replace("`n", "`r`n") }
+            [System.IO.File]::WriteAllText($batchPath, $batch, [System.Text.Encoding]::ASCII)
+            $start.Arguments = '/d /c ""' + $batchPath + '""'
+        }
         $start.WorkingDirectory = $destination.FullName
         $start.UseShellExecute = $false
         $start.RedirectStandardOutput = $true
@@ -62,15 +76,16 @@ exit 0
         $start.EnvironmentVariables['PATH'] = $mockBin.FullName + ';' + $env:PATH
         $start.EnvironmentVariables['UPDATER_TEST_MODE'] = $mode
         $start.EnvironmentVariables['UPDATER_TEST_ARCHIVE'] = $Archive
+        $start.EnvironmentVariables['UPDATER_TEST_SOURCE'] = $scripts.FullName
         $start.EnvironmentVariables['TEMP'] = $testDirectory
         $start.EnvironmentVariables['TMP'] = $testDirectory
         $process = [System.Diagnostics.Process]::Start($start)
         $stdout = $process.StandardOutput.ReadToEnd()
         $stderr = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
-        if ($mode -eq 'success') {
-            if ($process.ExitCode -ne 0) { throw "Success test failed: $stdout $stderr" }
-            if ($Archive) {
+        if ($mode -in @('success', 'lf-to-crlf', 'crlf-to-lf')) {
+            if ($process.ExitCode -ne 0 -or $stderr) { throw "Success test failed: $stdout $stderr" }
+            if ($Archive -and $mode -eq 'success') {
                 & (Join-Path $destination.FullName 'bin/codex.exe') --version
                 if ($LASTEXITCODE -ne 0) { throw 'Extracted Codex could not run' }
             } elseif ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'updated') {
