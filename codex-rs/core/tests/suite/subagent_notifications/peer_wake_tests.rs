@@ -336,10 +336,12 @@ async fn peer_followup_wakes_completed_worker_and_reports_to_root(
         },
     )
     .await;
+    let base_url = format!("{}/v1", server.uri());
+    let mock_server = start_mock_server().await;
     let test = test_codex()
         .with_model("koffing")
         .with_session_source(SessionSource::Cli)
-        .with_config(|config| {
+        .with_config(move |config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
                 config
                     .features
@@ -348,11 +350,12 @@ async fn peer_followup_wakes_completed_worker_and_reports_to_root(
             }
             config.multi_agent_v2.agent_polling = AgentPolling::Disabled;
             config.multi_agent_v2.max_concurrent_threads_per_session = 3;
+            config.model_provider.base_url = Some(base_url);
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
         })
-        .build_with_streaming_server(&server)
+        .build_with_auto_env(&mock_server)
         .await?;
     let mut created = test.thread_manager.subscribe_thread_created();
     test.codex
