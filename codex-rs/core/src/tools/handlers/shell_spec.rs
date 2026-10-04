@@ -125,13 +125,13 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "chars".to_string(),
             JsonSchema::string(Some(
-                "Bytes to write to stdin. Defaults to empty, which polls without writing.".to_string(),
+                "Bytes to write to stdin. Defaults to empty, which retrieves session output without writing input.".to_string(),
             )),
         ),
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
+                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty-input reads wait 5000-300000 ms by default.".to_string(),
             )),
         ),
         (
