@@ -37,7 +37,7 @@ pub(crate) fn handle_last_message(
     output_file: &Path,
 ) -> io::Result<()> {
     let message = last_agent_message.unwrap_or_default();
-    let write_result = write_last_message_file(message, Some(output_file));
+    write_last_message_file(message, Some(output_file))?;
     if last_agent_message.is_none() {
         writeln!(
             io::stderr().lock(),
@@ -45,7 +45,7 @@ pub(crate) fn handle_last_message(
             output_file.display()
         )?;
     }
-    write_result
+    Ok(())
 }
 
 fn write_last_message_file(contents: &str, last_message_path: Option<&Path>) -> io::Result<()> {
