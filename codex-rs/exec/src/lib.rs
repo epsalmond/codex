@@ -1140,7 +1140,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 .shutdown()
                 .await
                 .map_err(|err| anyhow::anyhow!("in-process app-server shutdown failed: {err}"))?;
-            event_processor.print_final_output();
+            event_processor
+                .print_final_output()
+                .map_err(|err| anyhow::anyhow!("failed to write final output: {err}"))?;
             return Ok(());
         }
         InitialOperation::UserTurn {
@@ -1318,7 +1320,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     if let Err(err) = client.shutdown().await {
         warn!("in-process app-server shutdown failed: {err}");
     }
-    event_processor.print_final_output();
+    if let Err(err) = event_processor.print_final_output() {
+        // The default exec log filter hides `warn!`, so report this directly.
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("Failed to write final output: {err}");
+        }
+        error_seen = true;
+    }
     if error_seen {
         std::process::exit(1);
     }

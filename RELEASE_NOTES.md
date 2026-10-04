@@ -32,6 +32,10 @@ The fork installs as `codex-shake` beside the official `codex` binary and can up
 
 `codex-shake-estimate` estimates Shake savings from local rollout files without sending them to a service. See the [estimator documentation](codex-rs/docs/shake-bench/README.md#offline-savings-estimate).
 
+## `codex exec` output failures
+
+`codex exec` now exits 1 when it cannot write the `--output-last-message` file, after normal shutdown, so CI no longer treats a missing output file as success.
+
 ## Getting the most out of codex-shake
 
 Ask for delegation, hand off long waits, and turn repeated work into scripts:
