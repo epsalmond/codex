@@ -1,6 +1,6 @@
 ---
 source: tui/src/app/turn_tips_tests.rs
-expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(screens.join(\"\\n\\n\"))"
+expression: "crate::chatwidget::tests::helpers::normalize_response_clock(crate::chatwidget::tests::helpers::normalize_snapshot_paths(screens.join(\"\\n\\n\")))"
 ---
 working=true, response rows=1, 80x12
 
@@ -35,7 +35,7 @@ working=false, response rows=1, 80x12
 
 › Ask Codex to do anything
 
-  gpt-test default · /tmp/project
+  gpt-test default · /tmp/project · ⏱ hh:mm XM
   ? for shortcuts
 
 working=false, response rows=30, 80x12
@@ -49,7 +49,7 @@ working=false, response rows=30, 80x12
 
 › Ask Codex to do anything
 
-  gpt-test default · /tmp/project
+  gpt-test default · /tmp/project · ⏱ hh:mm XM
   ? for shortcuts
 
 working=false, response rows=1, 80x9
@@ -60,7 +60,7 @@ working=false, response rows=1, 80x9
 
 › Ask Codex to do anything
 
-  gpt-test default · /tmp/project
+  gpt-test default · /tmp/project · ⏱ hh:mm XM
   ? for shortcuts
 
 working=false, response rows=1, 80x10
@@ -72,7 +72,7 @@ working=false, response rows=1, 80x10
 
 › Ask Codex to do anything
 
-  gpt-test default · /tmp/project
+  gpt-test default · /tmp/project · ⏱ hh:mm XM
   ? for shortcuts
 
 working=false, response rows=1, 80x11
@@ -85,7 +85,7 @@ working=false, response rows=1, 80x11
 
 › Ask Codex to do anything
 
-  gpt-test default · /tmp/project
+  gpt-test default · /tmp/project · ⏱ hh:mm XM
   ? for shortcuts
 
 working=false, response rows=1, 12x12

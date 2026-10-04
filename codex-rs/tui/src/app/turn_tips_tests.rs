@@ -347,7 +347,9 @@ async fn turn_tip_placements_and_completion_barrier() -> Result<()> {
     }
     insta::assert_snapshot!(
         "turn_tip_placements",
-        crate::chatwidget::tests::helpers::normalize_snapshot_paths(screens.join("\n\n"))
+        crate::chatwidget::tests::helpers::normalize_response_clock(
+            crate::chatwidget::tests::helpers::normalize_snapshot_paths(screens.join("\n\n"))
+        )
     );
     Ok(())
 }

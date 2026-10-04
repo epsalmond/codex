@@ -782,6 +782,12 @@ async fn status_line_shows_weekly_reset_in_local_time() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let reset_at = 1_784_969_400;
 
+    // Without rate-limit data (for example an API-key login) the item is omitted.
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyReset),
+        None
+    );
+
     chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
@@ -3931,10 +3937,10 @@ async fn completed_turn_clears_visible_running_hook() {
 
     assert_chatwidget_snapshot!(
         "completed_turn_clears_visible_running_hook",
-        format!(
+        normalize_response_clock(format!(
             "before completion:\n{before_completion}\nafter completion:\n{}",
             hook_status_frame(&chat, /*width*/ 80)
-        )
+        ))
     );
 }
 
