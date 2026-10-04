@@ -160,6 +160,7 @@ mod turn_steer;
 mod view_image;
 mod web_search;
 mod windows_sandbox_setup;
+mod work_lifecycle_stdio;
 mod workspace_routing;
 
 mod user_verification;

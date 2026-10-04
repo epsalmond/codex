@@ -957,10 +957,14 @@ impl Session {
                         SessionSource::Internal(_)
                     )
                 {
-                    control.start_wake_dispatcher(matches!(
-                        &session_configuration.session_source,
-                        SessionSource::Exec
-                    ));
+                    let exec_root =
+                        matches!(&session_configuration.session_source, SessionSource::Exec);
+                    let exec_root_wakes =
+                        exec_root && config.multi_agent_v2.exec_root_wakes_on_report;
+                    control.start_wake_dispatcher(exec_root && !exec_root_wakes);
+                    if exec_root_wakes {
+                        control.runtime.enable_work_observation();
+                    }
                 }
                 if parent_thread_id.is_none() {
                     control.propagate_config_update(AgentConfigUpdate::ServiceTier(

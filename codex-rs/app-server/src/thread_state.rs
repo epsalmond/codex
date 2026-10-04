@@ -11,6 +11,7 @@ use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnItemsView;
 use codex_core::CodexThread;
 use codex_core::ThreadConfigSnapshot;
+use codex_core::WorkObservationSnapshot;
 use codex_file_watcher::WatchRegistration;
 use codex_protocol::ThreadId;
 #[cfg(test)]
@@ -58,6 +59,12 @@ pub(crate) struct PendingThreadResumeRequest {
 
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
+    /// Add or replace the pinned root lifecycle watcher in the listener's ordered loop.
+    SetThreadWorkUpdates {
+        owner_connection_id: ConnectionId,
+        thread_id: ThreadId,
+        receiver: watch::Receiver<WorkObservationSnapshot>,
+    },
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
     SendThreadResumeResponse {
         request: Box<PendingThreadResumeRequest>,
@@ -314,9 +321,14 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "thread_state_lifecycle_observer_tests.rs"]
+mod lifecycle_observer_tests;
+
 struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
+    lifecycle_observer_owner: Option<ConnectionId>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -325,9 +337,16 @@ impl Default for ThreadEntry {
         Self {
             state: Arc::new(Mutex::new(ThreadState::default())),
             connection_ids: HashSet::new(),
+            lifecycle_observer_owner: None,
             has_connections_watcher: watch::channel(false).0,
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LifecycleObserverClaimError {
+    ConnectionNotSubscribed,
+    AlreadyClaimed { owner: ConnectionId },
 }
 
 impl ThreadEntry {
@@ -422,6 +441,47 @@ impl ThreadStateManager {
             .get(&thread_id)
             .map(|thread_entry| thread_entry.connection_ids.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// Bind lifecycle control to the connection that started an observed root thread.
+    /// Disconnect removes passive subscription state but deliberately retains this owner.
+    pub(crate) async fn claim_lifecycle_observer(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> Result<(), LifecycleObserverClaimError> {
+        let mut state = self.state.lock().await;
+        if !state.live_connections.contains_key(&connection_id) {
+            return Err(LifecycleObserverClaimError::ConnectionNotSubscribed);
+        }
+        let Some(thread_entry) = state.threads.get_mut(&thread_id) else {
+            return Err(LifecycleObserverClaimError::ConnectionNotSubscribed);
+        };
+        if !thread_entry.connection_ids.contains(&connection_id) {
+            return Err(LifecycleObserverClaimError::ConnectionNotSubscribed);
+        }
+        match thread_entry.lifecycle_observer_owner {
+            Some(owner) if owner != connection_id => {
+                Err(LifecycleObserverClaimError::AlreadyClaimed { owner })
+            }
+            Some(_) => Ok(()),
+            None => {
+                thread_entry.lifecycle_observer_owner = Some(connection_id);
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) async fn lifecycle_observer_owner(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<ConnectionId> {
+        self.state
+            .lock()
+            .await
+            .threads
+            .get(&thread_id)
+            .and_then(|thread_entry| thread_entry.lifecycle_observer_owner)
     }
 
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {

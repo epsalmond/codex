@@ -9,9 +9,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use codex_core::CodexThread;
+use codex_core::GuardedShutdownOutcome;
 use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
+use codex_core::WorkObservation;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_extension_items::sleep::SleepItem;
@@ -28,6 +30,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ev_assistant_message;
@@ -358,10 +361,10 @@ async fn wait_agent_mode_polls_while_child_runs() -> Result<()> {
     assert_wait_agent_polls_while_child_runs(SessionSource::Cli, Some(AgentPolling::Enabled)).await
 }
 
-/// Exec keeps `wait_agent` polling by default because its process exits with the root turn.
+/// `agent_polling = "enabled"` keeps an Exec root on `wait_agent` polling, as before exec drained.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exec_mode_polls_while_child_runs_by_default() -> Result<()> {
-    assert_wait_agent_polls_while_child_runs(SessionSource::Exec, None).await
+async fn exec_mode_polls_while_child_runs_when_polling_is_enabled() -> Result<()> {
+    assert_wait_agent_polls_while_child_runs(SessionSource::Exec, Some(AgentPolling::Enabled)).await
 }
 
 async fn assert_wait_agent_polls_while_child_runs(
@@ -1336,5 +1339,133 @@ async fn wait_agent_root_keeps_child_reports_queue_only() -> Result<()> {
 
     let bodies = root_request_bodies(&server, root).await;
     assert_eq!((bodies.len(), deliveries(&bodies, "child done")), (2, 1));
+    Ok(())
+}
+
+async fn wait_for_turn_complete_id(codex: &CodexThread) -> String {
+    let EventMsg::TurnComplete(completed) =
+        wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await
+    else {
+        unreachable!("the predicate only accepts turn completion");
+    };
+    completed.turn_id
+}
+
+fn assert_not_closable(observation: &WorkObservation) {
+    let snapshot = observation.snapshot();
+    assert!(!snapshot.quiescent, "{snapshot:?}");
+    // A running child can advance the revision between the read and the close; either refusal
+    // keeps the scope open.
+    let outcome = observation.shutdown_if_quiescent(&snapshot.revision);
+    assert!(
+        matches!(
+            outcome,
+            GuardedShutdownOutcome::NotQuiescent(_) | GuardedShutdownOutcome::StaleRevision(_)
+        ),
+        "{snapshot:?} -> {outcome:?}"
+    );
+}
+
+/// The premature-shutdown race: an Exec root that ends its turn while a child works must stay
+/// open until the wake turn's output is forwarded, even after the first turn's output was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_wake_mode_stays_open_until_the_wake_turn_output_is_forwarded() -> Result<()> {
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_model("koffing")
+        .with_session_source(SessionSource::Exec)
+        .with_config(|config| {
+            configure_multi_agent(config, None);
+        })
+        .build(&server)
+        .await?;
+    let root = test.session_configured.thread_id;
+    mount_spawn_then_status(&server, root).await;
+    mount_sse_once_match(
+        &server,
+        from_thread(root, /*is_root*/ true, root_before_report),
+        sse(vec![
+            ev_response_created("root-status"),
+            ev_assistant_message("root-status-msg", "worker is running"),
+            ev_completed("root-status"),
+        ]),
+    )
+    .await;
+    mount_child_answer(&server, root, "child done").await;
+    mount_sse_once_match(
+        &server,
+        from_thread(
+            root,
+            /*is_root*/ true,
+            |body| body.contains(FINAL_ANSWER),
+        ),
+        sse(vec![
+            ev_response_created("root-wake"),
+            ev_assistant_message("root-wake-msg", "integrated"),
+            ev_completed("root-wake"),
+        ]),
+    )
+    .await;
+
+    let observation = test
+        .codex
+        .work_observation()
+        .expect("an Exec root in wake mode is observable");
+    let (initial, mut updates) = observation.subscribe();
+    assert!(initial.quiescent);
+
+    submit_user_text(&test.codex, ROOT_PROMPT).await;
+    let first_turn = wait_for_turn_complete_id(&test.codex).await;
+    assert_not_closable(&observation);
+    test.codex.note_root_turn_output_forwarded(&first_turn);
+    let waiting = observation.snapshot();
+    assert_eq!(
+        (waiting.active_root_turns, waiting.pending_terminal_outputs),
+        (0, 0)
+    );
+    assert!(waiting.running_finite_work >= 2, "{waiting:?}");
+    assert_not_closable(&observation);
+
+    let wake_turn = wait_for_turn_complete_id(&test.codex).await;
+    assert_ne!(wake_turn, first_turn);
+    assert_eq!(observation.snapshot().pending_terminal_outputs, 1);
+    assert_not_closable(&observation);
+    assert!(!updates.borrow_and_update().quiescent);
+
+    test.codex.note_root_turn_output_forwarded(&wake_turn);
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = updates.borrow_and_update().clone();
+            if snapshot.quiescent {
+                return snapshot;
+            }
+            updates.changed().await.expect("observation remains alive");
+        }
+    })
+    .await?;
+    let GuardedShutdownOutcome::Closed(closed) =
+        observation.shutdown_if_quiescent(&drained.revision)
+    else {
+        panic!("a drained Exec tree should close at its current revision");
+    };
+    assert!(closed.closed);
+
+    // The wake assignment binds before root admission; a rejected turn must not reopen the tree.
+    let rejected = test
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "after close".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    assert!(
+        matches!(rejected, TurnInputSubmission::NotSubmitted { .. }),
+        "{rejected:?}"
+    );
+    assert!(observation.snapshot().closed);
+    assert_eq!(
+        deliveries(&root_request_bodies(&server, root).await, "child done"),
+        1
+    );
     Ok(())
 }

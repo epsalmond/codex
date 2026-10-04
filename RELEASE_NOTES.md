@@ -12,9 +12,17 @@ The `/subagents` picker shows each child’s status, captured context policy and
 
 ## Wake mode for multi-agent orchestrators
 
-Interactive MultiAgentV2 roots and eligible V2 child agents at every depth now wake on reports. Exec roots themselves continue polling their direct children with `wait_agent`. Set `agent_polling = "enabled"` to retain polling throughout the tree. Esc pauses root wakeups and holds reports for the next user message. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and the [nested wake release notes](releases/2026-10-02-nested-wake-mode.md).
+Interactive MultiAgentV2 roots, `codex exec` roots, and eligible V2 child agents at every depth now wake on reports. Set `agent_polling = "enabled"` to retain polling throughout the tree. Esc pauses root wakeups and holds reports for the next user message. See [wake mode](README.md#wake-mode-for-multi-agent-orchestrators) and the [nested wake release notes](releases/2026-10-02-nested-wake-mode.md).
 
-In `codex exec` and in subagents, `wait_agent` without `timeout_ms` now waits up to 300 seconds (interactive sessions keep 30 seconds), returns as soon as an agent reports, and returns at once when no child is running; a configured `default_wait_timeout_ms` applies everywhere.
+With `agent_polling = "enabled"`, `wait_agent` without `timeout_ms` in `codex exec` and in subagents now waits up to 300 seconds (interactive sessions keep 30 seconds), returns as soon as an agent reports, and returns at once when no child is running; a configured `default_wait_timeout_ms` applies everywhere. Wake-mode agents have no `wait_agent`, so the default does not apply to them.
+
+## Exec drains its agent tree by default
+
+`codex exec` roots now wake on child reports, and exec stays open until the agent tree is idle, including after `exec resume` and `exec fork`. It prints the last completed root turn's answer and exits 1 if any root turn failed or was interrupted. `--json` emits a `turn.started` event for every root turn, followed by `turn.completed`, or `turn.failed` for a failed turn. The first Ctrl-C interrupts the running root turn; a Ctrl-C between turns, or a second one, stops waiting and exits 1.
+
+To turn it off, set `features.multi_agent_v2.agent_polling = "enabled"` (for a single run, `codex-shake exec -c 'features.multi_agent_v2.agent_polling="enabled"'`). That restores `wait_agent` polling for the whole agent tree, exec included, and exec exits after one root turn, as before. An interactive session resumed with `codex exec resume` keeps polling, because exec cannot observe its work.
+
+Known gap: if the app-server and core disagree on whether a root turn failed (an error with no `codex_error_info`, or a permissions path-conversion failure), exec stops draining and tears down child agents that are still running. That matches the old single-turn behaviour; it does not hang. See [#97](https://github.com/epsalmond/codex/issues/97).
 
 ## Subagents on a different model provider
 
@@ -40,10 +48,10 @@ The fork installs as `codex-shake` beside the official `codex` binary and can up
 
 Ask for delegation, hand off long waits, and turn repeated work into scripts:
 
-- "Delegate the flaky-test investigation to a subagent and keep going." In an interactive session, its result arrives as a new turn; a `codex-shake exec` root collects it with `wait_agent`.
+- "Delegate the flaky-test investigation to a subagent and keep going." Its result arrives as a new turn, in an interactive session or a `codex-shake exec` run.
 - "Give each failing package to its own subagent and summarize their reports as they arrive."
 - For CI or a long build, ask for one waiting script in place of repeated status checks: "Run a script that waits for CI to finish, with the longest yield." Each check on the running script is still a model request, spaced up to 300 seconds apart by default, so one long wait keeps requests to a minimum.
-- Interactive sessions only: "Hand the CI wait to a subagent, then end your turn." The subagent's report starts your next turn. A `codex-shake exec` run ends with its root turn, so keep the wait in the root there.
+- "Hand the CI wait to a subagent, then end your turn." The subagent's report starts your next turn. In a `codex-shake exec` run the root can end its turn too: exec drains the agent tree and wakes the root with the reports. With `agent_polling = "enabled"`, exec restores the old polling behaviour and exits after one root turn, so keep the wait in the root there.
 - When a sequence of commands repeats, ask for a script: "Turn these steps into a script and use it from now on."
 - Give each subagent one self-contained task and ask for a short report; it shakes and compacts within its own context budget.
 - To steer a running turn, type your message and press Enter. Press Esc to interrupt the root turn; in wake mode this also pauses wakeups, and child results are held until your next message.

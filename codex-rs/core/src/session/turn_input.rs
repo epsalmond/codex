@@ -347,6 +347,12 @@ async fn start_or_steer(
                 unreachable!("explicit user input can enter Plan mode");
             };
             session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)?;
+            if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
+                tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
+                return Ok(TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::ServerDraining,
+                });
+            }
             if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
                 turn_context
                     .turn_metadata_state
@@ -507,6 +513,13 @@ async fn start_if_idle(
     if let Err(error) = session.bind_wake_assignment(&turn_context, allow_new_generation) {
         session.clear_reserved_idle_turn(&turn_state).await;
         return Err(error);
+    }
+    if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
+        tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining,
+        });
     }
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
         turn_context

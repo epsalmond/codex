@@ -11,6 +11,9 @@ use super::coordinator::TurnEndDisposition;
 use super::dispatcher::WakeDispatcherLifetime;
 use super::execution::AgentExecutionLimiter;
 use super::residency::V2Residency;
+use super::work_lifecycle::WorkAdmissionError;
+use super::work_lifecycle::WorkCoordinator;
+use super::work_lifecycle::WorkObservation;
 use crate::agent::api::AgentControl;
 use crate::agent::registry::AgentRegistry;
 use crate::config::RolloutBudgetConfig;
@@ -55,6 +58,9 @@ pub(crate) struct LocalAgentRuntime {
     pub(super) wake_dispatcher: Option<Arc<WakeDispatcherLifetime>>,
     wake_mode_enabled: Arc<AtomicBool>,
     root_waits_for_children: Arc<AtomicBool>,
+    work_observation_enabled: Arc<AtomicBool>,
+    /// Bounded work state shared by the root and its owned child tree.
+    pub(super) work_lifecycle: Arc<WorkCoordinator>,
 }
 
 impl LocalAgentRuntime {
@@ -71,6 +77,7 @@ impl LocalAgentRuntime {
         rollout_budget: Option<RolloutBudgetConfig>,
     ) -> Self {
         let wake_coordinator = Arc::new(AgentWakeCoordinator::default());
+        let work_lifecycle = Arc::new(WorkCoordinator::new(Arc::clone(&wake_coordinator)));
         let runtime = Self {
             manager,
             thread_id_generator,
@@ -80,6 +87,8 @@ impl LocalAgentRuntime {
             wake_dispatcher: Some(Arc::new(WakeDispatcherLifetime::default())),
             wake_mode_enabled: Arc::new(AtomicBool::new(false)),
             root_waits_for_children: Arc::new(AtomicBool::new(false)),
+            work_observation_enabled: Arc::new(AtomicBool::new(false)),
+            work_lifecycle,
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
@@ -96,6 +105,37 @@ impl LocalAgentRuntime {
         LocalAgentControl {
             session_id,
             runtime: self.clone(),
+        }
+    }
+
+    pub(crate) fn work_observation(&self) -> WorkObservation {
+        self.work_lifecycle.observation()
+    }
+
+    // Root turns are tracked only for an observed root, so an unobserved session keeps no
+    // lifecycle state and can never reach the tracked-turn cap.
+    pub(crate) fn root_turn_started(&self, turn_id: &str) -> Result<(), WorkAdmissionError> {
+        if !self.work_observation_enabled() {
+            return Ok(());
+        }
+        self.work_lifecycle.root_turn_started(turn_id)
+    }
+
+    pub(crate) fn root_turn_terminal(&self, turn_id: &str) {
+        if self.work_observation_enabled() {
+            self.work_lifecycle.root_turn_terminal(turn_id);
+        }
+    }
+
+    pub(crate) fn root_turn_output_forwarded(&self, turn_id: &str) {
+        if self.work_observation_enabled() {
+            self.work_lifecycle.root_turn_output_forwarded(turn_id);
+        }
+    }
+
+    pub(crate) fn root_turn_abandoned(&self, turn_id: &str) {
+        if self.work_observation_enabled() {
+            self.work_lifecycle.root_turn_abandoned(turn_id);
         }
     }
 }
@@ -156,6 +196,16 @@ impl LocalAgentRuntime {
 
     pub(crate) fn root_waits_for_children(&self) -> bool {
         self.root_waits_for_children.load(Ordering::Acquire)
+    }
+
+    /// Enables observation for an Exec root that ends its turn while children work. Interactive
+    /// roots are not observed yet.
+    pub(crate) fn enable_work_observation(&self) {
+        self.work_observation_enabled.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn work_observation_enabled(&self) -> bool {
+        self.wake_mode_enabled() && self.work_observation_enabled.load(Ordering::Acquire)
     }
 
     pub(crate) fn terminal_report_is_current(

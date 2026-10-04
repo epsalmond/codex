@@ -581,6 +581,18 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnsubscribeResponse,
     },
+    #[experimental("thread/subscribeWorkState")]
+    ThreadWorkSubscribe => "thread/subscribeWorkState" {
+        params: v2::ThreadWorkSubscribeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkSubscribeResponse,
+    },
+    #[experimental("thread/shutdownIfQuiescent")]
+    ThreadWorkShutdownIfQuiescent => "thread/shutdownIfQuiescent" {
+        params: v2::ThreadWorkShutdownIfQuiescentParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkShutdownIfQuiescentResponse,
+    },
     #[experimental("thread/increment_elicitation")]
     /// Increment the thread-local out-of-band elicitation counter.
     ///
@@ -1932,6 +1944,8 @@ server_notification_definitions! {
     ThreadDeleted => "thread/deleted" (v2::ThreadDeletedNotification),
     ThreadUnarchived => "thread/unarchived" (v2::ThreadUnarchivedNotification),
     ThreadClosed => "thread/closed" (v2::ThreadClosedNotification),
+    #[experimental("thread/workStateChanged")]
+    ThreadWorkUpdated => "thread/workStateChanged" (v2::ThreadWorkUpdatedNotification),
     ThreadReverted => "thread/reverted" (v2::ThreadRevertedNotification),
     SkillsChanged => "skills/changed" (v2::SkillsChangedNotification),
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),

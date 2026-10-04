@@ -10,6 +10,7 @@ mod event_processor;
 mod event_processor_with_human_output;
 pub(crate) mod event_processor_with_jsonl_output;
 pub(crate) mod exec_events;
+mod work_lifecycle;
 mod worktree;
 
 pub use cli::Cli;
@@ -166,6 +167,9 @@ use tracing::warn;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
+use work_lifecycle::DrainInterrupt;
+use work_lifecycle::DrainInterrupts;
+use work_lifecycle::WorkLifecycle;
 
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::EventProcessor;
@@ -1111,6 +1115,21 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
     exec_span.record("thread.id", primary_thread_id_for_span.as_str());
 
+    // The drain is on by default. Exec subscribes only when core also wakes the Exec root
+    // (`exec_root_wakes_on_report`, resolved from `agent_polling`), so both sides read one value
+    // and children are never left without a drain. The opt-out, `agent_polling = "enabled"`,
+    // sends exactly the requests exec sent before work observation existed. An `Unavailable`
+    // answer (for example, multi-agent v2 off) falls back to a single root turn.
+    let mut work_lifecycle = if matches!(&initial_operation, InitialOperation::ForkOnly)
+        || !config.multi_agent_v2.exec_root_wakes_on_report
+    {
+        None
+    } else {
+        WorkLifecycle::subscribe(&client, &mut request_ids, &primary_thread_id_for_span)
+            .await
+            .map_err(anyhow::Error::msg)?
+    };
+
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
     event_processor.print_config_summary(&config, &prompt_summary, &session_configured);
@@ -1124,14 +1143,19 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     info!("Codex initialized with event: {session_configured:?}");
 
     let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
+    // A drained run needs a second Ctrl-C to stop waiting on children; a single-turn run
+    // forwards only the first.
+    let repeat_interrupts = work_lifecycle.is_some();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
+        while tokio::signal::ctrl_c().await.is_ok() {
             tracing::debug!("Keyboard interrupt");
-            let _ = interrupt_tx.send(());
+            if interrupt_tx.send(()).is_err() || !repeat_interrupts {
+                break;
+            }
         }
     });
 
-    let task_id = match initial_operation {
+    let mut task_id = match initial_operation {
         InitialOperation::ForkOnly => {
             request_shutdown(&client, &mut request_ids, &primary_thread_id_for_span)
                 .await
@@ -1222,11 +1246,31 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     };
     exec_span.record("turn.id", task_id.as_str());
 
-    // Run the loop until the task is complete.
+    // Run until the task completes, or the observed work scope drains.
+    //
+    // By default the root is observable, and exec follows every root turn (child reports wake
+    // the root) until the agent tree is quiescent. With the opt-out
+    // (`features.multi_agent_v2.agent_polling = "enabled"`), or when the server reports
+    // work observation `Unavailable`, exec runs exactly one root turn. Under the drain, `task_id`
+    // tracks the latest root turn, and:
+    // - exec closes the scope only after the latest root turn completed and the tree is
+    //   quiescent, so a quiescent snapshot published before core admits a turn cannot end the run;
+    // - any failed or interrupted root turn, or a non-retried error in one, makes the run exit 1,
+    //   even when an earlier turn completed;
+    // - a failed or interrupted root turn also ends the drain: it makes the root assignment
+    //   terminal, which detaches its children, so their reports can no longer reach the root;
+    // - the printed final message and `--output-last-message` come from the last completed root
+    //   turn, so a later failed or interrupted turn does not erase an earlier answer;
+    // - JSONL emits `turn.started`/`turn.completed` for every root turn;
+    // - the first Ctrl-C interrupts the active root turn (which then ends the drain), and a Ctrl-C
+    //   between root turns, or a second Ctrl-C, stops draining at once; both exit 1.
+    //
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
+    let mut drain_interrupts = DrainInterrupts::default();
     let mut interrupt_channel_open = true;
+    let mut final_output_attempted_before_teardown = false;
     let primary_thread_id_for_requests = primary_thread_id.to_string();
     loop {
         let server_event = tokio::select! {
@@ -1234,6 +1278,15 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 if maybe_interrupt.is_none() {
                     interrupt_channel_open = false;
                     continue;
+                }
+                if let Some(lifecycle) = work_lifecycle.as_ref()
+                    && drain_interrupts.on_ctrl_c(lifecycle.root_turn_open())
+                        == DrainInterrupt::StopDraining
+                {
+                    // Do not wait for children to report. In-process shutdown performs the
+                    // app-server's bounded shutdown attempt for registered threads.
+                    error_seen = true;
+                    break;
                 }
                 if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
                     &client,
@@ -1265,6 +1318,47 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
+                // Set only for the root turn exec is following, under the drain.
+                let mut root_turn_completed = false;
+                let mut root_turn_unsuccessful = false;
+                if let Some(lifecycle) = work_lifecycle.as_mut() {
+                    match &notification {
+                        ServerNotification::TurnStarted(payload)
+                            if payload.thread_id == primary_thread_id_for_requests =>
+                        {
+                            task_id.clone_from(&payload.turn.id);
+                            exec_span.record("turn.id", task_id.as_str());
+                            lifecycle.root_turn_started();
+                        }
+                        ServerNotification::TurnCompleted(payload)
+                            if payload.thread_id == primary_thread_id_for_requests
+                                && payload.turn.id == task_id =>
+                        {
+                            lifecycle.root_turn_completed();
+                            root_turn_completed = true;
+                            root_turn_unsuccessful = matches!(
+                                payload.turn.status,
+                                codex_app_server_protocol::TurnStatus::Failed
+                                    | codex_app_server_protocol::TurnStatus::Interrupted
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                if let ServerNotification::ThreadWorkUpdated(payload) = &notification
+                    && let Some(lifecycle) = work_lifecycle.as_mut()
+                    && lifecycle.observe(payload)
+                {
+                    if let Some(exit) = lifecycle
+                        .finish_if_drained(&client, &mut request_ids, event_processor.as_mut())
+                        .await
+                    {
+                        error_seen |= exit.error;
+                        final_output_attempted_before_teardown = exit.final_output_attempted;
+                        break;
+                    }
+                    continue;
+                }
                 if let ServerNotification::Error(payload) = &notification {
                     if payload.thread_id == primary_thread_id_for_requests
                         && payload.turn_id == task_id
@@ -1299,6 +1393,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
+                        CodexStatus::InitiateShutdown
+                            if work_lifecycle.is_some() && !root_turn_unsuccessful => {}
                         CodexStatus::InitiateShutdown => {
                             if let Err(err) = request_shutdown(
                                 &client,
@@ -1313,6 +1409,17 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         }
                     }
                 }
+                // The tree may already be quiescent when the root turn completes.
+                if root_turn_completed
+                    && let Some(lifecycle) = work_lifecycle.as_mut()
+                    && let Some(exit) = lifecycle
+                        .finish_if_drained(&client, &mut request_ids, event_processor.as_mut())
+                        .await
+                {
+                    error_seen |= exit.error;
+                    final_output_attempted_before_teardown = exit.final_output_attempted;
+                    break;
+                }
             }
             InProcessServerEvent::Lagged { skipped } => {
                 let message = lagged_event_warning_message(skipped);
@@ -1325,7 +1432,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     if let Err(err) = client.shutdown().await {
         warn!("in-process app-server shutdown failed: {err}");
     }
-    if let Err(err) = event_processor.print_final_output() {
+    if !final_output_attempted_before_teardown
+        && let Err(err) = event_processor.print_final_output()
+    {
         // The default exec log filter hides `warn!`, so report this directly.
         #[allow(clippy::print_stderr)]
         {

@@ -6314,6 +6314,47 @@ class ThreadWakeupsUpdatedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadWorkShutdownOutcome(Enum):
+    closed = "closed"
+    already_closed = "alreadyClosed"
+    observation_inactive = "observationInactive"
+    stale_revision = "staleRevision"
+    not_quiescent = "notQuiescent"
+
+
+class ThreadWorkSnapshot(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    active_root_turns: Annotated[int, Field(alias="activeRootTurns", ge=0)]
+    closed: bool
+    output_forwarding_observed: Annotated[bool, Field(alias="outputForwardingObserved")]
+    outstanding_work: Annotated[int, Field(alias="outstandingWork", ge=0)]
+    pending_notifications: Annotated[int, Field(alias="pendingNotifications", ge=0)]
+    pending_terminal_outputs: Annotated[int, Field(alias="pendingTerminalOutputs", ge=0)]
+    quiescent: bool
+    revision: Annotated[
+        str,
+        Field(
+            description="Opaque coordinator-incarnation and revision token. Pass it back unchanged to guard close."
+        ),
+    ]
+    running_finite_work: Annotated[int, Field(alias="runningFiniteWork", ge=0)]
+
+
+class ThreadWorkSubscribeOutcome(Enum):
+    subscribed = "subscribed"
+    unavailable = "unavailable"
+
+
+class ThreadWorkUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    snapshot: ThreadWorkSnapshot
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class TokenUsageBreakdown(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9229,6 +9270,23 @@ class ThreadClosedServerNotification(BaseModel):
     ] = None
     method: Annotated[Literal["thread/closed"], Field(title="Thread/closedNotificationMethod")]
     params: ThreadClosedNotification
+
+
+class ThreadWorkStateChangedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/workStateChanged"], Field(title="Thread/workStateChangedNotificationMethod")
+    ]
+    params: ThreadWorkUpdatedNotification
 
 
 class ThreadRevertedServerNotification(BaseModel):
@@ -13028,6 +13086,7 @@ class ServerNotification(
         | ThreadDeletedServerNotification
         | ThreadUnarchivedServerNotification
         | ThreadClosedServerNotification
+        | ThreadWorkStateChangedServerNotification
         | ThreadRevertedServerNotification
         | SkillsChangedServerNotification
         | ThreadNameUpdatedServerNotification
@@ -13118,6 +13177,7 @@ class ServerNotification(
         | ThreadDeletedServerNotification
         | ThreadUnarchivedServerNotification
         | ThreadClosedServerNotification
+        | ThreadWorkStateChangedServerNotification
         | ThreadRevertedServerNotification
         | SkillsChangedServerNotification
         | ThreadNameUpdatedServerNotification

@@ -56,6 +56,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadDeleted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadUnarchived(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadClosed(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadWorkUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadNameUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
@@ -242,6 +245,8 @@ mod tests {
     use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
     use codex_app_server_protocol::ThreadSettings;
     use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
+    use codex_app_server_protocol::ThreadWorkSnapshot;
+    use codex_app_server_protocol::ThreadWorkUpdatedNotification;
     use codex_app_server_protocol::WarningNotification;
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
@@ -374,6 +379,29 @@ mod tests {
                 attachment_id: "attachment-1".to_string(),
                 operation: ThreadAttachmentOperation::Deleted,
             });
+
+        let target = server_notification_thread_target(&notification);
+
+        assert_eq!(target, ServerNotificationThreadTarget::Thread(thread_id));
+    }
+
+    #[test]
+    fn work_lifecycle_notifications_route_to_the_root_thread() {
+        let thread_id = ThreadId::new();
+        let notification = ServerNotification::ThreadWorkUpdated(ThreadWorkUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            snapshot: ThreadWorkSnapshot {
+                revision: "incarnation:1".to_string(),
+                outstanding_work: 0,
+                running_finite_work: 0,
+                pending_notifications: 0,
+                active_root_turns: 0,
+                pending_terminal_outputs: 0,
+                output_forwarding_observed: true,
+                closed: false,
+                quiescent: true,
+            },
+        });
 
         let target = server_notification_thread_target(&notification);
 

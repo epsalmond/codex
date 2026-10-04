@@ -22,6 +22,10 @@ pub(super) struct WakeQueue {
 }
 
 impl WakeQueue {
+    pub(super) fn queued_count(&self) -> usize {
+        self.pending.len() + self.in_flight.len()
+    }
+
     pub(super) fn remove_assignment(&mut self, assignment: &AgentAssignmentId) {
         self.pending.retain(|queued| queued != assignment);
         self.queued.remove(assignment);
@@ -54,23 +58,27 @@ fn push_if_current_and_open(state: &mut CoordinatorState, assignment: AgentAssig
     true
 }
 
+fn requeue_in_flight(state: &mut CoordinatorState, assignment: AgentAssignmentId) {
+    state.wake_queue.in_flight.remove(&assignment);
+    state.wake_queue.requested_again.remove(&assignment);
+    push_if_current_and_open(state, assignment);
+}
+
 impl AgentWakeCoordinator {
     /// Coalesces wake requests by current assignment generation and signals the event loop.
     pub(crate) fn request_wake(&self, assignment: AgentAssignmentId) -> bool {
-        let (queued, signal_event) = {
-            let mut state = self.lock_state();
-            if !is_current_and_wakeable(&state, &assignment) {
-                (false, false)
-            } else if state.wake_queue.in_flight.contains(&assignment) {
-                let first_in_flight_request = state.wake_queue.requested_again.insert(assignment);
-                (false, first_in_flight_request)
-            } else {
-                let queued = push_if_current_and_open(&mut state, assignment);
-                (queued, queued)
-            }
+        let mut state = self.lock_state();
+        let (queued, signal_event) = if !is_current_and_wakeable(&state, &assignment) {
+            (false, false)
+        } else if state.wake_queue.in_flight.contains(&assignment) {
+            let first_in_flight_request = state.wake_queue.requested_again.insert(assignment);
+            (false, first_in_flight_request)
+        } else {
+            let queued = push_if_current_and_open(&mut state, assignment);
+            (queued, queued)
         };
         if signal_event {
-            self.signal_wake_event();
+            state.signal_wake_event();
         }
         queued
     }
@@ -145,22 +153,23 @@ impl AgentWakeCoordinator {
 
     /// Returns a temporarily blocked request to the end of the queue without a busy wake.
     pub(crate) fn defer_wake_request(&self, assignment: AgentAssignmentId) {
+        requeue_in_flight(&mut self.lock_state(), assignment);
+    }
+
+    /// Requeues a cancelled delivery attempt and wakes the dispatcher to retry it.
+    fn defer_wake_request_and_signal(&self, assignment: AgentAssignmentId) {
         let mut state = self.lock_state();
-        state.wake_queue.in_flight.remove(&assignment);
-        state.wake_queue.requested_again.remove(&assignment);
-        push_if_current_and_open(&mut state, assignment);
+        requeue_in_flight(&mut state, assignment);
+        state.signal_wake_event();
     }
 
     /// Completes a delivery attempt and queues one more pass for reports that arrived in flight.
     pub(crate) fn complete_wake_request(&self, assignment: &AgentAssignmentId) {
-        let queued = {
-            let mut state = self.lock_state();
-            state.wake_queue.in_flight.remove(assignment);
-            let requested_again = state.wake_queue.requested_again.remove(assignment);
-            requested_again && push_if_current_and_open(&mut state, assignment.clone())
-        };
-        if queued {
-            self.signal_wake_event();
+        let mut state = self.lock_state();
+        state.wake_queue.in_flight.remove(assignment);
+        let requested_again = state.wake_queue.requested_again.remove(assignment);
+        if requested_again && push_if_current_and_open(&mut state, assignment.clone()) {
+            state.signal_wake_event();
         }
     }
 
@@ -213,8 +222,7 @@ impl Drop for WakeRequest {
             return;
         };
         if let Some(coordinator) = self.coordinator.upgrade() {
-            coordinator.defer_wake_request(assignment);
-            coordinator.signal_wake_event();
+            coordinator.defer_wake_request_and_signal(assignment);
         }
     }
 }

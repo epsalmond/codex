@@ -75,8 +75,8 @@ impl AgentWakeCoordinator {
             return Err("assignment is missing; an explicit followup is required");
         }
         let assignment = Self::create_assignment(&mut state, thread_id, parent, turn_id)?;
+        state.signal_wake_event();
         drop(state);
-        self.signal_wake_event();
         Ok(assignment)
     }
 
@@ -275,10 +275,10 @@ impl AgentWakeCoordinator {
                 Self::release_assignment(&mut state, id);
             }
         }
-        drop(state);
         if phase.is_terminal() {
-            self.signal_wake_event();
+            state.signal_wake_event();
         }
+        drop(state);
         if wake_recorded_reports {
             self.request_wake(id.clone());
         }
@@ -409,6 +409,7 @@ impl AgentWakeCoordinator {
     fn rollback_reservation(&self, id: &AgentAssignmentId) {
         let mut state = self.lock_state();
         Self::release_assignment(&mut state, id);
+        state.signal_wake_event();
     }
 }
 
@@ -453,6 +454,7 @@ impl AssignmentReservation {
             return Err("assignment reservation was invalidated");
         };
         assignment.phase = AssignmentPhase::Running;
+        state.signal_wake_event();
         self.committed = true;
         Ok(self.id.clone())
     }

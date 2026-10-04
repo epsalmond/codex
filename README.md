@@ -72,9 +72,9 @@ official `codex`.
   child shakes, then compacts, when it reaches the cap. See
   [subagents](codex-rs/docs/shake.md#subagents).
 - **Wake mode** lets an agent wait for its subagents without polling: each
-  child report starts a new turn on its parent. This covers interactive roots
-  and MultiAgentV2 child agents at every depth; a `codex-shake exec` root
-  still polls its direct children. See
+  child report starts a new turn on its parent. This covers interactive roots,
+  `codex-shake exec` roots, and MultiAgentV2 child agents at every depth; exec
+  stays open until the whole agent tree is idle. See
   [wake mode](#wake-mode-for-multi-agent-orchestrators).
 
 For prompts that put these to work, see
@@ -108,9 +108,10 @@ continues to show only the upstream Codex version. Binaries reporting Shake
 feature version `0.3.0` include event-driven wakeups for interactive CLI and
 app-server MultiAgentV2 roots by default. This change extends wakeups to
 eligible MultiAgentV2 child agents at every depth; check the exact release tag
-to confirm whether a binary includes the extension. Exec roots themselves
-still poll for their direct children. The unpublished `0.2` milestone covered
-subagent shaking and compaction plus intra-turn shaking. Version `0.3.0` is the
+to confirm whether a binary includes the extension. In those binaries Exec
+roots still poll for their direct children; later fork releases wake and drain
+Exec roots by default too (see wake mode below). The unpublished `0.2`
+milestone covered subagent shaking and compaction plus intra-turn shaking. Version `0.3.0` is the
 honorary bump that recognizes both milestones.
 
 The release tag is the reliable feature identity. Older binaries do not
@@ -123,12 +124,14 @@ waits: each child report starts a new turn on its parent. MultiAgentV2 is enable
 by default, and `agent_polling` defaults to `"disabled"`, so interactive CLI
 and app-server roots use wake mode without extra configuration. A V2 child
 created with `ThreadSpawn` also wakes when its own children report, at any
-depth, including when it was spawned under an Exec root. The Exec root itself
-continues polling its direct children with `wait_agent`.
-In `codex exec` and in subagents, `wait_agent` without `timeout_ms` waits up to
-300 seconds (interactive sessions keep 30 seconds), returns as soon as an agent
-reports, and returns at once when no child is running; a configured
-`default_wait_timeout_ms` applies everywhere.
+depth, including when it was spawned under an Exec root. A `codex exec` root
+wakes too: it ends its turn while children work, each child report starts its
+next turn, and exec stays open until the whole agent tree is idle. Exec then
+prints the last completed root turn's answer and exits 1 if any root turn failed
+or was interrupted; `--json` emits a `turn.started` event per root turn,
+followed by `turn.completed`, or `turn.failed` for a failed turn. The first
+Ctrl-C interrupts the running root turn; a Ctrl-C between turns, or a second
+one, stops waiting and exits 1.
 
 To keep polling throughout the agent tree, set:
 
@@ -138,6 +141,13 @@ agent_polling = "enabled"
 ```
 
 or for a single run, `codex-shake -c 'features.multi_agent_v2.agent_polling="enabled"'`.
+This also turns off the `codex exec` drain: the exec root polls with `wait_agent`
+and exec exits after one root turn. With polling enabled, `wait_agent` without
+`timeout_ms` waits up to 300 seconds in `codex exec` and in subagents
+(interactive sessions keep 30 seconds), returns as soon as an agent reports, and
+returns at once when no child is running; a configured `default_wait_timeout_ms`
+applies everywhere. In the default wake mode agents have no `wait_agent`, so this
+default does not apply.
 
 Esc pauses automatic wakeups and holds child results arriving at the root; the TUI
 shows "N child results queued — delivered with your next message". A child

@@ -114,7 +114,9 @@ type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorErro
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
+        ServerNotification::TurnStarted(_)
+            | ServerNotification::TurnCompleted(_)
+            | ServerNotification::ThreadWorkUpdated(_)
             | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadWakeupsUpdated(_)
             | ServerNotification::ThreadSettingsUpdated(_)
@@ -823,15 +825,19 @@ mod tests {
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    use codex_app_server_protocol::InitializeCapabilities;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadAttachmentOperation;
     use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
     use codex_app_server_protocol::ThreadQueueChangedNotification;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::ThreadWorkSnapshot;
+    use codex_app_server_protocol::ThreadWorkUpdatedNotification;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnItemsView;
+    use codex_app_server_protocol::TurnStartedNotification;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
     use pretty_assertions::assert_eq;
@@ -857,6 +863,19 @@ mod tests {
     async fn start_test_client_with_capacity(
         session_source: SessionSource,
         channel_capacity: usize,
+    ) -> InProcessClientHandle {
+        start_test_client_with_capabilities(
+            session_source,
+            channel_capacity,
+            /*capabilities*/ None,
+        )
+        .await
+    }
+
+    async fn start_test_client_with_capabilities(
+        session_source: SessionSource,
+        channel_capacity: usize,
+        capabilities: Option<InitializeCapabilities>,
     ) -> InProcessClientHandle {
         let codex_home = TempDir::new().expect("temp dir");
         let config = Arc::new(build_test_config(codex_home.path()).await);
@@ -885,13 +904,27 @@ mod tests {
                     title: None,
                     version: "0.0.0".to_string(),
                 },
-                capabilities: None,
+                capabilities,
             },
             channel_capacity,
         };
         let mut client = start(args).await.expect("in-process runtime should start");
         client._test_codex_home = Some(codex_home);
         client
+    }
+
+    async fn start_test_client_with_experimental_api(
+        session_source: SessionSource,
+    ) -> InProcessClientHandle {
+        start_test_client_with_capabilities(
+            session_source,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            Some(InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        )
+        .await
     }
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
@@ -946,6 +979,9 @@ mod tests {
                 .expect("in-process runtime should shutdown cleanly");
         }
     }
+
+    #[path = "in_process_work_lifecycle_tests.rs"]
+    mod work_lifecycle_tests;
 
     #[tokio::test]
     async fn in_process_start_clamps_zero_channel_capacity() {
@@ -1029,6 +1065,22 @@ mod tests {
 
     #[test]
     fn guaranteed_delivery_helpers_cover_required_server_notifications() {
+        // A drained exec run learns about a wake turn only from TurnStarted.
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::TurnStarted(TurnStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: Turn {
+                    id: "turn-2".to_string(),
+                    items: Vec::new(),
+                    items_view: TurnItemsView::NotLoaded,
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(0),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            })
+        ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::TurnCompleted(TurnCompletedNotification {
                 context_usage: None,
@@ -1048,6 +1100,22 @@ mod tests {
         assert!(server_notification_requires_delivery(
             &ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {
                 thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadWorkUpdated(ThreadWorkUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                snapshot: ThreadWorkSnapshot {
+                    revision: "incarnation:2".to_string(),
+                    outstanding_work: 0,
+                    running_finite_work: 0,
+                    pending_notifications: 0,
+                    active_root_turns: 0,
+                    pending_terminal_outputs: 0,
+                    output_forwarding_observed: true,
+                    closed: true,
+                    quiescent: true,
+                },
             })
         ));
         assert!(server_notification_requires_delivery(

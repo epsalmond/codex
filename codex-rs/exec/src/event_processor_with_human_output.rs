@@ -37,7 +37,16 @@ pub(crate) struct EventProcessorWithHumanOutput {
     final_message: Option<String>,
     final_message_rendered: bool,
     emit_final_message_on_shutdown: bool,
+    /// The final message of the most recent completed root turn. A drained exec run can follow a
+    /// completed turn with a failed or interrupted wake turn; that turn must not erase the answer.
+    last_completed_turn: Option<CompletedTurnMessage>,
     last_total_token_usage: Option<ThreadTokenUsage>,
+}
+
+#[derive(Clone)]
+struct CompletedTurnMessage {
+    message: Option<String>,
+    rendered: bool,
 }
 
 impl EventProcessorWithHumanOutput {
@@ -62,7 +71,25 @@ impl EventProcessorWithHumanOutput {
             final_message: None,
             final_message_rendered: false,
             emit_final_message_on_shutdown: false,
+            last_completed_turn: None,
             last_total_token_usage: None,
+        }
+    }
+
+    /// Drops the failed or interrupted turn's partial output. A single-turn run has no completed
+    /// turn and emits nothing; a drained run falls back to its last completed root turn.
+    fn restore_last_completed_turn(&mut self) {
+        match self.last_completed_turn.clone() {
+            Some(CompletedTurnMessage { message, rendered }) => {
+                self.final_message = message;
+                self.final_message_rendered = rendered;
+                self.emit_final_message_on_shutdown = true;
+            }
+            None => {
+                self.final_message = None;
+                self.final_message_rendered = false;
+                self.emit_final_message_on_shutdown = false;
+            }
         }
     }
 
@@ -321,21 +348,21 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         self.final_message = Some(final_message);
                     }
                     self.emit_final_message_on_shutdown = true;
+                    self.last_completed_turn = Some(CompletedTurnMessage {
+                        message: self.final_message.clone(),
+                        rendered: self.final_message_rendered,
+                    });
                     CodexStatus::InitiateShutdown
                 }
                 TurnStatus::Failed => {
-                    self.final_message = None;
-                    self.final_message_rendered = false;
-                    self.emit_final_message_on_shutdown = false;
+                    self.restore_last_completed_turn();
                     if let Some(error) = notification.turn.error {
                         eprintln!("{} {}", "ERROR:".style(self.red).style(self.bold), error);
                     }
                     CodexStatus::InitiateShutdown
                 }
                 TurnStatus::Interrupted => {
-                    self.final_message = None;
-                    self.final_message_rendered = false;
-                    self.emit_final_message_on_shutdown = false;
+                    self.restore_last_completed_turn();
                     eprintln!("{}", "turn interrupted".style(self.dimmed));
                     CodexStatus::InitiateShutdown
                 }

@@ -4791,6 +4791,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/workStateChanged"
+              ],
+              "title": "Thread/workStateChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadWorkUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/workStateChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/reverted"
               ],
               "title": "Thread/revertedNotificationMethod",
@@ -25448,6 +25468,98 @@
           "threadId"
         ],
         "title": "ThreadWakeupsUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadWorkShutdownOutcome": {
+        "description": "Possible outcomes of `thread/shutdownIfQuiescent`.",
+        "enum": [
+          "closed",
+          "alreadyClosed",
+          "observationInactive",
+          "staleRevision",
+          "notQuiescent"
+        ],
+        "type": "string"
+      },
+      "ThreadWorkSnapshot": {
+        "description": "A bounded snapshot of work owned by one root thread.",
+        "properties": {
+          "activeRootTurns": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "outputForwardingObserved": {
+            "type": "boolean"
+          },
+          "outstandingWork": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pendingNotifications": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pendingTerminalOutputs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "quiescent": {
+            "type": "boolean"
+          },
+          "revision": {
+            "description": "Opaque coordinator-incarnation and revision token. Pass it back unchanged to guard close.",
+            "type": "string"
+          },
+          "runningFiniteWork": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "activeRootTurns",
+          "closed",
+          "outputForwardingObserved",
+          "outstandingWork",
+          "pendingNotifications",
+          "pendingTerminalOutputs",
+          "quiescent",
+          "revision",
+          "runningFiniteWork"
+        ],
+        "type": "object"
+      },
+      "ThreadWorkSubscribeOutcome": {
+        "description": "Whether this root backend can provide authoritative work observation.",
+        "enum": [
+          "subscribed",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "ThreadWorkUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Lifecycle snapshot published when observed root work changes.",
+        "properties": {
+          "snapshot": {
+            "$ref": "#/definitions/v2/ThreadWorkSnapshot"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot",
+          "threadId"
+        ],
+        "title": "ThreadWorkUpdatedNotification",
         "type": "object"
       },
       "TokenUsageBreakdown": {

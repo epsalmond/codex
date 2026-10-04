@@ -300,6 +300,9 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
+        if !self.admit_root_task_or_emit_error(&turn_context).await {
+            return;
+        }
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
         self.clear_connector_selection().await;
         self.start_task(turn_context, input, task).await;
@@ -315,6 +318,9 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
+        if !self.admit_root_task_or_emit_error(&turn_context).await {
+            return;
+        }
         self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
         // task owns its turn, including background work. Later mail cannot change it.
@@ -567,6 +573,11 @@ impl Session {
         {
             return PendingWorkStartResult::Stale;
         }
+        if let Err(error) = self.register_root_turn_lifecycle_for_session(&sub_id).await {
+            tracing::warn!(%error, "pending wake turn admission rejected by lifecycle coordinator");
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return PendingWorkStartResult::Stale;
+        }
         let (mut input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
         let retained_start_options = start_options.clone();
@@ -610,6 +621,7 @@ impl Session {
             turn_context.turn_metadata_state.set_root_turn_id(id);
         }
         if let Err(error) = self.bind_wake_assignment_for_input(&turn_context, &input) {
+            self.abandon_root_turn_lifecycle(&turn_context.sub_id);
             // Binding already discards fenced coordinator reports. Ordinary accepted mail must
             // survive failed startup, without automatically repeating a deterministic rejection.
             input.retain(|item| Self::coordinator_report_id(item).is_none());

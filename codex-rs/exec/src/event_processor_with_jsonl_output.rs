@@ -65,6 +65,9 @@ pub struct EventProcessorWithJsonOutput {
     last_critical_error: Option<ThreadErrorEvent>,
     final_message: Option<String>,
     emit_final_message_on_shutdown: bool,
+    /// The final message of the most recent completed root turn (`Some(None)` when it had none).
+    /// A drained exec run can follow it with a failed or interrupted wake turn.
+    last_completed_final_message: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,11 +93,27 @@ impl EventProcessorWithJsonOutput {
             last_critical_error: None,
             final_message: None,
             emit_final_message_on_shutdown: false,
+            last_completed_final_message: None,
         }
     }
 
     pub fn final_message(&self) -> Option<&str> {
         self.final_message.as_deref()
+    }
+
+    /// Drops the failed or interrupted turn's partial output. A single-turn run has no completed
+    /// turn and emits nothing; a drained run falls back to its last completed root turn.
+    fn restore_last_completed_final_message(&mut self) {
+        match self.last_completed_final_message.clone() {
+            Some(message) => {
+                self.final_message = message;
+                self.emit_final_message_on_shutdown = true;
+            }
+            None => {
+                self.final_message = None;
+                self.emit_final_message_on_shutdown = false;
+            }
+        }
     }
 
     fn next_item_id(&self) -> String {
@@ -533,14 +552,14 @@ impl EventProcessorWithJsonOutput {
                             self.final_message = Some(final_message);
                         }
                         self.emit_final_message_on_shutdown = true;
+                        self.last_completed_final_message = Some(self.final_message.clone());
                         events.push(ThreadEvent::TurnCompleted(TurnCompletedEvent {
                             usage: self.usage_from_last_total(),
                         }));
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::Failed => {
-                        self.final_message = None;
-                        self.emit_final_message_on_shutdown = false;
+                        self.restore_last_completed_final_message();
                         let error = notification
                             .turn
                             .error
@@ -560,8 +579,7 @@ impl EventProcessorWithJsonOutput {
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::Interrupted => {
-                        self.final_message = None;
-                        self.emit_final_message_on_shutdown = false;
+                        self.restore_last_completed_final_message();
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::InProgress => CodexStatus::Running,

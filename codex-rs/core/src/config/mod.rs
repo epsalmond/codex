@@ -1417,6 +1417,11 @@ pub struct MultiAgentV2Config {
     pub hide_spawn_agent_metadata: bool,
     pub expose_spawn_agent_model_overrides: bool,
     pub agent_polling: AgentPolling,
+    /// Internal, resolved from `agent_polling` (not a config key). True by default: an Exec root
+    /// ends its turn while children work, a child report starts its next turn, and `codex exec`
+    /// drains the tree before exiting. `agent_polling = "enabled"` turns it off with the rest of
+    /// wake mode. Core and exec both read this field, so they agree on whether the root wakes.
+    pub exec_root_wakes_on_report: bool,
     pub disable_direct_message: bool,
     pub message_board_in_memory: bool,
     pub non_code_mode_only: bool,
@@ -1456,6 +1461,7 @@ impl MultiAgentV2Config {
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
             agent_polling: AgentPolling::Disabled,
+            exec_root_wakes_on_report: true,
             disable_direct_message: false,
             message_board_in_memory: false,
             non_code_mode_only: true,
@@ -2899,6 +2905,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let agent_polling = base
         .and_then(|config| config.agent_polling)
         .unwrap_or(default.agent_polling);
+    let exec_root_wakes_on_report = agent_polling == AgentPolling::Disabled;
     let disable_direct_message = base
         .and_then(|config| config.disable_direct_message)
         .unwrap_or(default.disable_direct_message);
@@ -2935,6 +2942,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         hide_spawn_agent_metadata,
         expose_spawn_agent_model_overrides,
         agent_polling,
+        exec_root_wakes_on_report,
         disable_direct_message,
         message_board_in_memory,
         non_code_mode_only,

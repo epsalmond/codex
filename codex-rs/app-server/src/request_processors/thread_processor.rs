@@ -1588,6 +1588,7 @@ impl ThreadRequestProcessor {
                 otel.name = "app_server.thread_start.config_snapshot",
             ))
             .await;
+        let lifecycle_observation = thread.work_observation();
         let mut thread = build_thread_from_snapshot(
             thread_id,
             session_configured.session_id.to_string(),
@@ -1599,23 +1600,20 @@ impl ThreadRequestProcessor {
         thread.daybreak_enabled = daybreak_enabled;
 
         // Auto-attach a thread listener when starting a thread.
-        log_listener_attach_result(
-            super::thread_lifecycle::ensure_conversation_listener(
-                listener_task_context.clone(),
-                thread_id,
-                request_id.connection_id,
-                experimental_raw_events,
-            )
-            .instrument(tracing::info_span!(
-                "app_server.thread_start.attach_listener",
-                otel.name = "app_server.thread_start.attach_listener",
-                thread_start.experimental_raw_events = experimental_raw_events,
-            ))
-            .await,
+        super::thread_lifecycle::attach_root_thread_listener(
+            listener_task_context.clone(),
             thread_id,
             request_id.connection_id,
-            "thread",
-        );
+            experimental_raw_events,
+            &config_snapshot.session_source,
+            lifecycle_observation,
+        )
+        .instrument(tracing::info_span!(
+            "app_server.thread_start.attach_listener",
+            otel.name = "app_server.thread_start.attach_listener",
+            thread_start.experimental_raw_events = experimental_raw_events,
+        ))
+        .await?;
 
         listener_task_context
             .thread_watch_manager
@@ -4105,18 +4103,22 @@ impl ThreadRequestProcessor {
                 } else {
                     None
                 };
-                // Auto-attach a thread listener when resuming a thread.
-                log_listener_attach_result(
-                    self.ensure_conversation_listener(
-                        thread_id,
-                        request_id.connection_id,
-                        /*raw_events_enabled*/ false,
-                    )
-                    .await,
+                // Auto-attach a thread listener when resuming a thread. A resumed Exec root
+                // binds its lifecycle owner exactly like a started one.
+                let resumed_session_source = codex_thread.config_snapshot().await.session_source;
+                if let Err(error) = super::thread_lifecycle::attach_root_thread_listener(
+                    self.listener_task_context(),
                     thread_id,
                     request_id.connection_id,
-                    "thread",
-                );
+                    /*raw_events_enabled*/ false,
+                    &resumed_session_source,
+                    codex_thread.work_observation(),
+                )
+                .await
+                {
+                    self.outgoing.send_error(request_id, error).await;
+                    return Ok(ControlFlow::Break(()));
+                }
 
                 let mut thread = match self
                     .load_thread_from_resume_source_or_send_internal(
@@ -5326,20 +5328,19 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = forked_thread.legacy_instruction_sources().await;
 
-        // Auto-attach a conversation listener when forking a thread.
-        log_listener_attach_result(
-            self.ensure_conversation_listener(
-                thread_id,
-                request_id.connection_id,
-                /*raw_events_enabled*/ false,
-            )
-            .await,
+        let config_snapshot = forked_thread.config_snapshot().await;
+
+        // Auto-attach a conversation listener when forking a thread. A forked Exec root binds
+        // its lifecycle owner exactly like a started one.
+        super::thread_lifecycle::attach_root_thread_listener(
+            self.listener_task_context(),
             thread_id,
             request_id.connection_id,
-            "thread",
-        );
-
-        let config_snapshot = forked_thread.config_snapshot().await;
+            /*raw_events_enabled*/ false,
+            &config_snapshot.session_source,
+            forked_thread.work_observation(),
+        )
+        .await?;
 
         // Persistent forks materialize their own rollout immediately. Ephemeral forks stay
         // pathless, so their visible history is projected before the source history is consumed.
