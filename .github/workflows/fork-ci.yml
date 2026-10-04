@@ -7,10 +7,11 @@ name: fork-ci
 # groups, so it can never pass here. Those workflows are disabled at the repo
 # level (`gh workflow disable`), not deleted, so upstream rebases/merges stay
 # conflict-free. This workflow replaces them for PRs with fmt + clippy + build
-# only, on standard GitHub-hosted ubuntu and macOS runners. Tests are not run
+# only, on standard GitHub-hosted Linux, macOS, and Windows runners. Tests are not run
 # here: contributors run them locally before pushing, and the workspace test
 # binaries do not fit a standard runner's disk or time budget. The build step
-# stays so people running the fork's binaries know they build in CI.
+# stays so people running the fork's binaries know they build in CI. Windows
+# also uploads a canonical dev-profile package for testing on a separate VM.
 # Pushes to eric/local-features run the same job only to write the Cargo cache
 # that PRs restore; the release itself is fork-release.yml.
 on:
@@ -52,6 +53,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: macos-15
             target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -75,9 +78,10 @@ jobs:
       # DotSlash and just (for `just fmt-check`), CODEX_REPO_ROOT.
       - uses: ./.github/actions/setup-ci
 
-      # setup-ci moves CARGO_TARGET_DIR outside the checkout; point it back so
-      # rust-cache's `codex-rs -> target` workspace is the dir actually used.
+      # Preserve setup-ci's Dev Drive on Windows. Unix uses the existing cache
+      # location in the checkout; rust-cache follows the actual path below.
       - name: Use in-tree Cargo target dir
+        if: runner.os != 'Windows'
         shell: bash
         run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/codex-rs/target" >> "$GITHUB_ENV"
 
@@ -96,6 +100,17 @@ jobs:
           targets: ${{ matrix.target }}
           components: clippy, rustfmt
 
+      - name: Configure Windows build environment
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Disable SQLite intrinsics on Windows x64
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC" >> "$GITHUB_ENV"
+
       # `just fmt-check` runs ruff through uv (same pin as fork-release.yml).
       - name: Install uv
         if: runner.os == 'Linux'
@@ -110,7 +125,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: codex-rs -> target
+          workspaces: codex-rs -> ${{ env.CARGO_TARGET_DIR }}
           key: fork-ci-${{ matrix.target }}
           # A PR's cache is readable only by that PR, yet each one is 1.4-1.7 GB
           # per target, so a few open PRs exhausted the 10 GB repo budget and
@@ -126,17 +141,21 @@ jobs:
           target: ${{ matrix.target }}
 
       # Same fix as fork-release.yml: rust-cache prunes the extracted
-      # librusty_v8.a while the restored fingerprint keeps v8's build script
+      # native library while the restored fingerprint keeps v8's build script
       # fresh, so cached builds fail to link. Re-extract it up front.
       - name: Restore rusty_v8 static library for cached builds
         shell: bash
         run: |
           set -euo pipefail
           test -s "$RUSTY_V8_ARCHIVE"
-          lib_dir="target/${{ matrix.target }}/debug/gn_out/obj"
+          lib_dir="$CARGO_TARGET_DIR/${{ matrix.target }}/debug/gn_out/obj"
+          lib_name=librusty_v8.a
+          if [[ "${{ runner.os }}" == Windows ]]; then
+            lib_name=rusty_v8.lib
+          fi
           mkdir -p "$lib_dir"
-          gunzip -c "$RUSTY_V8_ARCHIVE" > "$lib_dir/librusty_v8.a"
-          test -s "$lib_dir/librusty_v8.a"
+          gunzip -c "$RUSTY_V8_ARCHIVE" > "$lib_dir/$lib_name"
+          test -s "$lib_dir/$lib_name"
 
       # Same cheap, offline checks as fork-release.yml's validate job.
       - name: Test release helpers offline
@@ -168,5 +187,79 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --target ${{ matrix.target }} --bin codex --bin codex-code-mode-host
+          STABLE_GIT_COMMIT="$(git rev-parse HEAD)"
+          export STABLE_GIT_COMMIT
+          build_args=(--bin codex --bin codex-code-mode-host)
+          if [[ "${{ runner.os }}" == Windows ]]; then
+            build_args+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
+          fi
+          cargo build --target ${{ matrix.target }} "${build_args[@]}"
           df -h /
+
+      - name: Package Windows test build
+        if: runner.os == 'Windows'
+        working-directory: .
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          archive_name="codex-${TARGET}-${source_sha}-dev.zip"
+          binary_dir="$CARGO_TARGET_DIR/$TARGET/debug"
+          python3 scripts/build_codex_package.py \
+            --target "$TARGET" --cargo-profile dev \
+            --entrypoint-bin "$binary_dir/codex.exe" \
+            --code-mode-host-bin "$binary_dir/codex-code-mode-host.exe" \
+            --codex-command-runner-bin "$binary_dir/codex-command-runner.exe" \
+            --codex-windows-sandbox-setup-bin "$binary_dir/codex-windows-sandbox-setup.exe" \
+            --package-dir "$RUNNER_TEMP/windows-package" \
+            --archive-output "dist/$archive_name"
+          python3 - "$archive_name" "$source_sha" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+
+          archive_name, source_sha = sys.argv[1:]
+          archive = pathlib.Path("dist") / archive_name
+          checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+          archive.with_suffix(".zip.sha256").write_text(
+              f"{checksum}  {archive_name}\n", encoding="utf-8"
+          )
+          metadata = {
+              "sourceSha": source_sha,
+              "ref": os.environ["BUILD_REF"],
+              "target": os.environ["TARGET"],
+              "cargoProfile": "dev",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "runAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "archive": archive_name,
+              "sha256": checksum,
+          }
+          pathlib.Path("dist/build-info.json").write_text(
+              json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          echo "WINDOWS_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
+
+      - name: Smoke test extracted Windows package
+        if: runner.os == 'Windows'
+        working-directory: .
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "dist/$env:WINDOWS_ARCHIVE" -DestinationPath "$env:RUNNER_TEMP/windows-package-smoke"
+          python scripts/smoke_codex_package.py --package-dir "$env:RUNNER_TEMP/windows-package-smoke"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Windows test build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-windows-${{ matrix.target }}-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
