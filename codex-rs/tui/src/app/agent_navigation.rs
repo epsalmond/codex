@@ -25,6 +25,7 @@ use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
@@ -462,6 +463,40 @@ impl AgentNavigationState {
                         .agent_path
                         .as_deref()
                         .is_some_and(|agent_path| !agent_path.trim().is_empty())
+            })
+            .collect()
+    }
+
+    /// Returns running descendants of the displayed thread in the current session cache.
+    pub(crate) fn running_subagents(
+        &self,
+        displayed_thread_id: Option<ThreadId>,
+        primary_thread_id: Option<ThreadId>,
+    ) -> HashSet<ThreadId> {
+        let Some(displayed_thread_id) = displayed_thread_id else {
+            return HashSet::new();
+        };
+        let agent_path = self
+            .get(&displayed_thread_id)
+            .and_then(|entry| entry.agent_path.as_deref())
+            .or_else(|| {
+                (Some(displayed_thread_id) == primary_thread_id).then_some(AgentPath::ROOT)
+            });
+        let Some(agent_path) = agent_path else {
+            return HashSet::new();
+        };
+        let descendant_prefix = format!("{agent_path}/");
+        self.threads
+            .iter()
+            .filter_map(|(thread_id, entry)| {
+                (*thread_id != displayed_thread_id
+                    && entry.is_running
+                    && !entry.is_closed
+                    && entry
+                        .agent_path
+                        .as_deref()
+                        .is_some_and(|path| path.starts_with(&descendant_prefix)))
+                .then_some(*thread_id)
             })
             .collect()
     }

@@ -30,6 +30,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
         }),
         availability_nux: preset.availability_nux.map(Into::into),
         display_name: preset.display_name.to_string(),
+        short_name: preset.short_name,
         description: preset.description.to_string(),
         model_specialty: preset.model_specialty,
         hidden: !preset.show_in_picker,

@@ -15,11 +15,13 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -33,6 +35,18 @@ use tracing::info;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
+
+static BUNDLED_MODEL_SHORT_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
+    crate::bundled_models_response()
+        .map(|catalog| {
+            catalog
+                .models
+                .into_iter()
+                .filter_map(|model| model.short_name.map(|short_name| (model.slug, short_name)))
+                .collect()
+        })
+        .unwrap_or_default()
+});
 
 /// Remote endpoint used by the OpenAI-compatible model manager.
 ///
@@ -169,6 +183,23 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
 
     /// Build picker-ready presets from the active catalog snapshot.
     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
+        for model in &mut remote_models {
+            if model.short_name.is_none() {
+                model.short_name = BUNDLED_MODEL_SHORT_NAMES
+                    .iter()
+                    .filter(|(slug, _)| {
+                        model.slug.as_str() == slug.as_str()
+                            || model
+                                .slug
+                                .strip_suffix(slug.as_str())
+                                .is_some_and(|prefix| {
+                                    prefix.ends_with('.') || prefix.ends_with('/')
+                                })
+                    })
+                    .max_by_key(|(slug, _)| slug.len())
+                    .map(|(_, short_name)| short_name.clone());
+            }
+        }
         remote_models.sort_by_key(|model| model.priority);
 
         let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();

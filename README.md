@@ -82,14 +82,21 @@ For prompts that put these to work, see
 
 ### Statusline items
 
-codex-shake adds two TUI status-line items: `weekly-reset` (the local time
-your weekly usage window resets) and `last-response-clock` (when the latest
-live response in this session completed). Both are on by default, after the
-upstream defaults (`model-with-reasoning`, `current-dir`, `thread-name`), unless
-you've customized the status line. If you have, add them via `/statusline` or
-`tui.status_line`. Each
-stays hidden until it has data; `weekly-reset` never shows for API-key logins,
-which have no rate-limit windows. To remove them, uncheck them in
+The default TUI status line uses `model` (a short model label when the catalog
+provides one), `current-dir`, `thread-name`, `weekly-reset`, and
+`last-response-clock`. The bundled model catalog includes short labels for
+common Codex models, including `luna`, `sol`, and `astra`. A custom catalog can
+override a label with `short_name`; when it is absent, the full `display_name`
+is shown.
+
+`weekly-reset` shows the local time your weekly usage window resets, and
+`last-response-clock` shows when the latest live response in this session
+completed. These items stay hidden until they have data; `weekly-reset` never
+shows for API-key logins, which have no rate-limit windows. The optional
+`context-window-usage` item shows current context tokens over the model's
+context window (for example, `143K/823K`), while `active-subagents` shows the
+number of working descendants of the displayed thread. Add optional items via
+`/statusline` or `tui.status_line`. To remove default items, uncheck them in
 `/statusline`, or set your own list in `tui.status_line` in
 `~/.codex/config.toml`.
 

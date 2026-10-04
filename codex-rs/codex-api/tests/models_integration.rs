@@ -110,6 +110,7 @@ async fn models_client_hits_models_endpoint() {
         models: vec![ModelInfo {
             slug: "gpt-test".to_string(),
             display_name: "gpt-test".to_string(),
+            short_name: None,
             description: Some("desc".to_string()),
             default_reasoning_level: Some(ReasoningEffort::Medium),
             supported_reasoning_levels: vec![

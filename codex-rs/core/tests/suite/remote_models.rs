@@ -155,6 +155,7 @@ async fn remote_models_get_model_info_uses_longest_matching_prefix() -> Result<(
     );
     let specific = ModelInfo {
         display_name: "GPT 5.3 Codex".to_string(),
+        short_name: None,
         model_messages: Some(ModelMessages {
             instructions_template: Some("use specific prefix".to_string()),
             ..Default::default()
@@ -163,6 +164,7 @@ async fn remote_models_get_model_info_uses_longest_matching_prefix() -> Result<(
     };
     let generic = ModelInfo {
         display_name: "GPT 5.3".to_string(),
+        short_name: None,
         model_messages: Some(ModelMessages {
             instructions_template: Some("use generic prefix".to_string()),
             ..Default::default()
@@ -570,6 +572,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
     let remote_model = ModelInfo {
         slug: REMOTE_MODEL_SLUG.to_string(),
         display_name: "Remote Test".to_string(),
+        short_name: None,
         description: Some("A remote model that requires the test shell".to_string()),
         default_reasoning_level: Some(ReasoningEffort::Medium),
         supported_reasoning_levels: vec![ReasoningEffortPreset {
@@ -845,6 +848,7 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
     let remote_model = ModelInfo {
         slug: model.to_string(),
         display_name: "Parallel Remote".to_string(),
+        short_name: None,
         description: Some("A remote model with custom instructions".to_string()),
         default_reasoning_level: Some(ReasoningEffort::Medium),
         supported_reasoning_levels: vec![ReasoningEffortPreset {
@@ -1434,6 +1438,7 @@ fn test_remote_model_with_policy(
     ModelInfo {
         slug: slug.to_string(),
         display_name: format!("{slug} display"),
+        short_name: None,
         description: Some(format!("{slug} description")),
         default_reasoning_level: Some(ReasoningEffort::Medium),
         supported_reasoning_levels: vec![ReasoningEffortPreset {

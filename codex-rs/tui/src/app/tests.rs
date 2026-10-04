@@ -62,6 +62,8 @@ mod patch_approval_tests;
 mod permission_selection_tests;
 #[path = "tests/projectless_tests.rs"]
 mod projectless_tests;
+#[path = "tests/status_line_subagents_tests.rs"]
+mod status_line_subagents_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 

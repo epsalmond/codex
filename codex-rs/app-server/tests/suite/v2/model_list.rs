@@ -184,6 +184,7 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
         }),
         availability_nux: preset.availability_nux.clone().map(Into::into),
         display_name: preset.display_name.clone(),
+        short_name: preset.short_name.clone(),
         description: preset.description.clone(),
         model_specialty: preset.model_specialty.clone(),
         hidden: !preset.show_in_picker,

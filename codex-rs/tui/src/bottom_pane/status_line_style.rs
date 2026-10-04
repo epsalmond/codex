@@ -44,6 +44,7 @@ impl StatusLineAccent {
             StatusLineItem::Status => Self::State,
             StatusLineItem::ContextRemaining
             | StatusLineItem::ContextUsed
+            | StatusLineItem::ContextWindowUsage
             | StatusLineItem::ContextWindowSize
             | StatusLineItem::UsedTokens
             | StatusLineItem::TotalInputTokens
@@ -63,6 +64,7 @@ impl StatusLineAccent {
             StatusLineItem::ThreadName
             | StatusLineItem::ThreadTitle
             | StatusLineItem::WorkspaceHeadline => Self::Thread,
+            StatusLineItem::ActiveSubagents => Self::Progress,
             StatusLineItem::TaskProgress => Self::Progress,
         }
     }
