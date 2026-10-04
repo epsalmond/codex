@@ -175,6 +175,12 @@ jobs:
         working-directory: .
         run: just fmt-check
 
+      - name: Test Windows directory updater
+        if: runner.os == 'Windows'
+        working-directory: .
+        shell: pwsh
+        run: ./.github/scripts/test_windows_cwd_updater.ps1
+
       # codex-voice-host needs GStreamer >= 1.28 (apt ships 1.24) and nothing depends on it.
       # Mirrors rust-ci-full.yml's clippy step (justfile `clippy` + -D warnings).
       - name: cargo clippy
@@ -222,9 +228,13 @@ jobs:
           import os
           import pathlib
           import sys
+          import zipfile
 
           archive_name, source_sha = sys.argv[1:]
           archive = pathlib.Path("dist") / archive_name
+          with zipfile.ZipFile(archive, "a", compression=zipfile.ZIP_DEFLATED) as package:
+              for updater in ("codex-shake-update.bat", "codex-shake-update.ps1"):
+                  package.write(updater, updater)
           checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
           archive.with_suffix(".zip.sha256").write_text(
               f"{checksum}  {archive_name}\n", encoding="utf-8"
