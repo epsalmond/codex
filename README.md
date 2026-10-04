@@ -12,7 +12,8 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 ## Quickstart
 
 This fork ships Codex CLI as `codex-shake`, installed beside the official
-`codex`. Fork builds cover Apple Silicon macOS and x86_64 Linux; for other
+`codex`. Fork releases cover Apple Silicon macOS and x86_64 Linux. Windows
+x86_64 has a [development build](#windows-development-build); for other
 platforms, use [upstream Codex CLI](#installing-upstream-codex-cli).
 
 ### Installing codex-shake
@@ -44,6 +45,27 @@ Run `codex-shake` and sign in as described in
 [Using Codex with your ChatGPT plan](#using-codex-with-your-chatgpt-plan).
 `codex-shake` shares `~/.codex` (config, sign-in, and sessions) with the
 official `codex`.
+
+### Windows development build
+
+Install [GitHub CLI](https://cli.github.com) and run `gh auth login` first.
+Download [codex-shake-update.bat](https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/codex-shake-update.bat)
+and [codex-shake-update.ps1](https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/codex-shake-update.ps1)
+into the folder where you want Codex installed. In PowerShell, run:
+
+```powershell
+cd 'C:\Tools\codex-shake'
+.\codex-shake-update.bat
+.\bin\codex.exe --version
+```
+
+For later updates, close any running Codex processes and run the batch file
+from that folder again. It downloads the latest successful `fork-ci.yml`
+push build on `eric/local-features`, verifies the ZIP's SHA-256 checksum, and
+extracts into your current folder, overwriting matching files. The ZIP
+includes both updater scripts. These are development builds; GitHub Actions
+artifacts expire after 14 days, so an expired artifact needs a new successful
+push build.
 
 ### What codex-shake does by default
 
