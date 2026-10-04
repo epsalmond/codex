@@ -201,6 +201,7 @@ mod settings_commits;
 mod settings_constraints;
 mod shake_artifacts;
 mod shake_fork;
+mod shake_reasoning_resume;
 mod shake_watermark;
 mod shell_snapshot;
 mod skill_approval;
