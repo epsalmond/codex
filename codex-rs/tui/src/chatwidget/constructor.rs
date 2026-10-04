@@ -145,6 +145,7 @@ impl ChatWidget {
             #[cfg(any(target_os = "windows", test))]
             windows_sandbox_elevated_setup_complete: false,
             token_info: None,
+            context_snapshot: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             last_response_clock: None,

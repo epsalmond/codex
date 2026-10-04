@@ -124,6 +124,7 @@ async fn question_turn_end_recovers_collapsed_drafts_on_completion_and_failure()
         }
         chat.handle_server_notification(
             ServerNotification::TurnCompleted(TurnCompletedNotification {
+                context_usage: None,
                 thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                 turn: app_server_turn(
                     "turn",

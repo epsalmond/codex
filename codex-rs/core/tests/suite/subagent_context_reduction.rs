@@ -6,6 +6,7 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::config::SubagentContextReductionConfig;
 use codex_features::Feature;
+use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::protocol::EventMsg;
 use core_test_support::responses::ev_assistant_message;
@@ -274,7 +275,9 @@ async fn listed_last_reduction(
             .unwrap_or_default()
             .to_string(),
         reduction["before_tokens"].as_i64() > Some(threshold),
-        reduction["after_tokens"].as_i64() < Some(threshold),
+        reduction["after_tokens"]
+            .as_i64()
+            .is_some_and(|tokens| tokens < threshold),
     ))
 }
 
@@ -575,6 +578,301 @@ async fn nested_children_inherit_limits_and_root_keeps_its_own(enabled: bool) ->
     assert_eq!(
         (limits(test.codex.config().await), child_limits),
         ((Some(ROOT_LIMIT), None), vec![expected_child; 2]),
+    );
+    Ok(())
+}
+
+#[test_case(codex_protocol::config_types::AutoCompactTokenLimitScope::Total; "total")]
+#[test_case(codex_protocol::config_types::AutoCompactTokenLimitScope::BodyAfterPrefix; "body_after_prefix")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initial_task_over_child_cap_is_recorded_without_ordinary_sampling(
+    scope: codex_protocol::config_types::AutoCompactTokenLimitScope,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let task = format!(
+        "{CHILD_TASK}\n{} ",
+        "preserve the concrete task constraint\n".repeat(/*n*/ 20_000)
+    );
+    mount_root_spawn(&server, "worker", &task).await;
+    mount(
+        &server,
+        "child-compact",
+        |body| is_child(body) && is_compaction(body),
+        vec![compaction_output(
+            &format!("{SUMMARY}\n").repeat(/*n*/ 20_000),
+        )],
+    )
+    .await;
+    let test = reduction_test(/*enabled*/ true, /*threshold_tokens*/ 50_000)
+        .with_config(move |config| config.model_auto_compact_token_limit_scope = scope)
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn(ROOT_PROMPT).await?;
+    wait_for_child_turn(&test).await?;
+    let child = response_bodies(&server, is_child).await;
+    // The giant initial input was absent at the old pre-turn check. The maintenance
+    // request contains it; an insufficient rebuilt request cannot reach sampling.
+    assert_eq!(
+        child.iter().map(is_compaction).collect::<Vec<_>>(),
+        vec![true]
+    );
+    assert!(
+        child[0]
+            .to_string()
+            .contains("preserve the concrete task constraint")
+    );
+    assert_eq!(
+        listed_last_reduction(&test, &server, 50_000).await?.0,
+        "insufficient"
+    );
+    Ok(())
+}
+
+#[test_case(false; "native_tools")]
+#[test_case(true; "code_mode")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_output_crossing_cap_compacts_before_the_next_sample(code_mode: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    const CONSTRAINT: &str = "Keep the task constraint; remaining work is to validate the result.";
+    mount_root_spawn(&server, "worker", CONSTRAINT).await;
+    mount(
+        &server, "child-read", |body| is_child(body) && !is_compaction(body)
+            && call_output(body, "recent").is_none() && !body.to_string().contains(SUMMARY),
+        vec![if code_mode {
+            core_test_support::responses::ev_custom_tool_call("recent", "exec", &format!(
+                "// @exec: {{\"max_output_tokens\": 100000}}\ntext(await tools.exec_command({{cmd: \"{READ_COMMAND} recent.txt\", max_output_tokens: 100000}}));"
+            ))
+        } else { file_read("recent", "recent.txt") }],
+    ).await;
+    mount(
+        &server,
+        "child-compact",
+        |body| is_child(body) && is_compaction(body),
+        vec![compaction_output(SUMMARY)],
+    )
+    .await;
+    mount(
+        &server,
+        "child-done",
+        |body| is_child(body) && !is_compaction(body) && body.to_string().contains(SUMMARY),
+        vec![ev_assistant_message("child-done", "finished")],
+    )
+    .await;
+    let test = reduction_test(/*enabled*/ true, /*threshold_tokens*/ 50_000)
+        .with_model_info_override(MODEL, move |model| {
+            model.truncation_policy = TruncationPolicyConfig::tokens(/*limit*/ 96_000);
+            if code_mode {
+                model.tool_mode = Some(codex_protocol::openai_models::ToolMode::CodeMode);
+            }
+        })
+        .with_config(move |config| {
+            if code_mode {
+                assert!(config.features.enable(Feature::CodeMode).is_ok());
+                assert!(
+                    config
+                        .features
+                        .enable(Feature::ExecutedToolCallMetadata)
+                        .is_ok()
+                );
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    std::fs::write(
+        test.workspace_path("recent.txt"),
+        format!("{RECENT_MARKER}\n").repeat(/*n*/ 12_000),
+    )?;
+    test.submit_turn(ROOT_PROMPT).await?;
+    wait_for_child_turn(&test).await?;
+    let child = response_bodies(&server, is_child).await;
+    let custom_outputs = child
+        .iter()
+        .flat_map(|body| body["input"].as_array().into_iter().flatten())
+        .filter(|item| item["type"] == "custom_tool_call_output")
+        .map(|item| {
+            item["output"]
+                .to_string()
+                .chars()
+                .take(256)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        child.iter().map(is_compaction).collect::<Vec<_>>(),
+        vec![false, true, false],
+        "custom outputs: {custom_outputs:?}"
+    );
+    assert!(child[1].to_string().contains(RECENT_MARKER));
+    assert!(child[2].to_string().contains(CONSTRAINT));
+    assert_eq!(
+        listed_last_reduction(&test, &server, 50_000).await?.0,
+        "compacted"
+    );
+    Ok(())
+}
+
+#[test_case(true, AutoCompactTokenLimitScope::Total; "independent_child_cap")]
+#[test_case(true, AutoCompactTokenLimitScope::BodyAfterPrefix; "body_scope_does_not_replace_active_cap")]
+#[test_case(false, AutoCompactTokenLimitScope::Total; "disabled_child_policy_keeps_smaller_model_window")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_only_tools_cross_the_independent_child_cap(
+    enabled: bool,
+    scope: AutoCompactTokenLimitScope,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    mount(
+        &server,
+        "compact",
+        is_compaction,
+        vec![compaction_output(SUMMARY)],
+    )
+    .await;
+    let test = reduction_test(enabled, /*threshold_tokens*/ 1_000)
+        .with_session_source(codex_protocol::protocol::SessionSource::SubAgent(
+            codex_protocol::protocol::SubAgentSource::Other("admission-test".to_string()),
+        ))
+        .with_config(move |config| {
+            config.base_instructions = Some("Be concise.".to_string());
+            config.model_auto_compact_token_limit_scope = scope;
+            assert!(config.features.disable(Feature::Collab).is_ok());
+            assert!(config.features.disable(Feature::MultiAgentV2).is_ok());
+            if !enabled {
+                config.model_context_window = Some(1_000);
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn("Keep the task constraint and validate the remaining work.")
+        .await?;
+    let requests = response_bodies(&server, |_| true).await;
+    assert_eq!(
+        requests.iter().map(is_compaction).collect::<Vec<_>>(),
+        vec![true]
+    );
+    // The recorded message content fits; the tool schemas in the final request don't.
+    let snapshot = test.codex.conversation_history_snapshot().await;
+    let content_bytes: usize = snapshot
+        .items()
+        .map(|item| match item {
+            codex_protocol::models::ResponseItem::Message { content, .. } => content
+                .iter()
+                .map(|part| match part {
+                    codex_protocol::models::ContentItem::InputText { text }
+                    | codex_protocol::models::ContentItem::OutputText { text } => text.len(),
+                    _ => 0,
+                })
+                .sum(),
+            _ => 0,
+        })
+        .sum();
+    assert!(
+        content_bytes < 4_000,
+        "recorded content must fit the 1000-token cap: {content_bytes}"
+    );
+    // A new turn carrying only a warning has unchanged reducible context.
+    test.codex
+        .start_turn_if_idle(codex_protocol::turn_input::TurnInputRequest::new(
+            codex_protocol::turn_input::TurnInput::ResponseItem(
+                codex_protocol::models::ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![codex_protocol::models::ContentItem::InputText {
+                        text: "A warning without new eligible context".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ),
+        ))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(response_bodies(&server, |_| true).await.len(), 1);
+    mount(
+        &server,
+        "compact-new-input",
+        is_compaction,
+        vec![compaction_output(SUMMARY)],
+    )
+    .await;
+    test.submit_turn("New eligible task instructions").await?;
+    assert_eq!(response_bodies(&server, |_| true).await.len(), 2);
+    Ok(())
+}
+
+#[test_case(false; "failed")]
+#[test_case(true; "cancelled")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_compaction_failure_reports_unknown_post_size(cancel: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    mount_root_spawn(&server, "worker", CHILD_TASK).await;
+    mount(
+        &server,
+        "child-over-limit",
+        |body| is_child(body) && !is_compaction(body),
+        vec![
+            ev_function_call(CHILD_TOOL_CALL, "test_tool", "{}"),
+            ev_completed_with_tokens("child-over-limit", 100_000),
+        ],
+    )
+    .await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&started);
+    wiremock::Mock::given(|request: &wiremock::Request| is_compaction(&json_body(request)))
+        .respond_with(move |_: &wiremock::Request| {
+            notify.notify_one();
+            let response =
+                wiremock::ResponseTemplate::new(/*s*/ 500).set_body_string("compaction failed");
+            if cancel {
+                response.set_delay(Duration::from_secs(/*secs*/ 30))
+            } else {
+                response
+            }
+        })
+        .up_to_n_times(/*n*/ 1)
+        .mount(&server)
+        .await;
+    let test = reduction_test(/*enabled*/ true, /*threshold_tokens*/ 50_000)
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn(ROOT_PROMPT).await?;
+    if cancel {
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), started.notified()).await?;
+        let root = test.session_configured.thread_id;
+        let id = test
+            .thread_manager
+            .list_thread_ids()
+            .await
+            .into_iter()
+            .find(|id| *id != root)
+            .context("child should be compacting")?;
+        let child = test.thread_manager.get_thread(id).await?;
+        child
+            .submit(codex_protocol::protocol::Op::Interrupt)
+            .await?;
+        wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    } else {
+        wait_for_child_turn(&test).await?;
+    }
+    assert_eq!(
+        response_bodies(&server, is_child)
+            .await
+            .iter()
+            .map(is_compaction)
+            .collect::<Vec<_>>(),
+        vec![false, true]
+    );
+    // Nullable post-size must not compare as a measured size below the cap.
+    let outcome = if cancel { "cancelled" } else { "failed" };
+    assert_eq!(
+        listed_last_reduction(&test, &server, 50_000).await?,
+        (outcome.to_string(), true, false)
     );
     Ok(())
 }

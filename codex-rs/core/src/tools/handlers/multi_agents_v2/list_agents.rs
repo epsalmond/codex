@@ -59,6 +59,16 @@ impl Handler {
 
         let mut listed = Vec::with_capacity(agents.len());
         for agent in agents {
+            let mut context = session
+                .services
+                .local_agent_runtime
+                .agent_context_usage(agent.thread_id)
+                .await;
+            // The sealed-item boundary is human-facing status metadata.
+            if let Some(context) = &mut context {
+                context.shake_watermark = None;
+                context.prepared_request_tokens = None;
+            }
             listed.push(ListedAgent {
                 agent_name: agent
                     .metadata
@@ -67,11 +77,7 @@ impl Handler {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| agent.thread_id.to_string()),
                 agent_status: agent.status,
-                context: session
-                    .services
-                    .local_agent_runtime
-                    .agent_context_usage(agent.thread_id)
-                    .await,
+                context,
             });
         }
         Ok(boxed_tool_output(ListAgentsResult { agents: listed }))

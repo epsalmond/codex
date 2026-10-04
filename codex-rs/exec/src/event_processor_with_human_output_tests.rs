@@ -318,6 +318,7 @@ fn turn_completed_recovers_final_message_from_turn_items() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -368,6 +369,7 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -419,6 +421,7 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -463,6 +466,7 @@ fn turn_failed_clears_stale_final_message() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -508,6 +512,7 @@ fn turn_interrupted_clears_stale_final_message() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),

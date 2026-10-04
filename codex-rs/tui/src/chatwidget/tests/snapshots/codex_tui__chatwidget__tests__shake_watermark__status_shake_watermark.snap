@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/shake_watermark_tests.rs
+expression: "rows.join(\"\\n\")"
+---
+Context window:      100% left (42 used / 272K)
+Shake watermark:     42 items sealed
+Context window:      100% left (42 used / 272K)
+Shake watermark:     0 items sealed
+Context window:      100% left (42 used / 272K)
+Shake watermark:     unavailable

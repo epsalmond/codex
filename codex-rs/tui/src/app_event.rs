@@ -370,7 +370,7 @@ pub(crate) enum AppEvent {
         primary_thread_id: ThreadId,
         request_id: Uuid,
         status_revisions: std::collections::HashMap<ThreadId, u64>,
-        result: Result<Vec<Thread>, String>,
+        result: Result<AgentPickerThreadRefresh, String>,
     },
     /// Merge one-shot final-response previews fetched for tracked picker children.
     AgentPickerPreviewsLoaded {
@@ -382,6 +382,8 @@ pub(crate) enum AppEvent {
     AgentPickerPreviewNeeded(ThreadId),
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Close and archive a child and its descendants while retaining saved history.
+    CloseAgentThread(ThreadId),
 
     /// Fork the current thread into a transient side conversation.
     StartSide {
@@ -1665,4 +1667,10 @@ pub(crate) enum FeedbackCategory {
     Bug,
     SafetyCheck,
     Other,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AgentPickerThreadRefresh {
+    pub(crate) threads: Vec<Thread>,
+    pub(crate) archived_thread_ids: std::collections::HashSet<ThreadId>,
 }

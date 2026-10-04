@@ -318,6 +318,7 @@ pub(super) fn sample_turn_completed_notification(
     codex_error_info: Option<codex_app_server_protocol::CodexErrorInfo>,
 ) -> ServerNotification {
     ServerNotification::TurnCompleted(TurnCompletedNotification {
+        context_usage: None,
         thread_id: thread_id.to_string(),
         turn: Turn {
             id: turn_id.to_string(),

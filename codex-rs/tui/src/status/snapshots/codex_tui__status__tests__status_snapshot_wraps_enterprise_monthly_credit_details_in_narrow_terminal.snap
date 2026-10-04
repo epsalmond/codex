@@ -24,6 +24,7 @@ expression: sanitized
                          input + 400 output)
   Context window:        100% left (1.2K
                          used / 272K)
+  Shake watermark:       unavailable
   Monthly credit limit:  68% left
                          (resets 07:08 on
                          7 May)

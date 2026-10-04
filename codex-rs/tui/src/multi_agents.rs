@@ -49,6 +49,7 @@ pub(crate) struct AgentPickerThreadEntry {
 pub(crate) struct AgentPickerThreadDetails {
     pub(crate) response_preview: Option<String>,
     pub(crate) context_usage: Option<AgentPickerContextUsage>,
+    pub(crate) context_snapshot: Option<codex_app_server_protocol::ThreadContextUsage>,
     pub(crate) is_error: bool,
 }
 
