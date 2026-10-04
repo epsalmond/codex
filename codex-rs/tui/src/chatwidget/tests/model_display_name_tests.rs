@@ -108,10 +108,24 @@ async fn custom_model_display_name_in_status_line_and_fallback() {
         normalized_backend_snapshot(terminal.backend())
     );
 
+    chat.local_settings.tui.status_line = None;
+    chat.refresh_status_line();
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("draw default model status line");
+    assert_chatwidget_snapshot!(
+        "default_short_model_status_line",
+        normalized_backend_snapshot(terminal.backend())
+    );
+
     Arc::make_mut(&mut chat.model_catalog).models.clear();
     assert_eq!(chat.model_display_name(), slug);
     chat.set_model(crate::model_catalog::LUNA_RESERVE_MODEL);
     assert_eq!(chat.model_display_name(), "Luna Reserve");
     chat.set_model("");
     assert_eq!(chat.model_display_name(), DEFAULT_MODEL_DISPLAY_NAME);
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ModelName),
+        Some(DEFAULT_MODEL_DISPLAY_NAME.to_string())
+    );
 }

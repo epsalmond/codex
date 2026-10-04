@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/model_display_name_tests.rs
+assertion_line: 116
+expression: normalized_backend_snapshot(terminal.backend())
+---
+"                                                                                "
+"                                                                                "
+"› Ask Codex to do anything                                                      "
+"                                                                                "
+"  luna · /tmp/project · my-session                                              "

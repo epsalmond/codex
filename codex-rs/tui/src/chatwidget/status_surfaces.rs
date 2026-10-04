@@ -711,11 +711,16 @@ impl ChatWidget {
     /// git metadata.
     pub(super) fn status_line_value(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
-            StatusLineItem::ModelName => Some(
-                self.model_catalog
-                    .status_line_display_name(self.current_model())
-                    .to_string(),
-            ),
+            StatusLineItem::ModelName => {
+                let model = self.current_model();
+                Some(if model.is_empty() {
+                    self.model_display_name().to_string()
+                } else {
+                    self.model_catalog
+                        .status_line_display_name(model)
+                        .to_string()
+                })
+            }
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
             StatusLineItem::CurrentDir => {

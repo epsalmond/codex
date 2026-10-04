@@ -1637,6 +1637,27 @@ fn build_available_models_picks_default_after_hiding_hidden_models() {
     assert_eq!(available, vec![expected_hidden, expected_visible]);
 }
 
+#[test]
+fn build_available_models_applies_bundled_short_names_but_preserves_overrides() {
+    let manager = static_manager_for_tests(ModelsResponse { models: Vec::new() });
+    let remote_sol = remote_model("openai.gpt-6.1-sol", "GPT-6.1 Sol", /*priority*/ 0);
+    let mut custom_luna = remote_model("gpt-6-luna", "GPT-6 Luna", /*priority*/ 1);
+    custom_luna.short_name = Some("my-luna".to_string());
+
+    let available = manager.build_available_models(vec![remote_sol, custom_luna]);
+
+    assert_eq!(
+        available
+            .iter()
+            .map(|model| (model.model.as_str(), model.short_name.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("openai.gpt-6.1-sol", Some("sol")),
+            ("gpt-6-luna", Some("my-luna")),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn static_manager_reads_latest_auth_mode() {
     let auth_manager =

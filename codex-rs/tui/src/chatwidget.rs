@@ -464,7 +464,7 @@ const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
 const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_STATUS_LINE_ITEMS: [&str; 5] = [
-    "model-with-reasoning",
+    "model",
     "current-dir",
     "thread-name",
     "weekly-reset",
