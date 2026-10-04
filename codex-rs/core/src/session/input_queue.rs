@@ -370,6 +370,16 @@ impl InputQueue {
     /// Moves the agent mail in `items` back to the front of the mailbox, in order, and leaves the
     /// other input in `items`. Returns whether any mail was returned.
     pub(crate) async fn return_to_mailbox(&self, items: &mut Vec<TurnInput>) -> bool {
+        self.return_to_mailbox_with_start_options(items, TurnStartOptions::default())
+            .await
+    }
+
+    /// Restores accepted mail after failed startup, preserving its selected turn settings.
+    pub(crate) async fn return_to_mailbox_with_start_options(
+        &self,
+        items: &mut Vec<TurnInput>,
+        start_options: TurnStartOptions,
+    ) -> bool {
         let mut returned = Vec::new();
         for item in std::mem::take(items) {
             match item {
@@ -382,7 +392,7 @@ impl InputQueue {
         for communication in returned.into_iter().rev() {
             mails.push_front(PendingMailboxCommunication {
                 communication,
-                start_options: TurnStartOptions::default(),
+                start_options: start_options.clone(),
                 _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
             });
         }
