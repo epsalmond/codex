@@ -113,7 +113,7 @@ async fn reasoning_content_representations_preserve_seals_on_resume(
     assert!(
         !sealed_reasoning[0]
             .as_object()
-            .unwrap()
+            .context("sealed reasoning object")?
             .contains_key("content")
     );
     assert_eq!(sealed_reasoning[1].get("content"), Some(&Value::Null));
