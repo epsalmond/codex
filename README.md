@@ -84,8 +84,12 @@ For prompts that put these to work, see
 
 codex-shake adds two TUI status-line items: `weekly-reset` (the local time
 your weekly usage window resets) and `last-response-clock` (when the latest
-live response in this session completed). Turn them on with `/statusline`, or
-list them in `tui.status_line` in `~/.codex/config.toml`.
+live response in this session completed). Both are on by default, after the
+upstream defaults (`model-with-reasoning`, `current-dir`, `thread-name`). Each
+stays hidden until it has data; `weekly-reset` never shows for API-key logins,
+which have no rate-limit windows. To remove them, uncheck them in
+`/statusline`, or set your own list in `tui.status_line` in
+`~/.codex/config.toml`.
 
 ### Identifying Shake feature support
 

@@ -22,7 +22,7 @@ An agent role's `config_file` can now set `model_provider`, so `spawn_agent` run
 
 ## Statusline entries
 
-The TUI statusline can show the weekly usage reset time and the completion time of the latest live response. See [statusline items](README.md#statusline-items).
+The TUI statusline shows the weekly usage reset time and the completion time of the latest live response, and both are now on by default. Remove them with `/statusline` or by setting `tui.status_line` in `~/.codex/config.toml`. See [statusline items](README.md#statusline-items).
 
 ## Installation and self-update
 

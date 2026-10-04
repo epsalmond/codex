@@ -37,6 +37,15 @@ pub(super) fn truncated_path_variants(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// Replaces the wall-clock `last-response-clock` status-line value with a fixed-width placeholder.
+///
+/// A one-digit hour absorbs one following space so padded rows keep the same width at any hour.
+pub(crate) fn normalize_response_clock(text: impl Into<String>) -> String {
+    let pattern = regex_lite::Regex::new(r"⏱ (?:\d{2}:\d{2} [AP]M|\d:\d{2} [AP]M ?)")
+        .expect("response clock pattern is valid");
+    pattern.replace_all(&text.into(), "⏱ hh:mm XM").into_owned()
+}
+
 pub(crate) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
     let mut text = text.into();
 
