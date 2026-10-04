@@ -34,7 +34,7 @@ if (-not (($args -join ' ').StartsWith($expected))) { throw "Unexpected gh argum
 if ($env:UPDATER_TEST_MODE -eq 'download-failure') { exit 24 }
 $download = $args[-1]
 $zip = Join-Path $download 'codex-test.zip'
-if ($env:UPDATER_TEST_ARCHIVE -and $env:UPDATER_TEST_MODE -notin @('lf-to-crlf', 'crlf-to-lf')) {
+if ($env:UPDATER_TEST_ARCHIVE -and $env:UPDATER_TEST_MODE -notin @('lf-to-crlf', 'crlf-to-lf', 'inherited-module-path')) {
     Copy-Item -LiteralPath $env:UPDATER_TEST_ARCHIVE -Destination $zip
 } else {
     $payload = New-Item -ItemType Directory -Path (Join-Path $download 'payload')
@@ -54,7 +54,7 @@ if ($env:UPDATER_TEST_MODE -eq 'bad-checksum') { $hash = '0' * 64 }
 exit 0
 '@ | Set-Content -LiteralPath (Join-Path $mockBin.FullName 'mock-gh.ps1') -Encoding ASCII
 
-    foreach ($mode in @('success', 'bad-checksum', 'list-failure', 'download-failure', 'invalid-metadata', 'invalid-json', 'no-build', 'lf-to-crlf', 'crlf-to-lf')) {
+    foreach ($mode in @('success', 'bad-checksum', 'list-failure', 'download-failure', 'invalid-metadata', 'invalid-json', 'no-build', 'lf-to-crlf', 'crlf-to-lf', 'inherited-module-path')) {
         $destination = New-Item -ItemType Directory -Path (Join-Path $testDirectory "destination with spaces $mode")
         $sentinel = Join-Path $destination.FullName 'installed.txt'
         'original' | Set-Content -LiteralPath $sentinel
@@ -77,13 +77,16 @@ exit 0
         $start.EnvironmentVariables['UPDATER_TEST_MODE'] = $mode
         $start.EnvironmentVariables['UPDATER_TEST_ARCHIVE'] = $Archive
         $start.EnvironmentVariables['UPDATER_TEST_SOURCE'] = $scripts.FullName
+        if ($mode -eq 'inherited-module-path') {
+            $start.EnvironmentVariables['PSModulePath'] = 'C:\Program Files\PowerShell\7\Modules'
+        }
         $start.EnvironmentVariables['TEMP'] = $testDirectory
         $start.EnvironmentVariables['TMP'] = $testDirectory
         $process = [System.Diagnostics.Process]::Start($start)
         $stdout = $process.StandardOutput.ReadToEnd()
         $stderr = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
-        if ($mode -in @('success', 'lf-to-crlf', 'crlf-to-lf')) {
+        if ($mode -in @('success', 'lf-to-crlf', 'crlf-to-lf', 'inherited-module-path')) {
             if ($process.ExitCode -ne 0 -or $stderr) { throw "Success test failed: $stdout $stderr" }
             if ($Archive -and $mode -eq 'success') {
                 & (Join-Path $destination.FullName 'bin/codex.exe') --version
