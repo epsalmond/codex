@@ -1,0 +1,9 @@
+---
+source: tui/src/app/agent_context_display_tests.rs
+expression: "rows.join(\"\\n\")"
+---
+context 80000 · cap 100000 · window 272000 · gpt-6-luna · usage + estimate · snapshot 10s ago · provider 20s ago
+context 80000 · cap 100000 · window 272000 · gpt-6-luna · usage + estimate · snapshot 2h ago · provider 2h ago
+context 0 · cap 100000 · window 272000 · gpt-6-luna · estimate · snapshot 10s ago · provider ?
+context ? · cap ? · window ? · ? · estimate · snapshot ? · provider ?
+context ? · cap off · window ? · ? · estimate · snapshot ? · provider ?

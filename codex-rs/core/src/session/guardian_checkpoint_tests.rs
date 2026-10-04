@@ -71,7 +71,7 @@ async fn guardian_checkpoint_preserves_live_context_without_storage(
             .record_items([&followup], turn.model_info().truncation_policy.into());
         state.history.set_reference_context_item(Some(context));
         state.history.set_world_state_baseline(world_state.clone());
-        state.history.update_token_info(
+        state.update_token_info_from_usage(
             &TokenUsage {
                 input_tokens: 123,
                 total_tokens: 123,

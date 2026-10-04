@@ -4,11 +4,11 @@
 
 ## Subagent context reduction
 
-Spawned subagents inherit a 272,000-token Shake and compaction cap by default, tightened further when the parent has a lower limit. Within a turn, a child shakes first and compacts if needed; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
+Spawned subagents have a 272,000-token active-context cap by default, alongside inherited limits. Every prepared ordinary child request, including retries, reduces before sampling when needed and stops if still at or above its limits, with failed and cancelled attempts reported separately; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
 
 ## Subagent picker details
 
-The `/subagents` picker shows child status, context usage, and final-response previews, with numbered selection, `/` search and Esc to leave search, Ctrl+U to clear the query (Cmd+Delete in Ghostty on macOS), and `X` to archive a child while preserving the selected row. Option/Alt+Left/Right also switch visible agents with an empty prompt and no popup or overlay, including terminals that send Alt+b/f over SSH; see [monitoring subagents](README.md#monitoring-subagents).
+The `/subagents` picker shows each child’s status, captured context policy and freshness, reduction outcomes, and latest final response when idle. Highlight a row for details. Use numbered selection, `/` search and Esc to leave search, Ctrl+U to clear the query (Cmd+Delete in Ghostty on macOS), and `X` to archive a child while preserving the selected row. Option/Alt+Left/Right also switch visible agents with an empty prompt and no popup or overlay, including terminals that send Alt+b/f over SSH. `/status` shows Shake’s sealed-history-item watermark. See [monitoring subagents](README.md#monitoring-subagents).
 
 ## Wake mode for multi-agent orchestrators
 

@@ -45,6 +45,9 @@ impl ChatWidget {
         }
         match notification {
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
+                if let Some(snapshot) = notification.context_usage {
+                    self.context_snapshot = Some(snapshot);
+                }
                 // Replayed totals only set the baseline for the next live update.
                 self.request_pace.observe_total_tokens(
                     notification.token_usage.total.total_tokens,
@@ -419,6 +422,9 @@ impl ChatWidget {
         notification: TurnCompletedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        if let Some(snapshot) = notification.context_usage {
+            self.context_snapshot = Some(snapshot);
+        }
         // User-message dedupe only suppresses the app-server echo of a prompt
         // this TUI already rendered locally. Once that turn ends, another
         // client can submit the same text and it still needs its own user cell.

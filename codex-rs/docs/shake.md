@@ -380,8 +380,7 @@ window.
 Spawned subagent threads inherit `auto_shake` automatically:
 `build_agent_shared_config` (`codex-rs/core/src/agent/child_config.rs`) clones
 the parent `Config` wholesale and then refreshes only runtime-owned fields,
-and subagent turns run through the same `run_turn` → `run_pre_sampling_compact`
-path. Note that the effective *model* may differ from the parent's, so a
+and subagent turns use the same automatic Shake policy before sampling. Note that the effective *model* may differ from the parent's, so a
 subagent on a family with auto-shake off will not shake even when its parent
 does — which is the intended per-model behavior.
 
@@ -401,16 +400,26 @@ This child context policy is independent from parent scheduling. See the
 which MultiAgentV2 child sessions wake on reports and why Exec roots continue
 to poll.
 
-The mid-turn roll-over order also differs for subagents (see
-`codex-rs/core/src/session/mid_turn_reduction.rs`). At the point where a
-sampling follow-up would exceed the context limit:
+Every fully prepared ordinary child request is checked before dispatch, including
+initial input, tool continuations and rebuilt retries. The independent active
+context cap applies to the complete estimated request even when auto-compaction
+counts only the body after the prefix. Provider usage and local estimates remain
+approximate. Reduction runs in the existing request loop and preserves completed
+tools and running Code Mode work.
+
+When provider usage is available, growth in instructions, tool schemas or output
+schema is added to that accounting. Unknown prior request overhead is counted
+conservatively when reusing a restored provider measurement.
+
+When the prepared request reaches a limit:
 
 - a **subagent** first tries auto-shake; if that brings it back under the
   limit, sampling continues without compacting. If auto-shake is skipped or
   insufficient, compaction runs next; if the thread is still at or over the
   limit after compaction, the turn ends with a context-window-exceeded error
   instead of sampling and compacting in a loop. The parent observes this as a
-  failed child turn.
+  failed child turn. An unchanged post-reduction context and policy do not
+  trigger repeated insufficient compaction attempts.
 - a **root** session skips straight to compaction and keeps sampling
   regardless of the post-compaction size, matching the pre-existing behavior.
 - an explicit new-context-window request always compacts directly, for both
@@ -431,9 +440,23 @@ local estimate of items recorded since, `estimate` when no usage has been
 reported since the thread started or history was last rewritten), and
 `last_reduction`, the most recent automatic reduction, or `null`, as `{at,
 before_tokens, after_tokens (nullable), outcome}` where `outcome` is one of
-`shaken`, `compacted`, or `insufficient`.
+`shaken`, `compacted`, `insufficient`, `failed`, or `cancelled`. Success means
+the rebuilt prepared request passed the same admission check; failed or cancelled
+compaction reports `after_tokens: null`.
 
 ### Observability
+
+`/subagents` shows captured active context, child policy cap, usable model window,
+selected model, accounting basis, snapshot age, provider-measurement age and the
+last automatic reduction. Highlight a row to read the full metadata below the
+list. Existing usage and turn-completion events update these rows; unavailable
+metadata stays unknown, including when an old rollout is replayed.
+
+`/status` shows `Shake watermark:` immediately below `Context window:`. The value
+is the persisted exclusive history-item boundary: `42 items sealed` means those
+42 history items are protected from further Shake. It is not a token count or
+removable-context estimate. An invalid or unavailable seal shows `unavailable`;
+`0 items sealed` requires a verified unsealed epoch.
 
 A shake that changed anything emits:
 
@@ -506,15 +529,15 @@ see "Subagents" above for how the cap is applied.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `subagent_context_reduction.enabled` | bool | `true` | Apply the cap to spawned and resumed children. |
-| `subagent_context_reduction.threshold_tokens` | int > 0 | `272000` | Token count at which subagents shake and then compact, when lower than the limits they would otherwise inherit. `0` is rejected with a config error. |
+| `subagent_context_reduction.threshold_tokens` | int > 0 | `272000` | Independent cap on the complete prepared child request; also bounds inherited auto-compaction and auto-shake limits. `0` is rejected with a config error. |
 
 This cap controls child context reduction, not whether a parent polls for child
 results. The separate root polling setting and its default are documented in
 [wake mode](../../README.md#wake-mode-for-multi-agent-orchestrators).
 
-Under `model_auto_compact_token_limit_scope = "body_after_prefix"` the
-compaction cap applies to body tokens while the shake cap applies to total
-tokens.
+Under `model_auto_compact_token_limit_scope = "body_after_prefix"`, the
+inherited auto-compaction limit applies to body tokens. The independent child
+active-context cap still applies to the complete prepared request.
 
 ### Precedence
 

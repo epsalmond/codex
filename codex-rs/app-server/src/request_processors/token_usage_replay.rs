@@ -43,6 +43,7 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
         return;
     };
     let notification = ThreadTokenUsageUpdatedNotification {
+        context_usage: conversation.context_usage_snapshot().await.map(Into::into),
         thread_id: thread_id.to_string(),
         turn_id: token_usage_turn_id,
         token_usage: ThreadTokenUsage::from(info),
@@ -73,7 +74,7 @@ fn latest_token_usage_turn_id_from_rollout_items(
 ) -> Option<String> {
     let token_count_index = rollout_items
         .iter()
-        .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(_))))?;
+        .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some()))?;
     let mut builder = ThreadHistoryBuilder::new();
     for item in &rollout_items[..token_count_index] {
         builder.handle_rollout_item(item);
@@ -155,6 +156,13 @@ mod tests {
     fn replay_attribution_uses_latest_token_count_and_ignores_tail_turn() {
         let mut rollout_items = token_usage_history();
         rollout_items.extend(token_usage_history());
+        rollout_items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
+            TokenCountEvent {
+                info: None,
+                rate_limits: None,
+                context_usage: Some(codex_protocol::context_usage::AgentContextUsage::default()),
+            },
+        )));
         let turns = build_turns_from_rollout_items(&rollout_items);
 
         assert_eq!(
@@ -181,7 +189,12 @@ mod tests {
                 questions: None,
             })),
             RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
-                info: None,
+                context_usage: None,
+                info: Some(codex_protocol::protocol::TokenUsageInfo {
+                    total_token_usage: Default::default(),
+                    last_token_usage: Default::default(),
+                    model_context_window: None,
+                }),
                 rate_limits: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {

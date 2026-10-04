@@ -139,6 +139,7 @@ struct StatusHistoryCell {
     session_id: Option<String>,
     forked_from: Option<String>,
     token_usage: StatusTokenUsageData,
+    shake_watermark: Option<u64>,
     rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
     thread_usage: StatusThreadUsage,
 }
@@ -215,6 +216,7 @@ pub(crate) fn new_status_output_with_rate_limits(
         collaboration_mode,
         reasoning_effort_override,
         "<none>".to_string(),
+        /*shake_watermark*/ None,
         refreshing_rate_limits,
     )
     .0
@@ -239,6 +241,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     collaboration_mode: Option<&str>,
     reasoning_effort_override: Option<Option<ReasoningEffort>>,
     agents_summary: String,
+    shake_watermark: Option<u64>,
     refreshing_rate_limits: bool,
 ) -> (CompositeHistoryCell, StatusHistoryHandle) {
     let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
@@ -260,6 +263,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
         collaboration_mode,
         reasoning_effort_override,
         agents_summary,
+        shake_watermark,
         refreshing_rate_limits,
     ));
     let handle = StatusHistoryHandle {
@@ -292,6 +296,7 @@ impl StatusHistoryCell {
         collaboration_mode: Option<&str>,
         reasoning_effort_override: Option<Option<ReasoningEffort>>,
         agents_summary: String,
+        shake_watermark: Option<u64>,
         refreshing_rate_limits: bool,
     ) -> Self {
         let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
@@ -397,6 +402,7 @@ impl StatusHistoryCell {
             session_id,
             forked_from,
             token_usage,
+            shake_watermark,
             agents_summary,
             rate_limit_state,
             thread_usage,
@@ -787,6 +793,7 @@ impl StatusHistoryCell {
             push_label(&mut labels, &mut seen, "Collaboration mode");
         }
         push_label(&mut labels, &mut seen, "Token usage");
+        push_label(&mut labels, &mut seen, "Shake watermark");
         if self.token_usage.context_window.is_some() {
             push_label(&mut labels, &mut seen, "Context window");
         }
@@ -861,6 +868,12 @@ impl StatusHistoryCell {
         if let Some(spans) = self.context_window_spans() {
             lines.push(formatter.line("Context window", spans));
         }
+        let watermark = self.shake_watermark;
+        let watermark = match watermark {
+            Some(items) => format!("{items} items sealed"),
+            None => "unavailable".to_string(),
+        };
+        lines.push(formatter.line("Shake watermark", vec![watermark.into()]));
 
         lines.extend(self.rate_limit_lines(&rate_limit_state, available_width, &formatter));
         let thread_usage_lines = self.thread_usage.lines(&formatter, value_width);

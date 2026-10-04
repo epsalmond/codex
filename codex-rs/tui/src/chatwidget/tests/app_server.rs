@@ -917,6 +917,7 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
@@ -1547,6 +1548,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
 
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
@@ -1639,6 +1641,7 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
     }];
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: completed_turn,
         }),
