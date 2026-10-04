@@ -370,6 +370,15 @@ async fn picker_rows_show_status_context_and_preview_at_normal_and_narrow_widths
         render_bottom_popup(&app.chat_widget, /*width*/ 48)
     );
     app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    insta::assert_snapshot!(
+        "agent_picker_search_cleared",
+        render_bottom_popup(&app.chat_widget, /*width*/ 96)
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Char('t')));
+    assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 96).contains("Planner"));
+    app.chat_widget
         .handle_key_event(KeyEvent::from(KeyCode::Esc));
     let narrow = render_bottom_popup(&app.chat_widget, /*width*/ 48);
     for status in ["idle", "mid-turn", "closed", "error"] {
@@ -499,6 +508,70 @@ async fn picker_main_shortcut_and_close_keys_respect_search_mode() -> Result<()>
         app.chat_widget
             .handle_key_event(KeyEvent::from(KeyCode::Char('1')));
         assert!(matches!(rx.try_recv(), Ok(AppEvent::SelectAgentThread(id)) if id == root));
+        app.chat_widget
+            .show_selection_view(app.agent_picker_selection_view_params(Some(/*value*/ 0)));
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Char('2')));
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::SelectAgentThread(id)) if id == child));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_word_motion_shortcuts_switch_empty_drafts_with_any_keyboard_protocol() -> Result<()>
+{
+    for enhanced_keys_supported in [false, true] {
+        let mut app = make_test_app().await;
+        app.enhanced_keys_supported = enhanced_keys_supported;
+        let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.start_fresh_session(
+            &mut tui,
+            &mut server,
+            /*session_start_source*/ None,
+            /*initial_user_message*/ None,
+            /*new_thread_name*/ None,
+        )
+        .await;
+        let root = app.chat_widget.thread_id().unwrap();
+        let child_session = server.start_thread(&app.config).await?.session;
+        let child = child_session.thread_id;
+        app.thread_event_channels.insert(
+            child,
+            ThreadEventChannel::new_with_session(/*capacity*/ 4, child_session, Vec::new()),
+        );
+        app.upsert_agent_picker_thread(
+            child, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+        for (key, expected) in [('f', child), ('b', root)] {
+            app.handle_tui_event(
+                &mut tui,
+                &mut server,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::ALT)),
+            )
+            .await?;
+            assert_eq!(app.active_thread_id, Some(expected));
+        }
+        app.chat_widget.insert_str("one two");
+        app.handle_tui_event(
+            &mut tui,
+            &mut server,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)),
+        )
+        .await?;
+        app.chat_widget.insert_str("!");
+        assert_eq!(app.active_thread_id, Some(root));
+        assert_eq!(app.chat_widget.composer_text_with_pending(), "one !two");
+        app.handle_tui_event(
+            &mut tui,
+            &mut server,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
+        )
+        .await?;
+        app.chat_widget.insert_str("?");
+        assert_eq!(app.active_thread_id, Some(root));
+        assert_eq!(app.chat_widget.composer_text_with_pending(), "one !two?");
+        server.shutdown().await?;
     }
     Ok(())
 }

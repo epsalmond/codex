@@ -1,5 +1,6 @@
 //! Archive visibility follows backend lifecycle notifications and descendant discovery.
 use super::agent_navigation::AgentPickerThreadVisibility;
+use super::agent_picker::AGENT_PICKER_VIEW_ID;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::*;
@@ -17,6 +18,16 @@ impl App {
         if thread_id == root || self.agent_navigation.get(&thread_id).is_none() {
             return Ok(());
         }
+        let selected_idx = self
+            .chat_widget
+            .selected_index_for_present_view(AGENT_PICKER_VIEW_ID)
+            .or_else(|| {
+                let closing_key = thread_id.to_string();
+                self.agent_picker_selection_view_params(/*selected*/ None)
+                    .items
+                    .iter()
+                    .position(|item| item.selection_key.as_deref() == Some(closing_key.as_str()))
+            });
         // Switching first respects permission/setup blockers and keeps the displayed
         // transcript outside the subtree before the backend stops it.
         self.select_agent_thread_and_discard_side(tui, app_server, root)
@@ -33,8 +44,14 @@ impl App {
         if !self.agent_navigation.queue_picker_refresh(root) {
             self.refresh_agent_picker_threads(app_server, root);
         }
-        self.chat_widget
-            .show_selection_view(self.agent_picker_selection_view_params(/*selected*/ None));
+        let mut params = self.agent_picker_selection_view_params(selected_idx);
+        // An out-of-bounds initial selection falls back to Main, so clamp explicitly
+        // when archiving the final row.
+        if let Some(selected_idx) = selected_idx {
+            params.initial_selected_idx =
+                Some(selected_idx.min(params.items.len().saturating_sub(/*rhs*/ 1)));
+        }
+        self.chat_widget.show_selection_view(params);
         Ok(())
     }
 

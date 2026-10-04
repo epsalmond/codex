@@ -8,7 +8,7 @@ Spawned subagents have a 272,000-token active-context cap by default, alongside 
 
 ## Subagent picker details
 
-The `/subagents` picker shows each child’s status, captured context policy and freshness, reduction outcomes, and latest final response when idle. Highlight a row for details. `/status` shows Shake’s sealed-history-item watermark. See [monitoring subagents](README.md#monitoring-subagents).
+The `/subagents` picker shows each child’s status, captured context policy and freshness, reduction outcomes, and latest final response when idle. Highlight a row for details. Use numbered selection, `/` search and Esc to leave search, Ctrl+U to clear the query (Cmd+Delete in Ghostty on macOS), and `X` to archive a child while preserving the selected row. Option/Alt+Left/Right also switch visible agents with an empty prompt and no popup or overlay, including terminals that send Alt+b/f over SSH. `/status` shows Shake’s sealed-history-item watermark. See [monitoring subagents](README.md#monitoring-subagents).
 
 ## Wake mode for multi-agent orchestrators
 
