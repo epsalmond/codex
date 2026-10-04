@@ -88,6 +88,12 @@ mod target;
 mod user_authorization;
 mod wake_spawn;
 mod watch;
+mod work_lifecycle;
+
+pub use work_lifecycle::GuardedShutdownOutcome;
+pub(crate) use work_lifecycle::WorkAdmissionError;
+pub use work_lifecycle::WorkObservation;
+pub use work_lifecycle::WorkObservationSnapshot;
 
 /// Per-session controller handle for a local agent tree.
 /// Handles retain a session identity and share their tree's `LocalAgentRuntime`.

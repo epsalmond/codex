@@ -246,6 +246,21 @@ impl CodexThread {
         self.session.services.session_telemetry.clone()
     }
 
+    /// Return a lifecycle observer only when this backend has complete work and output coverage.
+    pub fn work_observation(&self) -> Option<crate::WorkObservation> {
+        self.session.services.agent_control.work_observation()
+    }
+
+    /// Release a root terminal-turn barrier after its final output notification has been sent.
+    pub fn note_root_turn_output_forwarded(&self, turn_id: &str) {
+        if !self.session_source.is_non_root_agent() {
+            self.session
+                .services
+                .local_agent_runtime
+                .root_turn_output_forwarded(turn_id);
+        }
+    }
+
     /// Schedule the same background model warmup used at startup for an idle thread.
     /// The next turn consumes the warmup through the existing startup handoff.
     /// Call after installing host services such as the thread's attestation routing.

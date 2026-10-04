@@ -533,15 +533,18 @@ fn apply_exec_resume_polling_fallback(
         .get_resumed_session_sources()
         .map(|(session_source, _)| session_source)
         .unwrap_or_else(|| current_session_source.clone());
+    // A resumed Exec root follows the user's `agent_polling`: exec observes it and drains its
+    // children. Internal and subagent sessions keep their own modes.
     if matches!(
         resumed_session_source,
-        SessionSource::Internal(_) | SessionSource::SubAgent(_)
+        SessionSource::Exec | SessionSource::Internal(_) | SessionSource::SubAgent(_)
     ) {
         return;
     }
 
-    // The exec process exits after a root turn, so it must retain polling until exec can
-    // remain alive for child reports. Keep this runtime override out of stored user config.
+    // An interactive root resumed by exec keeps its original session source, so exec cannot
+    // observe its work and exits after one root turn. It must poll, or its children would be
+    // orphaned. Keep this runtime override out of stored user config.
     config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
 }
 

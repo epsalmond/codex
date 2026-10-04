@@ -1,8 +1,10 @@
+use super::thread_work_updates::ThreadWorkUpdates;
 use super::*;
 use crate::extensions::send_thread_warning;
 use codex_app_server_protocol::ThreadQueueChangedNotification;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub(super) struct ListenerTaskContext {
@@ -132,59 +134,85 @@ pub(super) enum EnsureConversationListenerResult {
     ConnectionClosed,
 }
 
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "listener subscription must be serialized against pending unloads"
-)]
 pub(super) async fn ensure_conversation_listener(
     listener_task_context: ListenerTaskContext,
     conversation_id: ThreadId,
     connection_id: ConnectionId,
     raw_events_enabled: bool,
 ) -> Result<EnsureConversationListenerResult, JSONRPCErrorError> {
-    let conversation = match listener_task_context
-        .thread_manager
-        .get_thread(conversation_id)
-        .await
-    {
-        Ok(conv) => conv,
-        Err(_) => {
-            return Err(invalid_request(format!(
-                "thread not found: {conversation_id}"
-            )));
-        }
-    };
-    let thread_state = {
-        let pending_thread_unloads = listener_task_context.pending_thread_unloads.lock().await;
-        if pending_thread_unloads.contains(&conversation_id) {
-            return Err(invalid_request(format!(
-                "thread {conversation_id} is closing; retry after the thread is closed"
-            )));
-        }
-        let Some(thread_state) = listener_task_context
-            .thread_state_manager
-            .try_ensure_connection_subscribed(conversation_id, connection_id, raw_events_enabled)
-            .await
-        else {
-            return Ok(EnsureConversationListenerResult::ConnectionClosed);
-        };
-        thread_state
-    };
-    if let Err(error) = ensure_listener_task_running(
-        listener_task_context.clone(),
+    super::thread_lifecycle_attach::ensure_conversation_listener(
+        listener_task_context,
         conversation_id,
-        conversation,
-        thread_state,
+        connection_id,
+        raw_events_enabled,
+    )
+    .await
+}
+
+pub(super) async fn ensure_root_thread_listener(
+    listener_task_context: ListenerTaskContext,
+    conversation_id: ThreadId,
+    connection_id: ConnectionId,
+    raw_events_enabled: bool,
+    session_source: &codex_protocol::protocol::SessionSource,
+    observation: Option<codex_core::WorkObservation>,
+) -> Result<
+    (
+        Result<EnsureConversationListenerResult, JSONRPCErrorError>,
+        bool,
+    ),
+    JSONRPCErrorError,
+> {
+    super::thread_lifecycle_attach::ensure_root_thread_listener(
+        listener_task_context,
+        conversation_id,
+        connection_id,
+        raw_events_enabled,
+        session_source,
+        observation,
+    )
+    .await
+}
+
+/// Attaches `connection_id`'s listener to a root thread that was just started, resumed, or
+/// forked, binding that connection as the lifecycle owner when the root is observed. Without
+/// observation an attach failure is only logged, as before observation existed. An observed root
+/// cannot drain without its listener, so its attach failure is returned.
+pub(super) async fn attach_root_thread_listener(
+    listener_task_context: ListenerTaskContext,
+    thread_id: ThreadId,
+    connection_id: ConnectionId,
+    raw_events_enabled: bool,
+    session_source: &codex_protocol::protocol::SessionSource,
+    observation: Option<codex_core::WorkObservation>,
+) -> Result<(), JSONRPCErrorError> {
+    let lifecycle_observed = observation.is_some();
+    let (listener_attach_result, lifecycle_observer_active) = match ensure_root_thread_listener(
+        listener_task_context,
+        thread_id,
+        connection_id,
+        raw_events_enabled,
+        session_source,
+        observation,
     )
     .await
     {
-        let _ = listener_task_context
-            .thread_state_manager
-            .unsubscribe_connection_from_thread(conversation_id, connection_id)
-            .await;
-        return Err(error);
+        Ok(attached) => attached,
+        Err(error) if lifecycle_observed => return Err(error),
+        Err(error) => (Err(error), false),
+    };
+    if lifecycle_observer_active
+        && !matches!(
+            &listener_attach_result,
+            Ok(EnsureConversationListenerResult::Attached)
+        )
+    {
+        return Err(internal_error(format!(
+            "failed to attach lifecycle observer to root thread {thread_id}"
+        )));
     }
-    Ok(EnsureConversationListenerResult::Attached)
+    log_listener_attach_result(listener_attach_result, thread_id, connection_id, "thread");
+    Ok(())
 }
 
 pub(super) fn log_listener_attach_result(
@@ -242,9 +270,29 @@ pub(super) async fn ensure_listener_task_running(
         .await;
     let config_snapshot = conversation.config_snapshot().await;
     let thread_settings_baseline = thread_settings_from_config_snapshot(&config_snapshot);
+    let mut work_state_updates = ThreadWorkUpdates::for_thread(
+        &listener_task_context.thread_state_manager,
+        conversation.as_ref(),
+        conversation_id,
+    )
+    .await?;
     let (mut listener_command_rx, listener_generation) = {
         let mut thread_state = thread_state.lock().await;
         if thread_state.listener_matches(&conversation) {
+            if let Some(updates) = work_state_updates.take() {
+                let Some(listener_command_tx) = thread_state.listener_command_tx() else {
+                    return Err(internal_error(format!(
+                        "thread listener command channel is unavailable for {conversation_id}"
+                    )));
+                };
+                listener_command_tx
+                    .send(updates.into_listener_command())
+                    .map_err(|_| {
+                        internal_error(format!(
+                            "thread listener stopped before root work watcher attached for {conversation_id}"
+                        ))
+                    })?;
+            }
             return Ok(());
         }
         let (listener_command_rx, listener_generation) = thread_state.set_listener(
@@ -297,9 +345,44 @@ pub(super) async fn ensure_listener_task_running(
                         &thread_watch_manager,
                         &outgoing_for_task,
                         &pending_thread_unloads,
+                        &mut work_state_updates,
                         listener_command,
                     )
                     .await;
+                }
+                work_snapshot = async {
+                    match work_state_updates.as_mut() {
+                        Some(updates) => updates.next_notification().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match work_snapshot {
+                        Some(Ok(notification)) => {
+                            let Some(updates) = work_state_updates.as_ref() else {
+                                tracing::error!(
+                                    thread_id = %conversation_id,
+                                    "root work state update arrived without its watcher"
+                                );
+                                continue;
+                            };
+                            if !updates
+                                .deliver_or_cancel(
+                                    &outgoing_for_task,
+                                    &mut cancel_rx,
+                                    notification,
+                                )
+                                .await
+                            {
+                                break;
+                            }
+                        }
+                        Some(Err(error)) => tracing::error!(
+                            thread_id = %conversation_id,
+                            error = %error.message,
+                            "failed to encode root work state notification"
+                        ),
+                        None => work_state_updates = None,
+                    }
                 }
                 event = conversation.next_event() => {
                     let event = match event {
@@ -337,22 +420,54 @@ pub(super) async fn ensure_listener_task_running(
                     let subscribed_connection_ids = thread_state_manager
                         .subscribed_connection_ids(conversation_id)
                         .await;
-                    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
-                        outgoing_for_task.clone(),
-                        subscribed_connection_ids,
-                        conversation_id,
-                    );
+                    let (thread_outgoing, lifecycle_observer_owner) =
+                        super::thread_lifecycle_observer::thread_scoped_outgoing(
+                            &thread_state_manager,
+                            outgoing_for_task.clone(),
+                            subscribed_connection_ids,
+                            conversation_id,
+                        )
+                        .await;
 
-                    apply_bespoke_event_handling(
+                    let terminal_ack_cancel = CancellationToken::new();
+                    let event_handling = apply_bespoke_event_handling(
                         event.clone(),
                         conversation_id,
                         conversation.clone(),
                         thread_manager.clone(),
-                        thread_outgoing,
+                        thread_outgoing.with_terminal_ack_cancel(terminal_ack_cancel.clone()),
                         thread_state.clone(),
                         thread_watch_manager.clone(),
+                    );
+                    // Cancellation only aborts the terminal-output ack wait; the event itself is
+                    // always fully handled, so the post-event work below still runs.
+                    let cancelled = !super::thread_lifecycle_observer::complete_event_handling(
+                        &mut cancel_rx,
+                        &terminal_ack_cancel,
+                        event_handling,
                     )
                     .await;
+                    if cancelled {
+                        // A terminal event whose output ack was cancelled leaves its root turn
+                        // `AwaitingOutput`, so the scope can never become quiescent. That is
+                        // acceptable: only exec observes a root, it owns the only listener, and
+                        // this cancellation means that listener is going away with exec.
+                        let terminal_turn_id = match &event.msg {
+                            EventMsg::TurnComplete(completed) => Some(Some(&completed.turn_id)),
+                            EventMsg::TurnAborted(aborted) => Some(aborted.turn_id.as_ref()),
+                            _ => None,
+                        };
+                        if let Some(turn_id) = terminal_turn_id
+                            && let Some(owner_connection_id) = lifecycle_observer_owner
+                        {
+                            tracing::warn!(
+                                thread_id = %conversation_id,
+                                turn_id = ?turn_id,
+                                owner_connection_id = ?owner_connection_id,
+                                "terminal output wait cancelled; lifecycle barrier remains pending"
+                            );
+                        }
+                    }
                     if matches!(event.msg, EventMsg::ShutdownComplete)
                         && let Some(completion_tx) = thread_state
                             .lock()
@@ -360,6 +475,9 @@ pub(super) async fn ensure_listener_task_running(
                             .take_shutdown_drain_waiter()
                     {
                         let _ = completion_tx.send(());
+                    }
+                    if cancelled {
+                        break;
                     }
                 }
                 unloading_watchers_open = unloading_state.wait_for_unloading_trigger() => {
@@ -480,9 +598,21 @@ pub(super) async fn handle_thread_listener_command(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    work_state_updates: &mut Option<ThreadWorkUpdates>,
     listener_command: ThreadListenerCommand,
 ) {
     match listener_command {
+        ThreadListenerCommand::SetThreadWorkUpdates {
+            owner_connection_id,
+            thread_id,
+            receiver,
+        } => {
+            *work_state_updates = Some(ThreadWorkUpdates::from_listener_parts(
+                owner_connection_id,
+                thread_id,
+                receiver,
+            ));
+        }
         ThreadListenerCommand::SendThreadResumeResponse {
             request: resume_request,
             completion_tx,

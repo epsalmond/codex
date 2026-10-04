@@ -279,6 +279,7 @@ mod turn_suspension;
 mod wake_assignments;
 mod wake_reports;
 mod wakeups;
+mod work_lifecycle;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 pub(crate) use self::environment::ThreadEnvironmentDefaults;
@@ -2514,6 +2515,12 @@ impl Session {
             self.services
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
+        }
+        if let Err(error) = self
+            .update_root_turn_lifecycle(turn_context, &legacy_source)
+            .await
+        {
+            tracing::warn!(%error, "failed to update root turn lifecycle state");
         }
         let agent_status_override = (turn_context.agent_assignment_waiting.get() == Some(&true)
             && matches!(&legacy_source, EventMsg::TurnComplete(_)))

@@ -12248,13 +12248,14 @@ fn multi_agent_v2_default_agent_polling_is_disabled() {
 }
 
 #[test]
-fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
+fn multi_agent_v2_default_wakes_interactive_and_exec_roots() {
     let config = resolve_multi_agent_v2_config(&ConfigToml::default());
+    assert!(config.exec_root_wakes_on_report);
     let cli_mode = ChildReportMode::for_thread(&config, &SessionSource::Cli, true);
     let exec_mode = ChildReportMode::for_thread(&config, &SessionSource::Exec, true);
 
     assert_eq!(cli_mode, ChildReportMode::WakeOnReport);
-    assert_eq!(exec_mode, ChildReportMode::WaitAgent);
+    assert_eq!(exec_mode, ChildReportMode::WakeOnReport);
     let thread_spawn_mode = ChildReportMode::for_thread(
         &config,
         &SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -12291,7 +12292,11 @@ fn multi_agent_v2_default_wakes_interactive_roots_but_keeps_exec_polling() {
     );
 
     let messages = ResolvedModelMessages::bundled().multi_agent();
-    for (mode, expect_polling_guidance) in [(cli_mode, false), (exec_mode, true)] {
+    for (mode, expect_polling_guidance) in [
+        (cli_mode, false),
+        (exec_mode, false),
+        (ChildReportMode::WaitAgent, true),
+    ] {
         let usage_hints = resolve_usage_hints_with_root_polling(
             &config,
             messages,
@@ -12533,6 +12538,59 @@ subagent_developer_instructions = "  \t  "
         ..resolve_multi_agent_v2_config(&ConfigToml::default())
     };
     assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
+}
+
+#[test]
+fn multi_agent_v2_exec_root_wake_follows_agent_polling() {
+    let config_toml: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+agent_polling = "disabled"
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    let config = resolve_multi_agent_v2_config(&config_toml);
+    assert!(config.exec_root_wakes_on_report);
+
+    assert_eq!(
+        [true, false].map(|wake_mode_active| ChildReportMode::for_thread(
+            &config,
+            &SessionSource::Exec,
+            wake_mode_active,
+        )),
+        [ChildReportMode::WakeOnReport, ChildReportMode::WaitAgent],
+    );
+    let enabled: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+agent_polling = "enabled"
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    let enabled = resolve_multi_agent_v2_config(&enabled);
+    assert!(!enabled.exec_root_wakes_on_report);
+    assert_eq!(
+        ChildReportMode::for_thread(&enabled, &SessionSource::Exec, true),
+        ChildReportMode::WaitAgent
+    );
+}
+
+#[test]
+fn multi_agent_v2_exec_session_without_agent_polling_resolves_to_drain() {
+    let config_toml: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+enabled = true
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    let config = resolve_multi_agent_v2_config(&config_toml);
+
+    assert_eq!(
+        (
+            config.agent_polling,
+            config.exec_root_wakes_on_report,
+            ChildReportMode::for_thread(&config, &SessionSource::Exec, true),
+        ),
+        (AgentPolling::Disabled, true, ChildReportMode::WakeOnReport),
+    );
 }
 
 #[test]

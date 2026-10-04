@@ -138,6 +138,9 @@ async fn exec_root_keeps_polling_while_thread_spawn_descendants_wake() -> Result
                     .expect("test config should allow feature update");
             }
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
+            // Exec roots wake by default now; keep this root polling (an internal-only state) so
+            // the test still covers ThreadSpawn descendants waking under a polling root.
+            config.multi_agent_v2.exec_root_wakes_on_report = false;
             config.multi_agent_v2.max_concurrent_threads_per_session = 3;
             config.current_time_reminder = Some(CurrentTimeReminderConfig {
                 sleep_tool: true,

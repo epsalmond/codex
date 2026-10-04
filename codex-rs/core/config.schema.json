@@ -2886,7 +2886,7 @@
               "$ref": "#/definitions/AgentPolling"
             }
           ],
-          "description": "Root child-report polling mode. Defaults to `disabled`; Exec and child sessions still poll."
+          "description": "Root child-report polling mode. Defaults to `disabled`: roots, including `codex exec` roots (which drain the agent tree before exiting), wake on child reports. `enabled` keeps `wait_agent` polling throughout the agent tree."
         },
         "default_wait_timeout_ms": {
           "format": "int64",

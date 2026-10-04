@@ -1,6 +1,8 @@
 use super::*;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 
 #[test]
@@ -61,6 +63,25 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
         std::fs::read_to_string(&output_path).expect("read output file"),
         "keep existing contents"
     );
+}
+
+#[tokio::test]
+async fn failed_final_output_does_not_skip_cleanup() {
+    let tempdir = tempdir().expect("create tempdir");
+    let output_path = tempdir.path().join("missing").join("last-message.txt");
+    let mut processor = EventProcessorWithJsonOutput::new(Some(output_path));
+    processor.final_message = Some("final answer".to_string());
+    processor.emit_final_message_on_shutdown = true;
+    let cleanup_ran = AtomicBool::new(false);
+
+    let (output_result, ()) =
+        crate::event_processor::print_final_output_before_cleanup(&mut processor, async {
+            cleanup_ran.store(true, Ordering::Release);
+        })
+        .await;
+
+    assert!(output_result.is_err());
+    assert!(cleanup_ran.load(Ordering::Acquire));
 }
 
 #[test]
@@ -156,4 +177,93 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
         json!({"raw_messages": [{"ref_id": "turn0search0"}]})
     );
     assert!(serialized["item"]["result"].get("meta").is_none());
+}
+
+fn root_turn_completed(
+    turn_id: &str,
+    status: TurnStatus,
+    message: Option<&str>,
+) -> ServerNotification {
+    ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
+        context_usage: None,
+        thread_id: "thread-1".to_string(),
+        turn: codex_app_server_protocol::Turn {
+            id: turn_id.to_string(),
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            items: message
+                .map(|text| ThreadItem::AgentMessage {
+                    id: format!("{turn_id}-msg"),
+                    text: text.to_string(),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                })
+                .into_iter()
+                .collect(),
+            status,
+            error: None,
+            started_at: None,
+            completed_at: Some(0),
+            duration_ms: None,
+        },
+    })
+}
+
+/// A drained exec run emits one `turn.completed` per completed root turn, and a later failed or
+/// interrupted wake turn leaves the last completed answer in `--output-last-message`.
+#[test]
+fn failed_or_interrupted_wake_turn_keeps_the_last_completed_answer() {
+    for status in [TurnStatus::Failed, TurnStatus::Interrupted] {
+        let tempdir = tempdir().expect("create tempdir");
+        let output_path = tempdir.path().join("last-message.txt");
+        let mut processor = EventProcessorWithJsonOutput::new(Some(output_path.clone()));
+
+        let first = processor.collect_thread_events(root_turn_completed(
+            "turn-1",
+            TurnStatus::Completed,
+            Some("answer A"),
+        ));
+        assert!(
+            first
+                .events
+                .iter()
+                .any(|event| matches!(event, ThreadEvent::TurnCompleted(_)))
+        );
+        processor.final_message = Some("partial B".to_string());
+        processor.process_server_notification(root_turn_completed(
+            "turn-2",
+            status.clone(),
+            /*message*/ None,
+        ));
+
+        assert_eq!(processor.final_message(), Some("answer A"), "{status:?}");
+        EventProcessor::print_final_output(&mut processor).expect("final output should succeed");
+        assert_eq!(
+            std::fs::read_to_string(&output_path).expect("read output file"),
+            "answer A",
+            "{status:?}"
+        );
+    }
+}
+
+#[test]
+fn completed_wake_turn_replaces_the_earlier_answer() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let mut turn_completed_events = 0;
+    for (turn_id, message) in [("turn-1", "answer A"), ("turn-2", "answer B")] {
+        let collected = processor.collect_thread_events(root_turn_completed(
+            turn_id,
+            TurnStatus::Completed,
+            Some(message),
+        ));
+        turn_completed_events += collected
+            .events
+            .iter()
+            .filter(|event| matches!(event, ThreadEvent::TurnCompleted(_)))
+            .count();
+    }
+
+    assert_eq!(turn_completed_events, 2);
+    assert_eq!(processor.final_message(), Some("answer B"));
 }
