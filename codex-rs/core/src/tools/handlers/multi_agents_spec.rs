@@ -478,11 +478,17 @@ fn list_agents_output_schema() -> Value {
                         },
                         "context": {
                             "type": ["object", "null"],
-                            "description": "Active context tokens. basis \"usage\": last model-reported usage plus estimated newer items; \"estimate\": no usage reported since the last history rewrite. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient}) or null. Null when unavailable.",
+                            "description": "Active context tokens. basis \"usage\": provider measurement plus estimated newer context; \"estimate\": local estimate. Optional selected_model, child_policy_enabled, child_active_cap_tokens and model_window_tokens describe the prepared request. observed_at and provider_usage_at are original Unix seconds; missing values are unavailable. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient|failed|cancelled}) or null. Null when runtime data is unavailable.",
                             "properties": {
                                 "active_tokens": { "type": "integer" },
                                 "basis": { "type": "string", "enum": ["usage", "estimate"] },
-                                "last_reduction": { "type": ["object", "null"] }
+                                "last_reduction": { "type": ["object", "null"] },
+                                "selected_model": { "type": ["string", "null"], "maxLength": 128 },
+                                "child_policy_enabled": { "type": ["boolean", "null"] },
+                                "child_active_cap_tokens": { "type": ["integer", "null"] },
+                                "model_window_tokens": { "type": ["integer", "null"] },
+                                "observed_at": { "type": ["integer", "null"] },
+                                "provider_usage_at": { "type": ["integer", "null"] }
                             }
                         }
                     },
@@ -721,24 +727,24 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 ### When to delegate vs. do the subtask yourself
 - First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.
 - Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
-- Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.
+- Do urgent blocking work locally when your immediate next step depends on its result. If the very next action is blocked on that task, the main rollout should usually do it itself to keep the critical path moving.
 - Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.
 
 ### Designing delegated subtasks
 - Subtasks must be concrete, well-defined, and self-contained.
 - Delegated subtasks must materially advance the main task.
-- Do not duplicate work between the main rollout and delegated subtasks.
-- Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.
+- Give the main rollout and each delegated subtask distinct, non-overlapping work.
+- Issue one delegate call per unresolved thread; add another only when the new delegated task is genuinely different and necessary.
 - Narrow the delegated ask to the concrete output you need next.
 - For coding tasks, prefer delegating concrete code-change worker subtasks over read-only explorer analysis when the subagent can make a bounded patch in a clear write scope.
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 
 ### After you delegate
-- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
-- Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
+- Call wait_agent only when the next critical-path step needs a subagent's result and you have no other work until it returns.
+- Leave delegated subagent tasks to the subagent; spend your time integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
-- Do not repeatedly wait by reflex.
+- Wait again only after confirming you have no independent work left.
 - When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.
 
 ### Parallel delegation patterns
@@ -876,7 +882,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
         (
             "timeout_ms".to_string(),
             JsonSchema::number(Some(format!(
-                "Timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.",
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}. Use long timeouts (minutes); the call returns as soon as a target finishes.",
                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
             ))),
         ),

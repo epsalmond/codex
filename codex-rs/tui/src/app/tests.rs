@@ -9,6 +9,8 @@ mod security_setup_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/agent_picker_tests.rs"]
+mod agent_picker_tests;
 #[path = "tests/agents_navigation_tests.rs"]
 mod agents_navigation_tests;
 #[path = "tests/approvals_reviewer_error_tests.rs"]
@@ -63,6 +65,8 @@ mod projectless_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 
+#[path = "tests/agent_picker_requests_tests.rs"]
+mod agent_picker_requests_tests;
 #[path = "tests/history_hydration_tests.rs"]
 mod history_hydration_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
@@ -2289,6 +2293,39 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
 
     expected_entry.is_running = true;
     assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    Ok(())
+}
+
+#[tokio::test]
+async fn wake_mode_hint_shows_once_when_root_turn_ends_with_running_children() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.thread_event_channels
+        .insert(root, ThreadEventChannel::new(/*capacity*/ 8));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: child,
+            agent_path: "/root/child".to_string(),
+            is_running_hint: true,
+        });
+
+    let mut visibility = Vec::new();
+    for turn_id in ["turn-1", "turn-2"] {
+        app.enqueue_thread_notification(root, turn_started_notification(root, turn_id))
+            .await?;
+        visibility.push(app.chat_widget.wake_mode_hint_visible());
+        app.enqueue_thread_notification(
+            root,
+            turn_completed_notification(root, turn_id, TurnStatus::Completed),
+        )
+        .await?;
+        visibility.push(app.chat_widget.wake_mode_hint_visible());
+    }
+
+    assert_eq!(visibility, vec![false, true, false, false]);
     Ok(())
 }
 
@@ -6070,6 +6107,7 @@ async fn make_test_app() -> Box<App> {
         agents_overview: Default::default(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
+        wake_mode_hint_shown: false,
         active_thread_id: None,
         active_thread_rx: None,
         primary_thread_id: None,
@@ -6187,6 +6225,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             agents_overview: Default::default(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
+            wake_mode_hint_shown: false,
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,
@@ -7110,6 +7149,7 @@ fn turn_completed_notification(
     status: TurnStatus,
 ) -> ServerNotification {
     ServerNotification::TurnCompleted(TurnCompletedNotification {
+        context_usage: None,
         thread_id: thread_id.to_string(),
         turn: Turn {
             completed_at: Some(0),
@@ -7131,6 +7171,7 @@ fn token_usage_notification(
     model_context_window: Option<i64>,
 ) -> ServerNotification {
     ServerNotification::ThreadTokenUsageUpdated(ThreadTokenUsageUpdatedNotification {
+        context_usage: None,
         thread_id: thread_id.to_string(),
         turn_id: turn_id.to_string(),
         token_usage: ThreadTokenUsage {

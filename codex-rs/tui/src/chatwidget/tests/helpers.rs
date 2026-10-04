@@ -497,11 +497,20 @@ fn token_usage_breakdown(usage: TokenUsage) -> codex_app_server_protocol::TokenU
 }
 
 pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageInfo>) {
+    handle_token_count_from(chat, info, /*replay_kind*/ None);
+}
+
+pub(super) fn handle_token_count_from(
+    chat: &mut ChatWidget,
+    info: Option<TokenUsageInfo>,
+    replay_kind: Option<ReplayKind>,
+) {
     match info {
         Some(info) => {
             chat.handle_server_notification(
                 ServerNotification::ThreadTokenUsageUpdated(
                     codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                        context_usage: None,
                         thread_id: thread_id(chat),
                         turn_id: chat
                             .turn_lifecycle
@@ -515,7 +524,7 @@ pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageI
                         },
                     },
                 ),
-                /*replay_kind*/ None,
+                replay_kind,
             );
         }
         None => chat.set_token_info(/*info*/ None),
@@ -1162,6 +1171,7 @@ pub(super) fn handle_turn_completed(
 ) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn: app_server_turn(
                 turn_id,
@@ -1177,6 +1187,7 @@ pub(super) fn handle_turn_completed(
 pub(super) fn handle_turn_interrupted(chat: &mut ChatWidget, turn_id: &str) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn: app_server_turn(
                 turn_id,

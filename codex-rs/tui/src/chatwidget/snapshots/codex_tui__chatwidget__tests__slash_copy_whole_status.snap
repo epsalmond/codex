@@ -17,4 +17,5 @@ expression: "whole_status.replace(&directory,\n\"[[workspace]]\").replace(crate:
   Session:             00000000-0000-0000-0000-000000000123
 
   Token usage:         0 total  (0 input + 0 output)
+  Shake watermark:     unavailable
   Limits:              data not available yet

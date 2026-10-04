@@ -979,3 +979,90 @@ fn built_in_config_file_contents_resolves_explorer_only() {
         None
     );
 }
+
+/// A child config as `build_agent_shared_config` leaves it with default reduction settings.
+async fn subagent_budget_config() -> (TempDir, Config) {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.subagent_context_reduction.enabled = true;
+    config.model_auto_compact_token_limit = Some(272_000);
+    (home, config)
+}
+
+/// The stated budget, and the limit the compactor enforces, for `config` on a model whose
+/// largest window is `max_context_window`.
+fn stated_and_enforced_budget(
+    config: &Config,
+    max_context_window: i64,
+) -> (Option<u64>, Option<i64>) {
+    let mut model_info =
+        codex_models_manager::model_info::model_info_from_slug("subagent-budget-model");
+    model_info.max_context_window = Some(max_context_window);
+    let model_info = codex_models_manager::model_info::with_config_overrides(
+        model_info,
+        &config.to_models_manager_config(),
+    );
+    (
+        crate::session::multi_agents::subagent_context_token_cap(config, &model_info),
+        crate::session::context_window::auto_compact_scope_limit(config, &model_info),
+    )
+}
+
+#[tokio::test]
+async fn subagent_budget_is_the_compaction_trigger_on_the_default_window() {
+    let (_home, config) = subagent_budget_config().await;
+
+    // The 272,000-token cap compacts at 90% of a 272,000-token window.
+    assert_eq!(
+        stated_and_enforced_budget(&config, /*max_context_window*/ 272_000),
+        (Some(244_800), Some(244_800))
+    );
+}
+
+#[tokio::test]
+async fn subagent_budget_follows_a_role_compaction_limit() {
+    let (home, mut config) = subagent_budget_config().await;
+    let role_path = write_role_config(
+        &home,
+        "small-context-role.toml",
+        "model_auto_compact_token_limit = 100000\n",
+    )
+    .await;
+    config.agent_roles.insert(
+        "small".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("small"))
+        .await
+        .expect("role should apply");
+
+    assert_eq!(
+        stated_and_enforced_budget(&config, /*max_context_window*/ 272_000),
+        (Some(100_000), Some(100_000))
+    );
+}
+
+#[tokio::test]
+async fn subagent_budget_keeps_the_cap_under_a_large_explicit_window() {
+    let (_home, mut config) = subagent_budget_config().await;
+    config.model_context_window = Some(1_000_000);
+
+    assert_eq!(
+        stated_and_enforced_budget(&config, /*max_context_window*/ 1_000_000),
+        (Some(272_000), Some(272_000))
+    );
+}
+
+#[tokio::test]
+async fn subagent_budget_is_absent_without_subagent_context_reduction() {
+    let (_home, mut config) = subagent_budget_config().await;
+    config.subagent_context_reduction.enabled = false;
+
+    assert_eq!(
+        stated_and_enforced_budget(&config, /*max_context_window*/ 272_000),
+        (None, Some(244_800))
+    );
+}

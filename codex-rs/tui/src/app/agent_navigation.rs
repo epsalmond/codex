@@ -17,8 +17,9 @@
 //!
 //! The key invariant is that traversal follows first-seen spawn order rather than thread-id sort
 //! order. Once a thread id is observed it keeps its place in the cycle even if the entry is later
-//! updated or marked closed.
+//! updated or marked closed. Archived entries retain their metadata but leave the visible cycle.
 
+use super::agent_picker_state::AgentPickerState;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
@@ -43,14 +44,17 @@ use uuid::Uuid;
 pub(crate) struct AgentNavigationState {
     /// Latest picker metadata for each tracked thread id.
     threads: HashMap<ThreadId, AgentPickerThreadEntry>,
+    /// Bounded row details and freshness guards for asynchronous picker refreshes.
+    pub(super) picker_state: AgentPickerState,
     /// Stable first-seen traversal order for picker rows and keyboard cycling.
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    picker_excluded_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
-    pub(super) picker_refresh: Option<(ThreadId, Uuid)>,
+    pub(super) picker_refresh: Option<AgentPickerRefreshState>,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -62,22 +66,63 @@ pub(crate) enum AgentNavigationDirection {
     Next,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum AgentPickerThreadVisibility {
+    Visible,
+    Hidden,
+}
+
+#[derive(Debug)]
+pub(super) struct AgentPickerRefreshState {
+    root: ThreadId,
+    request_id: Uuid,
+    pub(super) visibility_changed_threads: HashSet<ThreadId>,
+    pub(super) follow_up_requested: bool,
+}
+
 impl AgentNavigationState {
     pub(crate) fn begin_picker_refresh(&mut self, thread_id: ThreadId) -> Option<Uuid> {
-        if self.picker_refresh.is_some() {
+        if self
+            .picker_refresh
+            .as_ref()
+            .is_some_and(|refresh| refresh.root == thread_id)
+        {
             return None;
         }
         let request_id = Uuid::new_v4();
-        self.picker_refresh = Some((thread_id, request_id));
+        self.picker_refresh = Some(AgentPickerRefreshState {
+            root: thread_id,
+            request_id,
+            visibility_changed_threads: HashSet::new(),
+            follow_up_requested: false,
+        });
         Some(request_id)
     }
 
-    pub(crate) fn finish_picker_refresh(&mut self, thread_id: ThreadId, request_id: Uuid) -> bool {
-        if self.picker_refresh != Some((thread_id, request_id)) {
+    pub(crate) fn queue_picker_refresh(&mut self, thread_id: ThreadId) -> bool {
+        let Some(refresh) = self.picker_refresh.as_mut() else {
+            return false;
+        };
+        if refresh.root != thread_id {
             return false;
         }
-        self.picker_refresh = None;
+        refresh.follow_up_requested = true;
         true
+    }
+
+    pub(crate) fn finish_picker_refresh(
+        &mut self,
+        thread_id: ThreadId,
+        request_id: Uuid,
+    ) -> Option<AgentPickerRefreshState> {
+        if !self
+            .picker_refresh
+            .as_ref()
+            .is_some_and(|refresh| refresh.root == thread_id && refresh.request_id == request_id)
+        {
+            return None;
+        }
+        self.picker_refresh.take()
     }
 
     /// Returns the cached picker entry for a specific thread id.
@@ -88,6 +133,99 @@ impl AgentNavigationState {
     /// this stays optional.
     pub(crate) fn get(&self, thread_id: &ThreadId) -> Option<&AgentPickerThreadEntry> {
         self.threads.get(thread_id)
+    }
+
+    pub(crate) fn picker_details(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Option<&crate::multi_agents::AgentPickerThreadDetails> {
+        self.picker_state.details(thread_id)
+    }
+
+    pub(crate) fn begin_picker_preview_generation(&mut self, root: ThreadId) -> Uuid {
+        self.picker_state.ensure_preview_generation(root)
+    }
+
+    pub(crate) fn start_picker_preview_generation(&mut self, root: ThreadId) -> Uuid {
+        self.picker_state.start_preview_generation(root)
+    }
+
+    pub(crate) fn begin_preview_backfill(&mut self, thread_id: ThreadId) -> Option<u64> {
+        self.picker_state.begin_preview_backfill(thread_id)
+    }
+
+    pub(crate) fn finish_preview_backfill(
+        &mut self,
+        root: ThreadId,
+        generation: Uuid,
+        thread_id: ThreadId,
+        revision: u64,
+        result: Result<Option<String>, String>,
+    ) {
+        self.picker_state
+            .finish_preview_backfill(root, generation, thread_id, revision, result);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_response_preview(&mut self, thread_id: ThreadId, preview: Option<String>) {
+        self.picker_state.set_response_preview(thread_id, preview);
+    }
+
+    pub(crate) fn note_completed_preview_turn(
+        &mut self,
+        thread_id: ThreadId,
+        turn_id: &str,
+        preview: Option<String>,
+    ) -> bool {
+        self.picker_state
+            .note_completed_preview_turn(thread_id, turn_id, preview)
+    }
+
+    pub(crate) fn set_context_usage(
+        &mut self,
+        thread_id: ThreadId,
+        context_usage: Option<crate::multi_agents::AgentPickerContextUsage>,
+    ) {
+        self.picker_state
+            .set_context_usage(thread_id, context_usage);
+    }
+
+    pub(crate) fn set_context_snapshot(
+        &mut self,
+        thread_id: ThreadId,
+        snapshot: codex_app_server_protocol::ThreadContextUsage,
+    ) {
+        self.picker_state.set_context_snapshot(thread_id, snapshot);
+    }
+
+    pub(crate) fn set_error(&mut self, thread_id: ThreadId, is_error: bool) {
+        if self.threads.contains_key(&thread_id) {
+            self.picker_state.set_error(thread_id, is_error);
+        }
+    }
+
+    pub(crate) fn set_error_from_discovery(&mut self, thread_id: ThreadId, is_error: bool) {
+        if self.threads.contains_key(&thread_id) {
+            self.picker_state
+                .set_error_without_revision(thread_id, is_error);
+        }
+    }
+
+    pub(crate) fn status_revision_snapshot(&self) -> HashMap<ThreadId, u64> {
+        self.picker_state.status_revision_snapshot()
+    }
+
+    pub(crate) fn status_revision_matches(
+        &self,
+        thread_id: ThreadId,
+        snapshot: &HashMap<ThreadId, u64>,
+    ) -> bool {
+        self.picker_state
+            .status_revision_matches(thread_id, snapshot)
+    }
+
+    pub(crate) fn clear_picker_details(&mut self, thread_id: ThreadId) {
+        self.picker_state.clear_details(thread_id);
     }
 
     pub(crate) fn is_parent_owned(&self, thread_id: ThreadId) -> bool {
@@ -104,7 +242,9 @@ impl AgentNavigationState {
     /// This is the cheapest way for `App` to decide whether opening the picker should show "No
     /// agents available yet." rather than constructing picker rows from an empty state.
     pub(crate) fn is_empty(&self) -> bool {
-        self.threads.is_empty()
+        self.threads
+            .keys()
+            .all(|id| self.picker_excluded_threads.contains(id))
     }
 
     /// Inserts or updates a picker entry while preserving first-seen traversal order.
@@ -121,6 +261,7 @@ impl AgentNavigationState {
     ) {
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
+            self.picker_state.start_thread(thread_id);
         }
         let (previous_agent_path, previous_is_running) = self
             .threads
@@ -142,6 +283,9 @@ impl AgentNavigationState {
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
         if !self.threads.contains_key(&activity.thread_id) {
             self.order.push(activity.thread_id);
+            self.picker_state.start_thread(activity.thread_id);
+        } else {
+            self.picker_state.bump_status_revision(activity.thread_id);
         }
         let entry =
             self.threads
@@ -166,6 +310,7 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
+        self.picker_state.bump_status_revision(thread_id);
         if self
             .threads
             .get(&thread_id)
@@ -174,15 +319,24 @@ impl AgentNavigationState {
             return;
         }
         self.stopped_threads.remove(&thread_id);
+        self.set_error(thread_id, /*is_error*/ false);
         self.set_running(thread_id, /*is_running*/ true);
     }
 
     pub(crate) fn mark_stopped(&mut self, thread_id: ThreadId) {
+        self.picker_state.bump_status_revision(thread_id);
         self.stopped_threads.insert(thread_id);
         self.set_running(thread_id, /*is_running*/ false);
     }
 
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.is_running = is_running;
+            self.picker_state.bump_status_revision(thread_id);
+        }
+    }
+
+    pub(crate) fn set_running_from_discovery(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
         }
@@ -203,6 +357,7 @@ impl AgentNavigationState {
     /// this up" by deleting the entry instead, wraparound navigation will silently change shape
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
+        self.picker_state.bump_status_revision(thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -220,9 +375,11 @@ impl AgentNavigationState {
     /// to a pristine single-session state.
     pub(crate) fn clear(&mut self) {
         self.threads.clear();
+        self.picker_state.clear();
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
+        self.picker_excluded_threads.clear();
         self.picker_refresh = None;
     }
 
@@ -233,9 +390,11 @@ impl AgentNavigationState {
     /// would leave ghost rows in `/subagents`.
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
         self.threads.remove(&thread_id);
+        self.picker_state.clear_thread(thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
+        self.picker_excluded_threads.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -244,9 +403,10 @@ impl AgentNavigationState {
     /// feature flag is currently disabled, because already-existing sub-agent threads should remain
     /// inspectable.
     pub(crate) fn has_non_primary_thread(&self, primary_thread_id: Option<ThreadId>) -> bool {
-        self.threads
-            .keys()
-            .any(|thread_id| Some(*thread_id) != primary_thread_id)
+        self.threads.keys().any(|thread_id| {
+            Some(*thread_id) != primary_thread_id
+                && !self.picker_excluded_threads.contains(thread_id)
+        })
     }
 
     /// Returns live picker rows in the same order users cycle through them.
@@ -261,11 +421,40 @@ impl AgentNavigationState {
             .collect()
     }
 
+    pub(crate) fn visible_threads(&self) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
+        self.ordered_threads()
+            .into_iter()
+            .filter(|(thread_id, _)| !self.picker_excluded_threads.contains(thread_id))
+            .collect()
+    }
+
+    pub(crate) fn set_picker_thread_visibility(
+        &mut self,
+        thread_id: ThreadId,
+        visibility: AgentPickerThreadVisibility,
+    ) {
+        let track_hidden = self.threads.contains_key(&thread_id) || self.picker_refresh.is_some();
+        match visibility {
+            AgentPickerThreadVisibility::Visible => self.picker_excluded_threads.remove(&thread_id),
+            AgentPickerThreadVisibility::Hidden => {
+                track_hidden && self.picker_excluded_threads.insert(thread_id)
+            }
+        };
+        if let Some(refresh) = self.picker_refresh.as_mut() {
+            refresh.visibility_changed_threads.insert(thread_id);
+        }
+    }
+
+    pub(crate) fn prune_untracked_picker_exclusions(&mut self) {
+        self.picker_excluded_threads
+            .retain(|thread_id| self.threads.contains_key(thread_id));
+    }
+
     pub(crate) fn ordered_path_backed_subagent_threads(
         &self,
         primary_thread_id: Option<ThreadId>,
     ) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
-        self.ordered_threads()
+        self.visible_threads()
             .into_iter()
             .filter(|(thread_id, entry)| {
                 Some(*thread_id) != primary_thread_id
@@ -279,7 +468,7 @@ impl AgentNavigationState {
 
     /// Returns tracked thread ids in the same stable order used by the picker.
     pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
-        self.ordered_threads()
+        self.visible_threads()
             .into_iter()
             .map(|(thread_id, _)| thread_id)
             .collect()
@@ -296,26 +485,23 @@ impl AgentNavigationState {
         current_displayed_thread_id: Option<ThreadId>,
         direction: AgentNavigationDirection,
     ) -> Option<ThreadId> {
-        let ordered_threads = self.ordered_threads();
-        if ordered_threads.len() < 2 {
-            return None;
-        }
-
         let current_thread_id = current_displayed_thread_id?;
-        let current_idx = ordered_threads
+        let current_idx = self
+            .order
             .iter()
-            .position(|(thread_id, _)| *thread_id == current_thread_id)?;
-        let next_idx = match direction {
-            AgentNavigationDirection::Next => (current_idx + 1) % ordered_threads.len(),
-            AgentNavigationDirection::Previous => {
-                if current_idx == 0 {
-                    ordered_threads.len() - 1
-                } else {
-                    current_idx - 1
+            .position(|thread_id| *thread_id == current_thread_id)?;
+        (1..self.order.len()).find_map(|offset| {
+            let idx = match direction {
+                AgentNavigationDirection::Next => (current_idx + offset) % self.order.len(),
+                AgentNavigationDirection::Previous => {
+                    (current_idx + self.order.len() - offset) % self.order.len()
                 }
-            }
-        };
-        Some(ordered_threads[next_idx].0)
+            };
+            let thread_id = self.order[idx];
+            (self.threads.contains_key(&thread_id)
+                && !self.picker_excluded_threads.contains(&thread_id))
+            .then_some(thread_id)
+        })
     }
 
     /// Derives the contextual footer label for the currently displayed thread.
@@ -468,8 +654,16 @@ mod tests {
             .begin_picker_refresh(thread_id)
             .expect("refresh after session reset");
 
-        assert!(!state.finish_picker_refresh(thread_id, stale_request));
-        assert!(state.finish_picker_refresh(thread_id, current_request));
+        assert!(
+            state
+                .finish_picker_refresh(thread_id, stale_request)
+                .is_none()
+        );
+        assert!(
+            state
+                .finish_picker_refresh(thread_id, current_request)
+                .is_some()
+        );
     }
 
     #[test]

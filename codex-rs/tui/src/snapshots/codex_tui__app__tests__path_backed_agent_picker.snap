@@ -1,11 +1,12 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 2393
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Subagents
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • /root/worker  00000000-0000-0000-0000-000000000123
+› 1. • /root/worker  mid-turn context ?
 
-  enter select · esc back
+  enter select · / search · x close agent · esc back

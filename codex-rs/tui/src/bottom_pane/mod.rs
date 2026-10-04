@@ -165,6 +165,7 @@ pub(crate) use list_selection_view::OnSelectionChangedCallback;
 pub(crate) use list_selection_view::PickerSurface;
 pub(crate) use list_selection_view::SelectionDescriptionLayout;
 pub(crate) use list_selection_view::SelectionRowDisplay;
+pub(crate) use list_selection_view::SelectionSearchActivation;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
 pub(crate) use list_selection_view::SideContentWidth;
@@ -1413,11 +1414,13 @@ impl BottomPane {
         // Configured list actions take precedence over optional row shortcuts.
         for item in &mut params.items {
             if item.secondary_action.as_ref().is_some_and(|secondary| {
-                let (code, modifiers) = secondary.key.parts();
-                self.keymap
-                    .list
-                    .action_for(KeyEvent::new(code, modifiers))
-                    .is_some()
+                secondary.keys.iter().any(|key| {
+                    let (code, modifiers) = key.parts();
+                    self.keymap
+                        .list
+                        .action_for(KeyEvent::new(code, modifiers))
+                        .is_some()
+                })
             }) {
                 item.secondary_action = None;
             }
@@ -1491,6 +1494,26 @@ impl BottomPane {
         }
         self.request_redraw();
         true
+    }
+
+    /// Update a matching selection view's rows without rebuilding its filter or scroll state.
+    pub(crate) fn update_selection_items_if_present(
+        &mut self,
+        view_id: &'static str,
+        items: Vec<list_selection_view::SelectionItem>,
+    ) -> bool {
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|view| view.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+        let updated = self.view_stack[index].update_selection_items(items);
+        if updated {
+            self.request_redraw();
+        }
+        updated
     }
 
     pub(crate) fn replace_view_if_present(
@@ -1640,6 +1663,18 @@ impl BottomPane {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn wake_mode_hint_visible(&self) -> bool {
+        self.pending_input_preview.wake_mode_hint
+    }
+
+    pub(crate) fn set_wake_mode_hint(&mut self, visible: bool) {
+        if self.pending_input_preview.wake_mode_hint != visible {
+            self.pending_input_preview.wake_mode_hint = visible;
+            self.request_redraw();
+        }
+    }
+
     /// Update the inactive-thread approval list shown above the composer.
     pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) {
         if self.pending_thread_approvals.set_threads(threads) {
@@ -1747,7 +1782,6 @@ impl BottomPane {
                 .is_some_and(|view| view.will_interrupt_turn_on_key_event(key_event))
     }
 
-    #[cfg(test)]
     pub(crate) fn active_view_id(&self) -> Option<&'static str> {
         self.view_stack.last().and_then(|view| view.view_id())
     }
@@ -2228,7 +2262,8 @@ impl BottomPane {
                 || !self.pending_input_preview.queued_messages.is_empty()
                 || !self.pending_input_preview.pending_steers.is_empty()
                 || !self.pending_input_preview.rejected_steers.is_empty()
-                || self.pending_input_preview.queued_agent_results > 0;
+                || self.pending_input_preview.queued_agent_results > 0
+                || self.pending_input_preview.wake_mode_hint;
             let has_status_or_footer = self.status_widget().is_some()
                 || self.hook_status_message.is_some()
                 || !self.unified_exec_footer.is_empty();

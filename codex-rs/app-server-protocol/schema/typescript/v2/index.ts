@@ -492,6 +492,10 @@ export type { ThreadAttachmentUpdatedNotification } from "./ThreadAttachmentUpda
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
+export type { ThreadContextReduction } from "./ThreadContextReduction";
+export type { ThreadContextReductionOutcome } from "./ThreadContextReductionOutcome";
+export type { ThreadContextTokenBasis } from "./ThreadContextTokenBasis";
+export type { ThreadContextUsage } from "./ThreadContextUsage";
 export type { ThreadDeleteParams } from "./ThreadDeleteParams";
 export type { ThreadDeleteResponse } from "./ThreadDeleteResponse";
 export type { ThreadDeletedNotification } from "./ThreadDeletedNotification";

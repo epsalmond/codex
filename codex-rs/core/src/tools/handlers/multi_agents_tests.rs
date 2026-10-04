@@ -1257,7 +1257,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         json!(r#"<agent name="/root/test_process" />"#),
     );
 
-    SendMessageHandlerV2
+    let output = SendMessageHandlerV2
         .handle(invocation(
             session.clone(),
             turn.clone(),
@@ -1269,6 +1269,9 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         ))
         .await
         .expect("send_message should accept v2 path");
+    let (acceptance, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    insta::assert_snapshot!(acceptance, @"Message accepted into the agent's queue. This acceptance does not confirm a new turn started; use followup_task to request work from an idle agent.");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == child_thread_id
@@ -1454,7 +1457,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_role: None,
     });
 
-    SendMessageHandlerV2
+    let output = SendMessageHandlerV2
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -1466,6 +1469,9 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         ))
         .await
         .expect("send_message should accept the root agent path");
+    let (acceptance, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    insta::assert_snapshot!(acceptance, @"Message accepted into the root agent's queue. This acceptance does not confirm a new turn started; the root reads queued mail while active or on its next turn.");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == root.thread_id
@@ -1661,9 +1667,17 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
     let active_tokens = context
         .as_object_mut()
         .and_then(|context| context.remove("active_tokens"));
+    let observed_at = context
+        .as_object_mut()
+        .and_then(|context| context.remove("observed_at"));
     assert_eq!(
-        (active_tokens.is_some_and(|tokens| tokens.is_i64()), context),
         (
+            active_tokens.is_some_and(|tokens| tokens.is_i64()),
+            observed_at.is_some_and(|at| at.is_i64()),
+            context
+        ),
+        (
+            true,
             true,
             json!({
                 "basis": "estimate",
@@ -2088,7 +2102,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         )
         .await;
 
-    FollowupTaskHandlerV2
+    let output = FollowupTaskHandlerV2
         .handle(invocation(
             session,
             turn,
@@ -2100,6 +2114,9 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         ))
         .await
         .expect("followup_task should succeed");
+    let (acceptance, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    insta::assert_snapshot!(acceptance, @"Follow-up accepted for turn processing; this does not confirm startup or completion.");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == agent_id
@@ -3193,6 +3210,48 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_returns_immediately_when_no_agent_can_report() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let output = timeout(
+        Duration::from_secs(/*secs*/ 5),
+        WaitAgentHandlerV2::default().handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait_agent",
+            function_payload(json!({})),
+        )),
+    )
+    .await
+    .expect("wait_agent should not wait when no agent can report")
+    .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "No subagents are running and no messages are queued, so nothing can report; returned without waiting.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
@@ -3203,6 +3262,7 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     config.multi_agent_v2.min_wait_timeout_ms = 50;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
 
     tokio::time::pause();
@@ -3250,6 +3310,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
 
     let output = WaitAgentHandlerV2::default()
@@ -3285,6 +3346,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3340,6 +3402,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     config.multi_agent_v2.min_wait_timeout_ms = 0;
     config.multi_agent_v2.max_wait_timeout_ms = 0;
     config.multi_agent_v2.default_wait_timeout_ms = 0;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 0;
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3380,6 +3443,7 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 50;
     config.multi_agent_v2.default_wait_timeout_ms = 1;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 1;
     set_turn_config(&mut turn, config);
 
     let Err(err) = WaitAgentHandlerV2::default()
@@ -3410,6 +3474,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1;
     config.multi_agent_v2.default_wait_timeout_ms = 1;
+    config.multi_agent_v2.noninteractive_default_wait_timeout_ms = 1;
     set_turn_config(&mut turn, config);
 
     let output = WaitAgentHandlerV2::default()

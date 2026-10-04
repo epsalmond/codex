@@ -217,6 +217,7 @@ pub(super) async fn ensure_listener_task_running(
     conversation: Arc<CodexThread>,
     thread_state: Arc<Mutex<ThreadState>>,
 ) -> Result<(), JSONRPCErrorError> {
+    let context_usage = conversation.context_usage_snapshot().await.map(Into::into);
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let Some(mut unloading_state) = UnloadingState::new(
         &listener_task_context,
@@ -252,6 +253,7 @@ pub(super) async fn ensure_listener_task_running(
             watch_registration,
             thread_settings_baseline,
         );
+        thread_state.context_usage = context_usage;
         let Some(listener_command_tx) = thread_state.listener_command_tx() else {
             tracing::warn!(
                 "thread listener command sender missing immediately after listener registration"

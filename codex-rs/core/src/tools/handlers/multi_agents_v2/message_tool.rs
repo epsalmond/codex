@@ -83,6 +83,17 @@ pub(super) async fn handle_message_string_tool(
     let receiver_agent_path = receipt.metadata.agent_path.ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    let acceptance = match mode {
+        MessageDeliveryMode::QueueOnly if receiver_agent_path.is_root() => {
+            "Message accepted into the root agent's queue. This acceptance does not confirm a new turn started; the root reads queued mail while active or on its next turn."
+        }
+        MessageDeliveryMode::QueueOnly => {
+            "Message accepted into the agent's queue. This acceptance does not confirm a new turn started; use followup_task to request work from an idle agent."
+        }
+        MessageDeliveryMode::TriggerTurn => {
+            "Follow-up accepted for turn processing; this does not confirm startup or completion."
+        }
+    };
     emit_sub_agent_activity(
         &session,
         &turn,
@@ -95,5 +106,8 @@ pub(super) async fn handle_message_string_tool(
     )
     .await;
 
-    Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+    Ok(FunctionToolOutput::from_text(
+        acceptance.to_string(),
+        Some(true),
+    ))
 }

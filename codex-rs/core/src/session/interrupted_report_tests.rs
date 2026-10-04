@@ -33,7 +33,6 @@ async fn interrupted_wake_attempt_reports_to_its_parent_once() {
             parent_thread_id,
             &SessionSource::Cli,
             "parent-turn",
-            None,
             /*allow_new_generation*/ true,
         )
         .expect("parent assignment starts")
@@ -43,7 +42,6 @@ async fn interrupted_wake_attempt_reports_to_its_parent_once() {
             session.thread_id,
             &turn_context.session_source,
             &turn_context.sub_id,
-            Some("parent-turn"),
             /*allow_new_generation*/ true,
         )
         .expect("child assignment starts")

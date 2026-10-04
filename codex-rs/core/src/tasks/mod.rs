@@ -1,4 +1,5 @@
 mod compact;
+mod failed_start;
 mod lifecycle;
 mod recorded_report_wake;
 mod regular;
@@ -521,7 +522,8 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
-        if !self.input_queue.has_pending_mailbox_items().await
+        if self.input_queue.wakeups_paused()
+            || !self.input_queue.has_pending_mailbox_items().await
             || (!self.input_queue.has_trigger_turn_mailbox_items().await
                 && !self.has_outstanding_durable_sleep())
         {
@@ -565,8 +567,9 @@ impl Session {
         {
             return PendingWorkStartResult::Stale;
         }
-        let (input, mut start_options) =
+        let (mut input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
+        let retained_start_options = start_options.clone();
         if !input.iter().any(
             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
         ) {
@@ -607,7 +610,39 @@ impl Session {
             turn_context.turn_metadata_state.set_root_turn_id(id);
         }
         if let Err(error) = self.bind_wake_assignment_for_input(&turn_context, &input) {
+            // Binding already discards fenced coordinator reports. Ordinary accepted mail must
+            // survive failed startup, without automatically repeating a deterministic rejection.
+            input.retain(|item| Self::coordinator_report_id(item).is_none());
+            let has_accepted_mail = !input.is_empty();
+            let initiator = input.iter().rev().find_map(|item| match item {
+                TurnInput::InterAgentCommunication(mail) if mail.trigger_turn => {
+                    Some(mail.author.clone())
+                }
+                _ => None,
+            });
+            if has_accepted_mail {
+                self.input_queue.pause_wakeups();
+                self.input_queue
+                    .return_to_mailbox_with_start_options(&mut input, retained_start_options)
+                    .await;
+            }
+            // Release startup's reservation before notifying an orchestrator that may recover
+            // immediately by sending another explicit follow-up.
             self.clear_reserved_idle_turn(&turn_state).await;
+            if has_accepted_mail {
+                self.send_event(
+                    turn_context.as_ref(),
+                    EventMsg::Warning(WarningEvent {
+                        message: format!(
+                            "Automatic turn did not start: {error}. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn."
+                        ),
+                    }),
+                )
+                .await;
+                self.emit_agent_wakeups_updated().await;
+                self.report_failed_automatic_start(turn_context.as_ref(), initiator, &error)
+                    .await;
+            }
             warn!("failed to bind automatic turn to agent assignment: {error}");
             return PendingWorkStartResult::Stale;
         }

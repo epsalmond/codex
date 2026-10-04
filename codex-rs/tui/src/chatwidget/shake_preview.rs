@@ -1,5 +1,9 @@
 //! Confirmation UI for a measured, non-mutating shake preview.
 
+use std::time::Duration;
+
+use codex_model_provider_info::CacheStaleness;
+use codex_model_provider_info::classify_cache_staleness;
 use codex_protocol::ThreadId;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::ShakeMode;
@@ -14,6 +18,7 @@ use ratatui::widgets::Widget;
 use super::ChatWidget;
 use super::shake_cost::Billing;
 use super::shake_cost::Pricing;
+use super::shake_cost::payback_line;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::bottom_pane::SelectionItem;
@@ -29,7 +34,11 @@ struct PreviewHeader {
 
 impl PreviewHeader {
     fn lines(&self, width: u16) -> Vec<Line<'_>> {
-        let mut lines = vec![Line::from(self.title.as_str().bold())];
+        let mut lines: Vec<Line<'_>> =
+            textwrap::wrap(self.title.as_str(), usize::from(width.max(/*other*/ 1)))
+                .into_iter()
+                .map(|line| Line::from(line.bold()))
+                .collect();
         for paragraph in self.description.split('\n') {
             lines.extend(
                 textwrap::wrap(paragraph, usize::from(width.max(/*other*/ 1)))
@@ -51,7 +60,39 @@ impl Renderable for PreviewHeader {
     }
 }
 
+fn count_noun(count: u32, singular: &str, plural: &str) -> String {
+    match count {
+        1 => format!("1 {singular}"),
+        n => format!("{n} {plural}"),
+    }
+}
+
+/// Rounded token count for the lead line: `100k`, `1,200k`, or `800`.
+fn compact_tokens(tokens: i64) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else {
+        format!("{}k", format_with_separators((tokens + 500) / 1_000))
+    }
+}
+
 impl ChatWidget {
+    /// The provider's prompt-cache TTL when the time since the last response
+    /// has reached it, using the same TTL policy as the cold-resume auto-shake.
+    fn expired_cache_ttl(&self) -> Option<Duration> {
+        let ttl = self
+            .config
+            .auto_shake
+            .resolved_cache_ttl_for_provider(Some(self.config.model_provider_id.as_str()))
+            .ttl;
+        let idle = self
+            .last_response_clock
+            .and_then(|at| chrono::Local::now().signed_duration_since(at).to_std().ok());
+        (classify_cache_staleness(idle, ttl) == CacheStaleness::LikelyExpired)
+            .then_some(ttl)
+            .flatten()
+    }
+
     pub(crate) fn show_shake_preview(
         &mut self,
         thread_id: ThreadId,
@@ -84,27 +125,42 @@ impl ChatWidget {
             0.0
         };
         let affected = match mode {
-            ShakeMode::Elide => format!(
-                "{} tool outputs and {} text blocks. Recent ~4k tokens stay protected; removed text is recoverable.",
-                preview.tool_outputs, preview.text_blocks,
-            ),
+            ShakeMode::Elide => {
+                let elided = match (preview.tool_outputs, preview.text_blocks) {
+                    (outputs, 0) => count_noun(outputs, "tool output", "tool outputs"),
+                    (0, blocks) => count_noun(blocks, "text block", "text blocks"),
+                    (outputs, blocks) => format!(
+                        "{} + {}",
+                        count_noun(outputs, "tool output", "tool outputs"),
+                        count_noun(blocks, "text block", "text blocks")
+                    ),
+                };
+                format!("{elided} recoverable")
+            }
             ShakeMode::Images => format!(
-                "Images to remove: {}. This mode does not save recovery artifacts.",
-                preview.images
+                "{} removed, not recoverable",
+                count_noun(preview.images, "image", "images")
             ),
             ShakeMode::Thinking => format!(
-                "Thinking blocks to remove: {}. This mode does not save recovery artifacts.",
-                preview.thinking_blocks
+                "{} removed, not recoverable",
+                count_noun(preview.thinking_blocks, "thinking block", "thinking blocks")
             ),
         };
-        let before = format_with_separators(preview.tokens_before);
-        let after = format_with_separators(preview.tokens_after);
+        let title = format!(
+            "Shake ({}): frees ~{} of {} ({percent:.0}%), {affected}.",
+            mode.as_str(),
+            compact_tokens(freed),
+            compact_tokens(preview.tokens_before),
+        );
         let request_before = self
             .token_info
             .as_ref()
             .map(|info| info.last_token_usage.tokens_in_context_window())
             .filter(|tokens| *tokens >= preview.tokens_before && *tokens > 0);
         let mut advice = Vec::new();
+        if mode == ShakeMode::Elide {
+            advice.push("Recent ~4k tokens stay protected.".to_string());
+        }
         advice.push(match self.last_response_clock {
             Some(at) => format!(
                 "Idle: {}m since last response. Cache expiry is not observed.",
@@ -145,17 +201,26 @@ impl ChatWidget {
         } else {
             Billing::Unknown
         };
-        if let Some(request_before) = request_before {
+        let payback = if let Some(request_before) = request_before {
             let request_after = request_before.saturating_sub(freed);
             advice.push(format!(
                 "Request estimate: {} → {} (latest context minus reduction; overhead may differ).",
                 format_with_separators(request_before),
                 format_with_separators(request_after)
             ));
-            advice.push(match Pricing::for_model(self.current_model(), billing) {
-                Some(pricing) => pricing.description(request_before, request_after),
-                None => "Cost scenarios unavailable for this model or billing route.".to_string(),
-            });
+            let payback = match Pricing::for_model(self.current_model(), billing) {
+                Some(pricing) => {
+                    advice.push(pricing.description(request_before, request_after));
+                    payback_line(
+                        pricing
+                            .scenarios(request_before, request_after)
+                            .warm_break_even_requests,
+                        &self.request_pace,
+                        self.expired_cache_ttl(),
+                    )
+                }
+                None => "Payback unavailable for this model or billing route.".to_string(),
+            };
             if self.config.model_auto_compact_token_limit_scope == AutoCompactTokenLimitScope::Total
                 && let Some(limit) = self
                     .config
@@ -169,19 +234,23 @@ impl ChatWidget {
             } else {
                 advice.push("Auto-compact headroom unavailable for the active budget.".to_string());
             }
+            payback
         } else {
-            advice.push("Full-request estimate unavailable; conversation counts alone cannot establish pricing or compact headroom.".to_string());
-        }
+            advice.push(
+                "Compact headroom unavailable; conversation counts alone cannot establish it."
+                    .to_string(),
+            );
+            "Payback unavailable until a model request reports full-request usage.".to_string()
+        };
         advice
             .push("Favor shake when it delays compaction, not simply before /compact.".to_string());
         let advice = advice.join("\n");
-        let freed = format_with_separators(freed);
         let subtitle = format!(
-            "Estimated conversation: {before} → {after} tokens. Frees ~{freed} ({percent:.0}%).\n{affected}\n\n{advice}\n\nConversation excludes instructions/tools. Costs exclude recovery and output; not plan-allowance predictions.",
+            "{payback}\n\n{advice}\n\nConversation excludes instructions/tools. Costs exclude recovery and output; not plan-allowance predictions.",
         );
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(PreviewHeader {
-                title: format!("Shake preview ({})", mode.as_str()),
+                title,
                 description: subtitle,
             }),
             footer_hint: Some(standard_popup_hint_line()),

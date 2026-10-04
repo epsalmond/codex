@@ -1,19 +1,17 @@
 //! Context reduction at the mid-turn roll-over point, after a sampling request whose
 //! follow-up would exceed the context limit.
 //!
-//! Subagents (`SessionSource::SubAgent`) try auto-shake before compaction, and a
-//! compaction that cannot bring them back under the limit ends the turn instead of
-//! sampling and compacting in a loop. Root sessions keep the prior behaviour: they
-//! compact directly and keep sampling whatever the post-compaction size. An explicit
-//! new-context-window request always compacts directly, for every session.
+//! Ordinary child limits are enforced by request_admission after prompt preparation.
+//! Explicit new-context-window requests compact directly here and defer child outcomes
+//! to final admission. Root sessions preserve their scoped post-sampling roll-over.
 
 use std::sync::Arc;
 
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
-use tracing::warn;
 
 use super::context_window::context_window_token_status;
 use super::session::Session;
@@ -41,8 +39,27 @@ pub(super) enum MidTurnReduction {
     Shaken,
     /// Compaction ran and sampling continues (a root session may still be over the limit).
     Compacted,
-    /// Compaction ran but a subagent's usage is still at or over the limit.
-    Insufficient,
+}
+
+/// Error text for a subagent turn that ended over its context limit. The parent reads it
+/// as the child's status, so it states what happened and the parent's next step.
+/// A subagent inherits its parent's `multi_agent_version`, which names the parent's messaging tool.
+pub(super) fn subagent_context_limit_message(
+    limit_tokens: Option<i64>,
+    multi_agent_version: MultiAgentVersion,
+) -> String {
+    let limit = limit_tokens.map_or_else(
+        || "context limit".to_string(),
+        |limit| format!("{limit}-token context limit"),
+    );
+    let ask = match multi_agent_version {
+        MultiAgentVersion::V2 => "Use `followup_task` to ask it",
+        MultiAgentVersion::V1 => "Use `send_input` to ask it",
+        MultiAgentVersion::Disabled => "Ask it",
+    };
+    format!(
+        "This subagent's turn ended because its context was still over its {limit} after compaction. {ask} for a brief report of its partial results, then delegate the remaining work as smaller tasks."
+    )
 }
 
 pub(super) async fn reduce_mid_turn(
@@ -60,9 +77,9 @@ pub(super) async fn reduce_mid_turn(
         RollOverTrigger::TokenLimitReached => subagent,
     };
     if shake_first {
-        maybe_run_auto_shake(sess, turn_context).await;
+        let shook = maybe_run_auto_shake(sess, turn_context).await;
         let after_shake = context_window_token_status(sess.as_ref(), turn_context.as_ref()).await;
-        if !after_shake.token_limit_reached {
+        if shook && !after_shake.token_limit_reached {
             record_reduction(
                 sess,
                 ContextReductionOutcome::Shaken,
@@ -76,7 +93,7 @@ pub(super) async fn reduce_mid_turn(
 
     // The request's step context holds settings, tools, and MCP bindings but no history
     // snapshot, so it remains valid for compaction after a shake rewrote history.
-    run_auto_compact(
+    let compact = run_auto_compact(
         sess,
         Arc::clone(step_context),
         /*fallback_step_context*/ None,
@@ -88,7 +105,19 @@ pub(super) async fn reduce_mid_turn(
         CompactionReason::ContextLimit,
         CompactionPhase::MidTurn,
     )
-    .await?;
+    .await;
+    if let Err(err) = compact {
+        record_reduction_error(sess, tokens_before, &err).await;
+        return Err(err);
+    }
+    if subagent {
+        sess.state.lock().await.pending_child_reduction =
+            Some(super::request_admission::ReductionAttempt {
+                before_tokens: tokens_before,
+                outcome: ContextReductionOutcome::Compacted,
+            });
+        return Ok(MidTurnReduction::Compacted);
+    }
 
     let after_compact = context_window_token_status(sess.as_ref(), turn_context.as_ref()).await;
     let tokens_after = after_compact.active_context_tokens;
@@ -98,18 +127,6 @@ pub(super) async fn reduce_mid_turn(
         ContextReductionOutcome::Compacted
     };
     record_reduction(sess, outcome, tokens_before, tokens_after).await;
-    if after_compact.token_limit_reached && subagent {
-        warn!(
-            turn_id = %turn_context.sub_id,
-            tokens_before,
-            tokens_after,
-            auto_compact_scope_tokens = after_compact.auto_compact_scope_tokens,
-            auto_compact_scope_limit = ?after_compact.auto_compact_scope_limit,
-            full_context_window_limit = ?after_compact.full_context_window_limit,
-            "mid-turn compaction left the subagent context over its limit; failing the turn"
-        );
-        return Ok(MidTurnReduction::Insufficient);
-    }
     Ok(MidTurnReduction::Compacted)
 }
 
@@ -128,3 +145,29 @@ pub(super) async fn record_reduction(
     })
     .await;
 }
+
+/// Failed maintenance has no trustworthy post-reduction measurement.
+pub(super) async fn record_reduction_error(
+    sess: &Session,
+    before_tokens: i64,
+    err: &codex_protocol::error::CodexErr,
+) {
+    let outcome = match err.details() {
+        codex_protocol::error::CodexErrorDetails::TurnAborted
+        | codex_protocol::error::CodexErrorDetails::Interrupted => {
+            ContextReductionOutcome::Cancelled
+        }
+        _ => ContextReductionOutcome::Failed,
+    };
+    sess.record_context_reduction(ContextReductionRecord {
+        at: chrono::Utc::now().timestamp(),
+        before_tokens,
+        after_tokens: None,
+        outcome,
+    })
+    .await;
+}
+
+#[cfg(test)]
+#[path = "mid_turn_reduction_tests.rs"]
+mod tests;

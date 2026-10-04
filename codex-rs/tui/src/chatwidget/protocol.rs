@@ -45,6 +45,14 @@ impl ChatWidget {
         }
         match notification {
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
+                if let Some(snapshot) = notification.context_usage {
+                    self.context_snapshot = Some(snapshot);
+                }
+                // Replayed totals only set the baseline for the next live update.
+                self.request_pace.observe_total_tokens(
+                    notification.token_usage.total.total_tokens,
+                    replay_kind.is_none() && self.turn_lifecycle.agent_turn_running,
+                );
                 self.set_token_info(Some(token_usage_info_from_app_server(
                     notification.token_usage,
                 )));
@@ -97,6 +105,8 @@ impl ChatWidget {
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) {
                     self.warning_display_state.startup_complete = true;
                     self.on_task_started();
+                    self.request_pace
+                        .start_turn(/*started_live*/ replay_kind.is_none());
                 }
             }
             ServerNotification::TurnCompleted(notification) => {
@@ -412,6 +422,9 @@ impl ChatWidget {
         notification: TurnCompletedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        if let Some(snapshot) = notification.context_usage {
+            self.context_snapshot = Some(snapshot);
+        }
         // User-message dedupe only suppresses the app-server echo of a prompt
         // this TUI already rendered locally. Once that turn ends, another
         // client can submit the same text and it still needs its own user cell.
@@ -467,6 +480,7 @@ impl ChatWidget {
                 }
                 self.last_non_retry_error = None;
                 if replay_kind.is_none() {
+                    self.request_pace.complete_turn();
                     self.last_response_clock = notification
                         .turn
                         .completed_at

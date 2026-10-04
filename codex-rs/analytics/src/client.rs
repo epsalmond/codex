@@ -879,6 +879,7 @@ fn session_event_to_analytics_notification(
                 TurnStatus::Completed
             };
             ServerNotification::TurnCompleted(TurnCompletedNotification {
+                context_usage: None,
                 thread_id: thread_id.to_string(),
                 turn: Turn {
                     error,
@@ -891,6 +892,7 @@ fn session_event_to_analytics_notification(
         }
         EventMsg::TurnAborted(aborted) => {
             ServerNotification::TurnCompleted(TurnCompletedNotification {
+                context_usage: None,
                 thread_id: thread_id.to_string(),
                 turn: Turn {
                     started_at: aborted.started_at,

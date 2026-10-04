@@ -194,9 +194,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use uuid::Uuid;
+mod agent_context_display;
 mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
+mod agent_picker_archive;
+mod agent_picker_state;
+mod agent_picker_status;
 mod agent_status_feed;
 #[cfg(any(unix, windows))]
 mod agents_overview;
@@ -623,6 +627,8 @@ pub(crate) struct App {
     agents_overview: agents_overview::AgentsOverviewState,
     side_threads: HashMap<ThreadId, SideThreadState>,
     abandoned_side_threads: HashSet<ThreadId>,
+    /// Whether the one-time wake-mode explanation has been shown this session.
+    wake_mode_hint_shown: bool,
     active_thread_id: Option<ThreadId>,
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,

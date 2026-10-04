@@ -1912,6 +1912,7 @@ pub struct ThreadTokenUsageUpdatedNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub token_usage: ThreadTokenUsage,
+    pub context_usage: Option<super::ThreadContextUsage>,
 }
 
 /// Internal-only notification containing the exact usage from one upstream

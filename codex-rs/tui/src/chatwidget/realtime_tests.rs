@@ -123,6 +123,7 @@ fn finish_turn(
 ) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: thread_id.to_string(),
             turn: Turn {
                 id: turn_id.to_string(),

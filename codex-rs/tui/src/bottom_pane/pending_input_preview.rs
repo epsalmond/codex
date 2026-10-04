@@ -25,6 +25,8 @@ pub(crate) struct PendingInputPreview {
     pub queued_messages: Vec<String>,
     /// Child agent results held while automatic wakeups are paused.
     pub queued_agent_results: u32,
+    /// One-time explanation of wake mode, shown while the root waits only on its children.
+    pub wake_mode_hint: bool,
     /// Key combination rendered in the hint line.  Defaults to Alt+Up but may
     /// be overridden for terminals where that chord is unavailable.
     pub(super) edit_binding: Option<key_hint::ShortcutHint>,
@@ -46,6 +48,7 @@ impl PendingInputPreview {
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
             queued_agent_results: 0,
+            wake_mode_hint: false,
             edit_binding: Some(key_hint::alt(KeyCode::Up).into()),
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
         }
@@ -89,6 +92,7 @@ impl PendingInputPreview {
             && self.rejected_steers.is_empty()
             && self.queued_messages.is_empty()
             && self.queued_agent_results == 0
+            && !self.wake_mode_hint
             && !has_questions)
             || width < 4
         {
@@ -196,6 +200,18 @@ impl PendingInputPreview {
                     " — delivered with your next message".dim(),
                 ]),
             );
+        } else if self.wake_mode_hint {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            Self::push_section_header(
+                &mut lines,
+                width,
+                Line::from(vec![
+                    "Subagents are working".cyan(),
+                    " — each result starts a new turn automatically; keep chatting meanwhile".dim(),
+                ]),
+            );
         }
 
         Paragraph::new(lines).into()
@@ -289,6 +305,31 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         queue.render(Rect::new(0, 0, width, height), &mut buf);
         assert_snapshot!("render_one_queued_agent_result_alone", format!("{buf:?}"));
+    }
+
+    #[test]
+    fn render_wake_mode_hint_alone() {
+        let mut queue = PendingInputPreview::new();
+        queue.wake_mode_hint = true;
+        let width = 60;
+        let height = queue.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        queue.render(Rect::new(0, 0, width, height), &mut buf);
+        assert_snapshot!("render_wake_mode_hint_alone", format!("{buf:?}"));
+    }
+
+    #[test]
+    fn queued_agent_results_replace_wake_mode_hint() {
+        let mut with_hint = PendingInputPreview::new();
+        with_hint.wake_mode_hint = true;
+        with_hint.queued_agent_results = 1;
+        let mut without_hint = PendingInputPreview::new();
+        without_hint.queued_agent_results = 1;
+        let width = 60;
+        assert_eq!(
+            with_hint.desired_height(width),
+            without_hint.desired_height(width)
+        );
     }
 
     #[test]

@@ -36,6 +36,10 @@ mod configuration_update;
 mod executed_tool_calls;
 mod item_metadata;
 
+#[cfg(test)]
+#[path = "reasoning_content_tests.rs"]
+mod reasoning_content_tests;
+
 pub use crate::local_media::MAX_PROMPT_AUDIO_INPUT_BYTES;
 pub use crate::local_media::snapshot_local_user_input;
 pub use crate::permission_profile_snapshot::PermissionProfileSnapshot;
@@ -1050,7 +1054,11 @@ pub enum ResponseItem {
         #[ts(optional)]
         id: Option<ResponseItemId>,
         summary: Vec<ReasoningItemReasoningSummary>,
-        #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
+        #[serde(
+            default = "default_reasoning_content",
+            skip_serializing_if = "should_serialize_reasoning_content"
+        )]
+        #[schemars(default)]
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
         encrypted_content: Option<String>,
@@ -1619,6 +1627,11 @@ fn render_command_prefix(prefix: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{tokens}]")
+}
+
+// Preserve omitted content across reloads without changing explicit nulls or legacy seals.
+fn default_reasoning_content() -> Option<Vec<ReasoningItemContent>> {
+    Some(Vec::new())
 }
 
 fn should_serialize_reasoning_content(content: &Option<Vec<ReasoningItemContent>>) -> bool {

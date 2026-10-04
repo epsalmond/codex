@@ -10,6 +10,7 @@ use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::codex_thread::ThreadConfigSnapshot;
+use crate::session::multi_agents::resolve_subagent_context_token_cap;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
@@ -182,10 +183,13 @@ async fn handle_spawn_agent(
                 child_model_info.as_ref().unwrap_or(turn.model_info()),
             )
             .multi_agent();
+            let subagent_context_token_cap =
+                resolve_subagent_context_token_cap(&session.services.models_manager, &config).await;
             Some(resolve_usage_hints(
                 &config.multi_agent_v2,
                 child_multi_agent_messages,
                 !config.update_plan_enabled && config.model_catalog.is_none(),
+                subagent_context_token_cap,
             ))
         } else {
             None

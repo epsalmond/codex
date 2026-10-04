@@ -146,6 +146,7 @@ impl ChatWidget {
                 self.turn_lifecycle.last_turn_id = Some(turn_id.clone());
                 self.last_non_retry_error = None;
                 self.on_task_started();
+                self.request_pace.start_turn(/*started_live*/ false);
             }
             let trailing_reasoning_id = (status == TurnStatus::InProgress)
                 .then(|| items.last())
@@ -221,6 +222,7 @@ impl ChatWidget {
             ) {
                 self.handle_turn_completed_notification(
                     TurnCompletedNotification {
+                        context_usage: None,
                         thread_id: self.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                         turn: Turn {
                             id: turn_id,

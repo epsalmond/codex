@@ -92,6 +92,7 @@ pub(crate) async fn make_test_app() -> App {
         agents_overview: Default::default(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
+        wake_mode_hint_shown: false,
         active_thread_id: None,
         active_thread_rx: None,
         primary_thread_id: None,

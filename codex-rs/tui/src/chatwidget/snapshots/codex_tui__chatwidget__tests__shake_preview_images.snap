@@ -2,13 +2,11 @@
 source: tui/src/chatwidget/tests/shake_preview_tests.rs
 expression: "render_bottom_popup(&chat, 90)"
 ---
-  Shake preview (images)
-  Estimated conversation: 118,000 → 71,000 tokens. Frees ~47,000 (40%).
-  Images to remove: 1. This mode does not save recovery artifacts.
+  Shake (images): frees ~47k of 118k (40%), 1 image removed, not recoverable.
+  Payback unavailable until a model request reports full-request usage.
 
   Idle age unavailable; cache state unknown.
-  Full-request estimate unavailable; conversation counts alone cannot establish pricing
-  or compact headroom.
+  Compact headroom unavailable; conversation counts alone cannot establish it.
   Favor shake when it delays compaction, not simply before /compact.
 
   Conversation excludes instructions/tools. Costs exclude recovery and output; not plan-

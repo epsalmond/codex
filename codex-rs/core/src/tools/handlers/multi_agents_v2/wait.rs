@@ -52,7 +52,10 @@ impl Handler {
         let args: WaitArgs = parse_arguments(&arguments)?;
         let min_timeout_ms = turn.config.multi_agent_v2.min_wait_timeout_ms;
         let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
-        let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
+        let default_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .default_wait_timeout_ms_for(&turn.session_source);
         let requested_timeout_ms = args.timeout_ms;
         let timeout_ms = match requested_timeout_ms {
             Some(ms) if ms > max_timeout_ms => {
@@ -91,8 +94,19 @@ impl Handler {
             )
             .await;
 
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-        let outcome = wait_for_activity(&mut activity_rx, pending_activity, deadline).await;
+        // With no queued mail and no running child, nothing can end the wait before the timeout.
+        let outcome = if pending_activity.is_none()
+            && !session
+                .services
+                .local_agent_runtime
+                .has_reporting_children(session.thread_id)
+                .await
+        {
+            WaitOutcome::NoRunningAgents
+        } else {
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+            wait_for_activity(&mut activity_rx, pending_activity, deadline).await
+        };
         let result = WaitAgentResult::from_outcome(outcome, requested_timeout_ms, timeout_ms);
 
         session
@@ -145,11 +159,18 @@ impl WaitAgentResult {
             WaitOutcome::MailboxActivity => "Wait completed.",
             WaitOutcome::Steered => "Wait interrupted by new input.",
             WaitOutcome::TimedOut => "Wait timed out.",
+            WaitOutcome::NoRunningAgents => {
+                "No subagents are running and no messages are queued, so nothing can report; returned without waiting."
+            }
         };
         let message = match requested_timeout_ms {
-            Some(requested_timeout_ms) if requested_timeout_ms < timeout_ms => format!(
-                "{message}\n\nRequested timeout of {requested_timeout_ms}ms was clamped to the minimum of {timeout_ms}ms."
-            ),
+            Some(requested_timeout_ms)
+                if requested_timeout_ms < timeout_ms && outcome != WaitOutcome::NoRunningAgents =>
+            {
+                format!(
+                    "{message}\n\nRequested timeout of {requested_timeout_ms}ms was clamped to the minimum of {timeout_ms}ms."
+                )
+            }
             Some(_) | None => message.to_string(),
         };
         Self {
@@ -182,6 +203,7 @@ enum WaitOutcome {
     MailboxActivity,
     Steered,
     TimedOut,
+    NoRunningAgents,
 }
 
 async fn wait_for_activity(

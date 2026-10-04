@@ -259,6 +259,9 @@ impl ChatWidget {
             collaboration_mode,
             reasoning_effort_override,
             agents_summary,
+            self.context_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.shake_watermark),
             refreshing_rate_limits,
         );
         if let Some(request_id) = request_id {

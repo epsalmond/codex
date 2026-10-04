@@ -2762,6 +2762,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
         agent_polling_enabled: false,
         expose_model_overrides: false,
         is_root: true,
+        subagent_context_token_cap: None,
     };
     let parent_task = InterAgentCommunication::new(
         AgentPath::root(),

@@ -3,6 +3,7 @@
 //! This module contains the exhaustive `AppEvent` dispatcher and exit-mode handling. Large domain
 //! actions are delegated to focused app submodules so the central match remains the routing layer.
 
+use super::agent_picker::AGENT_PICKER_VIEW_ID;
 use super::rate_limit_refresh::RateLimitReadStatus;
 use super::rate_limit_refresh::RateLimitRefreshOutcome;
 use super::resize_reflow::trailing_run_start;
@@ -2765,9 +2766,33 @@ impl App {
             AppEvent::AgentPickerThreadsLoaded {
                 primary_thread_id,
                 request_id,
+                status_revisions,
                 result,
             } => {
-                self.apply_agent_picker_thread_refresh(primary_thread_id, request_id, result);
+                self.apply_agent_picker_thread_refresh(
+                    app_server,
+                    primary_thread_id,
+                    request_id,
+                    status_revisions,
+                    result,
+                );
+            }
+            AppEvent::AgentPickerPreviewsLoaded {
+                primary_thread_id,
+                generation,
+                results,
+            } => {
+                self.apply_agent_picker_previews(primary_thread_id, generation, results);
+            }
+            AppEvent::AgentPickerPreviewNeeded(thread_id) => {
+                if let Some(root) = self.primary_thread_id
+                    && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
+                {
+                    self.refresh_agent_picker_previews(app_server, root, vec![thread_id]);
+                }
+            }
+            AppEvent::CloseAgentThread(thread_id) => {
+                self.close_agent_picker_thread(tui, app_server, thread_id).await?;
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)

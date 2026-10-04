@@ -4444,15 +4444,15 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         .replace(&root_thread_id.to_string(), "[root]")
                         .replace(&child_thread_id.to_string(), "[child]"),
                     @r###"
-                      Subagents
-                      Select an agent to watch. ⌥← previous, ⌥→ next.
+                  Subagents
+                  Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-                    › 1. • Main [default] (current)  [root]
-                      2. • /root/worker              [child]
+                › 1. • Main [default] (current)  idle context ?
+                  2. • /root/worker              idle context ?
 
-                      enter select · esc back
-                    "###
+                  enter select · / search · esc back
+                "###
                 );
                 assert_eq!(take_backfill_counts(&requests), (0, 0));
                 tokio::time::timeout(Duration::from_secs(5), started_rx).await??;
@@ -4480,36 +4480,114 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     ),
                     /*replay_kind*/ None,
                 );
-                app.agent_navigation.mark_stopped(child_thread_id);
-                release_tx.send(()).expect("release blocked thread list");
+                app.enqueue_thread_notification(
+                    child_thread_id,
+                    turn_started_notification(child_thread_id, "turn"),
+                )
+                .await?;
+                let live_error_thread_id = ThreadId::new();
+                app.upsert_agent_picker_thread(
+                    live_error_thread_id,
+                    /*agent_nickname*/ None,
+                    Some("worker".to_string()),
+                    /*is_closed*/ false,
+                );
+                app.enqueue_thread_notification(
+                    live_error_thread_id,
+                    ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+                        error: codex_app_server_protocol::TurnError {
+                            misalignment: None,
+                            message: "child failed".to_string(),
+                            codex_error_info: None,
+                            additional_details: None,
+                        },
+                        will_retry: false,
+                        thread_id: live_error_thread_id.to_string(),
+                        turn_id: "turn".to_string(),
+                    }),
+                )
+                .await?;
+                app.agent_navigation
+                    .set_response_preview(live_error_thread_id, Some("cached preview".to_string()));
                 let discovered_thread_id = ThreadId::new();
-                let mut completion = tokio::time::timeout(Duration::from_secs(5), async {
+                app.upsert_agent_picker_thread(
+                    discovered_thread_id,
+                    Some("discovered".to_string()),
+                    Some("worker".to_string()),
+                    /*is_closed*/ false,
+                );
+                app.agent_navigation
+                    .set_response_preview(discovered_thread_id, Some("cached preview".to_string()));
+                release_tx.send(()).expect("release blocked thread list");
+                let mut preview_events = 0;
+                let mut completion = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
                     loop {
                         let event = app_event_rx.recv().await.expect("app event channel");
                         if matches!(event, AppEvent::AgentPickerThreadsLoaded { .. }) {
-                            break event;
+                            break Ok::<_, color_eyre::eyre::Report>(event);
+                        } else if matches!(event, AppEvent::AgentPickerPreviewsLoaded { .. }) {
+                            preview_events += 1;
+                            Box::pin(app.handle_event(&mut tui, &mut app_server, event)).await?;
                         }
                     }
                 })
-                .await?;
+                .await??;
                 if let AppEvent::AgentPickerThreadsLoaded {
-                    result: Ok(threads),
+                    result: Ok(refresh),
                     ..
                 } = &mut completion
                 {
-                    let child = threads
+                    let child = refresh
+                        .threads
                         .iter_mut()
                         .find(|thread| thread.id == child_thread_id.to_string())
                         .expect("root-scoped response includes the cached child");
                     let mut discovered = child.clone();
                     discovered.id = discovered_thread_id.to_string();
                     discovered.can_accept_direct_input = None;
-                    child.status = ThreadStatus::Active {
+                    child.status = ThreadStatus::SystemError;
+                    let mut live_error = child.clone();
+                    live_error.id = live_error_thread_id.to_string();
+                    live_error.status = ThreadStatus::Active {
                         active_flags: Vec::new(),
                     };
-                    threads.push(discovered);
+                    refresh.threads.push(discovered);
+                    refresh.threads.push(live_error);
                 }
                 Box::pin(app.handle_event(&mut tui, &mut app_server, completion)).await?;
+                if preview_events < 2 {
+                    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+                        while preview_events < 2 {
+                            let event = app_event_rx.recv().await.expect("app event channel");
+                            if matches!(event, AppEvent::AgentPickerPreviewsLoaded { .. }) {
+                                preview_events += 1;
+                            }
+                            Box::pin(app.handle_event(&mut tui, &mut app_server, event)).await?;
+                        }
+                        Ok::<(), color_eyre::eyre::Report>(())
+                    })
+                    .await??;
+                }
+                let child_turn_params = recorded_params(&requests, "thread/turns/list")
+                    .into_iter()
+                    .filter(|params| params["threadId"] == child_thread_id.to_string())
+                    .collect::<Vec<_>>();
+                assert!(!child_turn_params.is_empty());
+                assert!(child_turn_params.iter().all(|params| {
+                    params["limit"] == 20
+                        && params["sortDirection"] == "desc"
+                        && params["itemsView"] == "full"
+                }));
+                assert_eq!(child_turn_params.len(), 2);
+                let root_list_params = recorded_params(&requests, "thread/list");
+                let picker_list = root_list_params
+                    .iter()
+                    .find(|params| params["ancestorThreadId"] == root_thread_id.to_string())
+                    .expect("picker lists descendants from its root");
+                assert_eq!(picker_list["limit"], 100);
+                assert_eq!(picker_list["sortDirection"], "desc");
+                assert_eq!(picker_list["useStateDbOnly"], true);
+                assert_eq!(picker_list["sourceKinds"].as_array().map(Vec::len), Some(1));
                 assert_eq!(
                     app.agent_navigation
                         .ordered_threads()
@@ -4528,7 +4606,17 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                 assert!(
                     app.agent_navigation
                         .get(&child_thread_id)
-                        .is_some_and(|entry| !entry.is_running)
+                        .is_some_and(|entry| entry.is_running)
+                );
+                assert!(
+                    !app.agent_navigation
+                        .picker_details(&child_thread_id)
+                        .is_some_and(|details| details.is_error)
+                );
+                assert!(
+                    app.agent_navigation
+                        .picker_details(&live_error_thread_id)
+                        .is_some_and(|details| details.is_error)
                 );
                 app_server.shutdown().await?;
                 proxy.await??;

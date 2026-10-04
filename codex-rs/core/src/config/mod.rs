@@ -257,6 +257,9 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usiz
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+/// `wait_agent` default for `codex exec` and subagent sessions, which have no user watching for
+/// interim status. The wait still returns as soon as an agent reports.
+pub(crate) const DEFAULT_MULTI_AGENT_V2_NONINTERACTIVE_DEFAULT_WAIT_TIMEOUT_MS: i64 = 300_000;
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
 
 pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
@@ -1402,6 +1405,9 @@ pub struct MultiAgentV2Config {
     pub min_wait_timeout_ms: i64,
     pub max_wait_timeout_ms: i64,
     pub default_wait_timeout_ms: i64,
+    /// `wait_agent` default for `codex exec` and subagent sessions. Equals
+    /// `default_wait_timeout_ms` when the user configures that value.
+    pub noninteractive_default_wait_timeout_ms: i64,
     pub usage_hint_text: Option<String>,
     pub root_agent_usage_hint_text: Option<String>,
     pub subagent_usage_hint_text: Option<String>,
@@ -1417,12 +1423,30 @@ pub struct MultiAgentV2Config {
 }
 
 impl MultiAgentV2Config {
+    /// The `wait_agent` timeout used when the call omits `timeout_ms`.
+    pub(crate) fn default_wait_timeout_ms_for(
+        &self,
+        session_source: &codex_protocol::protocol::SessionSource,
+    ) -> i64 {
+        if matches!(
+            session_source,
+            codex_protocol::protocol::SessionSource::Exec
+        ) || session_source.is_non_root_agent()
+        {
+            self.noninteractive_default_wait_timeout_ms
+        } else {
+            self.default_wait_timeout_ms
+        }
+    }
+
     fn defaults_for_max_concurrency(max_concurrent_threads_per_session: usize) -> Self {
         Self {
             max_concurrent_threads_per_session,
             min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
             max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
             default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
+            noninteractive_default_wait_timeout_ms:
+                DEFAULT_MULTI_AGENT_V2_NONINTERACTIVE_DEFAULT_WAIT_TIMEOUT_MS,
             usage_hint_text: None,
             root_agent_usage_hint_text: None,
             subagent_usage_hint_text: None,
@@ -2846,9 +2870,16 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let max_wait_timeout_ms = base
         .and_then(|config| config.max_wait_timeout_ms)
         .unwrap_or(default.max_wait_timeout_ms);
-    let default_wait_timeout_ms = base
-        .and_then(|config| config.default_wait_timeout_ms)
-        .unwrap_or(default.default_wait_timeout_ms);
+    let configured_default_wait_timeout_ms = base.and_then(|config| config.default_wait_timeout_ms);
+    let default_wait_timeout_ms =
+        configured_default_wait_timeout_ms.unwrap_or(default.default_wait_timeout_ms);
+    let noninteractive_default_wait_timeout_ms =
+        configured_default_wait_timeout_ms.unwrap_or_else(|| {
+            default
+                .noninteractive_default_wait_timeout_ms
+                .max(min_wait_timeout_ms)
+                .min(max_wait_timeout_ms)
+        });
     let usage_hint_text = base
         .and_then(|config| config.usage_hint_text.as_ref())
         .cloned()
@@ -2894,6 +2925,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         min_wait_timeout_ms,
         max_wait_timeout_ms,
         default_wait_timeout_ms,
+        noninteractive_default_wait_timeout_ms,
         usage_hint_text,
         root_agent_usage_hint_text,
         subagent_usage_hint_text,

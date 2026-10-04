@@ -1,0 +1,16 @@
+---
+source: tui/src/app/tests/agent_picker_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 64)"
+---
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+
+› 1. • Policy [worker]  error context 120000 · cap 100000 · win…
+  2. • Other [worker]   idle context ?
+
+
+  context 120000 · cap 100000 · window 272000 · gpt-6-luna
+  · usage + estimate · snapshot 2h ago · provider 1d ago ·
+  failed 120000→? (1h ago)
+  enter select · / search · x close agent · esc back

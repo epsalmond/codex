@@ -714,6 +714,7 @@ mod tests {
         status: TurnStatus,
     ) -> ServerNotification {
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: thread_id.to_string(),
             turn: Turn {
                 completed_at: Some(0),

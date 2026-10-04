@@ -18,9 +18,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-#[cfg(target_os = "macos")]
 use crossterm::event::KeyEventKind;
-#[cfg(target_os = "macos")]
 use crossterm::event::KeyModifiers;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -43,6 +41,20 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) is_running: bool,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentPickerThreadDetails {
+    pub(crate) response_preview: Option<String>,
+    pub(crate) context_usage: Option<AgentPickerContextUsage>,
+    pub(crate) context_snapshot: Option<codex_app_server_protocol::ThreadContextUsage>,
+    pub(crate) is_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentPickerContextUsage {
+    pub(crate) last_tokens: i64,
+    pub(crate) model_context_window: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,9 +85,11 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
-pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
+pub(crate) fn agent_picker_status_dot_spans(is_closed: bool, is_error: bool) -> Vec<Span<'static>> {
     let dot = if is_closed {
         "•".into()
+    } else if is_error {
+        "•".red()
     } else {
         "•".green()
     };
@@ -111,8 +125,8 @@ pub(crate) fn next_agent_shortcut() -> crate::key_hint::KeyBinding {
     crate::key_hint::alt(KeyCode::Right)
 }
 
-/// Matches the canonical "previous agent" binding plus platform-specific fallbacks that keep agent
-/// navigation working when enhanced key reporting is unavailable.
+/// Matches the canonical "previous agent" binding and terminal word-motion aliases,
+/// including macOS terminals connected to a different operating system over SSH.
 pub(crate) fn previous_agent_shortcut_matches(
     key_event: KeyEvent,
     allow_word_motion_fallback: bool,
@@ -121,8 +135,8 @@ pub(crate) fn previous_agent_shortcut_matches(
         || previous_agent_word_motion_fallback(key_event, allow_word_motion_fallback)
 }
 
-/// Matches the canonical "next agent" binding plus platform-specific fallbacks that keep agent
-/// navigation working when enhanced key reporting is unavailable.
+/// Matches the canonical "next agent" binding and terminal word-motion aliases,
+/// including macOS terminals connected to a different operating system over SSH.
 pub(crate) fn next_agent_shortcut_matches(
     key_event: KeyEvent,
     allow_word_motion_fallback: bool,
@@ -131,13 +145,12 @@ pub(crate) fn next_agent_shortcut_matches(
         || next_agent_word_motion_fallback(key_event, allow_word_motion_fallback)
 }
 
-#[cfg(target_os = "macos")]
 fn previous_agent_word_motion_fallback(
     key_event: KeyEvent,
     allow_word_motion_fallback: bool,
 ) -> bool {
-    // Some terminals, especially on macOS, send Option+b/f as word-motion keys instead of
-    // Option+arrow events unless enhanced keyboard reporting is enabled. Callers should only
+    // Some terminals send Alt+b/f instead of Option+arrow events regardless of keyboard
+    // protocol or the remote host's operating system. Callers should only
     // enable this fallback when the composer is empty so draft editing retains the expected
     // word-wise motion behavior.
     allow_word_motion_fallback
@@ -152,18 +165,9 @@ fn previous_agent_word_motion_fallback(
         )
 }
 
-#[cfg(not(target_os = "macos"))]
-fn previous_agent_word_motion_fallback(
-    _key_event: KeyEvent,
-    _allow_word_motion_fallback: bool,
-) -> bool {
-    false
-}
-
-#[cfg(target_os = "macos")]
 fn next_agent_word_motion_fallback(key_event: KeyEvent, allow_word_motion_fallback: bool) -> bool {
-    // Some terminals, especially on macOS, send Option+b/f as word-motion keys instead of
-    // Option+arrow events unless enhanced keyboard reporting is enabled. Callers should only
+    // Some terminals send Alt+b/f instead of Option+arrow events regardless of keyboard
+    // protocol or the remote host's operating system. Callers should only
     // enable this fallback when the composer is empty so draft editing retains the expected
     // word-wise motion behavior.
     allow_word_motion_fallback
@@ -176,14 +180,6 @@ fn next_agent_word_motion_fallback(key_event: KeyEvent, allow_word_motion_fallba
                 ..
             }
         )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn next_agent_word_motion_fallback(
-    _key_event: KeyEvent,
-    _allow_word_motion_fallback: bool,
-) -> bool {
-    false
 }
 
 pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSummary> {
@@ -850,7 +846,6 @@ mod tests {
         assert_snapshot!("collab_agent_transcript", snapshot);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn agent_shortcut_matches_option_arrow_word_motion_fallbacks_only_when_allowed() {
         assert!(previous_agent_shortcut_matches(
@@ -876,27 +871,6 @@ mod tests {
         assert!(!next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
             /*allow_word_motion_fallback*/ false,
-        ));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn agent_shortcut_matches_option_arrows_only() {
-        assert!(previous_agent_shortcut_matches(
-            KeyEvent::new(KeyCode::Left, crossterm::event::KeyModifiers::ALT,),
-            /*allow_word_motion_fallback*/ false
-        ));
-        assert!(next_agent_shortcut_matches(
-            KeyEvent::new(KeyCode::Right, crossterm::event::KeyModifiers::ALT,),
-            /*allow_word_motion_fallback*/ false
-        ));
-        assert!(!previous_agent_shortcut_matches(
-            KeyEvent::new(KeyCode::Char('b'), crossterm::event::KeyModifiers::ALT,),
-            /*allow_word_motion_fallback*/ false
-        ));
-        assert!(!next_agent_shortcut_matches(
-            KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::ALT,),
-            /*allow_word_motion_fallback*/ false
         ));
     }
 

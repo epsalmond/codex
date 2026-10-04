@@ -9,13 +9,14 @@ expression: sanitized
   Visit https://chatgpt.com/codex/settings/usage for up-to-date
   information on rate limits and credits
 
-  Server:          Local background server
+  Server:           Local background server
 
-  Model:           gpt-5.1-codex-max (reasoning medium)
-  Directory:       [[workspace]]
-  Permissions:     Custom (workspace with network access, Ask for approval)
-  Agents.md:       <none>
+  Model:            gpt-5.1-codex-max (reasoning medium)
+  Directory:        [[workspace]]
+  Permissions:      Custom (workspace with network access, Ask for approval)
+  Agents.md:        <none>
 
-  Token usage:     750 total  (500 input + 250 output)
-  Context window:  100% left (750 used / 272K)
-  Limits:          data not available yet
+  Token usage:      750 total  (500 input + 250 output)
+  Context window:   100% left (750 used / 272K)
+  Shake watermark:  unavailable
+  Limits:           data not available yet

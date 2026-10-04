@@ -277,7 +277,6 @@ impl LocalAgentRuntime {
         thread_id: ThreadId,
         source: &SessionSource,
         turn_id: &str,
-        parent_turn_id: Option<&str>,
         allow_new_generation: bool,
     ) -> Result<Option<AgentAssignmentId>, &'static str> {
         if !self.wake_mode_enabled() {
@@ -295,18 +294,16 @@ impl LocalAgentRuntime {
         let parent = if current_is_open {
             existing_parent
         } else if let Some(parent_thread_id) = parent_thread_id {
-            let parent = match parent_turn_id {
-                Some(parent_turn_id) => self
-                    .wake_coordinator
-                    .active_assignment_for_turn(parent_thread_id, parent_turn_id),
-                None if allow_new_generation => self
-                    .wake_coordinator
+            // Follow-up lineage may name a sibling caller's turn. Assignment ownership always
+            // follows the spawn parent, including when the previous child report was consumed.
+            let parent = if allow_new_generation {
+                self.wake_coordinator
                     .current_assignment(parent_thread_id)
-                    .filter(|id| self.wake_coordinator.is_current_open_assignment(id)),
-                None => existing_parent
-                    .filter(|id| self.wake_coordinator.is_current_open_assignment(id)),
+                    .filter(|id| self.wake_coordinator.is_current_open_assignment(id))
+            } else {
+                existing_parent.filter(|id| self.wake_coordinator.is_current_open_assignment(id))
             };
-            if parent.is_none() && current.is_none() {
+            if parent.is_none() {
                 return Err("parent assignment is not active for this turn");
             }
             parent
