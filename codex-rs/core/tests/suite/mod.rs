@@ -92,6 +92,7 @@ mod guardian_cached_score;
 mod guardian_checkpoint_migration;
 // Uses the same command-approval harness as guardian_review below.
 mod canonical_plugin_connectors;
+mod context_usage_snapshots;
 mod gateway_auth;
 #[cfg(not(target_os = "windows"))]
 mod guardian_context_budget;
@@ -199,6 +200,8 @@ mod search_tool;
 mod settings_commits;
 mod settings_constraints;
 mod shake_artifacts;
+mod shake_fork;
+mod shake_reasoning_resume;
 mod shake_watermark;
 mod shell_snapshot;
 mod skill_approval;

@@ -5224,6 +5224,19 @@ class ThreadCompactStartResponse(BaseModel):
     )
 
 
+class ThreadContextReductionOutcome(Enum):
+    shaken = "shaken"
+    compacted = "compacted"
+    insufficient = "insufficient"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class ThreadContextTokenBasis(Enum):
+    usage = "usage"
+    estimate = "estimate"
+
+
 class ThreadDeleteParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9822,6 +9835,39 @@ class SubAgentSource(
     root: SubAgentSourceValue | ThreadSpawnSubAgentSource | OtherSubAgentSource
 
 
+class ThreadContextReduction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    after_tokens: Annotated[int | None, Field(alias="afterTokens")] = None
+    before_tokens: Annotated[int, Field(alias="beforeTokens")]
+    completed_at: Annotated[int, Field(alias="completedAt")]
+    outcome: ThreadContextReductionOutcome
+
+
+class ThreadContextUsage(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    active_tokens: Annotated[int, Field(alias="activeTokens")]
+    basis: ThreadContextTokenBasis
+    child_active_cap_tokens: Annotated[int | None, Field(alias="childActiveCapTokens")] = None
+    child_policy_enabled: Annotated[bool | None, Field(alias="childPolicyEnabled")] = None
+    last_reduction: Annotated[ThreadContextReduction | None, Field(alias="lastReduction")] = None
+    model_window_tokens: Annotated[int | None, Field(alias="modelWindowTokens")] = None
+    observed_at: Annotated[int | None, Field(alias="observedAt")] = None
+    provider_usage_at: Annotated[int | None, Field(alias="providerUsageAt")] = None
+    selected_model: Annotated[str | None, Field(alias="selectedModel")] = None
+    shake_watermark: Annotated[
+        int | None,
+        Field(
+            alias="shakeWatermark",
+            description="Exclusive sealed-history-item boundary, not tokens or a percentage.",
+            ge=0,
+        ),
+    ] = None
+
+
 class ThreadForkParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10375,6 +10421,7 @@ class ThreadTokenUsageUpdatedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    context_usage: Annotated[ThreadContextUsage | None, Field(alias="contextUsage")] = None
     thread_id: Annotated[str, Field(alias="threadId")]
     token_usage: Annotated[ThreadTokenUsage, Field(alias="tokenUsage")]
     turn_id: Annotated[str, Field(alias="turnId")]
@@ -11636,6 +11683,7 @@ class TurnCompletedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    context_usage: Annotated[ThreadContextUsage | None, Field(alias="contextUsage")] = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn: Turn
 

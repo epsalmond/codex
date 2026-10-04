@@ -1257,7 +1257,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         json!(r#"<agent name="/root/test_process" />"#),
     );
 
-    SendMessageHandlerV2
+    let output = SendMessageHandlerV2
         .handle(invocation(
             session.clone(),
             turn.clone(),
@@ -1269,6 +1269,9 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         ))
         .await
         .expect("send_message should accept v2 path");
+    let (acceptance, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    insta::assert_snapshot!(acceptance, @"Message accepted into the agent's queue. This acceptance does not confirm a new turn started; use followup_task to request work from an idle agent.");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == child_thread_id
@@ -1454,7 +1457,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_role: None,
     });
 
-    SendMessageHandlerV2
+    let output = SendMessageHandlerV2
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -1466,6 +1469,9 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         ))
         .await
         .expect("send_message should accept the root agent path");
+    let (acceptance, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    insta::assert_snapshot!(acceptance, @"Message accepted into the root agent's queue. This acceptance does not confirm a new turn started; the root reads queued mail while active or on its next turn.");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == root.thread_id
@@ -1661,9 +1667,17 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
     let active_tokens = context
         .as_object_mut()
         .and_then(|context| context.remove("active_tokens"));
+    let observed_at = context
+        .as_object_mut()
+        .and_then(|context| context.remove("observed_at"));
     assert_eq!(
-        (active_tokens.is_some_and(|tokens| tokens.is_i64()), context),
         (
+            active_tokens.is_some_and(|tokens| tokens.is_i64()),
+            observed_at.is_some_and(|at| at.is_i64()),
+            context
+        ),
+        (
+            true,
             true,
             json!({
                 "basis": "estimate",
@@ -2088,7 +2102,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         )
         .await;
 
-    FollowupTaskHandlerV2
+    let output = FollowupTaskHandlerV2
         .handle(invocation(
             session,
             turn,
@@ -2100,6 +2114,9 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         ))
         .await
         .expect("followup_task should succeed");
+    let (acceptance, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    insta::assert_snapshot!(acceptance, @"Follow-up accepted for turn processing; this does not confirm startup or completion.");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == agent_id

@@ -1,6 +1,127 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "ThreadContextReduction": {
+      "properties": {
+        "afterTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "beforeTokens": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "completedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/definitions/ThreadContextReductionOutcome"
+        }
+      },
+      "required": [
+        "beforeTokens",
+        "completedAt",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "ThreadContextReductionOutcome": {
+      "enum": [
+        "shaken",
+        "compacted",
+        "insufficient",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ThreadContextTokenBasis": {
+      "enum": [
+        "usage",
+        "estimate"
+      ],
+      "type": "string"
+    },
+    "ThreadContextUsage": {
+      "description": "Context and policy of a captured prepared request, separate from cumulative usage.",
+      "properties": {
+        "activeTokens": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "basis": {
+          "$ref": "#/definitions/ThreadContextTokenBasis"
+        },
+        "childActiveCapTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "childPolicyEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lastReduction": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadContextReduction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelWindowTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "observedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "providerUsageAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "selectedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shakeWatermark": {
+          "description": "Exclusive sealed-history-item boundary, not tokens or a percentage.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "activeTokens",
+        "basis"
+      ],
+      "type": "object"
+    },
     "ThreadTokenUsage": {
       "properties": {
         "last": {
@@ -62,6 +183,16 @@
     }
   },
   "properties": {
+    "contextUsage": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadContextUsage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "threadId": {
       "type": "string"
     },

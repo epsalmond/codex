@@ -56,7 +56,9 @@ async fn question_turn_end_appends_open_drafts_in_order_once() {
     assert!(ops.try_recv().is_err());
     insta::assert_snapshot!(
         "question_turn_end_recovered_composer",
-        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80))
+        normalize_response_clock(normalize_snapshot_paths(render_bottom_popup(
+            &chat, /*width*/ 80
+        )))
     );
 
     handle_turn_completed(&mut chat, "ended-turn", /*duration_ms*/ None);
@@ -77,7 +79,9 @@ async fn question_turn_end_appends_open_drafts_in_order_once() {
     assert_eq!(chat.bottom_pane.composer_pending_pastes().len(), 1);
     insta::assert_snapshot!(
         "question_turn_end_large_draft",
-        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80))
+        normalize_response_clock(normalize_snapshot_paths(render_bottom_popup(
+            &chat, /*width*/ 80
+        )))
     );
 }
 
@@ -124,6 +128,7 @@ async fn question_turn_end_recovers_collapsed_drafts_on_completion_and_failure()
         }
         chat.handle_server_notification(
             ServerNotification::TurnCompleted(TurnCompletedNotification {
+                context_usage: None,
                 thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                 turn: app_server_turn(
                     "turn",

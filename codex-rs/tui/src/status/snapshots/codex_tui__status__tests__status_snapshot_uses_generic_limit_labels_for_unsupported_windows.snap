@@ -17,6 +17,7 @@ expression: sanitized
 
   Token usage:            1.2K total  (800 input + 400 output)
   Context window:         100% left (1.2K used / 272K)
+  Shake watermark:        unavailable
   Usage limit:            [█████████████░░░░░░░] 65% left
                           (resets 07:08 on 7 May)
   Secondary usage limit:  [██████████░░░░░░░░░░] 50% left

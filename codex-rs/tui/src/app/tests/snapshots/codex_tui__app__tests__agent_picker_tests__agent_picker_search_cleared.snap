@@ -1,0 +1,18 @@
+---
+source: tui/src/app/tests/agent_picker_tests.rs
+assertion_line: 361
+expression: "render_bottom_popup(&app.chat_widget, 96)"
+---
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+  Search subagents
+
+› • Main [default]                          idle context ?
+  • Planner [worker] (current)              idle context 4800 / 32000 (15%) · Finished the depe…
+  • /agents/review/long-running-test-agent  mid-turn context ?
+  • Closed [worker]                         closed context ?
+  • Error [worker]                          error context ?
+  • Agent 00000006                          idle context ?
+
+  enter select · esc exit search · ctrl+c close

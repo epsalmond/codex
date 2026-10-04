@@ -458,7 +458,7 @@ async fn legacy_terminal_preserves_image_paste_without_reading_clipboard() -> Re
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn legacy_terminal_preserves_agent_shortcuts_without_editor_word_bindings() -> Result<()> {
     for mode in ['i', 'R'] {

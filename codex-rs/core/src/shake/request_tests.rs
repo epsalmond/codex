@@ -283,6 +283,7 @@ fn sealed_reasoning_item_none_and_empty_content_have_distinct_wire_prefixes() {
     let reasoning_without_content: ResponseItem = serde_json::from_value(json!({
         "type": "reasoning",
         "summary": [],
+        "content": null,
         "encrypted_content": null
     }))
     .expect("valid reasoning item without content");

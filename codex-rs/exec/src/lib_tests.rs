@@ -434,6 +434,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
 fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
     let notification =
         ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
+            context_usage: None,
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),

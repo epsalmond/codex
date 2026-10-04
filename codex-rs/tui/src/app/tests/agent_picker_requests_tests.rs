@@ -1,6 +1,7 @@
 use super::session_lifecycle_requests::recorded_params;
 use super::session_lifecycle_requests::start_recording_app_server;
 use super::*;
+use app_test_support::create_fake_parented_rollout_with_source;
 use codex_state::SqliteConfig;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -285,5 +286,257 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
     app_server.shutdown().await?;
     proxy.await??;
     assert_eq!(active.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn close_agent_archives_child_returns_main_and_preserves_failures() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.start_fresh_session(
+        &mut tui,
+        &mut app_server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
+    let root = app.chat_widget.thread_id().unwrap();
+    // A missing backend thread must leave the cached row available after failure.
+    let missing = ThreadId::new();
+    app.upsert_agent_picker_thread(
+        missing,
+        Some("missing".into()),
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    while rx.try_recv().is_ok() {}
+    app.close_agent_picker_thread(&mut tui, &mut app_server, missing)
+        .await?;
+    assert!(
+        app.agent_navigation
+            .visible_threads()
+            .iter()
+            .any(|(id, _)| *id == missing)
+    );
+    assert!(next_history_message(&mut rx).contains("Failed to close agent"));
+    // Use a saved rollout so archive exercises the public app-server request.
+    let child = ThreadId::from_string(
+        &create_fake_parented_rollout_with_source(
+            &app.config.codex_home,
+            "2026-10-03T01-00-00",
+            "2026-10-03T01:00:00Z",
+            "archive child",
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("child".into()),
+                agent_role: None,
+            }),
+            root.into(),
+            root,
+        )
+        .expect("child rollout"),
+    )?;
+    let grandchild = ThreadId::from_string(
+        &create_fake_parented_rollout_with_source(
+            &app.config.codex_home,
+            "2026-10-03T01-00-01",
+            "2026-10-03T01:00:01Z",
+            "archive grandchild",
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: Some("grandchild".into()),
+                agent_role: None,
+            }),
+            root.into(),
+            child,
+        )
+        .expect("grandchild rollout"),
+    )?;
+    app.primary_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        root, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        child,
+        Some("child".into()),
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    let sibling = ThreadId::from_string(
+        &create_fake_parented_rollout_with_source(
+            &app.config.codex_home,
+            "2026-10-03T01-00-02",
+            "2026-10-03T01:00:02Z",
+            "archive sibling",
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("sibling".into()),
+                agent_role: None,
+            }),
+            root.into(),
+            root,
+        )
+        .expect("sibling rollout"),
+    )?;
+    // Load saved fixtures before navigation, as real spawned children are loaded.
+    for id in [child, grandchild, sibling] {
+        app_server
+            .resume_thread(
+                &app.local_settings,
+                app.config.clone(),
+                id,
+                app.resume_model_settings(),
+            )
+            .await?;
+    }
+    app.select_agent_thread(&mut tui, &mut app_server, child)
+        .await?;
+    app.select_agent_thread(&mut tui, &mut app_server, grandchild)
+        .await?;
+    assert_eq!(app.active_thread_id, Some(grandchild));
+    app.upsert_agent_picker_thread(
+        sibling,
+        Some("sibling".into()),
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    let stale_child = app_server
+        .thread_read(child, /*include_turns*/ false)
+        .await?;
+    app.pending_server_profiles.insert(
+        grandchild,
+        PermissionProfileSelection {
+            profile_id: "server-only".into(),
+            approval_policy: None,
+            approvals_reviewer: None,
+            display_label: "server-only".into(),
+        },
+    );
+    app.close_agent_picker_thread(&mut tui, &mut app_server, child)
+        .await?;
+    assert_eq!(recorded_params(&requests, "thread/archive").len(), 1);
+    assert_eq!(app.active_thread_id, Some(grandchild));
+    app.pending_server_profiles.clear();
+    app.close_agent_picker_thread(&mut tui, &mut app_server, root)
+        .await?;
+    assert_eq!(recorded_params(&requests, "thread/archive").len(), 1);
+    // Highlight the middle row while another child is displayed.
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(Some(/*value*/ 2)));
+    app.close_agent_picker_thread(&mut tui, &mut app_server, child)
+        .await?;
+    assert_eq!(recorded_params(&requests, "thread/archive").len(), 2);
+    assert_eq!(app.active_thread_id, Some(root));
+    assert!(
+        !app.agent_navigation
+            .visible_threads()
+            .iter()
+            .any(|(id, _)| *id == child)
+    );
+    assert_eq!(app.chat_widget.active_view_id(), Some("agent-picker"));
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view("agent-picker"),
+        Some(2)
+    );
+    let completion = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            let event = rx.recv().await.expect("app event channel");
+            if matches!(&event, AppEvent::AgentPickerThreadsLoaded { .. }) {
+                break event;
+            }
+        }
+    })
+    .await?;
+    Box::pin(app.handle_event(&mut tui, &mut app_server, completion)).await?;
+    assert!(
+        !app.agent_navigation
+            .visible_threads()
+            .iter()
+            .any(|(id, _)| *id == grandchild)
+    );
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view("agent-picker"),
+        Some(2),
+        "refresh must keep the row when the selected descendant is removed"
+    );
+    insta::assert_snapshot!(
+        "agent_picker_after_subtree_archive",
+        crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_widget, /*width*/ 80)
+    );
+    assert_eq!(
+        app.thread_event_channels[&grandchild].attachment(),
+        ThreadEventAttachment::ReplayOnly
+    );
+    assert!(
+        !app_server
+            .thread_read(child, /*include_turns*/ true)
+            .await?
+            .turns
+            .is_empty()
+    );
+    let stale_request = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    let revisions = app.agent_navigation.status_revision_snapshot();
+    app.handle_agent_picker_visibility_notification(
+        &app_server,
+        &ServerNotification::ThreadArchived(
+            codex_app_server_protocol::ThreadArchivedNotification {
+                thread_id: child.to_string(),
+            },
+        ),
+    );
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        stale_request,
+        revisions,
+        Ok(crate::app_event::AgentPickerThreadRefresh {
+            threads: vec![stale_child],
+            archived_thread_ids: HashSet::new(),
+        }),
+    );
+    assert!(
+        !app.agent_navigation
+            .visible_threads()
+            .iter()
+            .any(|(id, _)| *id == child)
+    );
+
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(Some(/*value*/ 2)));
+    app.close_agent_picker_thread(&mut tui, &mut app_server, sibling)
+        .await?;
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view("agent-picker"),
+        Some(1),
+        "archiving the last row must clamp to the last survivor"
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
     Ok(())
 }

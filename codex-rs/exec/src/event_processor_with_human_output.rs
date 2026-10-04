@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::io::Write;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionStatus;
@@ -382,22 +383,27 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         CodexStatus::Running
     }
 
-    fn print_final_output(&mut self) {
+    fn print_final_output(&mut self) -> std::io::Result<()> {
+        let mut first_error = None;
         if self.emit_final_message_on_shutdown
             && let Some(path) = self.last_message_path.as_deref()
+            && let Err(error) = handle_last_message(self.final_message.as_deref(), path)
         {
-            handle_last_message(self.final_message.as_deref(), path);
+            first_error = Some(error);
         }
 
-        if let Some(usage) = &self.last_total_token_usage {
-            eprintln!(
+        if let Some(usage) = &self.last_total_token_usage
+            && let Err(error) = writeln!(
+                std::io::stderr().lock(),
                 "{}\n{}",
                 "tokens used".style(self.dimmed),
                 format_with_separators(blended_total(usage))
-            );
+            )
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
 
-        #[allow(clippy::print_stdout)]
         if should_print_final_message_to_stdout(
             self.emit_final_message_on_shutdown
                 .then_some(self.final_message.as_deref())
@@ -406,7 +412,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             std::io::stderr().is_terminal(),
         ) && let Some(message) = self.final_message.as_deref()
         {
-            println!("{message}");
+            if let Err(error) = writeln!(std::io::stdout().lock(), "{message}")
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         } else if should_print_final_message_to_tty(
             self.emit_final_message_on_shutdown
                 .then_some(self.final_message.as_deref())
@@ -415,13 +425,18 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             std::io::stdout().is_terminal(),
             std::io::stderr().is_terminal(),
         ) && let Some(message) = self.final_message.as_deref()
-        {
-            eprintln!(
+            && let Err(error) = writeln!(
+                std::io::stderr().lock(),
                 "{}\n{}",
                 "codex".style(self.italic).style(self.magenta),
                 message
-            );
+            )
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
+
+        first_error.map_or(Ok(()), Err)
     }
 }
 

@@ -463,7 +463,13 @@ const ASK_FOR_APPROVAL_LABEL: &str = "Ask for approval";
 const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
 const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] = ["model-with-reasoning", "current-dir", "thread-name"];
+const DEFAULT_STATUS_LINE_ITEMS: [&str; 5] = [
+    "model-with-reasoning",
+    "current-dir",
+    "thread-name",
+    "weekly-reset",
+    "last-response-clock",
+];
 
 /// Common initialization parameters shared by all `ChatWidget` constructors.
 pub(crate) struct ChatWidgetInit {
@@ -558,6 +564,7 @@ pub(crate) struct ChatWidget {
     #[cfg(any(target_os = "windows", test))]
     pub(crate) windows_sandbox_elevated_setup_complete: bool,
     token_info: Option<TokenUsageInfo>,
+    context_snapshot: Option<codex_app_server_protocol::ThreadContextUsage>,
     token_usage_pending: bool,
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
@@ -1119,6 +1126,7 @@ impl ChatWidget {
                 self.bottom_pane
                     .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                 self.token_info = None;
+                self.context_snapshot = None;
                 self.request_pace.forget_total_tokens();
             }
         }
@@ -1157,6 +1165,7 @@ impl ChatWidget {
                     self.bottom_pane
                         .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                     self.token_info = None;
+                    self.context_snapshot = None;
                 }
             }
         }
@@ -2047,6 +2056,7 @@ impl ChatWidget {
 
     pub(crate) fn clear_token_usage(&mut self) {
         self.token_info = None;
+        self.context_snapshot = None;
     }
 }
 

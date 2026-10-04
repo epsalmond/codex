@@ -631,12 +631,13 @@ impl EventProcessor for EventProcessorWithJsonOutput {
         collected.status
     }
 
-    fn print_final_output(&mut self) {
+    fn print_final_output(&mut self) -> std::io::Result<()> {
         if self.emit_final_message_on_shutdown
             && let Some(path) = self.last_message_path.as_deref()
         {
-            handle_last_message(self.final_message.as_deref(), path);
+            handle_last_message(self.final_message.as_deref(), path)?;
         }
+        Ok(())
     }
 }
 

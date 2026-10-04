@@ -752,6 +752,13 @@ impl CodexThread {
         self.session.token_usage_info().await
     }
 
+    /// Latest captured context observation; reading it does not refresh historical clocks.
+    pub async fn context_usage_snapshot(
+        &self,
+    ) -> Option<codex_protocol::context_usage::AgentContextUsage> {
+        self.session.context_usage_snapshot().await
+    }
+
     /// Records a context fragment without creating a new user turn boundary.
     pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
         let item = ContextualUserFragment::into(fragment);

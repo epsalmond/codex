@@ -28,7 +28,7 @@ impl App {
             // ChatWidget's fixed image-paste shortcut is not in the configurable keymap.
             && !(key_event.kind == KeyEventKind::Press
                 && matches!(key_event.code, KeyCode::Char('v' | 'V')))
-            // Empty-draft agent navigation also has fixed legacy-terminal fallbacks.
+            // Empty-draft agent navigation also accepts terminal word-motion aliases.
             && !(self.chat_widget.composer_text_with_pending().is_empty()
                 && (previous_agent_shortcut_matches(key_event, /*allow_word_motion_fallback*/ true)
                     || next_agent_shortcut_matches(key_event, /*allow_word_motion_fallback*/ true)))
@@ -409,12 +409,12 @@ impl App {
                 return;
             }
         }
-        // Some terminals, especially on macOS, encode Option+Left/Right as Option+b/f unless
-        // enhanced keyboard reporting is available. We only treat those word-motion fallbacks as
+        // Some terminals, especially on macOS, encode Option+Left/Right as Alt+b/f even with
+        // enhanced keyboard reporting. We only treat those word-motion aliases as
         // agent-switch shortcuts when the composer is empty so we never steal the expected
         // editing behavior for moving across words inside a draft.
-        let allow_agent_word_motion_fallback = !self.enhanced_keys_supported
-            && self.chat_widget.composer_text_with_pending().is_empty();
+        let allow_agent_word_motion_fallback =
+            self.chat_widget.composer_text_with_pending().is_empty();
         if self.overlay.is_none()
             && self.chat_widget.no_modal_or_popup_active()
             // Alt+Left/Right are also natural word-motion keys in the composer. Keep agent

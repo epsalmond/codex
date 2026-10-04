@@ -4447,12 +4447,11 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                   Subagents
                   Select an agent to watch. ⌥← previous, ⌥→ next.
 
-                  Search subagents
 
-                › • Main [default] (current)  idle context ?
-                  • /root/worker              idle context ?
+                › 1. • Main [default] (current)  idle context ?
+                  2. • /root/worker              idle context ?
 
-                  enter select · esc back
+                  enter select · / search · esc back
                 "###
                 );
                 assert_eq!(take_backfill_counts(&requests), (0, 0));
@@ -4534,11 +4533,12 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                 })
                 .await??;
                 if let AppEvent::AgentPickerThreadsLoaded {
-                    result: Ok(threads),
+                    result: Ok(refresh),
                     ..
                 } = &mut completion
                 {
-                    let child = threads
+                    let child = refresh
+                        .threads
                         .iter_mut()
                         .find(|thread| thread.id == child_thread_id.to_string())
                         .expect("root-scoped response includes the cached child");
@@ -4551,8 +4551,8 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     live_error.status = ThreadStatus::Active {
                         active_flags: Vec::new(),
                     };
-                    threads.push(discovered);
-                    threads.push(live_error);
+                    refresh.threads.push(discovered);
+                    refresh.threads.push(live_error);
                 }
                 Box::pin(app.handle_event(&mut tui, &mut app_server, completion)).await?;
                 if preview_events < 2 {

@@ -71,7 +71,7 @@ impl ChatWidget {
             .and_then(|effort| self.ultra_reasoning_concurrency_warning(effort));
         let sparkle_thread = self.sparkle_thread_for_picker_action(&model);
         Some(SelectionSecondaryAction {
-            key,
+            keys: vec![key],
             footer_hint: hints.into(),
             action: Box::new(move |tx| {
                 tx.send(

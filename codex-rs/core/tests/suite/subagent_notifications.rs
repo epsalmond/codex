@@ -2945,6 +2945,8 @@ mod code_mode_wake_tests;
 mod exec_nested_wake_tests;
 #[path = "subagent_notifications/nested_wake_tests.rs"]
 mod nested_wake_tests;
+#[path = "subagent_notifications/peer_wake_tests.rs"]
+mod peer_wake_tests;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> Result<()> {
@@ -3143,7 +3145,10 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> R
     let followup_output = collaboration_responses[1]
         .function_call_output_text(FOLLOWUP_CALL_ID)
         .expect("requester follow-up tool output");
-    assert_eq!(followup_output, "");
+    assert_eq!(
+        followup_output,
+        "Follow-up accepted for turn processing; this does not confirm startup or completion."
+    );
     wait_for_event(worker_thread.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

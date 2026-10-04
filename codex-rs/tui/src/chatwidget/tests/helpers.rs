@@ -37,6 +37,15 @@ pub(super) fn truncated_path_variants(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// Replaces the wall-clock `last-response-clock` status-line value with a fixed-width placeholder.
+///
+/// A one-digit hour absorbs one following space so padded rows keep the same width at any hour.
+pub(crate) fn normalize_response_clock(text: impl Into<String>) -> String {
+    let pattern = regex_lite::Regex::new(r"⏱ (?:\d{2}:\d{2} [AP]M|\d:\d{2} [AP]M ?)")
+        .expect("response clock pattern is valid");
+    pattern.replace_all(&text.into(), "⏱ hh:mm XM").into_owned()
+}
+
 pub(crate) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
     let mut text = text.into();
 
@@ -510,6 +519,7 @@ pub(super) fn handle_token_count_from(
             chat.handle_server_notification(
                 ServerNotification::ThreadTokenUsageUpdated(
                     codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                        context_usage: None,
                         thread_id: thread_id(chat),
                         turn_id: chat
                             .turn_lifecycle
@@ -1170,6 +1180,7 @@ pub(super) fn handle_turn_completed(
 ) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn: app_server_turn(
                 turn_id,
@@ -1185,6 +1196,7 @@ pub(super) fn handle_turn_completed(
 pub(super) fn handle_turn_interrupted(chat: &mut ChatWidget, turn_id: &str) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn: app_server_turn(
                 turn_id,

@@ -84,8 +84,25 @@ For prompts that put these to work, see
 
 codex-shake adds two TUI status-line items: `weekly-reset` (the local time
 your weekly usage window resets) and `last-response-clock` (when the latest
-live response in this session completed). Turn them on with `/statusline`, or
-list them in `tui.status_line` in `~/.codex/config.toml`.
+live response in this session completed). Both are on by default, after the
+upstream defaults (`model-with-reasoning`, `current-dir`, `thread-name`), unless
+you've customized the status line. If you have, add them via `/statusline` or
+`tui.status_line`. Each
+stays hidden until it has data; `weekly-reset` never shows for API-key logins,
+which have no rate-limit windows. To remove them, uncheck them in
+`/statusline`, or set your own list in `tui.status_line` in
+`~/.codex/config.toml`.
+
+Two more items are available from `/statusline` or `tui.status_line`:
+`context-window-usage` shows current context tokens over the model's context
+window (for example, `143K/823K`), and `active-subagents` shows the number of
+working descendants of the displayed thread. The existing `thread-name` item
+shows the session name set by `/rename`.
+
+To use a compact model label in the `model` item, add an optional `short_name`
+to that model's entry in the configured `model_catalog_json`. For example,
+`"short_name": "luna"` displays `luna` in the statusline while other model
+labels continue to use `display_name`.
 
 ### Identifying Shake feature support
 
@@ -150,6 +167,10 @@ for its measurements.
 ### Monitoring subagents
 
 Run `/subagents` to monitor child runs. Each row shows whether a child is mid-turn, idle, closed, or in error, along with its latest reported context tokens against the model window when available. Idle children also show a short preview of their latest final response.
+
+Press `1`–`9` to select a numbered row (`1` is Main), or use arrows and Enter. Press `/` to search names, paths, or IDs; Esc clears search before closing the picker. Ctrl+U clears the query while keeping search active (Cmd+Delete in Ghostty on macOS). Press `X` to archive the selected child and its descendants; the picker keeps the same row selected, clamped to the last remaining row.
+
+With an empty prompt and no popup or overlay, Option/Alt+Left and Option/Alt+Right switch to the previous or next visible agent, including Main. Terminals that send Alt+b/f for these keys are supported, including macOS terminals connected over SSH; with text in the prompt, the keys retain word editing.
 
 ### Subagents on a different model provider
 

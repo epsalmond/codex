@@ -179,6 +179,14 @@ impl AgentPickerState {
         self.details.entry(thread_id).or_default().context_usage = context_usage;
     }
 
+    pub(super) fn set_context_snapshot(
+        &mut self,
+        thread_id: ThreadId,
+        snapshot: codex_app_server_protocol::ThreadContextUsage,
+    ) {
+        self.details.entry(thread_id).or_default().context_snapshot = Some(snapshot);
+    }
+
     pub(super) fn set_error(&mut self, thread_id: ThreadId, is_error: bool) {
         self.details.entry(thread_id).or_default().is_error = is_error;
         self.bump_status_revision(thread_id);
@@ -219,6 +227,7 @@ impl AgentPickerState {
     pub(super) fn clear_details(&mut self, thread_id: ThreadId) {
         self.details.entry(thread_id).or_default().response_preview = None;
         self.details.entry(thread_id).or_default().context_usage = None;
+        self.details.entry(thread_id).or_default().context_snapshot = None;
         self.preview_requests_in_flight.remove(&thread_id);
         self.preview_backfill_attempted.remove(&thread_id);
         self.advance_preview_revision(thread_id);

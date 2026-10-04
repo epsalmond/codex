@@ -120,12 +120,20 @@ pub(crate) enum SelectionRowDisplay {
     SingleLine,
 }
 
+/// How a searchable picker begins accepting query text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SelectionSearchActivation {
+    #[default]
+    Immediate,
+    Slash,
+}
+
 /// One selectable item in the generic selection list.
 pub(crate) type SelectionAction = Box<dyn Fn(&AppEventSender) + Send + Sync>;
 
 /// A second way to accept the highlighted row, sharing its dismissal behavior.
 pub(crate) struct SelectionSecondaryAction {
-    pub key: KeyBinding,
+    pub keys: Vec<KeyBinding>,
     pub action: SelectionAction,
     pub footer_hint: Line<'static>,
 }
@@ -169,6 +177,8 @@ pub(crate) struct SelectionItem {
     pub category_tag: Option<String>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
+    /// Wrapped content below the list for the highlighted row.
+    pub details: Option<Box<dyn Renderable>>,
     pub is_current: bool,
     pub is_default: bool,
     pub is_disabled: bool,
@@ -211,6 +221,7 @@ pub(crate) struct SelectionViewParams {
     pub tabs: Vec<SelectionTab>,
     pub initial_tab_id: Option<String>,
     pub is_searchable: bool,
+    pub search_activation: SelectionSearchActivation,
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
@@ -270,6 +281,7 @@ impl Default for SelectionViewParams {
             tabs: Vec::new(),
             initial_tab_id: None,
             is_searchable: false,
+            search_activation: SelectionSearchActivation::Immediate,
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
@@ -312,6 +324,10 @@ pub(crate) struct ListSelectionView {
     pub(super) dismiss_after_child_accept: bool,
     pub(super) app_event_tx: AppEventSender,
     is_searchable: bool,
+    search_activation: SelectionSearchActivation,
+    search_active: bool,
+    search_footer_hint: Line<'static>,
+    selection_before_search: Option<(Option<String>, usize)>,
     search_query: String,
     search_placeholder: Option<String>,
     col_width_mode: ColumnWidthMode,
@@ -451,6 +467,24 @@ impl ListSelectionView {
             dismiss_after_child_accept: false,
             app_event_tx,
             is_searchable: params.is_searchable,
+            search_activation: params.search_activation,
+            search_active: params.is_searchable
+                && params.search_activation == SelectionSearchActivation::Immediate,
+            search_footer_hint: vec![
+                keymap
+                    .accept
+                    .first()
+                    .copied()
+                    .unwrap_or(crate::key_hint::plain(KeyCode::Enter))
+                    .into(),
+                " select · ".into(),
+                crate::key_hint::plain(KeyCode::Esc).into(),
+                " exit search · ".into(),
+                crate::key_hint::ctrl(KeyCode::Char('c')).into(),
+                " close".into(),
+            ]
+            .into(),
+            selection_before_search: None,
             search_query: String::new(),
             search_placeholder: if params.is_searchable {
                 params.search_placeholder
@@ -532,10 +566,11 @@ impl ListSelectionView {
     }
 
     fn active_footer_hint(&self) -> Option<&Line<'static>> {
-        if let Some(action) = self
-            .selected_actual_idx()
-            .and_then(|idx| self.active_items().get(idx))
-            .and_then(|item| item.secondary_action.as_ref())
+        if (!self.search_active || self.search_activation == SelectionSearchActivation::Immediate)
+            && let Some(action) = self
+                .selected_actual_idx()
+                .and_then(|idx| self.active_items().get(idx))
+                .and_then(|item| item.secondary_action.as_ref())
         {
             return Some(&action.footer_hint);
         }
@@ -580,7 +615,7 @@ impl ListSelectionView {
                     .filter(|actual_idx| self.enabled_actual_idx(*actual_idx).is_some())
             })
             .or_else(|| {
-                (!self.is_searchable)
+                (!self.search_active)
                     .then(|| {
                         self.active_items()
                             .iter()
@@ -589,7 +624,7 @@ impl ListSelectionView {
                     .flatten()
             });
 
-        if self.is_searchable && !self.search_query.is_empty() {
+        if self.search_active && !self.search_query.is_empty() {
             let query_lower = self.search_query.to_lowercase();
             self.filtered_indices = self
                 .active_items()
@@ -674,7 +709,7 @@ impl ListSelectionView {
                     };
                     let name_with_marker = format!("{name}{marker}");
                     let is_disabled = item.is_disabled || item.disabled_reason.is_some();
-                    let wrap_prefix = if self.is_searchable {
+                    let wrap_prefix = if self.search_active {
                         // The number keys don't work when search is enabled (since we let the
                         // numbers be used for the search query).
                         format!("{prefix} ")
@@ -918,6 +953,7 @@ impl ListSelectionView {
 
     #[cfg(test)]
     pub(crate) fn set_search_query(&mut self, query: String) {
+        self.search_active = self.is_searchable;
         self.search_query = query;
         self.apply_filter();
     }
@@ -927,6 +963,9 @@ impl ListSelectionView {
     }
 
     fn footer_hint_lines(&self, width: u16) -> Vec<Line<'_>> {
+        if self.search_active && self.search_activation == SelectionSearchActivation::Slash {
+            return wrap_styled_line(&self.search_footer_hint, width);
+        }
         let Some(hint) = self.active_footer_hint() else {
             return Vec::new();
         };
@@ -998,6 +1037,13 @@ impl ListSelectionView {
     }
 
     fn stacked_side_content(&self) -> &dyn Renderable {
+        if let Some(details) = self
+            .selected_actual_idx()
+            .and_then(|idx| self.active_items().get(idx))
+            .and_then(|item| item.details.as_deref())
+        {
+            return details;
+        }
         self.stacked_side_content
             .as_deref()
             .unwrap_or_else(|| self.side_content.as_ref())
@@ -1099,9 +1145,48 @@ impl BottomPaneView for ListSelectionView {
         // keeps vim-style plain j/k/h/l useful in non-search lists without
         // making those letters impossible to type into a filter.
         let allow_plain_char_navigation =
-            !self.is_searchable || !is_plain_text_key_event(key_event);
+            !self.search_active || !is_plain_text_key_event(key_event);
 
         match key_event {
+            KeyEvent {
+                code: KeyCode::Char('/'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } if self.is_searchable
+                && self.search_activation == SelectionSearchActivation::Slash
+                && !self.search_active =>
+            {
+                self.selection_before_search = self
+                    .selected_actual_idx()
+                    .map(|idx| (self.active_items()[idx].selection_key.clone(), idx));
+                self.search_active = true;
+            }
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } if self.search_active
+                && self.search_activation == SelectionSearchActivation::Slash =>
+            {
+                self.initial_selected_idx = self.selected_actual_idx().or_else(|| {
+                    self.selection_before_search.take().and_then(|(key, idx)| {
+                        key.map_or(Some(idx), |key| {
+                            self.active_items()
+                                .iter()
+                                .position(|item| item.selection_key.as_ref() == Some(&key))
+                        })
+                    })
+                });
+                self.state.selected_idx = None;
+                self.selection_before_search = None;
+                self.search_active = false;
+                self.search_query.clear();
+                self.apply_filter();
+            }
+            _ if self.search_active
+                && crate::key_hint::ctrl(KeyCode::Char('u')).is_press(key_event) =>
+            {
+                self.search_query.clear();
+                self.apply_filter();
+            }
             _ if allow_plain_char_navigation && self.keymap.move_up.is_pressed(key_event) => {
                 self.move_up()
             }
@@ -1135,7 +1220,7 @@ impl BottomPaneView for ListSelectionView {
             KeyEvent {
                 code: KeyCode::Backspace,
                 ..
-            } if self.is_searchable => {
+            } if self.search_active => {
                 self.search_query.pop();
                 self.apply_filter();
             }
@@ -1144,7 +1229,7 @@ impl BottomPaneView for ListSelectionView {
                 modifiers: KeyModifiers::NONE,
                 ..
             } if self.selected_item_has_toggle()
-                && (!self.is_searchable || self.search_query.is_empty()) =>
+                && (!self.search_active || self.search_query.is_empty()) =>
             {
                 self.toggle_selected()
             }
@@ -1152,10 +1237,14 @@ impl BottomPaneView for ListSelectionView {
                 code: KeyCode::Char(' '),
                 modifiers: KeyModifiers::NONE,
                 ..
-            } if self.is_searchable
+            } if self.search_active
                 && self.search_query.is_empty()
                 && self.selected_item_has_toggle_placeholder() => {}
-            _ if self.allow_cancel && self.keymap.cancel.is_pressed(key_event) => {
+            _ if self.allow_cancel
+                && (self.keymap.cancel.is_pressed(key_event)
+                    || self.search_activation == SelectionSearchActivation::Slash
+                        && crate::key_hint::ctrl(KeyCode::Char('c')).is_press(key_event)) =>
+            {
                 self.on_ctrl_c();
             }
             _ if self.keymap.accept.is_pressed(key_event) => {
@@ -1166,7 +1255,7 @@ impl BottomPaneView for ListSelectionView {
                     .selected_actual_idx()
                     .and_then(|idx| self.active_items().get(idx))
                     .and_then(|item| item.secondary_action.as_ref())
-                    .is_some_and(|action| action.key.is_press(key_event)) =>
+                    .is_some_and(|action| action.keys.is_pressed(key_event)) =>
             {
                 self.accept(SelectionActionKind::Secondary);
             }
@@ -1178,7 +1267,7 @@ impl BottomPaneView for ListSelectionView {
                 code: KeyCode::Char(c),
                 modifiers,
                 ..
-            } if self.is_searchable
+            } if self.search_active
                 && !modifiers.contains(KeyModifiers::CONTROL)
                 && !modifiers.contains(KeyModifiers::ALT) =>
             {
@@ -1189,7 +1278,7 @@ impl BottomPaneView for ListSelectionView {
                 code: KeyCode::Char(c),
                 modifiers,
                 ..
-            } if !self.is_searchable
+            } if !self.search_active
                 && !modifiers.contains(KeyModifiers::CONTROL)
                 && !modifiers.contains(KeyModifiers::ALT) =>
             {
@@ -1214,7 +1303,7 @@ impl BottomPaneView for ListSelectionView {
     }
 
     fn handle_paste(&mut self, pasted: String) -> bool {
-        if !self.is_searchable {
+        if !self.search_active {
             return false;
         }
         let Some(pasted) = normalize_pasted_search_query(&pasted) else {
@@ -1304,13 +1393,13 @@ impl Renderable for ListSelectionView {
         let tab_height = tab_bar_height(&self.tabs, inner_width);
         let mut height = self.header_height(inner_width);
         let header_gap = if height == 0 { 0 } else { self.header_gap };
-        let tab_gap = u16::from(tab_height > 0 && self.is_searchable);
+        let tab_gap = u16::from(tab_height > 0 && self.search_active);
         height = height.saturating_add(tab_height + tab_gap);
         height = height.saturating_add(rows_height + 2 + header_gap);
         if self.picker_surface == PickerSurface::Panel {
             height = height.saturating_add(/*rhs*/ 1);
         }
-        if self.is_searchable {
+        if self.search_active {
             height = height.saturating_add(/*rhs*/ 1);
         }
 
@@ -1360,7 +1449,7 @@ impl Renderable for ListSelectionView {
         let minimum_content = u16::from(self.picker_surface == PickerSurface::Panel)
             + header_height.min(/*other*/ 1)
             + tab_height
-            + u16::from(self.is_searchable)
+            + u16::from(self.search_active)
             + 1;
         footer_rows = footer_rows.min(area.height.saturating_sub(minimum_content));
         let [content_area, footer_area] =
@@ -1443,13 +1532,13 @@ impl Renderable for ListSelectionView {
                 header: header_height,
                 header_gap: self.header_gap,
                 tabs: tab_height,
-                search: u16::from(self.is_searchable),
+                search: u16::from(self.search_active),
                 rows: rows_height,
                 side: stacked_side_h,
             },
         );
 
-        if !self.is_searchable && header_area.height < header_height {
+        if !self.search_active && header_area.height < header_height {
             let [header_area, elision_area] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(header_area);
             header.render(header_area, buf);
@@ -1475,7 +1564,7 @@ impl Renderable for ListSelectionView {
         }
 
         // -- Search bar --
-        if self.is_searchable {
+        if self.search_active {
             Line::from(self.search_query.clone()).render(search_area, buf);
             let query_span: Span<'static> = if self.search_query.is_empty() {
                 self.search_placeholder
@@ -1768,7 +1857,7 @@ mod tests {
                             tx.send(AppEvent::UpdateModel("primary".into()))
                         })],
                         secondary_action: Some(SelectionSecondaryAction {
-                            key: crate::key_hint::plain(KeyCode::Char('s')),
+                            keys: vec![crate::key_hint::plain(KeyCode::Char('s'))],
                             action: Box::new(|tx| {
                                 tx.send(AppEvent::UpdateModel("secondary".into()))
                             }),
@@ -3165,3 +3254,7 @@ mod tests {
 #[cfg(test)]
 #[path = "selection_picker_tests.rs"]
 mod picker_tests;
+
+#[cfg(test)]
+#[path = "selection_search_mode_tests.rs"]
+mod search_mode_tests;

@@ -4,11 +4,11 @@
 
 ## Subagent context reduction
 
-Spawned subagents inherit a 272,000-token Shake and compaction cap by default, tightened further when the parent has a lower limit. Within a turn, a child shakes first and compacts if needed; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
+Spawned subagents have a 272,000-token active-context cap by default, alongside inherited limits. Every prepared ordinary child request, including retries, reduces before sampling when needed and stops if still at or above its limits, with failed and cancelled attempts reported separately; see [subagent context reduction](codex-rs/docs/shake.md#subagents).
 
 ## Subagent picker details
 
-The `/subagents` picker shows each child’s status, latest reported context usage, and a short preview of its latest final response when idle. See [monitoring subagents](README.md#monitoring-subagents).
+The `/subagents` picker shows each child’s status, captured context policy and freshness, reduction outcomes, and latest final response when idle. Highlight a row for details. Use numbered selection, `/` search and Esc to leave search, Ctrl+U to clear the query (Cmd+Delete in Ghostty on macOS), and `X` to archive a child while preserving the selected row. Option/Alt+Left/Right also switch visible agents with an empty prompt and no popup or overlay, including terminals that send Alt+b/f over SSH. `/status` shows Shake’s sealed-history-item watermark. See [monitoring subagents](README.md#monitoring-subagents).
 
 ## Wake mode for multi-agent orchestrators
 
@@ -22,7 +22,7 @@ An agent role's `config_file` can now set `model_provider`, so `spawn_agent` run
 
 ## Statusline entries
 
-The TUI statusline can show the weekly usage reset time and the completion time of the latest live response. See [statusline items](README.md#statusline-items).
+The TUI statusline shows the weekly usage reset time and the completion time of the latest live response, and both are now on by default unless you've customized the status line. If you have, add them via `/statusline` or `tui.status_line` in `~/.codex/config.toml`. Otherwise, remove them the same way. See [statusline items](README.md#statusline-items).
 
 ## Installation and self-update
 
@@ -31,6 +31,10 @@ The fork installs as `codex-shake` beside the official `codex` binary and can up
 ## Offline savings estimate
 
 `codex-shake-estimate` estimates Shake savings from local rollout files without sending them to a service. See the [estimator documentation](codex-rs/docs/shake-bench/README.md#offline-savings-estimate).
+
+## `codex exec` output failures
+
+`codex exec` now exits 1 when it cannot write the `--output-last-message` file, after normal shutdown, so CI no longer treats a missing output file as success.
 
 ## Getting the most out of codex-shake
 

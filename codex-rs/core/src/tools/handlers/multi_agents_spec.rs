@@ -478,11 +478,17 @@ fn list_agents_output_schema() -> Value {
                         },
                         "context": {
                             "type": ["object", "null"],
-                            "description": "Active context tokens. basis \"usage\": last model-reported usage plus estimated newer items; \"estimate\": no usage reported since the last history rewrite. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient}) or null. Null when unavailable.",
+                            "description": "Active context tokens. basis \"usage\": provider measurement plus estimated newer context; \"estimate\": local estimate. Optional selected_model, child_policy_enabled, child_active_cap_tokens and model_window_tokens describe the prepared request. observed_at and provider_usage_at are original Unix seconds; missing values are unavailable. last_reduction is the last automatic reduction ({at, before_tokens, after_tokens|null, outcome: shaken|compacted|insufficient|failed|cancelled}) or null. Null when runtime data is unavailable.",
                             "properties": {
                                 "active_tokens": { "type": "integer" },
                                 "basis": { "type": "string", "enum": ["usage", "estimate"] },
-                                "last_reduction": { "type": ["object", "null"] }
+                                "last_reduction": { "type": ["object", "null"] },
+                                "selected_model": { "type": ["string", "null"], "maxLength": 128 },
+                                "child_policy_enabled": { "type": ["boolean", "null"] },
+                                "child_active_cap_tokens": { "type": ["integer", "null"] },
+                                "model_window_tokens": { "type": ["integer", "null"] },
+                                "observed_at": { "type": ["integer", "null"] },
+                                "provider_usage_at": { "type": ["integer", "null"] }
                             }
                         }
                     },
