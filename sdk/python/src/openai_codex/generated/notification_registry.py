@@ -81,6 +81,7 @@ from .v2_all import ThreadStatusChangedNotification
 from .v2_all import ThreadTokenUsageUpdatedNotification
 from .v2_all import ThreadUnarchivedNotification
 from .v2_all import ThreadWakeupsUpdatedNotification
+from .v2_all import ThreadWorkUpdatedNotification
 from .v2_all import TurnCompletedNotification
 from .v2_all import TurnDiffUpdatedNotification
 from .v2_all import TurnModerationMetadataNotification
@@ -165,6 +166,7 @@ KnownNotificationPayload: TypeAlias = (
     | ThreadTokenUsageUpdatedNotification
     | ThreadUnarchivedNotification
     | ThreadWakeupsUpdatedNotification
+    | ThreadWorkUpdatedNotification
     | TurnCompletedNotification
     | TurnDiffUpdatedNotification
     | TurnModerationMetadataNotification
@@ -252,6 +254,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "thread/tokenUsage/updated": ThreadTokenUsageUpdatedNotification,
     "thread/unarchived": ThreadUnarchivedNotification,
     "thread/wakeups/updated": ThreadWakeupsUpdatedNotification,
+    "thread/workStateChanged": ThreadWorkUpdatedNotification,
     "turn/completed": TurnCompletedNotification,
     "turn/diff/updated": TurnDiffUpdatedNotification,
     "turn/moderationMetadata": TurnModerationMetadataNotification,

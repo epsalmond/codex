@@ -191,7 +191,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             thread_watch_manager
                 .note_turn_completed(&conversation_id.to_string(), turn_failed)
                 .await;
-            handle_turn_complete(
+            let terminal_turn_id = event_turn_id.clone();
+            let terminal_output_acknowledged = handle_turn_complete(
                 conversation_id,
                 event_turn_id,
                 turn_complete_event,
@@ -199,6 +200,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &thread_state,
             )
             .await;
+            if terminal_output_acknowledged == Some(true) {
+                conversation.note_root_turn_output_forwarded(&terminal_turn_id);
+            }
         }
         EventMsg::McpStartupUpdate(update) => {
             let (status, error, failure_reason) = match update.status {
@@ -1216,7 +1220,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             thread_watch_manager
                 .note_turn_interrupted(&conversation_id.to_string())
                 .await;
-            handle_turn_interrupted(
+            let terminal_turn_id = event_turn_id.clone();
+            let terminal_output_acknowledged = handle_turn_interrupted(
                 conversation_id,
                 event_turn_id,
                 turn_aborted_event,
@@ -1224,6 +1229,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &thread_state,
             )
             .await;
+            if terminal_output_acknowledged == Some(true) {
+                conversation.note_root_turn_output_forwarded(&terminal_turn_id);
+            }
         }
         EventMsg::ThreadGoalUpdated(thread_goal_event) => {
             let notification = ThreadGoalUpdatedNotification {
@@ -1342,7 +1350,7 @@ async fn emit_turn_completed_with_status(
     event_turn_id: String,
     turn_completion_metadata: TurnCompletionMetadata,
     outgoing: &ThreadScopedOutgoingMessageSender,
-) {
+) -> Option<bool> {
     let (items, items_view) = match turn_completion_metadata.last_agent_message {
         Some(item) => (vec![item], TurnItemsView::Summary),
         None => (Vec::new(), TurnItemsView::NotLoaded),
@@ -1362,8 +1370,8 @@ async fn emit_turn_completed_with_status(
         },
     };
     outgoing
-        .send_server_notification(ServerNotification::TurnCompleted(notification))
-        .await;
+        .send_terminal_server_notification(ServerNotification::TurnCompleted(notification))
+        .await
 }
 
 async fn apply_canonical_item_completed_side_effects(
@@ -1526,7 +1534,7 @@ async fn handle_turn_complete(
     turn_complete_event: TurnCompleteEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
-) {
+) -> Option<bool> {
     let turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
     let context_usage = thread_state.lock().await.context_usage.clone();
 
@@ -1549,7 +1557,7 @@ async fn handle_turn_complete(
         },
         outgoing,
     )
-    .await;
+    .await
 }
 
 async fn handle_turn_interrupted(
@@ -1558,7 +1566,7 @@ async fn handle_turn_interrupted(
     turn_aborted_event: TurnAbortedEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
-) {
+) -> Option<bool> {
     let turn_summary = find_and_remove_turn_summary(conversation_id, thread_state).await;
     let context_usage = thread_state.lock().await.context_usage.clone();
 
@@ -1581,7 +1589,7 @@ async fn handle_turn_interrupted(
         },
         outgoing,
     )
-    .await;
+    .await
 }
 
 async fn respond_to_pending_interrupts(

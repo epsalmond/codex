@@ -26,12 +26,21 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
 
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
+
+#[path = "outgoing_message_terminal_output.rs"]
+mod terminal_output;
+
+#[cfg(test)]
+#[path = "outgoing_message_terminal_output_tests.rs"]
+mod terminal_output_tests;
+
 pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
@@ -144,6 +153,9 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
     outgoing: Arc<OutgoingMessageSender>,
     connection_ids: Arc<Vec<ConnectionId>>,
     thread_id: ThreadId,
+    lifecycle_observer_owner: Option<ConnectionId>,
+    /// Cancels only the wait for the lifecycle observer's terminal-output acknowledgement.
+    terminal_ack_cancel: Option<CancellationToken>,
 }
 
 struct PendingCallbackEntry {
@@ -166,6 +178,8 @@ impl ThreadScopedOutgoingMessageSender {
             outgoing,
             connection_ids: Arc::new(connection_ids),
             thread_id,
+            lifecycle_observer_owner: None,
+            terminal_ack_cancel: None,
         }
     }
 

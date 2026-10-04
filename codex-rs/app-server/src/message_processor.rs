@@ -1295,6 +1295,16 @@ impl MessageProcessor {
                 }
                 Ok(response)
             }
+            ClientRequest::ThreadWorkSubscribe { params, .. } => {
+                self.thread_processor
+                    .thread_work_subscribe(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadWorkShutdownIfQuiescent { params, .. } => {
+                self.thread_processor
+                    .thread_work_shutdown_if_quiescent(&request_id, params)
+                    .await
+            }
             ClientRequest::ThreadResume { params, .. } => {
                 self.thread_processor
                     .thread_resume(
