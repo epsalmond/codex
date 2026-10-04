@@ -3202,6 +3202,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
             models: vec![ModelInfo {
                 slug: text_only_model_slug.to_string(),
                 display_name: "RMCP Text Only".to_string(),
+                short_name: None,
                 description: Some("Test model without image input support".to_string()),
                 default_reasoning_level: None,
                 supported_reasoning_levels: vec![ReasoningEffortPreset {

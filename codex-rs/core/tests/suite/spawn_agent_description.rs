@@ -82,6 +82,7 @@ fn test_model_info(
     ModelInfo {
         slug: slug.to_string(),
         display_name: display_name.to_string(),
+        short_name: None,
         description: Some(description.to_string()),
         default_reasoning_level: Some(default_reasoning_level),
         supported_reasoning_levels,

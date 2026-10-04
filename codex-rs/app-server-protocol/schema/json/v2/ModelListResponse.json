@@ -132,6 +132,14 @@
           },
           "type": "array"
         },
+        "shortName": {
+          "default": null,
+          "description": "Compact label for status-line and other space-constrained surfaces.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "supportedReasoningEfforts": {
           "items": {
             "$ref": "#/definitions/ReasoningEffortOption"

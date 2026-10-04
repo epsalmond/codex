@@ -99,6 +99,14 @@ impl ChatWidget {
         self.bottom_pane.set_active_agent_label(active_agent_label);
     }
 
+    /// Mirrors live navigation state independently of deferred transcript activity.
+    pub(crate) fn set_active_subagents(&mut self, active_subagents: HashSet<ThreadId>) {
+        if self.active_subagents != active_subagents {
+            self.active_subagents = active_subagents;
+            self.refresh_status_line();
+        }
+    }
+
     /// Recomputes footer status-line content from config and current runtime state.
     ///
     /// This method is the status-line orchestrator: it parses configured item identifiers,
@@ -408,6 +416,15 @@ impl ChatWidget {
             .as_ref()
             .and_then(|info| info.model_context_window)
             .or(self.config.model_context_window)
+    }
+
+    pub(super) fn status_line_current_context_tokens(&self) -> Option<i64> {
+        if self.token_usage_pending {
+            return None;
+        }
+        self.token_info
+            .as_ref()
+            .map(|info| info.last_token_usage.tokens_in_context_window())
     }
 
     pub(super) fn status_line_context_remaining_percent(&self) -> Option<i64> {

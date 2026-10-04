@@ -123,6 +123,9 @@ pub struct Model {
     pub upgrade_info: Option<ModelUpgradeInfo>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub display_name: String,
+    /// Compact label for status-line and other space-constrained surfaces.
+    #[serde(default)]
+    pub short_name: Option<String>,
     pub description: String,
     #[serde(default)]
     pub model_specialty: Option<String>,

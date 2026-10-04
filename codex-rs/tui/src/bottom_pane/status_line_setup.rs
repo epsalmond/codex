@@ -107,6 +107,9 @@ pub(crate) enum StatusLineItem {
     #[strum(to_string = "context-used", serialize = "context-usage")]
     ContextUsed,
 
+    /// Current context tokens compared with the model's context window.
+    ContextWindowUsage,
+
     /// Remaining usage on the primary rate limit.
     FiveHourLimit,
 
@@ -156,6 +159,9 @@ pub(crate) enum StatusLineItem {
     /// Current thread title, falling back to its identifier when unnamed.
     ThreadTitle,
 
+    /// Number of subagents currently working.
+    ActiveSubagents,
+
     /// Current workspace notification headline.
     WorkspaceHeadline,
 
@@ -189,6 +195,9 @@ impl StatusLineItem {
             StatusLineItem::ContextUsed => {
                 "Percentage of context window used (omitted when unknown)"
             }
+            StatusLineItem::ContextWindowUsage => {
+                "Current context tokens / total context window (omitted when unknown)"
+            }
             StatusLineItem::FiveHourLimit => {
                 "Remaining usage on the primary usage limit (omitted when unavailable)"
             }
@@ -221,6 +230,7 @@ impl StatusLineItem {
             StatusLineItem::ThreadTitle => {
                 "Current thread title, or thread identifier when unnamed"
             }
+            StatusLineItem::ActiveSubagents => "Number of subagents currently working",
             StatusLineItem::WorkspaceHeadline => {
                 "Workspace notification headline (Enterprise workspaces only; omitted when unavailable)"
             }
@@ -246,6 +256,7 @@ impl StatusLineItem {
             StatusLineItem::ApprovalMode => StatusSurfacePreviewItem::ApprovalMode,
             StatusLineItem::ContextRemaining => StatusSurfacePreviewItem::ContextRemaining,
             StatusLineItem::ContextUsed => StatusSurfacePreviewItem::ContextUsed,
+            StatusLineItem::ContextWindowUsage => StatusSurfacePreviewItem::ContextWindowUsage,
             StatusLineItem::FiveHourLimit => StatusSurfacePreviewItem::FiveHourLimit,
             StatusLineItem::WeeklyLimit => StatusSurfacePreviewItem::WeeklyLimit,
             StatusLineItem::WeeklyReset => StatusSurfacePreviewItem::WeeklyReset,
@@ -262,6 +273,7 @@ impl StatusLineItem {
             StatusLineItem::RawOutput => StatusSurfacePreviewItem::RawOutput,
             StatusLineItem::ThreadName => StatusSurfacePreviewItem::ThreadName,
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
+            StatusLineItem::ActiveSubagents => StatusSurfacePreviewItem::ActiveSubagents,
             StatusLineItem::WorkspaceHeadline => StatusSurfacePreviewItem::WorkspaceHeadline,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
         }

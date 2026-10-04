@@ -45,4 +45,14 @@ impl ModelCatalog {
             .map(|preset| preset.display_name.as_str())
             .unwrap_or_else(|| model_display_name(model))
     }
+
+    pub(crate) fn status_line_display_name<'a>(&'a self, model: &'a str) -> &'a str {
+        self.models
+            .iter()
+            .find(|preset| preset.model == model)
+            .and_then(|preset| preset.short_name.as_deref())
+            .map(str::trim)
+            .filter(|short_name| !short_name.is_empty())
+            .unwrap_or_else(|| self.display_name(model))
+    }
 }

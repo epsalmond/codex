@@ -711,7 +711,11 @@ impl ChatWidget {
     /// git metadata.
     pub(super) fn status_line_value(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
-            StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
+            StatusLineItem::ModelName => Some(
+                self.model_catalog
+                    .status_line_display_name(self.current_model())
+                    .to_string(),
+            ),
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
             StatusLineItem::CurrentDir => {
@@ -757,6 +761,15 @@ impl ChatWidget {
             StatusLineItem::ContextUsed => self
                 .status_line_context_used_percent()
                 .map(|used| format!("Context {used}% used")),
+            StatusLineItem::ContextWindowUsage => {
+                let used = self.status_line_current_context_tokens()?;
+                let window = self.status_line_context_window_size()?;
+                Some(format!(
+                    "{}/{}",
+                    format_tokens_compact(used),
+                    format_tokens_compact(window)
+                ))
+            }
             StatusLineItem::FiveHourLimit => {
                 let (window, is_secondary) = self
                     .rate_limit_snapshots_by_limit_id
@@ -838,6 +851,11 @@ impl ChatWidget {
                 .as_deref()
                 .and_then(normalize_thread_name)
                 .or_else(|| self.thread_id.map(|id| id.to_string())),
+            StatusLineItem::ActiveSubagents => {
+                let count = self.active_subagents.len();
+                let noun = if count == 1 { "agent" } else { "agents" };
+                Some(format!("{count} {noun} working"))
+            }
             StatusLineItem::WorkspaceHeadline => self.status_line_workspace_headline.clone(),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),
         }
@@ -864,6 +882,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::Hostname => StatusLineItem::Hostname,
             StatusSurfacePreviewItem::ThreadName => StatusLineItem::ThreadName,
             StatusSurfacePreviewItem::ThreadTitle => StatusLineItem::ThreadTitle,
+            StatusSurfacePreviewItem::ActiveSubagents => StatusLineItem::ActiveSubagents,
             StatusSurfacePreviewItem::GitBranch => StatusLineItem::GitBranch,
             StatusSurfacePreviewItem::PullRequestNumber => StatusLineItem::PullRequestNumber,
             StatusSurfacePreviewItem::BranchChanges => StatusLineItem::BranchChanges,
@@ -871,6 +890,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::ApprovalMode => StatusLineItem::ApprovalMode,
             StatusSurfacePreviewItem::ContextRemaining => StatusLineItem::ContextRemaining,
             StatusSurfacePreviewItem::ContextUsed => StatusLineItem::ContextUsed,
+            StatusSurfacePreviewItem::ContextWindowUsage => StatusLineItem::ContextWindowUsage,
             StatusSurfacePreviewItem::FiveHourLimit => StatusLineItem::FiveHourLimit,
             StatusSurfacePreviewItem::WeeklyLimit => StatusLineItem::WeeklyLimit,
             StatusSurfacePreviewItem::WeeklyReset => StatusLineItem::WeeklyReset,

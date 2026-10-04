@@ -13,6 +13,7 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
         id: id.to_string(),
         model: format!("{id}-model"),
         display_name: format!("{id} display"),
+        short_name: None,
         description: format!("{id} description"),
         model_specialty: None,
         default_reasoning_effort: ReasoningEffort::Medium,

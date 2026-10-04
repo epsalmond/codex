@@ -8795,6 +8795,13 @@ class Model(BaseModel):
         ),
     ] = None
     service_tiers: Annotated[list[ModelServiceTier] | None, Field(alias="serviceTiers")] = []
+    short_name: Annotated[
+        str | None,
+        Field(
+            alias="shortName",
+            description="Compact label for status-line and other space-constrained surfaces.",
+        ),
+    ] = None
     supported_reasoning_efforts: Annotated[
         list[ReasoningEffortOption], Field(alias="supportedReasoningEfforts")
     ]

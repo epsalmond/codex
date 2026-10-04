@@ -239,6 +239,10 @@ pub struct ModelPreset {
     pub model: String,
     /// Display name shown in UIs.
     pub display_name: String,
+    /// Compact label for surfaces with limited space, such as the TUI status line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub short_name: Option<String>,
     /// Short human description shown in UIs.
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -409,6 +413,10 @@ pub struct ModelInfo {
     pub guardian: Option<GuardianModelPolicy>,
     pub slug: String,
     pub display_name: String,
+    /// Compact label for surfaces with limited space, such as the TUI status line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub short_name: Option<String>,
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reasoning_level: Option<ReasoningEffort>,
@@ -949,6 +957,7 @@ impl From<ModelInfo> for ModelPreset {
             id: info.slug.clone(),
             model: info.slug.clone(),
             display_name: info.display_name,
+            short_name: info.short_name,
             description: info.description.unwrap_or_default(),
             model_specialty: info.model_specialty,
             default_reasoning_effort: info
@@ -1061,6 +1070,7 @@ mod tests {
         ModelInfo {
             slug: "test-model".to_string(),
             display_name: "Test Model".to_string(),
+            short_name: None,
             description: None,
             default_reasoning_level: None,
             supported_reasoning_levels: vec![],
@@ -1910,6 +1920,16 @@ mod tests {
             preset.default_service_tier,
             Some(ServiceTier::Fast.request_value().to_string())
         );
+    }
+
+    #[test]
+    fn model_preset_preserves_short_name() {
+        let preset = ModelPreset::from(ModelInfo {
+            short_name: Some("luna".to_string()),
+            ..test_model(/*spec*/ None)
+        });
+
+        assert_eq!(preset.short_name.as_deref(), Some("luna"));
     }
 
     #[test]

@@ -134,6 +134,7 @@ impl App {
             }
         }
 
+        self.sync_active_subagents();
         let has_non_primary_agent_thread = self
             .agent_navigation
             .has_non_primary_thread(self.primary_thread_id);

@@ -101,6 +101,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
+        short_name: None,
         description: None,
         default_reasoning_level: None,
         supported_reasoning_levels: Vec::new(),

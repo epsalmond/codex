@@ -372,6 +372,7 @@ impl App {
     }
 
     pub(super) fn update_agent_picker_rows_if_present(&mut self) -> bool {
+        self.sync_active_subagents();
         let items = self.agent_picker_selection_items(|_, _| {});
         self.chat_widget
             .update_selection_items_if_present(AGENT_PICKER_VIEW_ID, items)

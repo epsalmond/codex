@@ -12,6 +12,7 @@ fn test_model(model_messages: Option<ModelMessages>) -> ModelInfo {
     ModelInfo {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
+        short_name: None,
         description: None,
         default_reasoning_level: None,
         supported_reasoning_levels: vec![],

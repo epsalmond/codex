@@ -230,7 +230,15 @@ impl App {
             .agent_navigation
             .active_agent_label(self.current_displayed_thread_id(), self.primary_thread_id);
         self.chat_widget.set_active_agent_label(label);
+        self.sync_active_subagents();
         self.sync_side_thread_ui();
+    }
+
+    pub(super) fn sync_active_subagents(&mut self) {
+        self.chat_widget.set_active_subagents(
+            self.agent_navigation
+                .running_subagents(self.current_displayed_thread_id(), self.primary_thread_id),
+        );
     }
 
     pub(super) async fn thread_cwd(&self, thread_id: ThreadId) -> Option<AbsolutePathBuf> {
@@ -1726,6 +1734,7 @@ impl App {
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
+        self.sync_active_subagents();
         Ok(())
     }
 

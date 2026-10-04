@@ -754,6 +754,7 @@ impl App {
     }
 
     pub(super) fn refresh_status_line(&mut self) {
+        self.sync_active_subagents();
         self.chat_widget.refresh_status_line();
     }
 }

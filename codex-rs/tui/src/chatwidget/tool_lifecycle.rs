@@ -143,6 +143,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_sub_agent_activity(&mut self, item: ThreadItem) {
+        // App already updated live navigation state; only transcript rendering is deferred here.
         // Background agents can finish while the parent answer is still streaming.
         // Keep that stream intact until its authoritative message completion.
         // After the turn stops, leftover prompts must not hold up late activity.
