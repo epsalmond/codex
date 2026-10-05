@@ -80,6 +80,11 @@ pub(crate) enum PendingWorkStartResult {
 }
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
+
+pub(super) enum TaskCancellation {
+    Aborted(TurnAbortReason),
+    Failed,
+}
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
@@ -815,20 +820,65 @@ impl Session {
             .turn_metadata_state
             .cancel_git_enrichment_task();
 
+        let failed = abort_reason.is_none() && turn_context.terminal_error.lock().await.is_some();
         let finished_task = {
             let mut active = self.active_turn.lock().await;
             active.as_mut().and_then(|active_turn| {
+                if !active_turn
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| Arc::ptr_eq(&task.turn_context, &turn_context))
+                {
+                    return None;
+                }
+                let failed_cells =
+                    failed.then(|| self.services.code_mode_service.active_cell_ids());
+                // Capture descendants before cell termination or hooks can detach them.
+                let failure_work = failed
+                    .then(|| {
+                        turn_context.agent_assignment.get().and_then(|assignment| {
+                        match self.services.local_agent_runtime.prepare_wake_turn_end(
+                            assignment,
+                            &turn_context.sub_id,
+                            crate::agent::control::TurnEndDisposition::Errored,
+                            || self.input_queue.pause_wakeups(),
+                        ) {
+                            Ok(classification) => Some((assignment.clone(), classification)),
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to classify natural turn failure");
+                                None
+                            }
+                        }
+                    })
+                    })
+                    .flatten();
                 let task = active_turn.task.take()?;
+                if failed {
+                    // Fence work retained by yielded cells before terminating their runtime.
+                    task.cancellation_token.cancel();
+                }
                 task.handle.detach();
                 Some((
                     Arc::clone(&active_turn.turn_state),
                     task.task.reads_pending_input(),
+                    failed_cells,
+                    failure_work,
                 ))
             })
         };
-        let Some((turn_state, read_pending_input)) = finished_task else {
+        let Some((turn_state, read_pending_input, failed_cells, failure_work)) = finished_task
+        else {
             return;
         };
+        if failure_work
+            .as_ref()
+            .is_some_and(|(_, classification)| classification.newly_classified)
+        {
+            self.emit_agent_wakeups_updated().await;
+        }
+        if let Some(cells) = failed_cells {
+            self.services.code_mode_service.interrupt_cells(cells).await;
+        }
         let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -1023,8 +1073,15 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
-        self.classify_wake_turn_end(turn_context.as_ref(), &event)
-            .await;
+        if let Some((assignment, classification)) = failure_work {
+            self.services
+                .local_agent_runtime
+                .finish_wake_turn_end(&assignment, classification)
+                .await;
+        } else {
+            self.classify_wake_turn_end(turn_context.as_ref(), &event)
+                .await;
+        }
         let saved_guardian_completion =
             matches!(event, EventMsg::TurnComplete(_)) && self.is_private_guardian_reviewer().await;
         if !saved_guardian_completion {
@@ -1095,26 +1152,29 @@ impl Session {
             .await
     }
 
-    async fn handle_task_abort(
+    pub(super) async fn cancel_running_task(
         self: &Arc<Self>,
-        mut task: RunningTask,
-        reason: TurnAbortReason,
-        turn_state: &Mutex<TurnState>,
-        error: Option<ErrorEvent>,
-    ) {
+        task: &mut RunningTask,
+        cancellation: &TaskCancellation,
+    ) -> bool {
         let sub_id = task.turn_context.sub_id.clone();
-        if task.cancellation_token.is_cancelled() {
-            return;
+        if task.cancellation_token.is_cancelled()
+            && !matches!(cancellation, TaskCancellation::Failed)
+        {
+            return false;
         }
 
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
         task.cancellation_token.cancel();
-        if reason == TurnAbortReason::Interrupted
-            && task
+        if matches!(cancellation, TaskCancellation::Failed)
+            || (matches!(
+                cancellation,
+                TaskCancellation::Aborted(TurnAbortReason::Interrupted)
+            ) && task
                 .turn_context
                 .config
                 .features
-                .enabled(Feature::CodeModeInterrupt)
+                .enabled(Feature::CodeModeInterrupt))
         {
             self.services
                 .code_mode_service
@@ -1124,7 +1184,6 @@ impl Session {
         task.turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
-        let session_task = task.task;
 
         select! {
             _ = task.done.notified() => {
@@ -1137,9 +1196,26 @@ impl Session {
         task.handle.abort();
         let _ = (&mut task.handle).await;
 
-        session_task
+        task.task
             .abort(Arc::clone(self), Arc::clone(&task.turn_context))
             .await;
+
+        true
+    }
+
+    async fn handle_task_abort(
+        self: &Arc<Self>,
+        mut task: RunningTask,
+        reason: TurnAbortReason,
+        turn_state: &Mutex<TurnState>,
+        error: Option<ErrorEvent>,
+    ) {
+        if !self
+            .cancel_running_task(&mut task, &TaskCancellation::Aborted(reason.clone()))
+            .await
+        {
+            return;
+        }
 
         if reason == TurnAbortReason::Interrupted
             && let Some(marker) = interrupted_turn_history_marker(
@@ -1200,6 +1276,8 @@ impl Session {
         }
     }
 }
+
+mod failure;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

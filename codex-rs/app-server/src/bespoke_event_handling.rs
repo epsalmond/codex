@@ -97,6 +97,7 @@ use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
 use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
@@ -964,7 +965,6 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
             let pending_response = PendingRequestPermissionsResponse {
                 call_id: request.call_id,
-                conversation_id,
                 turn_id: request.turn_id,
                 pending_request_id,
                 outgoing,
@@ -1840,7 +1840,6 @@ async fn on_request_permissions_response(
 ) {
     let PendingRequestPermissionsResponse {
         call_id,
-        conversation_id,
         turn_id,
         pending_request_id,
         outgoing,
@@ -1857,21 +1856,18 @@ async fn on_request_permissions_response(
         // remain PathUri after crossing the app-server boundary.
         Err(err) => {
             let message = format!("failed to localize granted filesystem paths: {err}");
-            handle_error_notification(
-                conversation_id,
-                &turn_id,
-                TurnError {
-                    misalignment: None,
-                    message,
-                    codex_error_info: None,
-                    additional_details: None,
-                },
-                &outgoing,
-                &thread_state,
-            )
-            .await;
-            if let Err(err) = conversation.submit(Op::Interrupt).await {
-                error!("failed to interrupt turn after invalid permission paths: {err}");
+            if let Err(err) = conversation
+                .submit(Op::FailTurn {
+                    turn_id,
+                    error: ErrorEvent {
+                        misalignment: None,
+                        message,
+                        codex_error_info: None,
+                    },
+                })
+                .await
+            {
+                error!("failed to fail turn after invalid permission paths: {err}");
             }
             return;
         }
@@ -1891,7 +1887,6 @@ async fn on_request_permissions_response(
 
 struct PendingRequestPermissionsResponse {
     call_id: String,
-    conversation_id: ThreadId,
     turn_id: String,
     pending_request_id: RequestId,
     outgoing: ThreadScopedOutgoingMessageSender,

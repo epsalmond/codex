@@ -820,6 +820,10 @@ pub(super) async fn submission_loop(
                     interrupt(&sess).await;
                     false
                 }
+                Op::FailTurn { turn_id, error } => {
+                    sess.fail_turn_if_active(&turn_id, error).await;
+                    false
+                }
                 Op::InterruptIfNoPendingInput { turn_id, reply } => {
                     sess.interrupt_turn_if_no_pending_input(&turn_id, reply)
                         .await;

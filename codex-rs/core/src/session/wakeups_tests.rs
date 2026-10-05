@@ -1,10 +1,14 @@
+use super::super::tests::make_session_and_context_with_rx;
 use super::super::tests::make_session_and_context_with_session_source;
 use crate::state::ActiveTurn;
 use codex_features::AgentPolling;
 use codex_protocol::AgentPath;
+use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::turn_input::TurnStartOptions;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
@@ -127,4 +131,48 @@ async fn queue_only_or_automatic_mail_does_not_clear_the_wake_pause() {
 
         assert!(session.input_queue.wakeups_paused());
     }
+}
+
+#[tokio::test]
+async fn stale_failure_finalizer_does_not_pause_newer_generation() {
+    let (session, context, _receiver) = make_session_and_context_with_rx().await;
+    let runtime = &session.services.local_agent_runtime;
+    runtime.enable_wake_mode();
+    let old = runtime
+        .begin_wake_assignment_for_turn(
+            session.thread_id,
+            &SessionSource::Exec,
+            &context.sub_id,
+            /*allow_new_generation*/ true,
+        )
+        .unwrap()
+        .unwrap();
+    context.agent_assignment.set(old).unwrap();
+    let event = EventMsg::TurnComplete(TurnCompleteEvent {
+        turn_id: context.sub_id.clone(),
+        last_agent_message: None,
+        error: Some(ErrorEvent {
+            message: "old failure".to_owned(),
+            codex_error_info: None,
+            misalignment: None,
+        }),
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+        time_to_first_token_ms: None,
+    });
+    session.classify_wake_turn_end(&context, &event).await;
+    assert!(session.input_queue.wakeups_paused());
+    session.input_queue.resume_wakeups();
+    runtime
+        .begin_wake_assignment_for_turn(
+            session.thread_id,
+            &SessionSource::Exec,
+            "newer-turn",
+            /*allow_new_generation*/ true,
+        )
+        .unwrap()
+        .unwrap();
+    session.classify_wake_turn_end(&context, &event).await;
+    assert!(!session.input_queue.wakeups_paused());
 }

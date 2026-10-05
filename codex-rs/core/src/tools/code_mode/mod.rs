@@ -160,19 +160,22 @@ impl CodeModeService {
     }
 
     pub(crate) async fn interrupt_active_cells(&self) {
+        self.interrupt_cells(self.active_cell_ids()).await;
+    }
+
+    pub(crate) fn active_cell_ids(&self) -> Vec<CellId> {
+        self.dispatch_broker.active_cell_ids()
+    }
+
+    pub(crate) async fn interrupt_cells(&self, cells: Vec<CellId>) {
         let Some(session) = self.session.get() else {
             return;
         };
-        join_all(
-            self.dispatch_broker
-                .active_cell_ids()
-                .into_iter()
-                .map(|cell_id| async move {
-                    if let Err(error) = session.terminate(cell_id.clone()).await {
-                        tracing::warn!(%cell_id, %error, "failed to terminate interrupted code-mode cell");
-                    }
-                }),
-        )
+        join_all(cells.into_iter().map(|cell_id| async move {
+            if let Err(error) = session.terminate(cell_id.clone()).await {
+                tracing::warn!(%cell_id, %error, "failed to terminate interrupted code-mode cell");
+            }
+        }))
         .await;
     }
 
