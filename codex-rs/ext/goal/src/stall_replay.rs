@@ -118,7 +118,10 @@ impl Replay {
                             .as_array()
                             .and_then(|parts| parts.first())
                             .and_then(|part| part["text"].as_str())
-                            .is_some_and(|text| text.starts_with("Message Type: NEW_TASK\n"));
+                            .is_some_and(|text| {
+                                crate::stall_observation::agent_text_kind(text)
+                                    == crate::stall_observation::AgentTextKind::TaskAdmission
+                            });
                         if self.counterfactual_auto && !self.admission_replaced && task_admission {
                             self.admission_replaced = true;
                         } else {
@@ -179,10 +182,13 @@ impl Replay {
                         }
                         if let Some(name) = self.names.remove(id) {
                             let output = &payload["output"];
-                            let result = output
-                                .as_str()
-                                .and_then(|text| serde_json::from_str(text).ok())
-                                .unwrap_or_else(|| output.clone());
+                            let kind = if payload["type"] == "custom_tool_call_output" {
+                                crate::stall_observation::OutputBodyKind::Custom
+                            } else {
+                                crate::stall_observation::OutputBodyKind::Function
+                            };
+                            let result =
+                                crate::stall_observation::model_output(&name, kind, output.clone());
                             observer.outcome(id, &name, &result);
                         } else {
                             observer.unknown();

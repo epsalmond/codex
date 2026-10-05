@@ -91,7 +91,7 @@ fn malformed_packaged_rules_and_unbounded_replacements_are_rejected() {
 fn waiting_length_policy_uses_normalized_unicode_characters() -> anyhow::Result<()> {
     let config = settings(&GoalsToml {
         stall_waiting_prefixes: Some(vec!["é".to_owned()]),
-        stall_waiting_text_max_chars: std::num::NonZeroU32::new(1),
+        stall_waiting_text_max_chars: std::num::NonZeroU32::new(/*n*/ 1),
         ..Default::default()
     })
     .map_err(anyhow::Error::msg)?;
