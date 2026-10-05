@@ -19,6 +19,7 @@ use codex_state::ThreadGoal;
 use codex_state::ThreadGoalStatus;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use stall_guard::ContinuationGuard;
 use std::num::NonZeroU32;
 use tempfile::TempDir;
@@ -140,6 +141,117 @@ async fn active_hold_and_report_deduplication_survive_guard_reopen() -> anyhow::
             .await
             .map_err(anyhow::Error::msg)?
     );
+    assert!(
+        !state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(goal.thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn maintenance_and_unknown_snapshots_preserve_holds_but_settings_changes_invalidate_history()
+-> anyhow::Result<()> {
+    let (_home, state, goal) = fixture().await?;
+    let initial = guard(GoalContinuationGuardMode::Defer);
+    empty_turn(&initial, &state, &goal, "turn1").await?;
+    empty_turn(&initial, &state, &goal, "turn2").await?;
+    initial.begin("maintenance", &goal);
+    assert!(
+        !initial
+            .finish(state.thread_goals(), goal.thread_id, "maintenance", &goal)
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(goal.thread_id)
+            .await?
+    );
+    assert!(!initial.restore(&goal, Some("unsupported snapshot")));
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(goal.thread_id)
+            .await?
+    );
+    let encoded = state
+        .thread_goals()
+        .thread_goal_continuation_guard_state(goal.thread_id)
+        .await?;
+    let revised = ContinuationGuard::new(
+        GoalContinuationGuardMode::Defer,
+        NonZeroU32::MIN.saturating_add(/*rhs*/ 1),
+        &GoalsToml {
+            stall_unlinked_timer_recognition: Some(false),
+            ..Default::default()
+        },
+    );
+    assert!(revised.restore(&goal, encoded.as_deref()));
+    state
+        .thread_goals()
+        .clear_thread_goal_continuation_guard(goal.thread_id, &goal.goal_id)
+        .await?;
+    assert!(!empty_turn(&revised, &state, &goal, "turn3").await?);
+    state
+        .thread_goals()
+        .replace_thread_goal_snapshot(&goal)
+        .await?;
+    let off = guard(GoalContinuationGuardMode::Off);
+    assert!(off.restore(&goal, /*serialized*/ None));
+    state
+        .thread_goals()
+        .clear_thread_goal_continuation_guard(goal.thread_id, &goal.goal_id)
+        .await?;
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(goal.thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_actions_and_results_keep_productive_automatic_work_running() -> anyhow::Result<()>
+{
+    let (_home, state, goal) = fixture().await?;
+    let detector = guard(GoalContinuationGuardMode::Defer);
+    for (index, (command, result)) in [
+        ("test", json!({"exit_code":1,"output":"failed assertion"})),
+        ("edit", json!({"exit_code":0,"output":"patch applied"})),
+        ("test", json!({"exit_code":0,"output":"passed"})),
+        (
+            "read new source",
+            json!({"exit_code":0,"output":"new evidence"}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = index.to_string();
+        detector.begin(&id, &goal);
+        detector.admitted(&id);
+        detector.with_turn(&id, |turn| {
+            turn.observer.call(
+                "call",
+                "exec_command",
+                &json!({"cmd":command}),
+                stall_observation::CallKind::Leaf,
+                stall_observation::CallParent::Direct,
+            );
+            turn.observer.outcome("call", "exec_command", &result);
+            turn.observer.final_text("Waiting for the next result");
+        });
+        assert!(
+            !detector
+                .finish(state.thread_goals(), goal.thread_id, &id, &goal)
+                .await
+                .map_err(anyhow::Error::msg)?
+        );
+    }
     assert!(
         !state
             .thread_goals()

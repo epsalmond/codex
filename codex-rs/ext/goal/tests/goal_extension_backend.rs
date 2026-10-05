@@ -99,6 +99,230 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn accepted_result_identity_and_real_async_user_answer_recover_only_detector_holds()
+-> anyhow::Result<()> {
+    let state = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(&state, thread_id).await?;
+    let goal = state
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "Finish the task",
+            codex_state::ThreadGoalStatus::Active,
+            None,
+        )
+        .await?;
+    let config = GoalExtensionConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    state
+        .thread_goals()
+        .record_thread_goal_continuation_guard(
+            thread_id,
+            &goal.goal_id,
+            "unknown old snapshot",
+            codex_state::GoalContinuationDisposition::Defer,
+        )
+        .await?;
+    let harness =
+        GoalExtensionHarness::with_config(state.clone(), thread_id, config.clone()).await?;
+    harness.start_turn("delivery", &TokenUsage::default()).await;
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    let envelope = |id: &str, ciphertext: &str, trigger_turn| -> anyhow::Result<_> {
+        let mut communication = codex_protocol::protocol::InterAgentCommunication::new_encrypted(
+            "/root/child".parse().map_err(anyhow::Error::msg)?,
+            codex_protocol::AgentPath::root(),
+            Vec::new(),
+            ciphertext.to_owned(),
+            trigger_turn,
+        );
+        communication.id = Some(codex_protocol::ResponseItemId::from_server(id.to_owned()));
+        Ok(communication.to_model_input_item())
+    };
+    for item in [
+        envelope(
+            "encrypted-task",
+            "new assignment",
+            /*trigger_turn*/ true,
+        )?,
+        envelope("blank-message", " ", /*trigger_turn*/ false)?,
+    ] {
+        let turn_store = ExtensionData::new("delivery");
+        for contributor in harness.registry.turn_lifecycle_contributors() {
+            contributor
+                .on_item_recorded(&harness.thread_store, &turn_store, &item)
+                .await;
+        }
+        assert!(
+            state
+                .thread_goals()
+                .has_thread_goal_continuation_deferral(thread_id)
+                .await?
+        );
+    }
+    for text in [
+        " ",
+        "Message Type: MESSAGE\nPayload:\n",
+        "Message Type: NEW_TASK\nPayload:\nNew assignment",
+    ] {
+        let item = serde_json::from_value(
+            json!({"type":"agent_message","id":"non-result","author":"child","recipient":"root","content":[{"type":"input_text","text":text}]}),
+        )?;
+        let turn_store = ExtensionData::new("delivery");
+        for contributor in harness.registry.turn_lifecycle_contributors() {
+            contributor
+                .on_item_recorded(&harness.thread_store, &turn_store, &item)
+                .await;
+        }
+        assert!(
+            state
+                .thread_goals()
+                .has_thread_goal_continuation_deferral(thread_id)
+                .await?
+        );
+    }
+    let message: codex_protocol::models::ResponseItem = serde_json::from_value(json!({
+        "type":"agent_message", "id":"report-1", "author":"child", "recipient":"root", "content":[{"type":"input_text","text":"New verified result"}]
+    }))?;
+    let turn_store = ExtensionData::new("delivery");
+    for contributor in harness.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_item_recorded(&harness.thread_store, &turn_store, &message)
+            .await;
+    }
+    assert!(
+        !state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    harness.stop_turn("delivery").await;
+    let encoded = state
+        .thread_goals()
+        .thread_goal_continuation_guard_state(thread_id)
+        .await?
+        .expect("report identity persisted");
+    state
+        .thread_goals()
+        .record_thread_goal_continuation_guard(
+            thread_id,
+            &goal.goal_id,
+            &encoded,
+            codex_state::GoalContinuationDisposition::Defer,
+        )
+        .await?;
+    harness.stop_thread().await;
+    let resumed = GoalExtensionHarness::with_config(state.clone(), thread_id, config).await?;
+    resumed
+        .start_turn("delivery-2", &TokenUsage::default())
+        .await;
+    let turn_store = ExtensionData::new("delivery-2");
+    for contributor in resumed.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_item_recorded(&resumed.thread_store, &turn_store, &message)
+            .await;
+    }
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    // An in-session config callback must not apply the mode kill switch.
+    resumed
+        .config
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .continuation_guard_mode = codex_core::config::GoalContinuationGuardMode::Off;
+    for contributor in resumed.registry.config_contributors() {
+        contributor.on_config_changed(&resumed.session_store, &resumed.thread_store, &(), &());
+    }
+    assert_eq!(
+        resumed
+            .thread_store
+            .get::<GoalExtensionConfig>()
+            .expect("frozen config")
+            .continuation_guard_mode,
+        codex_core::config::GoalContinuationGuardMode::Defer
+    );
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    let encrypted = envelope(
+        "report-2",
+        "new encrypted result",
+        /*trigger_turn*/ false,
+    )?;
+    for contributor in resumed.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_item_recorded(&resumed.thread_store, &turn_store, &encrypted)
+            .await;
+    }
+    assert!(
+        !state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    let encoded = state
+        .thread_goals()
+        .thread_goal_continuation_guard_state(thread_id)
+        .await?
+        .expect("fresh report identity persisted");
+    state
+        .thread_goals()
+        .record_thread_goal_continuation_guard(
+            thread_id,
+            &goal.goal_id,
+            &encoded,
+            codex_state::GoalContinuationDisposition::Defer,
+        )
+        .await?;
+    for contributor in resumed.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_item_recorded(&resumed.thread_store, &turn_store, &encrypted)
+            .await;
+    }
+    assert!(
+        state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    let answer =
+        codex_protocol::items::TurnItem::UserMessage(codex_protocol::items::UserMessageItem {
+            id: "actual-async-answer".to_owned(),
+            client_id: None,
+            content: vec![codex_protocol::user_input::UserInput::Text {
+                text: "Proceed with the next step".to_owned(),
+                text_elements: vec![],
+            }],
+        });
+    for contributor in resumed.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_item_completed(&resumed.thread_store, &turn_store, &answer)
+            .await;
+    }
+    assert!(
+        !state
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn installed_goal_tools_apply_maximum_token_budget() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -107,7 +331,6 @@ async fn installed_goal_tools_apply_maximum_token_budget() -> anyhow::Result<()>
     harness.thread_store.insert(GoalExtensionConfig {
         enabled: true,
         max_goal_token_budget: Some(100),
-        continuation_guard_mode: codex_core::config::GoalContinuationGuardMode::Off,
         ..Default::default()
     });
     let tools = harness.tools();
@@ -879,7 +1102,15 @@ async fn failed_execution_turns_block_goal_unless_a_tool_succeeds() -> anyhow::R
         let runtime = test_runtime().await?;
         let thread_id = test_thread_id()?;
         seed_thread_metadata(runtime.as_ref(), thread_id).await?;
-        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        let harness = GoalExtensionHarness::with_config(
+            runtime.clone(),
+            thread_id,
+            GoalExtensionConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .await?;
         harness.start_turn("turn-1", &TokenUsage::default()).await;
 
         let tools = harness.tools();
@@ -1669,6 +1900,7 @@ struct GoalExtensionHarness {
     thread_store: ExtensionData,
     goal_service: Arc<GoalService>,
     sink: Arc<RecordingEventSink>,
+    config: Arc<Mutex<GoalExtensionConfig>>,
 }
 
 impl GoalExtensionHarness {
@@ -1676,6 +1908,25 @@ impl GoalExtensionHarness {
         runtime: Arc<codex_state::StateRuntime>,
         thread_id: ThreadId,
     ) -> anyhow::Result<Self> {
+        Self::with_config(
+            runtime,
+            thread_id,
+            GoalExtensionConfig {
+                enabled: true,
+                continuation_guard_mode: codex_core::config::GoalContinuationGuardMode::Off,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn with_config(
+        runtime: Arc<codex_state::StateRuntime>,
+        thread_id: ThreadId,
+        config: GoalExtensionConfig,
+    ) -> anyhow::Result<Self> {
+        let config = Arc::new(Mutex::new(config));
+        let source = Arc::clone(&config);
         let sink = Arc::new(RecordingEventSink::default());
         let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
@@ -1686,11 +1937,11 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            |_| GoalExtensionConfig {
-                enabled: true,
-                max_goal_token_budget: None,
-                continuation_guard_mode: codex_core::config::GoalContinuationGuardMode::Off,
-                ..Default::default()
+            move |_| {
+                source
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
             },
         );
         let registry = Arc::new(builder.build());
@@ -1717,6 +1968,7 @@ impl GoalExtensionHarness {
             thread_store,
             goal_service,
             sink,
+            config,
         })
     }
 
@@ -1760,6 +2012,7 @@ impl GoalExtensionHarness {
             thread_store,
             goal_service: Arc::clone(&self.goal_service),
             sink: Arc::clone(&self.sink),
+            config: Arc::clone(&self.config),
         })
     }
 
