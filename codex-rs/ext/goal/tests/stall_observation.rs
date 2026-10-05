@@ -4,6 +4,8 @@
 mod stall;
 #[path = "../src/stall_observation.rs"]
 mod stall_observation;
+#[path = "../src/stall_settings.rs"]
+mod stall_settings;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -148,7 +150,14 @@ fn waiting_commentary_does_not_mask_waits_but_substantive_commentary_does() {
         ("Completed the next requested analysis section.", true),
     ] {
         let mut observer = empty();
-        observer.commentary_text(commentary, stall::WAITING_PREFIXES);
+        observer.commentary_text(
+            commentary,
+            &stall_settings::waiting_prefixes(None)
+                .expect("valid packaged defaults")
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(observer.finish().activity, expected);
     }
 }

@@ -1963,7 +1963,7 @@
         },
         "stall_waiting_prefixes": {
           "default": null,
-          "description": "Replacement assistant-final waiting prefixes: at most 32 literals, each at most 64 Unicode characters as written and nonempty after whitespace normalization. Unset preserves defaults; an empty list disables only this prefix rule. Matching lowercases, collapses whitespace, and normalizes curly apostrophes using the goal extension's shared matcher; the final-text limit stays fixed at 512 characters.",
+          "description": "Replacement assistant final or commentary waiting prefixes: at most 32 literals, each at most 64 Unicode characters as written and nonempty after whitespace normalization. Unset preserves defaults; an empty list disables only this prefix rule. Matching lowercases, collapses whitespace, and normalizes curly apostrophes using the goal extension's shared matcher; normalized message text is limited to 512 characters.",
           "items": {
             "maxLength": 64,
             "minLength": 1,

@@ -4,6 +4,7 @@ codex_rust_crate(
     name = "goal",
     compile_data = glob([
         "templates/**",
+        "config/**",
     ]),
     crate_name = "codex_goal_extension",
     integration_compile_data_extra = [
@@ -12,5 +13,9 @@ codex_rust_crate(
         "src/stall.rs",
         "src/stall_observation.rs",
         "src/stall_replay.rs",
-    ] + glob(["templates/**"]),
+        "src/stall_settings.rs",
+    ] + glob([
+        "templates/**",
+        "config/**",
+    ]),
 )
