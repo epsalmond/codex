@@ -1,5 +1,27 @@
 load("//:defs.bzl", "codex_rust_crate")
 
+filegroup(
+    name = "stall_warning_templates",
+    srcs = [
+        "templates/goals/stall_held.md",
+        "templates/goals/stall_observed.md",
+    ],
+    visibility = ["//codex-rs/tui:__pkg__"],
+)
+
+filegroup(
+    name = "stall_replay_test_sources",
+    srcs = [
+        "config/continuation-defaults.v1.json",
+        "src/stall.rs",
+        "src/stall_observation.rs",
+        "src/stall_output.rs",
+        "src/stall_replay.rs",
+        "src/stall_settings.rs",
+    ],
+    visibility = ["//codex-rs/app-server:__pkg__"],
+)
+
 codex_rust_crate(
     name = "goal",
     compile_data = glob([
@@ -12,11 +34,11 @@ codex_rust_crate(
         "src/steering.rs",
         "src/stall.rs",
         "src/stall_observation.rs",
+        "src/stall_output.rs",
         "src/stall_replay.rs",
         "src/stall_settings.rs",
-        "src/stall_guard.rs",
         "src/stall_live.rs",
-        "src/stall_output.rs",
+        "src/stall_guard.rs",
     ] + glob([
         "templates/**",
         "config/**",

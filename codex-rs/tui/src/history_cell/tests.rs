@@ -38,6 +38,23 @@ use rmcp::model::ContentBlock;
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
 #[test]
+fn goal_continuation_guard_warning_snapshots() -> anyhow::Result<()> {
+    for kind in ["held", "observed"] {
+        let resource = format!("../ext/goal/templates/goals/stall_{kind}.md");
+        let path = codex_utils_cargo_bin::find_resource!(resource)?;
+        let message = std::fs::read_to_string(path)?;
+        let cell = new_warning_event(message.trim().to_owned());
+        for width in [40, 80] {
+            insta::assert_snapshot!(
+                format!("goal_stall_{kind}_{width}"),
+                render_lines(&cell.transcript_lines(width)).join("\n")
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn connected_server_version_notice_snapshot() {
     let target = crate::AppServerTarget::Remote {
         endpoint: crate::RemoteAppServerEndpoint::UnixSocket {

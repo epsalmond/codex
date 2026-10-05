@@ -1,0 +1,8 @@
+---
+source: tui/src/history_cell/tests.rs
+expression: "render_lines(&cell.transcript_lines(width)).join(\"\\n\")"
+---
+⚠ Repeated automatic goal turns are
+  suspected of making no progress.
+  Observation mode leaves continuation
+  enabled.
