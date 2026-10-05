@@ -9,15 +9,113 @@ use crate::stall::normalized;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+#[path = "stall_output.rs"]
+mod output;
+
 pub(crate) const MAX_CALLS: usize = 256;
 pub(crate) const MAX_ID_BYTES: usize = 512;
 pub(crate) const MAX_NAME_BYTES: usize = 256;
 use crate::stall_settings::StallSettings;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentTextKind {
+    Empty,
+    TaskAdmission,
+    Result,
+}
+
+pub(crate) fn agent_text_kind(text: &str) -> AgentTextKind {
+    if text.trim().is_empty()
+        || text.starts_with("Message Type:")
+            && text
+                .split_once("\nPayload:\n")
+                .is_none_or(|(_, payload)| payload.trim().is_empty())
+    {
+        AgentTextKind::Empty
+    } else if text.starts_with("Message Type: NEW_TASK\n") {
+        AgentTextKind::TaskAdmission
+    } else {
+        AgentTextKind::Result
+    }
+}
+
+/// Classify the readable transport header separately from encrypted payloads.
+pub(crate) fn agent_content_kind(
+    content: &[codex_protocol::models::AgentMessageInputContent],
+) -> AgentTextKind {
+    use codex_protocol::models::AgentMessageInputContent;
+    let readable = content
+        .iter()
+        .filter_map(|part| match part {
+            AgentMessageInputContent::InputText { text } => Some(text.as_str()),
+            AgentMessageInputContent::EncryptedContent { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if readable.starts_with("Message Type: NEW_TASK\n") {
+        return AgentTextKind::TaskAdmission;
+    }
+    let encrypted_payload = content.iter().any(|part| matches!(part,
+        AgentMessageInputContent::EncryptedContent { encrypted_content } if !encrypted_content.trim().is_empty()));
+    if encrypted_payload || agent_text_kind(&readable) == AgentTextKind::Result {
+        AgentTextKind::Result
+    } else {
+        AgentTextKind::Empty
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CallKind {
     Leaf,
     Wrapper,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum OutputBodyKind {
+    Function,
+    Custom,
+}
+
+/// Translate only owned transport bodies; arbitrary native text stays verbatim.
+pub(crate) fn model_output(name: &str, kind: OutputBodyKind, value: Value) -> Value {
+    let name = name.strip_prefix("functions.").unwrap_or(name);
+    if matches!(kind, OutputBodyKind::Custom) {
+        let mut parts = match value {
+            Value::String(text) => vec![serde_json::json!({"type":"input_text", "text":text})],
+            Value::Array(parts) => parts,
+            value => return value,
+        };
+        for part in &mut parts {
+            if matches!(part["type"].as_str(), Some("input_text" | "output_text")) {
+                part["type"] = Value::String("input_text".to_owned());
+            }
+        }
+        return Value::Array(parts);
+    }
+    if matches!(name, "exec_command" | "write_stdin") {
+        if let Some(text) = value.as_str() {
+            if let Some(parsed) = output::terminal_text(text) {
+                return parsed;
+            }
+            if let Ok(parsed) = serde_json::from_str::<Value>(text)
+                && parsed.get("output").is_some()
+                && (parsed.get("exit_code").is_some() || parsed.get("session_id").is_some())
+            {
+                return parsed;
+            }
+        }
+        if let Some(parts) = value.as_array()
+            && parts.len() == 1
+            && matches!(
+                parts[0]["type"].as_str(),
+                Some("input_text" | "output_text")
+            )
+            && let Some(parsed) = parts[0]["text"].as_str().and_then(output::terminal_text)
+        {
+            return parsed;
+        }
+    }
+    value
 }
 
 #[derive(Clone, Copy)]
@@ -74,6 +172,20 @@ impl TurnObserver {
         self.fresh_input = true;
     }
     pub(crate) fn external_result(&mut self, content: &Value) {
+        if content.is_array()
+            && let Ok(parts) = serde_json::from_value::<
+                Vec<codex_protocol::models::AgentMessageInputContent>,
+            >(content.clone())
+        {
+            match agent_content_kind(&parts) {
+                AgentTextKind::TaskAdmission => return,
+                AgentTextKind::Empty => {
+                    self.unknown();
+                    return;
+                }
+                AgentTextKind::Result => {}
+            }
+        }
         let text = match content {
             Value::Array(parts) => {
                 let texts: Option<Vec<_>> = parts
@@ -95,19 +207,19 @@ impl TurnObserver {
                 return;
             }
         };
-        if text.trim().is_empty()
-            || text.starts_with("Message Type:")
-                && text
-                    .split_once("\nPayload:\n")
-                    .is_none_or(|(_, payload)| payload.trim().is_empty())
-        {
-            self.unknown();
-            return;
+        match agent_text_kind(&text) {
+            AgentTextKind::Empty => {
+                self.unknown();
+                return;
+            }
+            AgentTextKind::TaskAdmission => return,
+            AgentTextKind::Result => {}
         }
         self.external_result = Some(digest((self.external_result, normalized(&text))));
     }
     pub(crate) fn final_text(&mut self, text: &str) {
         self.final_kind = FinalKind::from_text(text, &self.settings);
+        self.activity |= self.final_kind == FinalKind::Other;
     }
     pub(crate) fn commentary_text(&mut self, text: &str) {
         self.activity |= FinalKind::from_text(text, &self.settings) == FinalKind::Other;
@@ -226,12 +338,12 @@ fn observable_outcome(result: &Value) -> bool {
         Value::String(text) => !text.trim().is_empty(),
         Value::Array(parts) => !parts.is_empty() && parts.iter().all(observable_outcome),
         Value::Object(fields) => match fields.get("type").and_then(Value::as_str) {
-            Some("input_text" | "output_text") => fields
+            Some("input_text" | "output_text" | "text") => fields
                 .get("text")
                 .and_then(Value::as_str)
                 .is_some_and(|text| !text.trim().is_empty()),
-            Some("encrypted_content" | "input_image" | "input_audio") => false,
-            _ => !fields.is_empty(),
+            Some(_) => false,
+            None => !fields.is_empty(),
         },
         Value::Bool(_) | Value::Number(_) => true,
     }

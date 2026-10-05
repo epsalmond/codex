@@ -343,3 +343,39 @@ fn action(id: &str, command: &str, output: &str, exit_code: i32) -> TurnObserver
     );
     turn
 }
+
+#[test]
+fn task_admissions_and_blank_result_envelopes_do_not_supply_fresh_results() {
+    for (content, complete) in [
+        (
+            "Message Type: NEW_TASK\nPayload:\nPerform the next task",
+            true,
+        ),
+        ("Message Type: MESSAGE\nPayload:\n", false),
+        ("", false),
+    ] {
+        let mut observer = empty();
+        observer.external_result(&json!([{"type":"input_text","text":content}]));
+        let observation = observer.finish();
+        assert_eq!(
+            (observation.complete, observation.external_result),
+            (complete, None)
+        );
+    }
+}
+
+#[test]
+fn substantive_final_evidence_survives_later_empty_and_waiting_messages() {
+    for signoff in ["", "Waiting for the current result"] {
+        let mut detector = StallDetector::default();
+        for index in 1..=3 {
+            let mut turn = empty();
+            turn.final_text("Verified new evidence; the next action changed.");
+            turn.final_text(signoff);
+            assert_eq!(
+                detector.observe(&index.to_string(), turn.finish(), threshold()),
+                Assessment::NotSuspected
+            );
+        }
+    }
+}
