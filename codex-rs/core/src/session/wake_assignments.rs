@@ -69,7 +69,11 @@ impl Session {
         Ok(())
     }
 
-    pub(crate) fn classify_wake_turn_end(&self, turn_context: &TurnContext, event: &EventMsg) {
+    pub(crate) async fn classify_wake_turn_end(
+        &self,
+        turn_context: &TurnContext,
+        event: &EventMsg,
+    ) {
         let Some(assignment) = turn_context.agent_assignment.get() else {
             return;
         };
@@ -84,11 +88,30 @@ impl Session {
             },
             _ => unreachable!("turn finalization only constructs terminal events"),
         };
-        match self.services.local_agent_runtime.classify_wake_turn_end(
-            assignment,
-            &turn_context.sub_id,
-            disposition,
-        ) {
+        let runtime = &self.services.local_agent_runtime;
+        let phase = if disposition == TurnEndDisposition::Errored {
+            match runtime.prepare_wake_turn_end(
+                assignment,
+                &turn_context.sub_id,
+                disposition,
+                || self.input_queue.pause_wakeups(),
+            ) {
+                Ok(classification) => {
+                    if classification.newly_classified {
+                        self.emit_agent_wakeups_updated().await;
+                    }
+                    Ok(runtime
+                        .finish_wake_turn_end(assignment, classification)
+                        .await)
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            runtime
+                .classify_wake_turn_end(assignment, &turn_context.sub_id, disposition)
+                .await
+        };
+        match phase {
             Ok(AssignmentPhase::Waiting) => {
                 let _ = turn_context.agent_assignment_waiting.set(true);
             }

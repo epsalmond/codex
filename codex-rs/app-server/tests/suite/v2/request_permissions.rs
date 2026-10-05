@@ -440,3 +440,82 @@ async fn request_permissions_round_trip() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invalid_permission_paths_fail_the_originating_turn() -> Result<()> {
+    let codex_home = tempfile::TempDir::new()?;
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_once(
+        &server,
+        create_request_permissions_sse_response("invalid-grant")?,
+    )
+    .await;
+    MockResponsesConfig::new(&server.uri())
+        .with_approval_policy("on-request")
+        .enable_feature(Feature::RequestPermissionsTool)
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app.start_thread(ThreadStartParams::default()).await?;
+    let TurnStartResponse { turn, .. } = app
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "request access".to_owned(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    let ServerRequest::PermissionsRequestApproval { request_id, .. } = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_request_message(),
+    )
+    .await??
+    else {
+        panic!("expected permission request");
+    };
+    app.send_response(
+        request_id,
+        json!({ "permissions": { "fileSystem": { "write": ["relative/grant"] } } }),
+    )
+    .await?;
+    let error: codex_app_server_protocol::ErrorNotification =
+        timeout(DEFAULT_READ_TIMEOUT, app.read_notification("error")).await??;
+    assert_eq!(
+        (
+            error.turn_id,
+            error.error.codex_error_info,
+            error.will_retry
+        ),
+        (turn.id.clone(), None, false)
+    );
+    let completed: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(
+        (completed.turn.id, completed.turn.status),
+        (turn.id, TurnStatus::Failed)
+    );
+    assert!(
+        completed
+            .turn
+            .error
+            .expect("failed turn error")
+            .message
+            .contains("failed to localize granted filesystem paths")
+    );
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "invalid grant must not resume the model"
+    );
+    Ok(())
+}

@@ -237,11 +237,14 @@ async fn evicted_waiting_wake_agent_reports_interruption_once() {
         .commit()
         .expect("leaf reservation commits");
     assert_eq!(
-        control.runtime.classify_wake_turn_end(
-            &first_assignment,
-            &turn.sub_id,
-            TurnEndDisposition::Succeeded,
-        ),
+        control
+            .runtime
+            .classify_wake_turn_end(
+                &first_assignment,
+                &turn.sub_id,
+                TurnEndDisposition::Succeeded,
+            )
+            .await,
         Ok(AssignmentPhase::Waiting)
     );
     turn.agent_assignment_waiting

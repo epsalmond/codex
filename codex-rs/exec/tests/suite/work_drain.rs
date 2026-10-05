@@ -310,10 +310,10 @@ async fn failed_wake_turn_exits_non_zero_with_the_completed_answer() -> anyhow::
     Ok(())
 }
 
-/// A failed root turn detaches its still-running child, whose report can never reach the root,
-/// so exec exits 1 without waiting for that child.
+/// A failed root turn cancels its still-running child before failed completion,
+/// so the default drain exits 1 within the bound despite the held child response.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_root_turn_does_not_wait_for_detached_children() -> anyhow::Result<()> {
+async fn failed_root_turn_cancels_children_and_exits_within_bound() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     // Holding the sender keeps the child running for the whole test.
