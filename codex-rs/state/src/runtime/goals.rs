@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct GoalStore {
-    pool: Arc<SqlitePool>,
+    pub(super) pool: Arc<SqlitePool>,
 }
 
 impl GoalStore {
@@ -110,12 +110,17 @@ ON CONFLICT(thread_id) DO UPDATE SET
             r#"
 INSERT INTO thread_goal_continuation_deferrals (thread_id)
 VALUES (?)
-ON CONFLICT(thread_id) DO NOTHING
+ON CONFLICT(thread_id) DO UPDATE SET kind = 'fork', goal_id = NULL
             "#,
         )
         .bind(goal.thread_id.to_string())
         .execute(&mut *transaction)
         .await?;
+
+        sqlx::query("DELETE FROM thread_goal_continuation_guard_state WHERE thread_id = ?")
+            .bind(goal.thread_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
 
         transaction.commit().await?;
 
@@ -130,8 +135,9 @@ ON CONFLICT(thread_id) DO NOTHING
             r#"
 SELECT EXISTS(
     SELECT 1
-    FROM thread_goal_continuation_deferrals
-    WHERE thread_id = ?
+    FROM thread_goal_continuation_deferrals d
+    JOIN thread_goals g ON g.thread_id = d.thread_id
+    WHERE d.thread_id = ? AND (d.goal_id IS NULL OR d.goal_id = g.goal_id)
 )
             "#,
         )
