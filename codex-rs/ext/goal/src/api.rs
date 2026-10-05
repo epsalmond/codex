@@ -276,6 +276,16 @@ impl GoalService {
         };
 
         if let Some(runtime) = runtime.as_ref() {
+            let replaced_or_changed = previous_goal.as_ref().is_none_or(|previous| {
+                previous.goal_id != goal.goal_id || previous.objective != goal.objective
+            });
+            if status == Some(codex_state::ThreadGoalStatus::Active) || replaced_or_changed {
+                runtime
+                    .guard()
+                    .recover(state_db.thread_goals(), &goal, /*report*/ None)
+                    .await
+                    .map_err(GoalServiceError::Internal)?;
+            }
             runtime.clear_pending_turn_start_options().await;
         }
 

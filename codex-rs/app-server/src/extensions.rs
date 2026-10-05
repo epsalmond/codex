@@ -84,6 +84,11 @@ pub(crate) fn thread_extensions(
             |config: &Config| GoalExtensionConfig {
                 enabled: config.features.enabled(codex_features::Feature::Goals),
                 max_goal_token_budget: config.max_goal_token_budget,
+                continuation_guard_mode: config.goal_continuation_guard_mode,
+                stall_after_no_progress_turns: config.goal_stall_after_no_progress_turns,
+                stall_waiting_prefixes: config.goal_stall_waiting_prefixes.clone(),
+                stall_waiting_text_max_chars: config.goal_stall_waiting_text_max_chars,
+                stall_unlinked_timer_recognition: config.goal_stall_unlinked_timer_recognition,
             },
         );
     }

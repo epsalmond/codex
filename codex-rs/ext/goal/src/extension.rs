@@ -54,6 +54,25 @@ use crate::tool::GoalToolExecutor;
 pub struct GoalExtensionConfig {
     pub enabled: bool,
     pub max_goal_token_budget: Option<i64>,
+    pub continuation_guard_mode: codex_core::config::GoalContinuationGuardMode,
+    pub stall_after_no_progress_turns: std::num::NonZeroU32,
+    pub stall_waiting_prefixes: Option<Vec<String>>,
+    pub stall_waiting_text_max_chars: Option<std::num::NonZeroU32>,
+    pub stall_unlinked_timer_recognition: Option<bool>,
+}
+
+impl Default for GoalExtensionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_goal_token_budget: None,
+            continuation_guard_mode: Default::default(),
+            stall_after_no_progress_turns: std::num::NonZeroU32::MIN.saturating_add(/*rhs*/ 1),
+            stall_waiting_prefixes: None,
+            stall_waiting_text_max_chars: None,
+            stall_unlinked_timer_recognition: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -109,7 +128,7 @@ where
             );
             let tools_available_for_thread =
                 input.persistent_thread_state_available && tools_visible_for_thread;
-            input.thread_store.insert(config);
+            input.thread_store.insert(config.clone());
             let accounting_state = input
                 .thread_store
                 .get_or_init::<GoalAccountingState>(GoalAccountingState::default);
@@ -154,10 +173,24 @@ where
                         tools_available_for_thread,
                         tools_visible_for_thread,
                         root_accounting_state,
+                        guard: crate::stall_guard::ContinuationGuard::new(
+                            config.continuation_guard_mode,
+                            config.stall_after_no_progress_turns,
+                            &codex_core::config::GoalsToml {
+                                stall_waiting_prefixes: config.stall_waiting_prefixes.clone(),
+                                stall_waiting_text_max_chars: config.stall_waiting_text_max_chars,
+                                stall_unlinked_timer_recognition: config
+                                    .stall_unlinked_timer_recognition,
+                                ..Default::default()
+                            },
+                        ),
                     },
                 )
             });
             runtime.set_enabled(enabled);
+            if let Err(error) = runtime.initialize_guard().await {
+                tracing::warn!(%error, "failed to load persisted goal continuation guard");
+            }
             self.goal_service.register_runtime(&runtime);
         })
     }
@@ -212,7 +245,15 @@ where
         _previous_config: &C,
         new_config: &C,
     ) {
-        let config = (self.goal_config)(new_config);
+        let mut config = (self.goal_config)(new_config);
+        // Guard policy is frozen until a new runtime loads the session.
+        if let Some(previous) = thread_store.get::<GoalExtensionConfig>() {
+            config.continuation_guard_mode = previous.continuation_guard_mode;
+            config.stall_after_no_progress_turns = previous.stall_after_no_progress_turns;
+            config.stall_waiting_prefixes = previous.stall_waiting_prefixes.clone();
+            config.stall_waiting_text_max_chars = previous.stall_waiting_text_max_chars;
+            config.stall_unlinked_timer_recognition = previous.stall_unlinked_timer_recognition;
+        }
         let enabled = config.enabled;
         thread_store.insert(config);
         if let Some(runtime) = goal_runtime_handle(thread_store) {
@@ -242,7 +283,7 @@ where
             if let Err(err) = self
                 .state_dbs
                 .thread_goals()
-                .clear_thread_goal_continuation_deferral(runtime.thread_id())
+                .clear_thread_goal_fork_deferral(runtime.thread_id())
                 .await
             {
                 tracing::warn!("failed to clear deferred goal continuation: {err}");
@@ -323,9 +364,10 @@ where
                 );
                 return;
             }
-            if let Err(err) = runtime
-                .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)
-                .await
+            if runtime.guard().mode != codex_core::config::GoalContinuationGuardMode::Defer
+                && let Err(err) = runtime
+                    .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)
+                    .await
             {
                 input.thread_store.remove::<TurnStartOptions>();
                 tracing::warn!("failed to stop goal after empty responses for {turn_id}: {err}");
@@ -341,6 +383,9 @@ where
                 .await
             {
                 input.thread_store.remove::<TurnStartOptions>();
+                runtime
+                    .guard()
+                    .with_turn(turn_id, |turn| turn.observer.unknown());
                 tracing::warn!(
                     "failed to account active goal progress at turn stop for {turn_id}: {err}"
                 );
@@ -607,8 +652,10 @@ pub fn install_with_backend<C>(
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.turn_lifecycle_contributor(extension.clone());
+    registry.turn_lifecycle_contributor(Arc::new(crate::stall_hooks::GuardContributor));
     registry.token_usage_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension.clone());
+    registry.tool_lifecycle_contributor(Arc::new(crate::stall_hooks::GuardContributor));
     registry.tool_contributor(extension);
 }
 

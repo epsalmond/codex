@@ -1,8 +1,10 @@
 # Goal stall detector replay
 
-These private modules are a foundation for the continuation guard. They do not
-change runtime continuation yet. The detector assesses one completed automatic
-goal turn; manual turns reset suspicion. Missing outcomes, unlinked Code Mode
+These private modules share the active runtime continuation guard's extraction
+and assessment rules. Default `defer` holds an Active goal after two suspicious
+automatic turns; repeated actions first establish a baseline. `observe` warns
+without holding and `off` skips assessment. The detector assesses one completed
+automatic goal turn; manual turns reset suspicion. Missing outcomes, unlinked Code Mode
 calls, unsupported inbound messages, and capped observations remain unknown.
 
 Run the deterministic tests from the repository root:
@@ -17,8 +19,19 @@ The empirical test is ignored by default. To replay local rollout windows:
 CODEX_STALL_CORPUS_MANIFEST=/absolute/private/manifest.json just test -p codex-goal-extension --test stall_replay real_local_episode_replay --run-ignored only --no-capture
 ```
 
-The private JSON manifest has a positive `threshold` and an `episodes` array. Each
-episode specifies `id`, absolute local `path`, inclusive `start_line`/`end_line`,
+The private JSON manifest has an `episodes` array and an optional positive
+`threshold` (collector default 3; use 2 for the shipped guard candidate). This top-level candidate threshold takes precedence over
+`goals.stall_after_no_progress_turns`; the latter is a live-runtime setting and
+is not the replay collector's candidate threshold. Optional `goals` contains
+settings in the same shape as `[goals]` in config.toml. Waiting-prefix replacement,
+normalized text limit, and literal-timer recognition use the same validated
+versioned packaged profile as live execution. Omitted fields use packaged defaults;
+`stall_waiting_prefixes: []` disables prefix matching. Invalid effective settings
+fail the collector instead of producing misleading zero-assessment statistics.
+Replay reports candidate assessments regardless of live `continuation_guard_mode`;
+it does not mutate a runtime goal or apply holds.
+
+Each episode specifies `id`, absolute local `path`, inclusive `start_line`/`end_line`,
 `expected_stall`, and optional `counterfactual_auto`. Labels are used only to
 evaluate the resulting assessments, never as extracted features. Use complete
 turn windows, preserving interleaved user input, returned results, and unknown
@@ -54,5 +67,10 @@ payloads. Tool arguments and outcomes are borrowed for hashing. Only owned
 transport envelope fields are removed; substantive code, targets, ranges,
 status, and output remain part of the action fingerprint. A narrowly recognized
 self-contained timer cell has a leaf outcome even without nested tracing; other
-opaque Code Mode cells remain unknown. Integration must feed this same observer
-from live, linked tool outcomes and trusted turn admission before enabling holds.
+opaque Code Mode cells remain unknown. The active integration feeds this observer
+accepted borrowed tool outcomes, accepted history items, and successful host goal
+admission. Replay admits automatic turns only from structured `goal.internal_context`
+provenance, so changing the human continuation prompt does not alter eligibility.
+Provider-native work that lacks supported output extraction is Unknown in both
+paths. Live recovery persists bounded receipt identities atomically with releasing
+only the detector hold; fork deferrals retain their separate contract.

@@ -63,6 +63,12 @@ async fn empty_goal_continuations_block_after_three_without_activity(
         .with_model("gpt-5.4")
         .enable_feature(Feature::Goals)
         .write(codex_home.path())?;
+    let path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&path)?;
+    std::fs::write(
+        path,
+        format!("{config}\n[goals]\ncontinuation_guard_mode = \"off\"\n"),
+    )?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_managed_config()

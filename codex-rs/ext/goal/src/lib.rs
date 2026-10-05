@@ -8,6 +8,12 @@ mod extension;
 mod metrics;
 mod runtime;
 mod spec;
+mod stall;
+mod stall_guard;
+mod stall_hooks;
+mod stall_live;
+mod stall_observation;
+mod stall_settings;
 mod steering;
 mod tool;
 
