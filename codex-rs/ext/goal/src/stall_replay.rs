@@ -2,10 +2,10 @@
 
 use crate::stall::Assessment;
 use crate::stall::StallDetector;
-use crate::stall::WAITING_PREFIXES;
 use crate::stall_observation::CallKind;
 use crate::stall_observation::CallParent;
 use crate::stall_observation::TurnObserver;
+use crate::stall_settings;
 use serde_json::Value;
 use std::num::NonZeroU32;
 
@@ -18,7 +18,6 @@ pub(crate) struct ReplayStats {
     pub(crate) max_streak: u32,
 }
 
-#[derive(Default)]
 pub(crate) struct Replay {
     observer: Option<TurnObserver>,
     turn_id: String,
@@ -26,7 +25,23 @@ pub(crate) struct Replay {
     names: std::collections::BTreeMap<String, String>,
     counterfactual_auto: bool,
     admission_replaced: bool,
+    waiting_prefixes: Result<Vec<String>, String>,
     pub(crate) stats: ReplayStats,
+}
+
+impl Default for Replay {
+    fn default() -> Self {
+        Self {
+            observer: None,
+            turn_id: String::new(),
+            detector: StallDetector::default(),
+            names: Default::default(),
+            counterfactual_auto: false,
+            admission_replaced: false,
+            waiting_prefixes: stall_settings::waiting_prefixes(None),
+            stats: ReplayStats::default(),
+        }
+    }
 }
 
 impl Replay {
@@ -37,6 +52,8 @@ impl Replay {
         }
     }
     pub(crate) fn record(&mut self, record: &Value, threshold: NonZeroU32) -> Option<Assessment> {
+        let prefixes = self.waiting_prefixes.as_ref().ok()?;
+        let prefixes = prefixes.iter().map(String::as_str).collect::<Vec<_>>();
         let payload = &record["payload"];
         match (record["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
@@ -85,9 +102,9 @@ impl Replay {
                             }
                         } else if payload["role"] == "assistant" {
                             if payload["phase"] == "commentary" {
-                                observer.commentary_text(&text, WAITING_PREFIXES);
+                                observer.commentary_text(&text, &prefixes);
                             } else {
-                                observer.final_text(&text, WAITING_PREFIXES);
+                                observer.final_text(&text, &prefixes);
                             }
                         }
                     }
@@ -174,7 +191,7 @@ impl Replay {
                 }
                 let mut observer = self.observer.take()?;
                 if let Some(text) = payload["last_agent_message"].as_str() {
-                    observer.final_text(text, WAITING_PREFIXES);
+                    observer.final_text(text, &prefixes);
                 }
                 if !payload["error"].is_null() {
                     observer.unknown();

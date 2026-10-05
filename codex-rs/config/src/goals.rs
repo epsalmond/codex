@@ -48,11 +48,11 @@ pub struct GoalsToml {
     /// Repeated actions first establish a baseline, then count repetitions.
     #[schemars(range(min = 1, max = 4294967295u32))]
     pub stall_after_no_progress_turns: Option<NonZeroU32>,
-    /// Replacement assistant-final waiting prefixes: at most 32 literals, each at most
+    /// Replacement assistant final or commentary waiting prefixes: at most 32 literals, each at most
     /// 64 Unicode characters as written and nonempty after whitespace normalization.
     /// Unset preserves defaults; an empty list disables only this prefix rule.
     /// Matching lowercases, collapses whitespace, and normalizes curly apostrophes
-    /// using the goal extension's shared matcher; the final-text limit stays fixed at 512 characters.
+    /// using the goal extension's shared matcher; normalized message text is limited to 512 characters.
     #[serde(default, deserialize_with = "deserialize_waiting_prefixes")]
     #[schemars(schema_with = "waiting_prefixes_schema")]
     pub stall_waiting_prefixes: Option<Vec<String>>,

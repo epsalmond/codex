@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 #[path = "../src/stall.rs"]
 mod stall;
+#[path = "../src/stall_settings.rs"]
+mod stall_settings;
 
 use pretty_assertions::assert_eq;
 use stall::Assessment;
@@ -8,15 +10,22 @@ use stall::FinalKind;
 use stall::StallDetector;
 use stall::Suspicion;
 use stall::TurnObservation;
-use stall::WAITING_PREFIXES;
 use stall::digest;
 use std::num::NonZeroU32;
 
+#[allow(clippy::expect_used)]
 fn turn(text: &str) -> TurnObservation {
     TurnObservation {
         automatic: true,
         complete: true,
-        final_kind: FinalKind::from_text(text, WAITING_PREFIXES),
+        final_kind: FinalKind::from_text(
+            text,
+            &stall_settings::waiting_prefixes(None)
+                .expect("valid packaged defaults")
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        ),
         ..Default::default()
     }
 }

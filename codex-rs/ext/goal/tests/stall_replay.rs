@@ -6,6 +6,8 @@ mod stall;
 mod stall_observation;
 #[path = "../src/stall_replay.rs"]
 mod stall_replay;
+#[path = "../src/stall_settings.rs"]
+mod stall_settings;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;

@@ -16,24 +16,6 @@ pub(crate) fn digest(value: impl Hash) -> Digest {
     })
 }
 
-pub(crate) const WAITING_PREFIXES: &[&str] = &[
-    "waiting",
-    "awaiting",
-    "still waiting",
-    "i am waiting",
-    "i'm waiting",
-    "i am still waiting",
-    "i'm still waiting",
-    "no new input",
-    "no new evidence",
-    "no new results",
-    "no new updates",
-    "no new output",
-    "nothing new",
-    "the agents are fixing",
-    "implementation and validation continue",
-];
-
 pub(crate) fn normalized(text: &str) -> String {
     text.replace(['‘', '’'], "'")
         .to_lowercase()
