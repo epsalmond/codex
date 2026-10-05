@@ -189,3 +189,25 @@ fn unsupported_assistant_parts_are_not_empty_final_evidence() {
         );
     }
 }
+
+#[test]
+fn qualified_opaque_wrappers_remain_unknown() {
+    let mut replay = Replay::default();
+    for index in 0..4 {
+        let id = format!("turn-{index}");
+        let records = [
+            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":id}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<codex_internal_context source=\"goal\">\nContinue working toward the active thread goal."}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["goal.internal_context"]}}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call","name":"functions.exec","input":"opaque_work()"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call","output":"pending"}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":id,"last_agent_message":"waiting"}}),
+        ];
+        assert_eq!(
+            records
+                .iter()
+                .filter_map(|record| replay.record(record, threshold()))
+                .collect::<Vec<_>>(),
+            vec![Assessment::Unclassified]
+        );
+    }
+}

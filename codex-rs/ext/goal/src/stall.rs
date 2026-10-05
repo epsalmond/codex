@@ -30,6 +30,8 @@ pub(crate) const WAITING_PREFIXES: &[&str] = &[
     "no new updates",
     "no new output",
     "nothing new",
+    "the agents are fixing",
+    "implementation and validation continue",
 ];
 
 pub(crate) fn normalized(text: &str) -> String {
@@ -83,7 +85,7 @@ pub(crate) enum Assessment {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct TurnObservation {
     pub(crate) automatic: bool,
     pub(crate) complete: bool,
@@ -133,7 +135,11 @@ impl StallDetector {
         } else if !observation.complete {
             self.streak = 0;
             Assessment::Unclassified
-        } else if observation.fresh_input || fresh_result {
+        } else if observation.fresh_input
+            || fresh_result
+            || observation.activity
+            || observation.final_kind == FinalKind::Other
+        {
             self.streak = 0;
             Assessment::NotSuspected
         } else {

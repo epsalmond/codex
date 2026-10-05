@@ -87,6 +87,9 @@ impl TurnObserver {
     pub(crate) fn final_text(&mut self, text: &str, waiting_prefixes: &[&str]) {
         self.final_kind = FinalKind::from_text(text, waiting_prefixes);
     }
+    pub(crate) fn commentary_text(&mut self, text: &str, waiting_prefixes: &[&str]) {
+        self.activity |= FinalKind::from_text(text, waiting_prefixes) == FinalKind::Other;
+    }
     pub(crate) fn activity(&mut self) {
         self.activity = true;
     }
@@ -102,6 +105,7 @@ impl TurnObserver {
         kind: CallKind,
         parent: CallParent<'_>,
     ) {
+        let name = name.strip_prefix("functions.").unwrap_or(name);
         let parent = match parent {
             CallParent::Direct => None,
             CallParent::Nested(id) => Some(id),
@@ -144,6 +148,11 @@ impl TurnObserver {
     }
 
     pub(crate) fn outcome(&mut self, call_id: &str, name: &str, result: &Value) {
+        let name = name.strip_prefix("functions.").unwrap_or(name);
+        if !observable_outcome(result) {
+            self.unknown();
+            return;
+        }
         let Some(call) = self.calls.get_mut(call_id) else {
             self.unknown();
             return;
@@ -187,6 +196,23 @@ impl TurnObserver {
             final_kind: self.final_kind,
             actions: (complete && !actions.is_empty()).then(|| digest(actions)),
         }
+    }
+}
+
+fn observable_outcome(result: &Value) -> bool {
+    match result {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(parts) => !parts.is_empty() && parts.iter().all(observable_outcome),
+        Value::Object(fields) => match fields.get("type").and_then(Value::as_str) {
+            Some("input_text" | "output_text") => fields
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty()),
+            Some("encrypted_content" | "input_image" | "input_audio") => false,
+            _ => !fields.is_empty(),
+        },
+        Value::Bool(_) | Value::Number(_) => true,
     }
 }
 

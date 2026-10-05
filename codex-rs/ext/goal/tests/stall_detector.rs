@@ -66,7 +66,7 @@ fn baseline_is_not_a_repetition_at_any_candidate_threshold() {
             let observation = TurnObservation {
                 has_tools: true,
                 actions: Some(digest("same action and outcome")),
-                ..turn("wait")
+                ..turn("waiting")
             };
             assert_eq!(
                 detector.observe(&index.to_string(), observation, threshold),
@@ -81,6 +81,37 @@ fn baseline_is_not_a_repetition_at_any_candidate_threshold() {
                 }
             );
         }
+    }
+}
+
+#[test]
+fn substantive_output_breaks_repetition_even_with_stable_tools_or_waiting_signoff() {
+    for reset in ["final", "commentary"] {
+        let mut detector = StallDetector::default();
+        for index in 0..4 {
+            let observation = TurnObservation {
+                activity: reset == "commentary",
+                has_tools: reset == "final",
+                actions: (reset == "final").then(|| digest("unchanged test command and result")),
+                ..turn(if reset == "final" {
+                    "Here is the next completed section of the requested analysis."
+                } else {
+                    "Waiting for the remaining result."
+                })
+            };
+            assert_eq!(
+                detector.observe(&index.to_string(), observation, threshold()),
+                Assessment::NotSuspected
+            );
+        }
+        assert_eq!(
+            detector.observe("next-wait", turn("waiting"), threshold()),
+            Assessment::Suspected {
+                reason: Suspicion::WaitingFinal,
+                streak: 1,
+                threshold_reached: false,
+            }
+        );
     }
 }
 
