@@ -224,6 +224,19 @@ impl LocalAgentControl {
         &self,
         assignment: &AgentAssignmentId,
     ) -> CodexResult<()> {
+        let operation = self
+            .runtime
+            .wake_coordinator
+            .begin_generation_operation(assignment)
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        tokio::select! {
+            biased;
+            _ = operation.cancelled() => Err(CodexErr::TurnAborted),
+            result = self.load_coordinator_target(assignment) => result,
+        }
+    }
+
+    async fn load_coordinator_target(&self, assignment: &AgentAssignmentId) -> CodexResult<()> {
         let state = self.runtime.upgrade()?;
         let root_thread_id = ThreadId::from(self.session_id);
         if assignment.thread_id == root_thread_id
@@ -331,8 +344,22 @@ impl LocalAgentControl {
                     "wake target has no root-owned reload configuration".to_string(),
                 )
             })?;
-        self.ensure_v2_agent_loaded(config, assignment.thread_id, None)
-            .await?;
+        self.ensure_v2_agent_loaded_for_wake(
+            config,
+            assignment.thread_id,
+            /*parent*/ None,
+            Some(assignment),
+        )
+        .await?;
+        if !self
+            .runtime
+            .wake_coordinator
+            .is_current_open_assignment(assignment)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "wake assignment was cancelled during reload".to_owned(),
+            ));
+        }
         let thread = state.get_thread(assignment.thread_id).await?;
         validate_coordinator_reload_target(
             &thread.session_source,

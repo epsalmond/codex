@@ -21,6 +21,10 @@ impl WakeAssignmentReservation {
         self.thread_id
     }
 
+    pub(super) fn operation(&self) -> std::sync::Arc<crate::agent::control::GenerationOperation> {
+        self.reservation.operation()
+    }
+
     pub(super) fn commit(self, actual_thread_id: ThreadId) -> CodexResult<AgentAssignmentId> {
         if actual_thread_id != self.thread_id {
             return Err(CodexErr::InvalidRequest(

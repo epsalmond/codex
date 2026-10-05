@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicU64;
@@ -62,6 +63,42 @@ impl AssignmentPhase {
     }
 }
 
+/// Shared cancellation and completion barrier for one assignment generation's operations.
+pub(crate) struct GenerationOperation {
+    cancellation: tokio_util::sync::CancellationToken,
+    _completion: tokio::sync::watch::Sender<()>,
+}
+
+impl GenerationOperation {
+    fn new() -> (Arc<Self>, tokio::sync::watch::Receiver<()>) {
+        let (completion, receiver) = tokio::sync::watch::channel(());
+        (
+            Arc::new(Self {
+                cancellation: tokio_util::sync::CancellationToken::new(),
+                _completion: completion,
+            }),
+            receiver,
+        )
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        self.cancellation.cancelled().await;
+    }
+}
+
+#[derive(Clone)]
+struct SpawnCleanup {
+    thread_id: ThreadId,
+    operation: std::sync::Weak<GenerationOperation>,
+    completion: tokio::sync::watch::Receiver<()>,
+}
+
+pub(crate) struct TurnEndClassification {
+    pub(crate) phase: AssignmentPhase,
+    pub(crate) newly_classified: bool,
+    pub(crate) cancelled_descendants: Vec<(ThreadId, Option<tokio::sync::watch::Receiver<()>>)>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TurnEndDisposition {
     Succeeded,
@@ -89,6 +126,11 @@ struct Assignment {
     terminal_report_id: Option<ResponseItemId>,
     counts_toward_limit: bool,
     reload_config: Option<Config>,
+    spawn_cleanups: Vec<SpawnCleanup>,
+    in_flight: Option<(
+        std::sync::Weak<crate::agent::control::GenerationOperation>,
+        tokio::sync::watch::Receiver<()>,
+    )>,
 }
 
 struct TerminalReport {

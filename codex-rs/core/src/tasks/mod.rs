@@ -403,7 +403,8 @@ impl Session {
                 completed_at,
                 duration_ms,
             });
-            self.classify_wake_turn_end(turn_context.as_ref(), &event);
+            self.classify_wake_turn_end(turn_context.as_ref(), &event)
+                .await;
             self.send_event(turn_context.as_ref(), event).await;
             if let Err(err) = self.flush_rollout().await {
                 warn!("failed to flush rollout after cancelling a capacity-waiting turn: {err}");
@@ -781,6 +782,12 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) {
+        // The task detaches its own JoinHandle below; keep recursive cleanup observable.
+        let _finalization = turn_context.agent_assignment.get().and_then(|assignment| {
+            self.services
+                .local_agent_runtime
+                .retain_assignment_finalization(assignment)
+        });
         let task_succeeded = task_result.is_ok();
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
@@ -1016,7 +1023,8 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
-        self.classify_wake_turn_end(turn_context.as_ref(), &event);
+        self.classify_wake_turn_end(turn_context.as_ref(), &event)
+            .await;
         let saved_guardian_completion =
             matches!(event, EventMsg::TurnComplete(_)) && self.is_private_guardian_reviewer().await;
         if !saved_guardian_completion {
@@ -1089,7 +1097,7 @@ impl Session {
 
     async fn handle_task_abort(
         self: &Arc<Self>,
-        task: RunningTask,
+        mut task: RunningTask,
         reason: TurnAbortReason,
         turn_state: &Mutex<TurnState>,
         error: Option<ErrorEvent>,
@@ -1127,6 +1135,7 @@ impl Session {
         }
 
         task.handle.abort();
+        let _ = (&mut task.handle).await;
 
         session_task
             .abort(Arc::clone(self), Arc::clone(&task.turn_context))
@@ -1181,7 +1190,8 @@ impl Session {
             completed_at,
             duration_ms,
         });
-        self.classify_wake_turn_end(task.turn_context.as_ref(), &event);
+        self.classify_wake_turn_end(task.turn_context.as_ref(), &event)
+            .await;
         self.send_event(task.turn_context.as_ref(), event).await;
         // Regular items were flushed before this terminal event was appended; buffering
         // thread writers may not flush it without another explicit barrier.

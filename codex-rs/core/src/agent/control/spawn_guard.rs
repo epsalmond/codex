@@ -11,6 +11,7 @@ pub(super) struct PendingSpawn {
     state: Arc<ThreadManagerState>,
     child: Option<ThreadId>,
     edge_write: Option<JoinHandle<()>>,
+    pub(super) operation: Option<Arc<crate::agent::control::GenerationOperation>>,
 }
 
 impl PendingSpawn {
@@ -19,6 +20,7 @@ impl PendingSpawn {
             state,
             child: Some(child),
             edge_write: None,
+            operation: None,
         }
     }
 
@@ -48,11 +50,14 @@ impl Drop for PendingSpawn {
         };
         let state = Arc::clone(&self.state);
         let edge_write = self.edge_write.take();
+        let operation = self.operation.take();
         drop(tokio::spawn(async move {
+            let _operation = operation;
             if let Some(thread) = state.remove_thread(&child).await {
                 if let Err(error) = thread.shutdown_and_wait().await {
                     warn!("failed to stop cancelled child spawn: {error}");
                 }
+                thread.wait_until_terminated().await;
                 if let Some(live_thread) = thread.session.live_thread()
                     && let Err(error) = live_thread.discard().await
                 {

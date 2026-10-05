@@ -59,6 +59,7 @@ use uuid::Uuid;
 
 pub(crate) use self::coordinator::AgentAssignmentId;
 pub(crate) use self::coordinator::AssignmentPhase;
+pub(crate) use self::coordinator::GenerationOperation;
 pub(crate) use self::coordinator::TurnEndDisposition;
 pub(crate) use self::runtime::AgentControlInit;
 pub(crate) use self::runtime::LocalAgentRuntime;

@@ -442,3 +442,94 @@ fn interrupted_turn_rejects_late_terminal_classification() {
             .is_err()
     );
 }
+
+#[test]
+fn failed_root_invalidates_waiting_reserved_and_in_flight_descendants() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+    let reservation = coordinator
+        .reserve_child_assignment(root.clone(), ThreadId::new())
+        .expect("reservation");
+    let reserved = reservation.id().clone();
+    let reload = coordinator
+        .begin_generation_operation(&child)
+        .expect("reload guard");
+    assert_eq!(
+        coordinator.classify_turn_end(&child, "child-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+    assert!(coordinator.request_wake(child.clone()));
+    let in_flight = coordinator
+        .claim_next_wake_request()
+        .expect("in-flight wake");
+    let report = terminal_report(&coordinator, &grandchild, "grandchild-turn");
+    let classification = coordinator
+        .prepare_turn_end(&root, "root-turn", TurnEndDisposition::Errored, || {})
+        .expect("failed root");
+    assert_eq!(classification.phase, AssignmentPhase::Errored);
+    let cancelled = classification
+        .cancelled_descendants
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<std::collections::HashSet<_>>();
+    let expected = std::collections::HashSet::from([
+        child.thread_id,
+        grandchild.thread_id,
+        reserved.thread_id,
+    ]);
+    assert_eq!(cancelled, expected);
+    assert_eq!(outstanding(&coordinator), 0);
+    assert!(!coordinator.has_pending_reports(&child));
+    assert!(
+        !coordinator.report_is_current_for_thread(&report.id.expect("report ID"), child.thread_id)
+    );
+    assert!(coordinator.begin_generation_operation(&child).is_err());
+    assert!(reservation.commit().is_err());
+    in_flight.defer();
+    assert!(coordinator.claim_next_wake_request().is_none());
+    let completion = classification
+        .cancelled_descendants
+        .into_iter()
+        .find(|(id, _)| *id == child.thread_id)
+        .expect("child cleanup")
+        .1
+        .expect("operation receiver");
+    assert!(
+        completion.has_changed().is_ok(),
+        "reload still owns its guard"
+    );
+    drop(reload);
+    assert!(
+        completion.has_changed().is_err(),
+        "operation closure is the cleanup barrier"
+    );
+}
+
+#[test]
+fn failed_root_retains_cleanup_after_reservation_rollback() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let reservation = coordinator
+        .reserve_child_assignment(root.clone(), ThreadId::new())
+        .expect("reservation");
+    let child = reservation.id().clone();
+    let operation = reservation.operation();
+    drop(reservation);
+    assert!(coordinator.current_assignment(child.thread_id).is_none());
+    let classification = coordinator
+        .prepare_turn_end(&root, "root-turn", TurnEndDisposition::Errored, || {})
+        .expect("failed root");
+    let (thread_id, completion) = classification
+        .cancelled_descendants
+        .into_iter()
+        .next()
+        .expect("rollback cleanup is retained");
+    assert_eq!(thread_id, child.thread_id);
+    assert!(operation.cancellation.is_cancelled());
+    let completion = completion.expect("operation completion");
+    assert!(completion.has_changed().is_ok());
+    drop(operation);
+    assert!(completion.has_changed().is_err());
+}

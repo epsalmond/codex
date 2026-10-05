@@ -84,6 +84,32 @@ impl AgentWakeCoordinator {
                 .is_some_and(|assignment| assignment.phase == AssignmentPhase::Waiting)
     }
 
+    /// Retains a generation's in-flight startup/reload until its cleanup has completed.
+    pub(crate) fn begin_generation_operation(
+        &self,
+        id: &AgentAssignmentId,
+    ) -> Result<std::sync::Arc<crate::agent::control::GenerationOperation>, &'static str> {
+        let mut state = self.lock_state();
+        if state.current_by_thread.get(&id.thread_id) != Some(id) {
+            return Err("assignment is no longer current");
+        }
+        let record = state
+            .assignments
+            .get_mut(id)
+            .ok_or("assignment is missing")?;
+        if !record.phase.is_open() {
+            return Err("assignment is terminal");
+        }
+        if let Some((operation, _)) = &record.in_flight
+            && let Some(operation) = operation.upgrade()
+        {
+            return Ok(operation);
+        }
+        let (operation, completion) = super::GenerationOperation::new();
+        record.in_flight = Some((std::sync::Arc::downgrade(&operation), completion));
+        Ok(operation)
+    }
+
     pub(crate) fn cancel_assignment(&self, id: &AgentAssignmentId) {
         let mut state = self.lock_state();
         Self::release_assignment(&mut state, id);

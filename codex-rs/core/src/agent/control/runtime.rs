@@ -242,14 +242,91 @@ impl LocalAgentRuntime {
         self.wake_coordinator.discard_report_if_stale(report_id)
     }
 
-    pub(crate) fn classify_wake_turn_end(
+    pub(crate) fn begin_reserved_generation_operation(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_protocol::error::Result<Arc<super::coordinator::GenerationOperation>> {
+        let assignment = self
+            .wake_coordinator
+            .current_assignment(thread_id)
+            .ok_or_else(|| {
+                codex_protocol::error::CodexErr::InvalidRequest(
+                    "child assignment was cancelled before startup".to_owned(),
+                )
+            })?;
+        self.wake_coordinator
+            .begin_generation_operation(&assignment)
+            .map_err(|error| codex_protocol::error::CodexErr::InvalidRequest(error.to_owned()))
+    }
+
+    pub(crate) fn retain_assignment_finalization(
+        &self,
+        assignment: &AgentAssignmentId,
+    ) -> Option<Arc<super::coordinator::GenerationOperation>> {
+        self.wake_coordinator
+            .begin_generation_operation(assignment)
+            .ok()
+    }
+
+    pub(crate) async fn classify_wake_turn_end(
         &self,
         assignment: &AgentAssignmentId,
         turn_id: &str,
         disposition: TurnEndDisposition,
     ) -> Result<AssignmentPhase, &'static str> {
+        if disposition != TurnEndDisposition::Errored {
+            return self
+                .wake_coordinator
+                .classify_turn_end(assignment, turn_id, disposition);
+        }
+        let classification = self.prepare_wake_turn_end(assignment, turn_id, disposition, || {})?;
+        Ok(self.finish_wake_turn_end(assignment, classification).await)
+    }
+
+    pub(crate) fn prepare_wake_turn_end(
+        &self,
+        assignment: &AgentAssignmentId,
+        turn_id: &str,
+        disposition: TurnEndDisposition,
+        pause_wakeups: impl FnOnce(),
+    ) -> Result<super::coordinator::TurnEndClassification, &'static str> {
         self.wake_coordinator
-            .classify_turn_end(assignment, turn_id, disposition)
+            .prepare_turn_end(assignment, turn_id, disposition, pause_wakeups)
+    }
+
+    pub(crate) async fn finish_wake_turn_end(
+        &self,
+        assignment: &AgentAssignmentId,
+        classification: super::coordinator::TurnEndClassification,
+    ) -> AssignmentPhase {
+        if let Some(manager) = self.manager.upgrade() {
+            let mut descendants =
+                std::collections::HashMap::<ThreadId, Vec<tokio::sync::watch::Receiver<()>>>::new();
+            for (thread_id, completion) in classification.cancelled_descendants {
+                let completions = descendants.entry(thread_id).or_default();
+                if let Some(completion) = completion {
+                    completions.push(completion);
+                }
+            }
+            futures::future::join_all(descendants.into_iter().map(|(thread_id, completions)| {
+                let manager = Arc::clone(&manager);
+                async move {
+                    stop_cancelled_descendant(&manager, thread_id).await;
+                    for mut completion in completions {
+                        // No sender publishes values: closure means startup and async cleanup ended.
+                        let _ = completion.changed().await;
+                    }
+                    // Startup may have published after the first lookup; its guard now ended.
+                    stop_cancelled_descendant(&manager, thread_id).await;
+                    let _ = manager.remove_thread(&thread_id).await;
+                    self.control(assignment.thread_id.into())
+                        .forget_v2_residency(thread_id);
+                    self.registry.release_spawned_thread(thread_id);
+                }
+            }))
+            .await;
+        }
+        classification.phase
     }
 
     pub(crate) fn wake_assignment_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {
@@ -396,5 +473,14 @@ impl LocalAgentRuntime {
                 .set(Arc::clone(provider));
         }
         provider
+    }
+}
+
+async fn stop_cancelled_descendant(manager: &ThreadManagerState, thread_id: ThreadId) {
+    if let Ok(thread) = manager.get_thread(thread_id).await {
+        if let Err(error) = thread.shutdown_and_wait().await {
+            tracing::warn!(%error, %thread_id, "failed to request cancelled descendant shutdown");
+        }
+        thread.wait_until_terminated().await;
     }
 }

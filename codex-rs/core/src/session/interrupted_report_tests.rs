@@ -51,11 +51,13 @@ async fn interrupted_wake_attempt_reports_to_its_parent_once() {
         .set(child_assignment.clone())
         .expect("turn is bound to its assignment");
     assert_eq!(
-        runtime.classify_wake_turn_end(
-            &child_assignment,
-            &turn_context.sub_id,
-            crate::agent::control::TurnEndDisposition::Interrupted,
-        ),
+        runtime
+            .classify_wake_turn_end(
+                &child_assignment,
+                &turn_context.sub_id,
+                crate::agent::control::TurnEndDisposition::Interrupted,
+            )
+            .await,
         Ok(crate::agent::control::AssignmentPhase::Interrupted)
     );
 

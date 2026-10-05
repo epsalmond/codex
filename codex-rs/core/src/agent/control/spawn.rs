@@ -324,10 +324,32 @@ impl LocalAgentControl {
     /// A provided parent enables owner-validated reloads; `None` preserves sender-driven reloads.
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        mut config: Config,
+        config: Config,
         thread_id: ThreadId,
         parent: Option<Arc<CodexThread>>,
     ) -> CodexResult<()> {
+        self.ensure_v2_agent_loaded_for_wake(
+            config, thread_id, parent, /*wake_assignment*/ None,
+        )
+        .await
+    }
+
+    pub(super) async fn ensure_v2_agent_loaded_for_wake(
+        &self,
+        mut config: Config,
+        thread_id: ThreadId,
+        parent: Option<Arc<CodexThread>>,
+        wake_assignment: Option<&super::coordinator::AgentAssignmentId>,
+    ) -> CodexResult<()> {
+        let generation_operation = wake_assignment
+            .map(|assignment| {
+                self.runtime
+                    .wake_coordinator
+                    .begin_generation_operation(assignment)
+                    .map_err(|error| CodexErr::InvalidRequest(error.to_owned()))
+            })
+            .transpose()?;
+
         let state = self.runtime.upgrade()?;
         let owner_thread_id = parent.as_ref().map(|parent| parent.session.thread_id);
         if let Some(parent) = &parent {
@@ -604,6 +626,7 @@ impl LocalAgentControl {
 
         match state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+                generation_operation,
                 config,
                 initial_history,
                 agent_control: self.clone(),
@@ -809,6 +832,9 @@ impl LocalAgentControl {
         };
         agent_metadata.agent_id = Some(new_thread.thread_id);
         let mut pending_spawn = PendingSpawn::new(Arc::clone(&state), new_thread.thread_id);
+        pending_spawn.operation = wake_assignment_reservation
+            .as_ref()
+            .map(super::wake_spawn::WakeAssignmentReservation::operation);
 
         if let Some(SessionSource::SubAgent(
             subagent_source @ SubAgentSource::ThreadSpawn {
@@ -1480,6 +1506,7 @@ impl LocalAgentControl {
 
         let resumed_thread = state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+                generation_operation: None,
                 config: config.clone(),
                 initial_history,
                 agent_control: self.clone(),

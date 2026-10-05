@@ -35,3 +35,60 @@ impl SessionStartup {
         }
     }
 }
+
+/// Keeps generation cleanup observable if child initialization is dropped before publication.
+pub(crate) struct GenerationStartup {
+    pub(crate) startup: Arc<SessionStartup>,
+    operation: Option<Arc<crate::agent::control::GenerationOperation>>,
+    threads: Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<codex_protocol::ThreadId, Arc<crate::CodexThread>>,
+        >,
+    >,
+}
+
+impl GenerationStartup {
+    pub(crate) fn new(
+        operation: Arc<crate::agent::control::GenerationOperation>,
+        threads: Arc<
+            tokio::sync::RwLock<
+                std::collections::HashMap<codex_protocol::ThreadId, Arc<crate::CodexThread>>,
+            >,
+        >,
+    ) -> Self {
+        Self {
+            startup: Arc::default(),
+            operation: Some(operation),
+            threads,
+        }
+    }
+
+    pub(crate) async fn disarm(mut self) {
+        // Successful startup transfers the managed writer to the session loop.
+        self.startup.persistence.lock().await.commit();
+        self.operation = None;
+    }
+}
+
+impl Drop for GenerationStartup {
+    fn drop(&mut self) {
+        let Some(operation) = self.operation.take() else {
+            return;
+        };
+        let startup = Arc::clone(&self.startup);
+        let threads = Arc::clone(&self.threads);
+        tokio::spawn(async move {
+            let _operation = operation;
+            startup.cleanup().await;
+            if let Some(session) = startup.session.get() {
+                let mut threads = threads.write().await;
+                if threads
+                    .get(&session.thread_id())
+                    .is_some_and(|thread| Arc::ptr_eq(&thread.session, session))
+                {
+                    threads.remove(&session.thread_id());
+                }
+            }
+        });
+    }
+}

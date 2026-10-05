@@ -8,6 +8,7 @@ use super::super::AssignmentReloadAuthority;
 use super::super::CoordinatorState;
 use super::super::MAX_OUTSTANDING_ASSIGNMENTS;
 use super::super::ReportDeliveryState;
+use super::super::TurnEndClassification;
 use super::super::TurnEndDisposition;
 use crate::config::Config;
 use codex_protocol::ResponseItemId;
@@ -170,12 +171,25 @@ impl AgentWakeCoordinator {
             thread_id,
             generation: Uuid::now_v7(),
         };
-        state
+        let (operation, completion) = super::super::GenerationOperation::new();
+        let parent_record = state
             .assignments
             .get_mut(&parent)
-            .ok_or("parent assignment is missing")?
-            .direct_children
-            .insert(id.clone());
+            .ok_or("parent assignment is missing")?;
+        parent_record
+            .spawn_cleanups
+            .retain(|cleanup| cleanup.completion.has_changed().is_ok());
+        if parent_record.spawn_cleanups.len() >= MAX_OUTSTANDING_ASSIGNMENTS {
+            return Err("in-flight child cleanup limit reached");
+        }
+        parent_record
+            .spawn_cleanups
+            .push(super::super::SpawnCleanup {
+                thread_id,
+                operation: Arc::downgrade(&operation),
+                completion: completion.clone(),
+            });
+        parent_record.direct_children.insert(id.clone());
         state.assignments.insert(
             id.clone(),
             Assignment {
@@ -189,6 +203,8 @@ impl AgentWakeCoordinator {
                 terminal_report_id: None,
                 counts_toward_limit: true,
                 reload_config: None,
+                spawn_cleanups: Vec::new(),
+                in_flight: Some((Arc::downgrade(&operation), completion)),
             },
         );
         state.current_by_thread.insert(thread_id, id.clone());
@@ -197,6 +213,7 @@ impl AgentWakeCoordinator {
             coordinator: Arc::clone(self),
             id,
             committed: false,
+            operation,
         })
     }
 
@@ -206,8 +223,22 @@ impl AgentWakeCoordinator {
         terminal_turn_id: impl Into<String>,
         disposition: TurnEndDisposition,
     ) -> Result<AssignmentPhase, &'static str> {
+        self.prepare_turn_end(id, terminal_turn_id, disposition, || {})
+            .map(|classification| classification.phase)
+    }
+
+    pub(crate) fn prepare_turn_end(
+        &self,
+        id: &AgentAssignmentId,
+        terminal_turn_id: impl Into<String>,
+        disposition: TurnEndDisposition,
+        pause_wakeups: impl FnOnce(),
+    ) -> Result<TurnEndClassification, &'static str> {
         let mut state = self.lock_state();
         let terminal_turn_id = terminal_turn_id.into();
+        if state.current_by_thread.get(&id.thread_id) != Some(id) {
+            return Err("assignment is no longer current");
+        }
         let assignment = state
             .assignments
             .get_mut(id)
@@ -221,6 +252,11 @@ impl AgentWakeCoordinator {
             {
                 assignment
                     .last_classified_phase
+                    .map(|phase| TurnEndClassification {
+                        phase,
+                        newly_classified: false,
+                        cancelled_descendants: Vec::new(),
+                    })
                     .ok_or("classified turn has no recorded phase")
             } else {
                 Err("turn is not active for this assignment")
@@ -230,6 +266,11 @@ impl AgentWakeCoordinator {
             return if assignment.terminal_disposition == Some(disposition) {
                 assignment
                     .last_classified_phase
+                    .map(|phase| TurnEndClassification {
+                        phase,
+                        newly_classified: false,
+                        cancelled_descendants: Vec::new(),
+                    })
                     .ok_or("classified turn has no recorded phase")
             } else {
                 Err("turn already has a different terminal outcome")
@@ -264,9 +305,52 @@ impl AgentWakeCoordinator {
                         .is_some_and(|report| report.delivery == ReportDeliveryState::Recorded)
                 })
             });
+        let mut cancelled_descendants = Vec::new();
         if phase.is_terminal() {
             state.wake_queue.remove_assignment(id);
-            Self::detach_direct_children(&mut state, id);
+            if phase == AssignmentPhase::Errored {
+                pause_wakeups();
+                let mut cleanups = state
+                    .assignments
+                    .get_mut(id)
+                    .map(|record| std::mem::take(&mut record.spawn_cleanups))
+                    .unwrap_or_default();
+                let mut pending = state
+                    .assignments
+                    .get(id)
+                    .map(|assignment| {
+                        assignment
+                            .direct_children
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                while let Some(child) = pending.pop() {
+                    if let Some(record) = state.assignments.get_mut(&child) {
+                        pending.extend(record.direct_children.iter().cloned());
+                        cleanups.append(&mut record.spawn_cleanups);
+                        cancelled_descendants.push((
+                            child.thread_id,
+                            record.in_flight.take().map(|(operation, completion)| {
+                                if let Some(operation) = operation.upgrade() {
+                                    operation.cancellation.cancel();
+                                }
+                                completion
+                            }),
+                        ));
+                    }
+                    Self::release_assignment(&mut state, &child);
+                }
+                for cleanup in cleanups {
+                    if let Some(operation) = cleanup.operation.upgrade() {
+                        operation.cancellation.cancel();
+                    }
+                    cancelled_descendants.push((cleanup.thread_id, Some(cleanup.completion)));
+                }
+            } else {
+                Self::detach_direct_children(&mut state, id);
+            }
             if state
                 .assignments
                 .get(id)
@@ -282,7 +366,11 @@ impl AgentWakeCoordinator {
         if wake_recorded_reports {
             self.request_wake(id.clone());
         }
-        Ok(phase)
+        Ok(TurnEndClassification {
+            phase,
+            newly_classified: true,
+            cancelled_descendants,
+        })
     }
 
     fn create_assignment(
@@ -329,6 +417,8 @@ impl AgentWakeCoordinator {
                 terminal_report_id: None,
                 counts_toward_limit: parent.is_some(),
                 reload_config: None,
+                spawn_cleanups: Vec::new(),
+                in_flight: None,
             },
         );
         if parent.is_some() {
@@ -417,9 +507,14 @@ pub(crate) struct AssignmentReservation {
     coordinator: Arc<AgentWakeCoordinator>,
     id: AgentAssignmentId,
     committed: bool,
+    operation: Arc<crate::agent::control::GenerationOperation>,
 }
 
 impl AssignmentReservation {
+    pub(crate) fn operation(&self) -> Arc<crate::agent::control::GenerationOperation> {
+        Arc::clone(&self.operation)
+    }
+
     #[cfg(test)]
     pub(in crate::agent::control::coordinator) fn id(&self) -> &AgentAssignmentId {
         &self.id

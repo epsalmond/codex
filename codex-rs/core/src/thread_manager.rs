@@ -318,6 +318,7 @@ impl StartThreadOptions {
 }
 
 struct ThreadSpawnRequest {
+    generation_operation: Option<Arc<crate::agent::control::GenerationOperation>>,
     startup: Option<Arc<crate::session::startup::SessionStartup>>,
     options: StartThreadOptions,
     auth_manager: Arc<AuthManager>,
@@ -340,6 +341,7 @@ impl ThreadSpawnRequest {
     ) -> Self {
         Self {
             startup: None,
+            generation_operation: None,
             options,
             auth_manager,
             agent_control: agent_control.into(),
@@ -386,6 +388,7 @@ fn effective_originator_value(
 }
 
 pub(crate) struct ResumeThreadWithHistoryOptions {
+    pub(crate) generation_operation: Option<Arc<crate::agent::control::GenerationOperation>>,
     pub(crate) config: Config,
     pub(crate) initial_history: InitialHistory,
     pub(crate) agent_control: LocalAgentControl,
@@ -1974,6 +1977,13 @@ impl ThreadManagerState {
         environments: Option<Vec<TurnEnvironmentSelection>>,
         reserved_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
+        let generation_operation = reserved_thread_id
+            .map(|thread_id| {
+                agent_control
+                    .runtime
+                    .begin_reserved_generation_operation(thread_id)
+            })
+            .transpose()?;
         let client_mcp_extensions = self.client_mcp_extensions_for_child(parent_thread_id).await;
         let options = StartThreadOptions {
             history_mode,
@@ -1987,6 +1997,7 @@ impl ThreadManagerState {
         };
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        request.generation_operation = generation_operation;
         request.parent_thread_id = parent_thread_id;
         request.forked_from_thread_id = forked_from_thread_id;
         request.inherited_environments = inherited_environments;
@@ -1999,6 +2010,7 @@ impl ThreadManagerState {
         options: ResumeThreadWithHistoryOptions,
     ) -> CodexResult<NewThread> {
         let ResumeThreadWithHistoryOptions {
+            generation_operation,
             config,
             initial_history,
             agent_control,
@@ -2025,6 +2037,7 @@ impl ThreadManagerState {
         };
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        request.generation_operation = generation_operation;
         request.parent_thread_id = parent_thread_id;
         request.inherited_environments = inherited_environments;
         request.inherited_instructions = inherited_instructions;
@@ -2049,6 +2062,13 @@ impl ThreadManagerState {
         thread_extension_init: ExtensionDataInit,
         reserved_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
+        let generation_operation = reserved_thread_id
+            .map(|thread_id| {
+                agent_control
+                    .runtime
+                    .begin_reserved_generation_operation(thread_id)
+            })
+            .transpose()?;
         let client_mcp_extensions = self.client_mcp_extensions_for_child(parent_thread_id).await;
         let options = StartThreadOptions {
             initial_history,
@@ -2064,6 +2084,7 @@ impl ThreadManagerState {
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
         request.fork_persistence = ForkPersistence::CopiedDeferred;
+        request.generation_operation = generation_operation;
         request.parent_thread_id = parent_thread_id;
         request.forked_from_thread_id = forked_from_thread_id;
         request.inherited_environments = inherited_environments;
@@ -2085,8 +2106,37 @@ impl ThreadManagerState {
     }
 
     /// Spawn a new thread with optional history and register it with the manager.
-    async fn spawn_thread(&self, request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+    async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        let operation = request.generation_operation.take();
+        let guard = operation.as_ref().map(|operation| {
+            crate::session::startup::GenerationStartup::new(
+                Arc::clone(operation),
+                Arc::clone(&self.threads),
+            )
+        });
+        if let Some(guard) = &guard {
+            request.startup = Some(Arc::clone(&guard.startup));
+        }
+        let result = if let Some(operation) = operation {
+            tokio::select! {
+                biased;
+                _ = operation.cancelled() => Err(CodexErr::TurnAborted),
+                result = self.spawn_thread_inner(request) => result,
+            }
+        } else {
+            self.spawn_thread_inner(request).await
+        };
+        if result.is_ok()
+            && let Some(guard) = guard
+        {
+            guard.disarm().await;
+        }
+        result
+    }
+
+    async fn spawn_thread_inner(&self, request: ThreadSpawnRequest) -> CodexResult<NewThread> {
         let ThreadSpawnRequest {
+            generation_operation: _,
             startup,
             options,
             auth_manager,
