@@ -85,9 +85,7 @@ impl Replay {
                             }
                         } else if payload["role"] == "assistant" {
                             if payload["phase"] == "commentary" {
-                                if !text.trim().is_empty() {
-                                    observer.activity();
-                                }
+                                observer.commentary_text(&text, WAITING_PREFIXES);
                             } else {
                                 observer.final_text(&text, WAITING_PREFIXES);
                             }
@@ -122,7 +120,7 @@ impl Replay {
                             .as_str()
                             .and_then(|text| serde_json::from_str(text).ok())
                             .unwrap_or_else(|| argument.clone());
-                        let kind = if name == "exec"
+                        let kind = if matches!(name, "exec" | "functions.exec")
                             && payload["namespace"]
                                 .as_str()
                                 .is_none_or(|namespace| namespace == "functions")

@@ -108,6 +108,72 @@ fn incomplete_or_unsupported_inbound_results_remain_unknown() {
 }
 
 #[test]
+fn unobservable_outputs_are_unknown_but_observed_empty_stdout_is_valid() {
+    for result in [
+        json!(null),
+        json!(" "),
+        json!([]),
+        json!([{"type":"input_text","text":""}]),
+        json!([{"type":"encrypted_content","encrypted_content":"opaque"}]),
+    ] {
+        let mut detector = StallDetector::default();
+        for index in 0..4 {
+            let mut observer = empty();
+            observer.call(
+                "call",
+                "read",
+                &json!({"target":"a"}),
+                CallKind::Leaf,
+                CallParent::Direct,
+            );
+            observer.outcome("call", "read", &result);
+            assert_eq!(
+                detector.observe(&index.to_string(), observer.finish(), threshold()),
+                Assessment::Unclassified
+            );
+        }
+    }
+    assert_eq!(
+        action("call", "read", "", /*exit_code*/ 0)
+            .finish()
+            .complete,
+        true
+    );
+}
+
+#[test]
+fn waiting_commentary_does_not_mask_waits_but_substantive_commentary_does() {
+    for (commentary, expected) in [
+        ("Still waiting for the existing result.", false),
+        ("Completed the next requested analysis section.", true),
+    ] {
+        let mut observer = empty();
+        observer.commentary_text(commentary, stall::WAITING_PREFIXES);
+        assert_eq!(observer.finish().activity, expected);
+    }
+}
+
+#[test]
+fn qualified_default_names_keep_the_same_owned_timer_observation() {
+    let observation = |name: &str, elapsed: &str| {
+        let mut observer = empty();
+        observer.call(
+            "call",
+            name,
+            &json!("await new Promise(r => setTimeout(r, 1)); text(\"done\");"),
+            CallKind::Wrapper,
+            CallParent::Direct,
+        );
+        observer.outcome("call", name, &json!([{"type":"input_text","text":format!("Script completed\nWall time {elapsed} seconds\nOutput:\ndone")} ]));
+        observer.finish()
+    };
+    assert_eq!(
+        observation("exec", "0.1"),
+        observation("functions.exec", "0.2")
+    );
+}
+
+#[test]
 fn missing_and_unlinked_outcomes_remain_unclassified() {
     let mut detector = StallDetector::default();
     let mut missing = empty();
