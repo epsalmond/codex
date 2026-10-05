@@ -2,13 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
 use crate::HooksToml;
 use crate::browser_use::BrowserUseConfigToml;
 use crate::computer_use::ComputerUseConfigToml;
+pub use crate::goals::GoalContinuationGuardMode;
+pub use crate::goals::GoalsToml;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
@@ -1057,13 +1058,6 @@ where
         }
         Some(WebSearchToolConfigInput::Config(config)) => Some(config),
     })
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct GoalsToml {
-    /// Maximum token budget allowed for a goal and default budget for new goals.
-    pub max_goal_token_budget: Option<NonZeroU64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]

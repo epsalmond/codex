@@ -146,6 +146,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
+use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -189,6 +190,7 @@ pub use codex_config::Constrained;
 pub use codex_config::ConstraintError;
 pub use codex_config::ConstraintResult;
 pub use codex_config::LoaderOverrides;
+pub use codex_config::config_toml::GoalContinuationGuardMode;
 pub use codex_network_proxy::NetworkProxyAuditMetadata;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
 pub use codex_sandboxing::system_bwrap_warning;
@@ -957,6 +959,16 @@ pub struct Config {
 
     /// Maximum token budget allowed for a goal and default budget for new goals.
     pub max_goal_token_budget: Option<i64>,
+
+    /// Session-scoped stall policy, default defer; off/observe retain the legacy empty guard.
+    pub goal_continuation_guard_mode: GoalContinuationGuardMode,
+
+    /// Positive automatic-turn suspicion threshold, default 2.
+    pub goal_stall_after_no_progress_turns: NonZeroU32,
+
+    /// Validated replacement literals; None uses extension defaults, Some(empty) disables prefixes.
+    /// Normalization belongs to the shared goal matcher at session start/resume.
+    pub goal_stall_waiting_prefixes: Option<Vec<String>>,
 
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
@@ -4505,6 +4517,13 @@ impl Config {
                     })
                 })
                 .transpose()?,
+            goal_continuation_guard_mode: cfg.goals.as_ref()
+                .and_then(|goals| goals.continuation_guard_mode).unwrap_or_default(),
+            goal_stall_after_no_progress_turns: cfg.goals.as_ref()
+                .and_then(|goals| goals.stall_after_no_progress_turns)
+                .unwrap_or(NonZeroU32::MIN.saturating_add(/*other*/ 1)),
+            goal_stall_waiting_prefixes: cfg.goals.as_ref()
+                .and_then(|goals| goals.stall_waiting_prefixes.clone()),
             memories: memories_config,
             agent_interrupt_message_enabled,
             codex_home,
@@ -5074,6 +5093,10 @@ pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "goals_tests.rs"]
+mod goals_tests;
 
 #[cfg(test)]
 #[path = "config_loader_tests.rs"]

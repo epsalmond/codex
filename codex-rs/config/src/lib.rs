@@ -14,6 +14,10 @@ mod constraint;
 mod diagnostics;
 mod filesystem_constraints;
 mod fingerprint;
+mod goals;
+#[cfg(test)]
+#[path = "goals_tests.rs"]
+mod goals_tests;
 mod guardian;
 mod hook_config;
 mod host_name;
