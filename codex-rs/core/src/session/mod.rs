@@ -259,6 +259,7 @@ pub(crate) mod multi_agents;
 mod plugin_selection;
 pub(crate) mod prompt_cache_clock;
 mod realtime_history;
+mod resumed_agent_status;
 mod retained_context;
 mod review;
 mod rollout_budget;
@@ -1652,15 +1653,7 @@ impl Session {
             InitialHistory::Resumed(resumed_history) => {
                 let turn_context = self.new_default_turn().await;
                 let rollout_items = resumed_history.history;
-                if matches!(
-                    rollout_items.iter().rev().find_map(|item| match item {
-                        RolloutItem::EventMsg(event) => agent_status_from_event(event),
-                        _ => None,
-                    }),
-                    Some(AgentStatus::Interrupted)
-                ) {
-                    self.agent_status.send_replace(AgentStatus::Interrupted);
-                }
+                self.restore_resumed_agent_status(&rollout_items).await;
                 let previous_turn_settings = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
