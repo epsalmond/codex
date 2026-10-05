@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::io::Write;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -380,6 +381,9 @@ async fn new_config(
         ghost_snapshot: GhostSnapshotConfig::default(),
         multi_agent_v2: MultiAgentV2Config::default(),
         max_goal_token_budget: None,
+        goal_continuation_guard_mode: Default::default(),
+        goal_stall_after_no_progress_turns: NonZeroU32::MIN.saturating_add(/*other*/ 1),
+        goal_stall_waiting_prefixes: None,
         token_budget: None,
         token_budget_startup_config: None,
         rollout_budget: None,

@@ -1910,14 +1910,67 @@
       },
       "type": "object"
     },
+    "GoalContinuationGuardMode": {
+      "description": "Policy for automatic goal turns suspected of making no progress.",
+      "oneOf": [
+        {
+          "description": "Disable stall assessment while retaining the legacy empty-response guard.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Observe suspected stalls without holding continuation; retain the legacy empty-response guard.",
+          "enum": [
+            "observe"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Hold automatic continuation on suspected stalls while keeping the goal Active.",
+          "enum": [
+            "defer"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "GoalsToml": {
       "additionalProperties": false,
+      "description": "Goal settings loaded when a session starts or resumes, without hot reload. In off/observe, startup releases only a suspected-stall hold, preserving fork holds. In defer, real user input, explicit activation, or accepted new results recover a hold. See `ext/goal/templates/goals/continuation.md` for runtime recovery guidance.",
       "properties": {
+        "continuation_guard_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GoalContinuationGuardMode"
+            }
+          ],
+          "description": "Stall policy, default defer. Off and observe retain the legacy empty-response guard. Changes take effect only when a session starts or resumes."
+        },
         "max_goal_token_budget": {
           "description": "Maximum token budget allowed for a goal and default budget for new goals.",
           "format": "uint64",
           "minimum": 1.0,
           "type": "integer"
+        },
+        "stall_after_no_progress_turns": {
+          "description": "Consecutive suspicious automatic turns before a hold, default 2; range 1..=4294967295. Repeated actions first establish a baseline, then count repetitions.",
+          "format": "uint32",
+          "maximum": 4294967295.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "stall_waiting_prefixes": {
+          "default": null,
+          "description": "Replacement assistant-final waiting prefixes: at most 32 literals, each at most 64 Unicode characters as written and nonempty after whitespace normalization. Unset preserves defaults; an empty list disables only this prefix rule. Matching lowercases, collapses whitespace, and normalizes curly apostrophes using the goal extension's shared matcher; the final-text limit stays fixed at 512 characters.",
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
         }
       },
       "type": "object"
