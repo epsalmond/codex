@@ -18,7 +18,9 @@ use codex_extension_api::McpToolSource;
 use codex_extension_api::ResponseItem;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
+use codex_extension_api::ToolOutputInput;
 use codex_extension_api::ToolStartInput;
+use codex_extension_api::TurnLifecycleContributor;
 use codex_features::Feature;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_protocol::mcp::CallToolResult;
@@ -67,6 +69,24 @@ struct RecordedHistory {
 #[derive(Default)]
 struct ConversationHistoryRecorder {
     histories: Mutex<Vec<RecordedHistory>>,
+    outputs: Mutex<Vec<Value>>,
+    recorded: Mutex<Vec<ResponseItem>>,
+}
+
+impl TurnLifecycleContributor for ConversationHistoryRecorder {
+    fn on_item_recorded<'a>(
+        &'a self,
+        _thread_store: &'a codex_extension_api::ExtensionData,
+        _turn_store: &'a codex_extension_api::ExtensionData,
+        item: &'a ResponseItem,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(item.clone());
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +120,17 @@ impl McpServerContributor<Config> for ExtensionOwnedAppsServer {
 }
 
 impl ToolLifecycleContributor for ConversationHistoryRecorder {
+    fn on_tool_output<'a>(&'a self, input: ToolOutputInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move {
+            self.outputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(
+                    serde_json::to_value(input.output)
+                        .expect("accepted tool output is serializable"),
+                );
+        })
+    }
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
             self.histories
@@ -165,6 +196,7 @@ async fn tool_start_receives_conversation_history() -> Result<()> {
     let recorder = Arc::new(ConversationHistoryRecorder::default());
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(recorder.clone());
+    extensions.turn_lifecycle_contributor(recorder.clone());
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| config.update_plan_enabled = true)
@@ -173,6 +205,17 @@ async fn tool_start_receives_conversation_history() -> Result<()> {
 
     let user_prompt = "Inspect the workspace and update the plan.";
     test.submit_text_turn(user_prompt).await?;
+
+    let recorded = recorder
+        .recorded
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(recorded.iter().any(|item| matches!(item, ResponseItem::Message {role, content, ..}
+        if role == "user" && content.contains(&ContentItem::InputText {text: user_prompt.to_owned()}))));
+    assert!(recorded.iter().any(
+        |item| matches!(item, ResponseItem::FunctionCallOutput {call_id: Some(id), ..}
+        if id == second_call_id)
+    ));
 
     let histories = recorder
         .histories
@@ -227,6 +270,18 @@ async fn tool_start_receives_conversation_history() -> Result<()> {
         item,
         ResponseItem::FunctionCall { call_id, .. } if call_id == second_call_id
     )));
+
+    let outputs = recorder
+        .outputs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        outputs.as_slice(),
+        &[
+            json!({"type":"function_call_output", "call_id": first_call_id, "output":"Plan updated"}),
+            json!({"type":"function_call_output", "call_id": second_call_id, "output":"Plan updated"}),
+        ]
+    );
 
     Ok(())
 }
