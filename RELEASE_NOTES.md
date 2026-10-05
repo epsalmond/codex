@@ -22,7 +22,7 @@ With `agent_polling = "enabled"`, `wait_agent` without `timeout_ms` in `codex ex
 
 To turn it off, set `features.multi_agent_v2.agent_polling = "enabled"` (for a single run, `codex-shake exec -c 'features.multi_agent_v2.agent_polling="enabled"'`). That restores `wait_agent` polling for the whole agent tree, exec included, and exec exits after one root turn, as before. An interactive session resumed with `codex exec resume` keeps polling, because exec cannot observe its work.
 
-Known gap: if the app-server and core disagree on whether a root turn failed (an error with no `codex_error_info`, or a permissions path-conversion failure), exec stops draining and tears down child agents that are still running. That matches the old single-turn behaviour; it does not hang. See [#97](https://github.com/epsalmond/codex/issues/97).
+Errors without an error code and permission path-conversion failures are now reported as failed turns. Exec stops the failed turn's child work before reporting completion. See [#97](https://github.com/epsalmond/codex/issues/97).
 
 ## Subagents on a different model provider
 
