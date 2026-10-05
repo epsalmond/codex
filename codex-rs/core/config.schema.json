@@ -1961,6 +1961,10 @@
           "minimum": 1.0,
           "type": "integer"
         },
+        "stall_unlinked_timer_recognition": {
+          "description": "Recognize the fixed literal-timer Code Mode grammar when nested observations are absent, default true. False keeps those unlinked cells Unknown; no script is evaluated by this rule.",
+          "type": "boolean"
+        },
         "stall_waiting_prefixes": {
           "default": null,
           "description": "Replacement assistant final or commentary waiting prefixes: at most 32 literals, each at most 64 Unicode characters as written and nonempty after whitespace normalization. Unset preserves defaults; an empty list disables only this prefix rule. Matching lowercases, collapses whitespace, and normalizes curly apostrophes using the goal extension's shared matcher; normalized message text is limited to 512 characters.",
@@ -1971,6 +1975,14 @@
           },
           "maxItems": 32,
           "type": "array"
+        },
+        "stall_waiting_text_max_chars": {
+          "default": null,
+          "description": "Maximum normalized characters in a waiting final or commentary message, default 512. Values must be positive and at most 512. Longer messages are substantive output.",
+          "format": "uint32",
+          "maximum": 512.0,
+          "minimum": 1.0,
+          "type": "integer"
         }
       },
       "type": "object"

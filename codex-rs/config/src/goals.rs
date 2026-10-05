@@ -56,6 +56,29 @@ pub struct GoalsToml {
     #[serde(default, deserialize_with = "deserialize_waiting_prefixes")]
     #[schemars(schema_with = "waiting_prefixes_schema")]
     pub stall_waiting_prefixes: Option<Vec<String>>,
+    /// Maximum normalized characters in a waiting final or commentary message, default 512.
+    /// Values must be positive and at most 512. Longer messages are substantive output.
+    #[serde(default, deserialize_with = "deserialize_waiting_text_max_chars")]
+    #[schemars(range(min = 1, max = 512))]
+    pub stall_waiting_text_max_chars: Option<NonZeroU32>,
+    /// Recognize the fixed literal-timer Code Mode grammar when nested observations are absent,
+    /// default true. False keeps those unlinked cells Unknown; no script is evaluated by this rule.
+    pub stall_unlinked_timer_recognition: Option<bool>,
+}
+
+fn deserialize_waiting_text_max_chars<'de, D>(
+    deserializer: D,
+) -> Result<Option<NonZeroU32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<NonZeroU32>::deserialize(deserializer)?;
+    if value.is_some_and(|value| value.get() > 512) {
+        return Err(D::Error::custom(
+            "goals.stall_waiting_text_max_chars must be at most 512",
+        ));
+    }
+    Ok(value)
 }
 
 fn deserialize_waiting_prefixes<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>

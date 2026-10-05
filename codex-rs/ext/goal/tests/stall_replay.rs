@@ -21,6 +21,36 @@ fn threshold() -> NonZeroU32 {
 }
 
 #[test]
+fn structured_goal_admission_survives_prompt_edits_and_replay_uses_overrides() -> anyhow::Result<()>
+{
+    for trusted in [true, false] {
+        let mut replay = Replay::new(&codex_core::config::GoalsToml {
+            stall_waiting_prefixes: Some(vec!["holding".to_owned()]),
+            ..Default::default()
+        })
+        .map_err(anyhow::Error::msg)?;
+        for turn in 1..=3 {
+            replay.record(&json!({"type":"event_msg", "payload":{"type":"task_started", "turn_id":turn.to_string()}}), threshold());
+            replay.record(&json!({"type":"response_item", "payload":{"type":"message", "role":"user",
+                "content":[{"type":"input_text", "text":"Entirely revised goal continuation prose"}],
+                "internal_chat_message_metadata_passthrough":{"content_item_kinds":if trusted { vec!["goal.internal_context"] } else { vec!["user.text"] }} }}), threshold());
+            assert_eq!(replay.record(&json!({"type":"event_msg", "payload":{"type":"task_complete", "turn_id":turn.to_string(), "last_agent_message":"Holding for the current result"}}), threshold()),
+                Some(if trusted { Assessment::Suspected { reason:stall::Suspicion::WaitingFinal, streak:turn, threshold_reached:turn==3 } } else { Assessment::NotSuspected }));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn replay_constructor_propagates_invalid_effective_settings() {
+    let goals = codex_core::config::GoalsToml {
+        stall_waiting_prefixes: Some(vec![" ".to_owned()]),
+        ..Default::default()
+    };
+    assert!(Replay::new(&goals).is_err());
+}
+
+#[test]
 #[ignore = "requires a private local rollout manifest"]
 fn real_local_episode_replay() -> anyhow::Result<()> {
     let path = std::env::var("CODEX_STALL_CORPUS_MANIFEST")?;
@@ -29,12 +59,16 @@ fn real_local_episode_replay() -> anyhow::Result<()> {
     let mut failures = Vec::new();
     let threshold = NonZeroU32::new(manifest["threshold"].as_u64().unwrap_or(/*default*/ 3) as u32)
         .expect("positive threshold");
+    let goals = serde_json::from_value::<codex_core::config::GoalsToml>(
+        manifest.get("goals").cloned().unwrap_or_else(|| json!({})),
+    )?;
     for episode in manifest["episodes"].as_array().expect("episode manifest") {
         let mut replay = if episode["counterfactual_auto"].as_bool().unwrap_or(false) {
-            Replay::counterfactual_auto()
+            Replay::counterfactual_auto(&goals)
         } else {
-            Replay::default()
-        };
+            Replay::new(&goals)
+        }
+        .map_err(anyhow::Error::msg)?;
         let mut classified = 0;
         let mut suspicious = 0;
         let mut deferred = false;
@@ -90,7 +124,7 @@ fn real_local_episode_replay() -> anyhow::Result<()> {
 
 #[test]
 fn sanitized_rollout_events_exercise_actual_extractor_and_reset_boundaries() {
-    let mut replay = Replay::default();
+    let mut replay = Replay::new(&Default::default()).expect("validated packaged settings");
     for index in 1..=4 {
         let id = format!("turn-{index}");
         let mut records = vec![
@@ -123,7 +157,7 @@ fn sanitized_rollout_events_exercise_actual_extractor_and_reset_boundaries() {
 
 #[test]
 fn productive_automatic_calls_preserve_changed_targets_and_outcomes() {
-    let mut replay = Replay::default();
+    let mut replay = Replay::new(&Default::default()).expect("validated packaged settings");
     for index in 0..6 {
         let id = format!("turn-{index}");
         let records = [
@@ -149,7 +183,8 @@ fn productive_automatic_calls_preserve_changed_targets_and_outcomes() {
 
 #[test]
 fn counterfactual_origin_keeps_real_inbound_reset_and_compacted_turn_boundary() {
-    let mut replay = Replay::counterfactual_auto();
+    let mut replay =
+        Replay::counterfactual_auto(&Default::default()).expect("validated packaged settings");
     let records = [
         json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"first"}}),
         json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"original admission"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}),
@@ -175,7 +210,7 @@ fn unsupported_assistant_parts_are_not_empty_final_evidence() {
         json!([{"type":"output_text"}]),
         json!([{"type":"output_audio","audio":"opaque"}]),
     ] {
-        let mut replay = Replay::default();
+        let mut replay = Replay::new(&Default::default()).expect("validated packaged settings");
         let records = [
             json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}),
             json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<codex_internal_context source=\"goal\">\nContinue working toward the active thread goal."}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["goal.internal_context"]}}}),
@@ -194,7 +229,7 @@ fn unsupported_assistant_parts_are_not_empty_final_evidence() {
 
 #[test]
 fn qualified_opaque_wrappers_remain_unknown() {
-    let mut replay = Replay::default();
+    let mut replay = Replay::new(&Default::default()).expect("validated packaged settings");
     for index in 0..4 {
         let id = format!("turn-{index}");
         let records = [

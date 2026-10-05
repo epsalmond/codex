@@ -10,6 +10,37 @@ use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
 #[tokio::test]
+async fn goal_guard_loads_bounded_wait_length_and_timer_policy() -> anyhow::Result<()> {
+    let home = tempdir()?;
+    let parsed: ConfigToml = toml::from_str(
+        "[goals]\nstall_waiting_text_max_chars = 32\nstall_unlinked_timer_recognition = false\n",
+    )?;
+    let config = Config::load_from_base_config_with_overrides(
+        parsed,
+        ConfigOverrides::default(),
+        home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        (
+            config
+                .goal_stall_waiting_text_max_chars
+                .map(std::num::NonZeroU32::get),
+            config.goal_stall_unlinked_timer_recognition
+        ),
+        (Some(32), Some(false))
+    );
+    for limit in [0, 513] {
+        let error = toml::from_str::<ConfigToml>(&format!(
+            "[goals]\nstall_waiting_text_max_chars = {limit}\n"
+        ))
+        .expect_err("invalid waiting length");
+        assert!(error.to_string().contains("stall_waiting_text_max_chars"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_guard_loads_effective_defaults_and_literal_replacements() -> anyhow::Result<()> {
     let home = tempdir()?;
     for (source, expected) in [

@@ -150,15 +150,32 @@ fn waiting_commentary_does_not_mask_waits_but_substantive_commentary_does() {
         ("Completed the next requested analysis section.", true),
     ] {
         let mut observer = empty();
-        observer.commentary_text(
-            commentary,
-            &stall_settings::waiting_prefixes(None)
-                .expect("valid packaged defaults")
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        );
+        observer.commentary_text(commentary);
         assert_eq!(observer.finish().activity, expected);
+    }
+}
+
+#[test]
+fn unlinked_literal_timer_recognition_can_be_disabled() {
+    for enabled in [true, false] {
+        let mut observer = TurnObserver::new(stall_settings::StallSettings {
+            unlinked_timer_recognition: enabled,
+            ..Default::default()
+        });
+        observer.automatic();
+        observer.call(
+            "timer",
+            "exec",
+            &json!("await new Promise(done => setTimeout(done, 1)); text(\"ack\");"),
+            CallKind::Wrapper,
+            CallParent::Direct,
+        );
+        observer.outcome(
+            "timer",
+            "exec",
+            &json!([{"type":"output_text", "text":"ack"}]),
+        );
+        assert_eq!(observer.finish().complete, enabled);
     }
 }
 

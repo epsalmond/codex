@@ -1,6 +1,8 @@
 {
   "version": 1,
   "goals": {
+    "stall_waiting_text_max_chars": 512,
+    "stall_unlinked_timer_recognition": true,
     "stall_waiting_prefixes": [
       "waiting",
       "awaiting",

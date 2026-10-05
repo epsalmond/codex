@@ -1,5 +1,6 @@
 //! Conservative turn-level suspicion, independent of continuation policy.
 
+use crate::stall_settings::StallSettings;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -33,14 +34,15 @@ pub(crate) enum FinalKind {
 }
 
 impl FinalKind {
-    pub(crate) fn from_text(text: &str, waiting_prefixes: &[&str]) -> Self {
+    pub(crate) fn from_text(text: &str, settings: &StallSettings) -> Self {
         let text: String = normalized(text).chars().take(513).collect();
         if text.is_empty() {
             Self::Empty
-        } else if text.chars().count() <= 512
-            && waiting_prefixes
+        } else if text.chars().count() <= settings.waiting_text_max_chars.get() as usize
+            && settings
+                .prefixes
                 .iter()
-                .any(|prefix| text.starts_with(prefix))
+                .any(|prefix| text.starts_with(prefix.as_str()))
         {
             Self::Waiting
         } else {
