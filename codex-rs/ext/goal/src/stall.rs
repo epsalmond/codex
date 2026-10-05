@@ -1,6 +1,8 @@
 //! Conservative turn-level suspicion, independent of continuation policy.
 
 use crate::stall_settings::StallSettings;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -25,7 +27,7 @@ pub(crate) fn normalized(text: &str) -> String {
         .join(" ")
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FinalKind {
     #[default]
     Empty,
@@ -51,14 +53,14 @@ impl FinalKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Suspicion {
     EmptyFinal,
     WaitingFinal,
     RepeatedActions,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Assessment {
     Unclassified,
     NotSuspected,
@@ -69,7 +71,7 @@ pub(crate) enum Assessment {
     },
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TurnObservation {
     pub(crate) automatic: bool,
     pub(crate) complete: bool,
@@ -82,7 +84,7 @@ pub(crate) struct TurnObservation {
     pub(crate) actions: Option<Digest>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct StallDetector {
     previous_actions: Option<Digest>,
     previous_external_result: Option<Digest>,
