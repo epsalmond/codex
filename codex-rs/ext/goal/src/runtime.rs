@@ -24,6 +24,9 @@ use crate::tool::protocol_goal_from_state;
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
 
+#[path = "runtime_guard.rs"]
+mod guard;
+
 #[derive(Clone)]
 pub struct GoalRuntimeHandle {
     inner: Arc<GoalRuntimeInner>,
@@ -35,6 +38,7 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) tools_available_for_thread: bool,
     pub(crate) tools_visible_for_thread: bool,
     pub(crate) root_accounting_state: Option<Arc<GoalAccountingState>>,
+    pub(crate) guard: crate::stall_guard::ContinuationGuard,
 }
 
 pub(crate) enum ActiveGoalStopReason {
@@ -57,6 +61,7 @@ struct GoalRuntimeInner {
     tools_available_for_thread: bool,
     tools_visible_for_thread: bool,
     goal_state_lock: Semaphore,
+    guard: crate::stall_guard::ContinuationGuard,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -111,6 +116,7 @@ impl GoalRuntimeHandle {
                 tools_available_for_thread: config.tools_available_for_thread,
                 tools_visible_for_thread: config.tools_visible_for_thread,
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
+                guard: config.guard,
             }),
         }
     }
@@ -488,6 +494,7 @@ impl GoalRuntimeHandle {
             Ok(StartIfIdleSubmission::Started { turn_id }) => {
                 // Turn-stop evaluation takes the same permit, so even a fast response
                 // cannot finish before this host-admitted continuation is identified.
+                self.guard().admitted(&turn_id);
                 self.inner.accounting_state.mark_goal_continuation(turn_id);
             }
             Ok(StartIfIdleSubmission::NotSubmitted { reason }) => {

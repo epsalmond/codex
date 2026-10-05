@@ -11,6 +11,7 @@ codex_rust_crate(
     extra_binaries_non_windows = [
         "//codex-rs/cli:codex",
     ],
+    integration_compile_data_extra = ["//codex-rs/ext/goal:stall_replay_test_sources"],
     integration_test_timeout = "long",
     run_tests_with_wine_exec = True,
     test_shard_counts = {

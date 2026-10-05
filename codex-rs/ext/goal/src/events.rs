@@ -8,7 +8,7 @@ use codex_protocol::protocol::ThreadGoalUpdatedEvent;
 
 #[derive(Clone)]
 pub(crate) struct GoalEventEmitter {
-    sink: Arc<dyn ExtensionEventSink>,
+    pub(crate) sink: Arc<dyn ExtensionEventSink>,
 }
 
 impl GoalEventEmitter {
