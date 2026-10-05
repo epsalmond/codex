@@ -84,6 +84,7 @@ pub use contributors::ToolContributor;
 pub use contributors::ToolFinishInput;
 pub use contributors::ToolLifecycleContributor;
 pub use contributors::ToolLifecycleFuture;
+pub use contributors::ToolOutputInput;
 pub use contributors::ToolStartInput;
 pub use contributors::ToolTimingBoundary;
 pub use contributors::ToolTimingInput;

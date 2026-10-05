@@ -22,6 +22,7 @@ use crate::tools::flat_tool_name;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
+use crate::tools::lifecycle::notify_tool_output;
 use crate::tools::lifecycle::notify_tool_start;
 use crate::tools::router::tool_log_payload;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
@@ -777,6 +778,10 @@ impl ToolRegistry {
                     &result.payload,
                     result.result.as_ref(),
                 );
+                let output = result
+                    .result
+                    .to_response_item(&result.call_id, &result.payload);
+                notify_tool_output(&invocation, &output).await;
                 Ok(result)
             }
             Err(err) => {

@@ -51,6 +51,7 @@ pub use tool_lifecycle::McpToolSource;
 pub use tool_lifecycle::ToolCallOutcome;
 pub use tool_lifecycle::ToolFinishInput;
 pub use tool_lifecycle::ToolLifecycleFuture;
+pub use tool_lifecycle::ToolOutputInput;
 pub use tool_lifecycle::ToolStartInput;
 pub use tool_lifecycle::ToolTimingBoundary;
 pub use tool_lifecycle::ToolTimingInput;
@@ -246,6 +247,18 @@ pub trait TurnLifecycleContributor: Send + Sync {
         Box::pin(std::future::ready(()))
     }
 
+    /// Observes an item after the host accepts it into conversation history.
+    /// This includes delivered agent reports, unlike streamed completion notices.
+    /// Items can contain sensitive plaintext; retain only bounded derived facts.
+    fn on_item_recorded<'a>(
+        &'a self,
+        _thread_store: &'a ExtensionData,
+        _turn_store: &'a ExtensionData,
+        _item: &'a codex_protocol::models::ResponseItem,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
     /// Called before the host drops the completed turn runtime and turn store.
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
@@ -407,6 +420,12 @@ pub trait ToolLifecycleContributor: Send + Sync {
     /// A matching start callback does not exist when execution is blocked,
     /// hook-provided input cannot be applied, or cancellation wins first.
     fn on_tool_finish<'a>(&'a self, _input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(std::future::ready(()))
+    }
+
+    /// Observes the accepted model-facing output, including nested code-mode calls.
+    /// Calls that return no accepted output have no matching callback.
+    fn on_tool_output<'a>(&'a self, _input: ToolOutputInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(std::future::ready(()))
     }
 

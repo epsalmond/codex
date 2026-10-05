@@ -3857,6 +3857,17 @@ impl Session {
         {
             mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
         }
+        for item in &response_items {
+            for contributor in self.services.extensions.turn_lifecycle_contributors() {
+                contributor
+                    .on_item_recorded(
+                        &self.services.thread_extension_data,
+                        turn_context.extension_data.as_ref(),
+                        item,
+                    )
+                    .await;
+            }
+        }
         self.send_raw_response_items(turn_context, &response_items)
             .await;
     }

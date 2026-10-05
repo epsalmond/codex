@@ -214,6 +214,28 @@ pub struct ToolFinishInput<'a> {
     pub outcome: ToolCallOutcome,
 }
 
+/// Borrowed model-facing output after tool policy and post-use hooks accept the result.
+/// Observers must retain only bounded derived facts; outputs can contain sensitive plaintext.
+pub struct ToolOutputInput<'a> {
+    /// Store scoped to the host session runtime.
+    pub session_store: &'a ExtensionData,
+    /// Store scoped to this thread runtime.
+    pub thread_store: &'a ExtensionData,
+    /// Store scoped to this turn runtime.
+    pub turn_store: &'a ExtensionData,
+    /// Current turn submission id.
+    pub turn_id: &'a str,
+    /// Host-owned tool call id, including nested calls.
+    pub call_id: &'a str,
+    /// Finalized routed tool name.
+    pub tool_name: &'a ToolName,
+    /// Source of this accepted call.
+    pub source: ToolCallSource,
+    /// The accepted representation, not its lossy logging output.
+    /// Provider or host-private metadata is not evidence of model-visible activity.
+    pub output: &'a codex_protocol::models::ResponseInputItem,
+}
+
 /// The execution interval represented by a tool timing observation.
 #[derive(Clone, Copy, Debug)]
 pub enum ToolTimingBoundary {

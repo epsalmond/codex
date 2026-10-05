@@ -6,6 +6,7 @@ use codex_extension_api::McpToolResultInput;
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolCallSource as ExtensionToolCallSource;
 use codex_extension_api::ToolFinishInput;
+use codex_extension_api::ToolOutputInput;
 use codex_extension_api::ToolStartInput;
 use codex_file_system::ExecutorFileSystem;
 use codex_protocol::mcp::CallToolResult;
@@ -117,6 +118,31 @@ pub(crate) async fn notify_tool_finish(invocation: &ToolInvocation, outcome: Too
         outcome,
     )
     .await;
+}
+
+pub(crate) async fn notify_tool_output(
+    invocation: &ToolInvocation,
+    output: &codex_protocol::models::ResponseInputItem,
+) {
+    for contributor in invocation
+        .session
+        .services
+        .extensions
+        .tool_lifecycle_contributors()
+    {
+        contributor
+            .on_tool_output(ToolOutputInput {
+                session_store: &invocation.session.services.session_extension_data,
+                thread_store: &invocation.session.services.thread_extension_data,
+                turn_store: invocation.turn.extension_data.as_ref(),
+                turn_id: &invocation.turn.sub_id,
+                call_id: &invocation.call_id,
+                tool_name: &invocation.tool_name,
+                source: extension_tool_call_source(invocation.source.clone()),
+                output,
+            })
+            .await;
+    }
 }
 
 pub(crate) async fn notify_tool_aborted(
