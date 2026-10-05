@@ -118,6 +118,17 @@ impl TurnObserver {
             self.unknown();
             return;
         }
+        let kind = if kind == CallKind::Wrapper
+            && matches!(name, "exec" | "functions.exec")
+            && arguments
+                .as_str()
+                .or_else(|| arguments.get("code").and_then(Value::as_str))
+                .is_some_and(timer_only)
+        {
+            CallKind::Leaf
+        } else {
+            kind
+        };
         self.calls.insert(
             call_id.to_owned(),
             Call {
@@ -208,5 +219,97 @@ fn canonical(name: &str, value: &Value, side: Side) -> Value {
         }
         return Value::Object(fields);
     }
+    if matches!(name, "exec" | "functions.exec")
+        && matches!(side, Side::Result)
+        && let Value::Array(parts) = value
+    {
+        let mut parts = parts.clone();
+        if let Some(first) = parts.first_mut()
+            && let Some(text) = first.get("text").and_then(Value::as_str)
+            && let Some(body) = text.strip_prefix("Script completed\nWall time ")
+            && let Some((duration, output)) = body.split_once("\nOutput:\n")
+            && valid_code_mode_duration(duration)
+        {
+            first["text"] = Value::String(format!("Script completed\nOutput:\n{output}"));
+        }
+        return Value::Array(parts);
+    }
     value.clone()
+}
+
+// A complete, small self-contained cell has an observable leaf outcome even in old
+// rollouts without nested tool tracing. All other unlinked cells remain unknown.
+fn timer_only(code: &str) -> bool {
+    let code = code.trim();
+    let code = if code.starts_with("// @exec:") {
+        let Some((header, body)) = code.split_once('\n') else {
+            return false;
+        };
+        if serde_json::from_str::<Value>(header.trim_start_matches("// @exec:").trim()).is_err() {
+            return false;
+        }
+        body.trim()
+    } else {
+        code
+    };
+    let Some(body) = code.strip_prefix("await new Promise(") else {
+        return false;
+    };
+    let Some((binding, body)) = body.split_once("=>") else {
+        return false;
+    };
+    let binding = binding.trim();
+    if !binding
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        || !binding
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return false;
+    }
+    let Some(body) = body.trim().strip_prefix("setTimeout(") else {
+        return false;
+    };
+    let Some((argument, body)) = body.split_once(',') else {
+        return false;
+    };
+    if argument.trim() != binding {
+        return false;
+    }
+    let Some((duration, remainder)) = body.split_once("));") else {
+        return false;
+    };
+    if duration.trim().parse::<u64>().is_err() {
+        return false;
+    }
+    let remainder = remainder.trim();
+    if remainder.is_empty() {
+        return true;
+    }
+    remainder
+        .strip_prefix("text(")
+        .and_then(|body| body.strip_suffix(");"))
+        .is_some_and(|literal| serde_json::from_str::<String>(literal.trim()).is_ok())
+}
+
+fn valid_code_mode_duration(line: &str) -> bool {
+    let parts: Vec<_> = line.split_whitespace().collect();
+    match parts.as_slice() {
+        [total, "seconds"] => total.parse::<f64>().is_ok(),
+        [
+            total,
+            "seconds",
+            "(code-mode",
+            host,
+            "seconds;",
+            "overhead",
+            overhead,
+            "seconds)",
+        ] => [total, host, overhead]
+            .iter()
+            .all(|value| value.parse::<f64>().is_ok()),
+        _ => false,
+    }
 }

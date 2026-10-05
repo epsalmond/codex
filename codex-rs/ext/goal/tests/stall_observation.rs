@@ -186,6 +186,55 @@ fn wrappers_coalesce_only_with_linked_leaf_outcomes() {
     );
 }
 
+#[test]
+fn self_contained_timer_cells_share_live_and_replay_canonicalization() {
+    let mut detector = StallDetector::default();
+    for index in 1..=4 {
+        let mut turn = empty();
+        turn.call(
+            "cell",
+            "exec",
+            &json!("await new Promise(resolve => setTimeout(resolve, 45000)); text(\"finished\");"),
+            CallKind::Wrapper,
+            CallParent::Direct,
+        );
+        turn.outcome("cell","exec",&json!([{ "type":"input_text","text":if index%2==0 {format!("Script completed\nWall time {index}.000 seconds (code-mode 0.750 seconds; overhead 0.500 seconds)\nOutput:\n")}else{format!("Script completed\nWall time {index}.0 seconds\nOutput:\n")}},{"type":"input_text","text":"finished"}]));
+        assert_eq!(
+            detector.observe(&index.to_string(), turn.finish(), threshold()),
+            if index == 1 {
+                Assessment::NotSuspected
+            } else {
+                Assessment::Suspected {
+                    reason: Suspicion::RepeatedActions,
+                    streak: index - 1,
+                    threshold_reached: index == 4,
+                }
+            }
+        );
+    }
+    for code in [
+        "await new Promise(resolve => setTimeout(resolve, 45000)); text(await tools.read({target:'new'}));",
+        "await new Promise(resolve => setTimeout(resolve, 45000)); text(\"finished\"); await tools.write({target:'new'});",
+        "await new Promise(resolve => setTimeout(other, 45000));",
+        "await new Promise(resolve => setTimeout(resolve, delay));",
+        "await new Promise(resolve => setTimeout(resolve, 45000)); text(eval('work()'));",
+    ] {
+        let mut turn = empty();
+        turn.call(
+            "cell",
+            "exec",
+            &json!(code),
+            CallKind::Wrapper,
+            CallParent::Direct,
+        );
+        turn.outcome("cell","exec",&json!([{ "type":"input_text","text":"Script completed\nWall time 1.0 seconds\nOutput:\n"}]));
+        assert_eq!(
+            detector.observe(code, turn.finish(), threshold()),
+            Assessment::Unclassified
+        );
+    }
+}
+
 fn action(id: &str, command: &str, output: &str, exit_code: i32) -> TurnObserver {
     let mut turn = empty();
     turn.call(
