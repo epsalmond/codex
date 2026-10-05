@@ -1472,3 +1472,9 @@ async fn exec_wake_mode_stays_open_until_the_wake_turn_output_is_forwarded() -> 
 
 #[path = "agent_wake/failure_tests.rs"]
 mod failure_tests;
+
+#[path = "agent_wake/code_mode_failure_tests.rs"]
+mod code_mode_failure_tests;
+
+#[path = "agent_wake/cold_failure_tests.rs"]
+mod cold_failure_tests;

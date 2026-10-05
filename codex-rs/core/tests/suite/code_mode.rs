@@ -56,6 +56,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_tools::FreeformTool;
 use codex_tools::FreeformToolFormat;
@@ -5871,8 +5872,18 @@ impl ToolLifecycleContributor for InterruptedNestedToolObserver {
     }
 }
 
+#[derive(Clone, Copy)]
+enum HostTurnEnd {
+    Interrupt,
+    Fail,
+}
+
+#[test_case(HostTurnEnd::Interrupt; "interrupt")]
+#[test_case(HostTurnEnd::Fail; "failure_without_interrupt_feature")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_interrupt_terminates_active_cells_and_nested_tools() -> Result<()> {
+async fn code_mode_interrupt_terminates_active_cells_and_nested_tools(
+    termination: HostTurnEnd,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let (started_tx, started_rx) = oneshot::channel();
@@ -5887,9 +5898,17 @@ async fn code_mode_interrupt_terminates_active_cells_and_nested_tools() -> Resul
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(Arc::new(extensions.build()))
-        .with_config(|config| {
+        .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
-            let _ = config.features.enable(Feature::CodeModeInterrupt);
+            let _ = config.features.enable(Feature::CodeModeHost);
+            match termination {
+                HostTurnEnd::Interrupt => {
+                    let _ = config.features.enable(Feature::CodeModeInterrupt);
+                }
+                HostTurnEnd::Fail => {
+                    let _ = config.features.disable(Feature::CodeModeInterrupt);
+                }
+            }
             let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
         });
     let test = builder.build_with_auto_env(&server).await?;
@@ -5952,19 +5971,43 @@ async fn code_mode_interrupt_terminates_active_cells_and_nested_tools() -> Resul
     )
     .await;
 
-    test.codex
+    let TurnInputSubmission::Started { turn_id } = test
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "start a long-running nested tool".to_string(),
             text_elements: Vec::new(),
         }]))
-        .await?;
+        .await?
+    else {
+        panic!("nested tool turn must start");
+    };
     let active_cell_id = tokio::time::timeout(Duration::from_secs(10), started_rx).await??;
 
-    test.codex.submit(Op::Interrupt).await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnAborted(_))
-    })
-    .await;
+    match termination {
+        HostTurnEnd::Interrupt => {
+            test.codex.submit(Op::Interrupt).await?;
+            wait_for_event(&test.codex, |event| {
+                matches!(event, EventMsg::TurnAborted(_))
+            })
+            .await;
+        }
+        HostTurnEnd::Fail => {
+            test.codex
+                .submit(Op::FailTurn {
+                    turn_id,
+                    error: codex_protocol::protocol::ErrorEvent {
+                        message: "host failure".to_owned(),
+                        codex_error_info: None,
+                        misalignment: None,
+                    },
+                })
+                .await?;
+            wait_for_event(&test.codex, |event| {
+                matches!(event, EventMsg::TurnComplete(_))
+            })
+            .await;
+        }
+    }
     let nested_outcome = tokio::time::timeout(Duration::from_secs(10), finished_rx).await??;
     assert_eq!(nested_outcome, ToolCallOutcome::Aborted);
 
