@@ -249,6 +249,61 @@ rules and current limitations.
 A provider-switching role cannot fork the parent's history; spawn it with
 `fork_turns = "none"` (the default).
 
+### Automatic goal continuation
+
+When Goals is enabled, the host checks admitted automatic goal turns for empty
+output, short literal waiting messages, and repeated action/result digests.
+The default `defer` mode holds continuation after two consecutive suspicious
+turns. Repeated actions first establish a baseline, so that pattern needs three
+turns. A hold persists across restart and keeps the goal Active; descendants and
+budget accounting continue.
+
+New user input, explicit goal activation, a changed objective, or a newly accepted
+agent result can recover a hold. Plain turn starts, maintenance, and generic
+process/cell completion do not release it. This does not add a process-completion
+wake mechanism.
+
+Tune policy in `~/.codex/config.toml`:
+
+```toml
+[goals]
+continuation_guard_mode = "defer" # off, observe, or defer
+stall_after_no_progress_turns = 2
+stall_waiting_text_max_chars = 512 # positive; at most 512 normalized Unicode characters
+stall_unlinked_timer_recognition = true # fixed literal-timer grammar; no script evaluation
+# stall_waiting_prefixes = ["waiting", "awaiting"] # replaces the packaged vocabulary
+```
+
+Waiting prefixes apply to final and commentary messages. Unset uses the versioned
+[packaged profile](codex-rs/ext/goal/config/continuation-defaults.v1.json); `[]`
+disables the prefix rule. Replacements allow at most 32 nonblank literals, each
+at most 64 Unicode characters as written. Matching lowercases, collapses
+whitespace, and normalizes curly apostrophes. Invalid packaged policy disables
+stall assessment and retains the legacy empty-response guard; it has no duplicate
+Rust vocabulary fallback.
+
+Settings are frozen when a new runtime starts or resumes. Restart and resume to
+apply edits. `observe` warns without holding; `off` skips assessment. Both retain
+the legacy three-empty-response Blocked guard, and loading either releases only
+detector holds, preserving fork deferrals. Disabling literal-timer recognition
+leaves unlinked Code Mode cells Unknown.
+
+Each new runtime treats prior suspicion history as Unknown because older binaries
+may have done unobserved work. Pre-threshold streaks restart; persisted holds and
+accepted-result ID deduplication remain until authorized recovery. Deduplication
+retains the 32 most recent accepted identities. Loading changed guard settings
+invalidates compatible prior detector history and releases detector holds,
+including when the new mode remains `defer`; fork deferrals remain separate.
+
+This is a conservative heuristic, not a proof of progress. Short prefix matches
+can hold productive messages, and changing outputs can hide a stall. Unknown or
+incomplete observations break suspicion. Hard resource caps remain fixed (256
+calls, 512-byte IDs, 256-byte tool names, and 4096-byte persisted state). Calibration
+used two bad windows from one incident family, with no independent-family
+validation; manual controls were Unknown and one exceeded the call cap. The
+automatic returned-results control did not hold. Tune with the same effective
+profile in live execution and replay rather than assuming general accuracy.
+
 ### Installing upstream Codex CLI
 
 The official OpenAI release installs as `codex`.
