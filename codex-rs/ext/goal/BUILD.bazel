@@ -10,5 +10,6 @@ codex_rust_crate(
         "src/accounting.rs",
         "src/steering.rs",
         "src/stall.rs",
+        "src/stall_observation.rs",
     ] + glob(["templates/**"]),
 )
