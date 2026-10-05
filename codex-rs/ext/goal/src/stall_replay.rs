@@ -25,35 +25,32 @@ pub(crate) struct Replay {
     names: std::collections::BTreeMap<String, String>,
     counterfactual_auto: bool,
     admission_replaced: bool,
-    waiting_prefixes: Result<Vec<String>, String>,
+    settings: stall_settings::StallSettings,
     pub(crate) stats: ReplayStats,
 }
 
-impl Default for Replay {
-    fn default() -> Self {
-        Self {
+impl Replay {
+    pub(crate) fn new(goals: &codex_core::config::GoalsToml) -> Result<Self, String> {
+        Ok(Self {
             observer: None,
             turn_id: String::new(),
             detector: StallDetector::default(),
             names: Default::default(),
             counterfactual_auto: false,
             admission_replaced: false,
-            waiting_prefixes: stall_settings::waiting_prefixes(None),
+            settings: stall_settings::settings(goals)?,
             stats: ReplayStats::default(),
-        }
+        })
     }
-}
-
-impl Replay {
-    pub(crate) fn counterfactual_auto() -> Self {
-        Self {
-            counterfactual_auto: true,
-            ..Default::default()
-        }
+    pub(crate) fn counterfactual_auto(
+        goals: &codex_core::config::GoalsToml,
+    ) -> Result<Self, String> {
+        let mut replay = Self::new(goals)?;
+        replay.counterfactual_auto = true;
+        Ok(replay)
     }
     pub(crate) fn record(&mut self, record: &Value, threshold: NonZeroU32) -> Option<Assessment> {
-        let prefixes = self.waiting_prefixes.as_ref().ok()?;
-        let prefixes = prefixes.iter().map(String::as_str).collect::<Vec<_>>();
+        let settings = &self.settings;
         let payload = &record["payload"];
         match (record["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
@@ -61,7 +58,7 @@ impl Replay {
                     self.detector.reset();
                 }
                 self.turn_id = payload["turn_id"].as_str()?.to_owned();
-                self.observer = Some(TurnObserver::default());
+                self.observer = Some(TurnObserver::new(settings.clone()));
                 if self.counterfactual_auto {
                     self.observer.as_mut()?.automatic();
                 }
@@ -70,7 +67,7 @@ impl Replay {
             }
             (Some("response_item"), _) => {
                 let observer = self.observer.as_mut()?;
-                if self.names.len() > 256 {
+                if self.names.len() > crate::stall_observation::MAX_CALLS {
                     observer.unknown();
                     return None;
                 }
@@ -93,18 +90,26 @@ impl Replay {
                             .join("\n");
                         if payload["role"] == "user" {
                             let kinds = &payload["internal_chat_message_metadata_passthrough"]["content_item_kinds"];
-                            if kinds.as_array().is_some_and(|kinds| kinds.len() == 1 && kinds[0] == "goal.internal_context")
-                                && text.starts_with("<codex_internal_context source=\"goal\">\nContinue working toward the active thread goal.") {
+                            if kinds.as_array().is_some_and(|kinds| {
+                                kinds.len() == 1 && kinds[0] == "goal.internal_context"
+                            }) {
                                 observer.automatic();
-                            } else if kinds.as_array().is_none_or(|kinds| kinds.iter().any(|kind| kind.as_str().is_some_and(|kind| kind.starts_with("user.")))) {
-                                if self.counterfactual_auto && !self.admission_replaced {self.admission_replaced=true;}
-                                else {observer.fresh_input();}
+                            } else if kinds.as_array().is_none_or(|kinds| {
+                                kinds.iter().any(|kind| {
+                                    kind.as_str().is_some_and(|kind| kind.starts_with("user."))
+                                })
+                            }) {
+                                if self.counterfactual_auto && !self.admission_replaced {
+                                    self.admission_replaced = true;
+                                } else {
+                                    observer.fresh_input();
+                                }
                             }
                         } else if payload["role"] == "assistant" {
                             if payload["phase"] == "commentary" {
-                                observer.commentary_text(&text, &prefixes);
+                                observer.commentary_text(&text);
                             } else {
-                                observer.final_text(&text, &prefixes);
+                                observer.final_text(&text);
                             }
                         }
                     }
@@ -129,7 +134,9 @@ impl Replay {
                             observer.unknown();
                             return None;
                         };
-                        if id.len() > 512 || name.len() > 256 {
+                        if id.len() > crate::stall_observation::MAX_ID_BYTES
+                            || name.len() > crate::stall_observation::MAX_NAME_BYTES
+                        {
                             observer.unknown();
                             return None;
                         }
@@ -155,7 +162,7 @@ impl Replay {
                             None => name.to_owned(),
                         };
                         observer.call(id, &name, &arguments, kind, parent);
-                        if name.len() > 256 {
+                        if name.len() > crate::stall_observation::MAX_NAME_BYTES {
                             observer.unknown();
                             return None;
                         }
@@ -191,7 +198,7 @@ impl Replay {
                 }
                 let mut observer = self.observer.take()?;
                 if let Some(text) = payload["last_agent_message"].as_str() {
-                    observer.final_text(text, &prefixes);
+                    observer.final_text(text);
                 }
                 if !payload["error"].is_null() {
                     observer.unknown();

@@ -384,6 +384,8 @@ async fn new_config(
         goal_continuation_guard_mode: Default::default(),
         goal_stall_after_no_progress_turns: NonZeroU32::MIN.saturating_add(/*other*/ 1),
         goal_stall_waiting_prefixes: None,
+        goal_stall_waiting_text_max_chars: None,
+        goal_stall_unlinked_timer_recognition: None,
         token_budget: None,
         token_budget_startup_config: None,
         rollout_budget: None,

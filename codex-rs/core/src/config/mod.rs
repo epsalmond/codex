@@ -970,6 +970,8 @@ pub struct Config {
     /// Validated replacement literals; None uses extension defaults, Some(empty) disables prefixes.
     /// Normalization belongs to the shared goal matcher at session start/resume.
     pub goal_stall_waiting_prefixes: Option<Vec<String>>,
+    pub goal_stall_waiting_text_max_chars: Option<NonZeroU32>,
+    pub goal_stall_unlinked_timer_recognition: Option<bool>,
 
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
@@ -4525,6 +4527,10 @@ impl Config {
                 .unwrap_or(NonZeroU32::MIN.saturating_add(/*other*/ 1)),
             goal_stall_waiting_prefixes: cfg.goals.as_ref()
                 .and_then(|goals| goals.stall_waiting_prefixes.clone()),
+            goal_stall_waiting_text_max_chars: cfg.goals.as_ref()
+                .and_then(|goals| goals.stall_waiting_text_max_chars),
+            goal_stall_unlinked_timer_recognition: cfg.goals.as_ref()
+                .and_then(|goals| goals.stall_unlinked_timer_recognition),
             memories: memories_config,
             agent_interrupt_message_enabled,
             codex_home,

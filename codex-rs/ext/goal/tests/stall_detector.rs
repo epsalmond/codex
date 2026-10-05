@@ -13,19 +13,11 @@ use stall::TurnObservation;
 use stall::digest;
 use std::num::NonZeroU32;
 
-#[allow(clippy::expect_used)]
 fn turn(text: &str) -> TurnObservation {
     TurnObservation {
         automatic: true,
         complete: true,
-        final_kind: FinalKind::from_text(
-            text,
-            &stall_settings::waiting_prefixes(None)
-                .expect("valid packaged defaults")
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        ),
+        final_kind: FinalKind::from_text(text, &stall_settings::StallSettings::default()),
         ..Default::default()
     }
 }
@@ -218,7 +210,13 @@ fn waiting_is_bounded_literal_matching_not_a_tool_name_heuristic() {
         detector.observe(
             "custom",
             TurnObservation {
-                final_kind: FinalKind::from_text("WORK IN PROGRESS", &["work in progress"]),
+                final_kind: FinalKind::from_text(
+                    "WORK IN PROGRESS",
+                    &stall_settings::StallSettings {
+                        prefixes: vec!["work in progress".to_owned()],
+                        ..Default::default()
+                    }
+                ),
                 ..turn("")
             },
             threshold()

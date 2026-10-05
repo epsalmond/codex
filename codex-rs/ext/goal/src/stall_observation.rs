@@ -9,8 +9,10 @@ use crate::stall::normalized;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const MAX_CALLS: usize = 256;
-const MAX_ID_BYTES: usize = 512;
+pub(crate) const MAX_CALLS: usize = 256;
+pub(crate) const MAX_ID_BYTES: usize = 512;
+pub(crate) const MAX_NAME_BYTES: usize = 256;
+use crate::stall_settings::StallSettings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CallKind {
@@ -32,8 +34,9 @@ struct Call {
     parent: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct TurnObserver {
+    settings: StallSettings,
     calls: BTreeMap<String, Call>,
     automatic: bool,
     fresh_input: bool,
@@ -44,7 +47,26 @@ pub(crate) struct TurnObserver {
     capped: bool,
 }
 
+impl Default for TurnObserver {
+    fn default() -> Self {
+        Self::new(StallSettings::default())
+    }
+}
+
 impl TurnObserver {
+    pub(crate) fn new(settings: StallSettings) -> Self {
+        Self {
+            incomplete: settings.profile_version == 0,
+            settings,
+            calls: BTreeMap::new(),
+            automatic: false,
+            fresh_input: false,
+            external_result: None,
+            activity: false,
+            final_kind: FinalKind::default(),
+            capped: false,
+        }
+    }
     pub(crate) fn automatic(&mut self) {
         self.automatic = true;
     }
@@ -84,14 +106,11 @@ impl TurnObserver {
         }
         self.external_result = Some(digest((self.external_result, normalized(&text))));
     }
-    pub(crate) fn final_text(&mut self, text: &str, waiting_prefixes: &[&str]) {
-        self.final_kind = FinalKind::from_text(text, waiting_prefixes);
+    pub(crate) fn final_text(&mut self, text: &str) {
+        self.final_kind = FinalKind::from_text(text, &self.settings);
     }
-    pub(crate) fn commentary_text(&mut self, text: &str, waiting_prefixes: &[&str]) {
-        self.activity |= FinalKind::from_text(text, waiting_prefixes) == FinalKind::Other;
-    }
-    pub(crate) fn activity(&mut self) {
-        self.activity = true;
+    pub(crate) fn commentary_text(&mut self, text: &str) {
+        self.activity |= FinalKind::from_text(text, &self.settings) == FinalKind::Other;
     }
     pub(crate) fn unknown(&mut self) {
         self.incomplete = true;
@@ -115,14 +134,16 @@ impl TurnObserver {
             self.unknown();
             return;
         }
-        if call_id.len() > MAX_ID_BYTES
+        if name.len() > MAX_NAME_BYTES
+            || call_id.len() > MAX_ID_BYTES
             || parent.is_some_and(|id| id.len() > MAX_ID_BYTES)
             || self.calls.contains_key(call_id)
         {
             self.unknown();
             return;
         }
-        let kind = if kind == CallKind::Wrapper
+        let kind = if self.settings.unlinked_timer_recognition
+            && kind == CallKind::Wrapper
             && matches!(name, "exec" | "functions.exec")
             && arguments
                 .as_str()
