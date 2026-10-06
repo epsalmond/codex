@@ -1,4 +1,5 @@
 use super::Submission;
+use crate::WithTurnExtensionData;
 use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
 use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
 use crate::realtime_conversation::handle_speech as handle_realtime_conversation_speech;
@@ -184,6 +185,7 @@ pub(crate) async fn apply_shake(
         return crate::shake::ShakeResult::default();
     }
     let prior_shake_state = history.shake_history_state().clone();
+    let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
     let mut envelopes = history.into_annotated_items();
     let start = usize::try_from(prior_shake_state.watermark)
         .unwrap_or(usize::MAX)
@@ -297,6 +299,7 @@ pub(crate) async fn apply_shake(
                 std::mem::take(&mut envelopes),
                 trigger.compacted_item_message(),
                 new_watermark,
+                input_goal_ids,
             )
             .await
         {
@@ -600,7 +603,7 @@ pub fn refresh_mcp_servers(sess: &Session) {
 }
 
 pub async fn reload_user_config(sess: &Arc<Session>) {
-    sess.reload_user_config_layer().await;
+    Box::pin(sess.reload_user_config_layer()).await;
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
@@ -686,6 +689,7 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         .terminate_all_processes()
         .await;
     if let Err(err) = sess.services.code_mode_service.shutdown().await {
+        sess.services.local_agent_runtime.record_shutdown_failure();
         warn!("failed to shutdown code mode session: {err}");
     }
     sess.stop_mcp_prewarm_worker().await;
@@ -731,6 +735,7 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     if let Some(live_thread) = sess.live_thread()
         && let Err(e) = live_thread.shutdown().await
     {
+        sess.services.local_agent_runtime.record_shutdown_failure();
         warn!("failed to shutdown thread persistence: {e}");
         let event = Event {
             id: sub_id.clone(),
@@ -805,9 +810,20 @@ pub(super) async fn submission_loop(
     config: Arc<Config>,
     rx_sub: Receiver<Submission>,
 ) {
-    // To break out of this loop, send Op::Shutdown.
+    // Session shutdown and tree shutdown both use the existing teardown handler.
     let mut shutdown_received = false;
-    while let Ok(sub) = rx_sub.recv().await {
+    loop {
+        let sub = tokio::select! {
+            biased;
+            _ = sess.services.local_agent_runtime.shutdown.cancelled() => {
+                shutdown_received = shutdown(&sess, super::new_submission_id()).await;
+                break;
+            }
+            sub = rx_sub.recv() => match sub {
+                Ok(sub) => sub,
+                Err(_) => break,
+            },
+        };
         if matches!(sub.op, Op::ResolveElicitation { .. }) {
             debug!(submission_id = %sub.id, operation = sub.op.kind(), "Submission");
         } else {
@@ -874,7 +890,11 @@ pub(super) async fn submission_loop(
                     mode,
                     reply,
                 } => {
-                    let result = turn_input::handle(&sess, *request, mode, sub.id.clone()).await;
+                    let request = WithTurnExtensionData {
+                        request: *request,
+                        turn_extension_init: sub.turn_extension_init,
+                    };
+                    let result = turn_input::handle(&sess, request, mode, sub.id.clone()).await;
                     let _ = reply.send(result);
                     false
                 }
@@ -885,7 +905,10 @@ pub(super) async fn submission_loop(
                 } => {
                     let result = turn_input::handle_recovery(
                         &sess,
-                        thread_settings,
+                        WithTurnExtensionData {
+                            request: thread_settings,
+                            turn_extension_init: sub.turn_extension_init,
+                        },
                         start_options,
                         sub.id.clone(),
                     )
@@ -911,6 +934,10 @@ pub(super) async fn submission_loop(
                     reply,
                 } => {
                     let _settings_guard = thread_settings::acquire_persistence_lock(&sess).await;
+                    let thread_settings = WithTurnExtensionData {
+                        request: thread_settings,
+                        turn_extension_init: sub.turn_extension_init,
+                    };
                     match thread_settings::update(&sess, thread_settings).await {
                         Ok(snapshot) => {
                             // Reply first: the caller may hold a lock its event consumer needs.
@@ -1047,6 +1074,7 @@ pub(super) async fn submission_loop(
         if let Some(live_thread) = sess.live_thread()
             && let Err(err) = live_thread.shutdown().await
         {
+            sess.services.local_agent_runtime.record_shutdown_failure();
             warn!("failed to shutdown thread persistence after submission channel closed: {err}");
         }
     }

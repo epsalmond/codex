@@ -62,6 +62,9 @@ pub(crate) use self::coordinator::AssignmentPhase;
 pub(crate) use self::coordinator::GenerationOperation;
 pub(crate) use self::coordinator::TurnEndDisposition;
 pub(crate) use self::runtime::AgentControlInit;
+pub(crate) use self::runtime::AgentTreeMembership;
+pub(crate) use self::runtime::AgentTreeShutdownState;
+pub(crate) use self::runtime::AgentTreeTeardownGuard;
 pub(crate) use self::runtime::LocalAgentRuntime;
 pub(crate) use self::watch::StatusSubscription;
 
@@ -476,12 +479,20 @@ impl LocalAgentControl {
         else {
             return;
         };
+        let Ok(membership) = self.runtime.admit_start() else {
+            return;
+        };
+        let teardown = membership.into_teardown_guard();
         let control = self.clone();
-        tokio::spawn(async move {
+        let watcher = async move {
             let status = match control.subscribe_status(child_thread_id).await {
                 Ok(mut updates) => {
                     let mut final_status = None;
-                    while let Some(Ok(snapshot)) = updates.next().await {
+                    while let Some(Ok(snapshot)) = tokio::select! {
+                        biased;
+                        _ = control.runtime.shutdown.cancelled() => return,
+                        update = updates.next() => update,
+                    } {
                         if let Some(status) = snapshot.status()
                             && is_final(status)
                         {
@@ -496,7 +507,11 @@ impl LocalAgentControl {
                 }
                 Err(_) => control.get_status(child_thread_id).await,
             };
-            if !is_final(&status) {
+            // Tree shutdown is a lifecycle handoff, not a child result for the parent.
+            if !is_final(&status)
+                || (matches!(&status, AgentStatus::Shutdown)
+                    && control.runtime.shutdown.is_cancelled())
+            {
                 return;
             }
 
@@ -556,6 +571,10 @@ impl LocalAgentControl {
                     status,
                 ))
                 .await;
+        };
+        tokio::spawn(async move {
+            watcher.await;
+            teardown.complete();
         });
     }
 

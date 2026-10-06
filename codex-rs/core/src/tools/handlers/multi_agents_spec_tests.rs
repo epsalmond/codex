@@ -59,6 +59,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             hide_agent_type_model_reasoning: false,
             expose_spawn_agent_model_overrides: true,
             multi_agent_version: MultiAgentVersion::V2,
+            model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
         },
@@ -174,6 +175,29 @@ fn spawn_agent_catalog_description_preserves_generated_context() {
 }
 
 #[test]
+fn spawn_agent_tool_uses_model_catalog_when_available_in_context() {
+    let tool = create_spawn_agent_tool_v2(
+        SpawnAgentToolOptions {
+            available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
+            agent_type_description: "role help".to_string(),
+            expose_spawn_agent_model_overrides: true,
+            multi_agent_version: MultiAgentVersion::V2,
+            model_catalog_in_context: true,
+            child_report_mode: ChildReportMode::WaitAgent,
+            ..Default::default()
+        },
+        /*description_override*/ None,
+    );
+
+    let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
+        panic!("spawn_agent should be a function tool");
+    };
+    assert!(!description.contains("Available model overrides"));
+    assert!(description.contains(SPAWN_AGENT_MODEL_CATALOG_GUIDANCE));
+    assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE_V2));
+}
+
+#[test]
 fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
     let tool = create_spawn_agent_tool_v1(SpawnAgentToolOptions {
         available_models: Vec::new(),
@@ -182,6 +206,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
         hide_agent_type_model_reasoning: false,
         expose_spawn_agent_model_overrides: true,
         multi_agent_version: MultiAgentVersion::V1,
+        model_catalog_in_context: false,
         usage_hint_text: None,
         child_report_mode: ChildReportMode::WaitAgent,
     });
@@ -244,6 +269,7 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
             hide_agent_type_model_reasoning: false,
             expose_spawn_agent_model_overrides: true,
             multi_agent_version: MultiAgentVersion::V2,
+            model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
         },
@@ -294,6 +320,7 @@ fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
             hide_agent_type_model_reasoning: true,
             expose_spawn_agent_model_overrides: true,
             multi_agent_version: MultiAgentVersion::V2,
+            model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
         },
@@ -331,6 +358,7 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
             hide_agent_type_model_reasoning: true,
             expose_spawn_agent_model_overrides: false,
             multi_agent_version: MultiAgentVersion::V2,
+            model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
         },
