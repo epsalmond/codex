@@ -240,14 +240,33 @@ mod role_overrides {
             next_config.model_context_window = Some(context_window);
         }
         if let Some(limit) = overrides.model_auto_compact_token_limit {
-            // Keep the subagent compaction cap from `build_agent_shared_config`.
-            next_config.model_auto_compact_token_limit =
-                Some(match config.model_auto_compact_token_limit {
-                    Some(existing) if config.subagent_context_reduction.enabled => {
-                        existing.min(limit)
-                    }
-                    _ => limit,
+            if let Some(state) = &mut next_config.context_settings
+                && let Some(basis) = &mut state.inherited
+            {
+                basis.compaction_token_limit = Some(if config.subagent_context_reduction.enabled {
+                    basis
+                        .compaction_token_limit
+                        .map_or(limit, |existing| existing.min(limit))
+                } else {
+                    limit
                 });
+            }
+            next_config.model_auto_compact_token_limit = Some(
+                if config.context_settings.is_none() && config.subagent_context_reduction.enabled {
+                    config
+                        .model_auto_compact_token_limit
+                        .map_or(limit, |existing| existing.min(limit))
+                } else {
+                    limit
+                },
+            );
+            if let Some(state) = next_config.context_settings.clone() {
+                crate::session::context_settings::project(
+                    &mut next_config,
+                    &state,
+                    crate::session::context_settings::ContextSettingsTarget::Child,
+                );
+            }
         }
         if let Some(instructions) = &overrides.developer_instructions {
             next_config.developer_instructions = Some(instructions.clone());
