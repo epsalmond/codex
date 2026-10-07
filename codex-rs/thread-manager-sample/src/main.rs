@@ -249,6 +249,8 @@ async fn new_config(
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        context_settings: None,
+        context_settings_from_spawn: false,
         model_auto_compact_token_limit_scope: AutoCompactTokenLimitScope::Total,
         auto_shake: Default::default(),
         subagent_context_reduction: SubagentContextReductionConfig {
