@@ -1,6 +1,8 @@
 use crate::agent::LocalAgentControl;
 #[path = "notification_tests.rs"]
 mod notification_tests;
+#[path = "reduction_outcome_tests.rs"]
+mod reduction_outcome_tests;
 #[path = "work_lifecycle_admission_tests.rs"]
 mod work_lifecycle_admission_tests;
 
@@ -16,6 +18,7 @@ use super::*;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
 use crate::compact::InitialContextInjection;
+use crate::compact_invocation::CompactionInvocation;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::context::ContextualUserFragment;
@@ -11768,14 +11771,13 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
     };
     let requests = responses::mount_response_sequence(&server, replies).await;
     let mut client_session = session.services.model_client.new_session();
-    crate::compact_remote_v2::run_inline_remote_auto_compact_task(
+    crate::compact_remote_v2::run_inline_remote_compact_task(
         Arc::clone(&session),
         Arc::clone(&primary),
         Some(Arc::clone(&fallback)),
         &mut client_session,
         InitialContextInjection::DoNotInject,
-        CompactionReason::ModelDownshift,
-        CompactionPhase::PreTurn,
+        CompactionInvocation::automatic(CompactionReason::ModelDownshift, CompactionPhase::PreTurn),
     )
     .await
     .expect("compaction succeeds");

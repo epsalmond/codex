@@ -1,3 +1,4 @@
+use crate::compact_invocation::CompactionInvocation;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -107,12 +108,11 @@ pub(crate) async fn build_compaction_initial_context(
     }
 }
 
-pub(crate) async fn run_inline_auto_compact_task(
+pub(crate) async fn run_inline_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    invocation: CompactionInvocation,
 ) -> CodexResult<()> {
     let prompt = turn_context
         .config
@@ -131,9 +131,9 @@ pub(crate) async fn run_inline_auto_compact_task(
         turn_context,
         input,
         initial_context_injection,
-        CompactionTrigger::Auto,
-        reason,
-        phase,
+        invocation.trigger,
+        invocation.reason,
+        invocation.phase,
     )
     .await?;
     Ok(())
