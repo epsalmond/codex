@@ -10,6 +10,7 @@ use codex_config::config_toml::AutoShakeThresholdToml;
 use codex_protocol::context_settings::CompactionThreshold;
 use codex_protocol::context_settings::ContextSettingsOverrides;
 use codex_protocol::context_settings::ContextSettingsState;
+use codex_protocol::context_settings::ContextSettingsUpdate;
 use codex_protocol::context_settings::ContextSettingsValues;
 use codex_protocol::context_settings::ContextSettingsView;
 use codex_protocol::context_settings::InheritedContextBaseline;
@@ -31,6 +32,19 @@ impl From<&SessionSource> for ContextSettingsTarget {
             Self::Root
         }
     }
+}
+
+pub(super) fn apply(
+    state: &ContextSettingsState,
+    update: &ContextSettingsUpdate,
+) -> ConstraintResult<ContextSettingsState> {
+    let mut next = state.clone();
+    match update {
+        ContextSettingsUpdate::Reset => next.overrides = ContextSettingsOverrides::default(),
+        ContextSettingsUpdate::Patch { overrides } => merge(&mut next.overrides, overrides),
+    }
+    validate_state(&next)?;
+    Ok(next)
 }
 
 pub(crate) fn merge(target: &mut ContextSettingsOverrides, patch: &ContextSettingsOverrides) {

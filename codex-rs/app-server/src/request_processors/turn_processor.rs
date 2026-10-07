@@ -874,6 +874,7 @@ impl TurnRequestProcessor {
         if has_any_overrides {
             thread
                 .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
+                    context_settings: None,
                     restored_context_settings: None,
                     disabled_plugin_ids: disabled_plugin_ids.clone(),
                     environments: environments.clone(),
@@ -899,6 +900,7 @@ impl TurnRequestProcessor {
         }
 
         Ok(codex_protocol::protocol::ThreadSettingsOverrides {
+            context_settings: None,
             disabled_plugin_ids,
             environments,
             runtime_workspace_roots,

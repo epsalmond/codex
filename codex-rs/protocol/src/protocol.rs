@@ -509,6 +509,7 @@ pub enum TurnSettingsUpdateOutcome {
 /// own. Standalone updates change the settings inherited by future turns.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ThreadSettingsOverrides {
+    pub context_settings: Option<crate::context_settings::ContextSettingsUpdate>,
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
     pub environments: Option<TurnEnvironmentSelections>,
 

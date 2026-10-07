@@ -344,6 +344,7 @@ impl SessionConfiguration {
         environment_selections: Vec<TurnEnvironmentSelection>,
     ) -> CodexThreadSettingsOverrides {
         CodexThreadSettingsOverrides {
+            context_settings: Some(codex_protocol::context_settings::ContextSettingsUpdate::Reset),
             restored_context_settings: Some(self.context_settings.clone()),
             environments: Some(TurnEnvironmentSelections::new(
                 self.legacy_fallback_cwd.clone(),
@@ -409,6 +410,9 @@ impl SessionConfiguration {
         if let Some(state) = &updates.restored_context_settings {
             super::context_settings::validate_state(state)?;
             next_configuration.context_settings = state.clone();
+        } else if let Some(update) = &updates.context_settings {
+            next_configuration.context_settings =
+                super::context_settings::apply(&self.context_settings, update)?;
         }
         if let Some(disabled_plugin_ids) = &updates.disabled_plugin_ids {
             next_configuration.disabled_plugin_ids = disabled_plugin_ids.clone();
@@ -606,6 +610,7 @@ pub(crate) struct SessionSettingsCommit {
 
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
+    pub(crate) context_settings: Option<codex_protocol::context_settings::ContextSettingsUpdate>,
     pub(crate) restored_context_settings:
         Option<codex_protocol::context_settings::ContextSettingsState>,
     pub(crate) step_settings: StepSettingsUpdate,
