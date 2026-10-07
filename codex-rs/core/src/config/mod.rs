@@ -1377,6 +1377,10 @@ pub struct SubagentContextReductionConfig {
 /// neither.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AutoShakeConfig {
+    /// Thread overlay, applied after family resolution.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub thread_overrides: codex_protocol::context_settings::ContextSettingsOverrides,
     /// Global threshold override. `None` means "not overridden by the user";
     /// resolution falls back to the built-in global default (`inherit` is
     /// rejected at load time, since there is nothing for the global scope to

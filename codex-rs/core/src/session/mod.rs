@@ -866,6 +866,7 @@ impl Session {
                                     .clone()
                                     .unwrap_or_else(|| {
                                         codex_protocol::context_settings::ContextSettingsState {
+                                            overrides: Default::default(),
                                             inherited: config
                                                 .context_settings
                                                 .as_ref()
@@ -4064,6 +4065,7 @@ impl Session {
                     Arc::clone(&settings.model_info),
                     self.features.enabled(Feature::FastMode),
                 );
+                inherited_settings.context_settings = settings.context_settings.clone();
                 inherited_settings.context_selection = settings.context_selection.clone();
                 inherited_settings.mcp_approvals_reviewer_override =
                     settings.mcp_approvals_reviewer_override;
