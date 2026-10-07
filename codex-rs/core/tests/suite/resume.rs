@@ -448,3 +448,96 @@ async fn resume_model_switch_is_not_duplicated_after_pre_turn_override() -> Resu
 
     Ok(())
 }
+
+#[derive(Clone, Copy)]
+enum ContextResumeSnapshot {
+    Selected,
+    Reset,
+    Legacy,
+}
+
+#[test_case::test_case(ContextResumeSnapshot::Selected; "selection")]
+#[test_case::test_case(ContextResumeSnapshot::Reset; "reset")]
+#[test_case::test_case(ContextResumeSnapshot::Legacy; "legacy")]
+#[tokio::test]
+async fn context_resume_uses_latest_owned_selection_including_empty_legacy_snapshot(
+    kind: ContextResumeSnapshot,
+) -> Result<()> {
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
+    use codex_protocol::context_settings::ShakeThreshold;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let initial = test_codex().build_with_auto_env(&server).await?;
+    initial
+        .codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    shake_threshold: Some(ShakeThreshold::Off),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await?;
+    let saved = initial.codex.thread_settings_snapshot().await;
+    mount_sse_once(&server, sse(vec![ev_completed("context-seed")])).await;
+    initial
+        .submit_text_turn("Persist the selected context defaults")
+        .await?;
+    initial.codex.shutdown_and_wait().await?;
+    let latest = match kind {
+        ContextResumeSnapshot::Selected => saved.context_settings.clone(),
+        ContextResumeSnapshot::Reset => Some(Default::default()),
+        ContextResumeSnapshot::Legacy => None,
+    };
+    let mut owned = saved.clone();
+    owned.context_settings = latest.clone();
+    let events = vec![
+        codex_history::RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_id: Some(initial.session_configured.thread_id),
+                thread_settings: saved.clone(),
+            },
+        )),
+        codex_history::RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_id: Some(initial.session_configured.thread_id),
+                thread_settings: owned,
+            },
+        )),
+        codex_history::RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_id: Some(codex_protocol::ThreadId::new()),
+                thread_settings: saved.clone(),
+            },
+        )),
+    ];
+    let resumed = initial
+        .thread_manager
+        .resume_thread_with_history(
+            initial.config.clone(),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: initial.session_configured.thread_id,
+                history: Arc::new(events),
+                rollout_path: initial.session_configured.rollout_path.clone(),
+                last_activity_at: None,
+            }),
+            initial.thread_manager.auth_manager(),
+            /*parent_trace*/ None,
+            codex_protocol::mcp::ClientMcpExtensions::default(),
+        )
+        .await?;
+    assert_eq!(
+        resumed
+            .thread
+            .thread_settings_snapshot()
+            .await
+            .context_settings,
+        Some(latest.unwrap_or_default())
+    );
+    resumed.thread.shutdown_and_wait().await?;
+    Ok(())
+}

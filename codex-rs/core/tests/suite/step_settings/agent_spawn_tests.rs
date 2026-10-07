@@ -4,14 +4,16 @@ use super::*;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[test_case(false, None; "v1 inherits captured settings")]
-#[test_case(true, None; "v2 inherits captured settings")]
-#[test_case(false, Some(ReasoningEffort::Medium); "v1 validates effort against captured model")]
-#[test_case(true, Some(ReasoningEffort::Medium); "v2 validates effort against captured model")]
+#[test_case(false, None, "none"; "v1 inherits captured settings")]
+#[test_case(true, None, "none"; "v2 inherits captured settings")]
+#[test_case(false, Some(ReasoningEffort::Medium), "none"; "v1 validates effort against captured model")]
+#[test_case(true, Some(ReasoningEffort::Medium), "none"; "v2 validates effort against captured model")]
+#[test_case(true, None, "all"; "v2 full-history inherits captured context selection")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_inherits_captured_settings_after_a_turn_update(
     multi_agent_v2: bool,
     requested_effort: Option<ReasoningEffort>,
+    fork_turns: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -19,7 +21,7 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
     let mut spawn_arguments = json!({ "message": "Complete the delegated task." });
     let namespace = if multi_agent_v2 {
         spawn_arguments["task_name"] = json!("worker");
-        spawn_arguments["fork_turns"] = json!("none");
+        spawn_arguments["fork_turns"] = json!(fork_turns);
         "collaboration"
     } else {
         "multi_agent_v1"
@@ -85,6 +87,23 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
         .build_with_auto_env(&server)
         .await?;
     let mut created_threads = test.thread_manager.subscribe_thread_created();
+    test.codex
+        .update_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
+            context_settings: Some(
+                codex_protocol::context_settings::ContextSettingsUpdate::Patch {
+                    overrides: codex_protocol::context_settings::ContextSettingsOverrides {
+                        shake_threshold: Some(
+                            codex_protocol::context_settings::ShakeThreshold::Percent {
+                                percent: 43,
+                            },
+                        ),
+                        ..Default::default()
+                    },
+                },
+            ),
+            ..Default::default()
+        })
+        .await?;
     let request = start_paused_turn(&test.codex).await?;
     apply_turn_settings(
         &test.codex,
@@ -109,6 +128,19 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
         wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     }
 
+    let child_context = child_thread.context_settings().await;
+    assert_eq!(
+        (
+            child_context.model.as_str(),
+            child_context.effective.shake_threshold
+        ),
+        (
+            MODEL_B,
+            codex_protocol::context_settings::ShakeThreshold::Percent { percent: 43 }
+        )
+    );
+    assert!(child_context.inherited_child_active_cap.is_some());
+    assert_eq!(child_context.requested, Default::default());
     let expected_effort = requested_effort.unwrap_or(ReasoningEffort::High);
     let requests = response_mock.requests();
     let child_request = requests
