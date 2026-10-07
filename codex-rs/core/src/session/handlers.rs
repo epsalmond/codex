@@ -20,6 +20,9 @@ use crate::context::ContextualUserFragment;
 use crate::context::GuardianApprovedAction;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
+use crate::shake::ShakeFailure;
+use crate::shake::ShakeOutcome;
+use crate::shake::ShakeSkipReason;
 use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
@@ -166,7 +169,7 @@ pub(crate) async fn apply_shake(
     mode: codex_protocol::protocol::ShakeMode,
     expected_fingerprint: Option<String>,
     trigger: ShakeTrigger,
-) -> crate::shake::ShakeResult {
+) -> ShakeOutcome {
     let ephemeral_elide =
         mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
 
@@ -181,7 +184,7 @@ pub(crate) async fn apply_shake(
             }),
         )
         .await;
-        return crate::shake::ShakeResult::default();
+        return ShakeOutcome::Failed(ShakeFailure::InvalidSeal);
     }
     let prior_shake_state = history.shake_history_state().clone();
     let mut envelopes = history.into_annotated_items();
@@ -203,8 +206,9 @@ pub(crate) async fn apply_shake(
             }),
         )
         .await;
-        return crate::shake::ShakeResult::default();
+        return ShakeOutcome::Stale;
     }
+    let mut artifact_save_failed = false;
     let (result, new_watermark) = match mode {
         codex_protocol::protocol::ShakeMode::Images => {
             let end = crate::shake::watermark::close_over_tool_calls(&envelopes, envelopes.len())
@@ -238,6 +242,7 @@ pub(crate) async fn apply_shake(
                         .map(|id| store.destination_path(id, label).display().to_string())
                 }
                 Err(err) => {
+                    artifact_save_failed = true;
                     warn!(%err, "failed to save shake artifact; preserving original region");
                     None
                 }
@@ -272,18 +277,24 @@ pub(crate) async fn apply_shake(
     // with the well-known marker so the TUI can identify the completion notice
     // and release its input gate; the message stays human-readable for other
     // clients.
+    let reduction_summary = if artifact_save_failed && result.is_noop() {
+        "Artifact recovery could not be saved; no content was reduced. Retry after fixing artifact storage."
+            .to_string()
+    } else {
+        result.summary_line(mode)
+    };
     let summary = if ephemeral_elide {
         "⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery."
             .to_string()
     } else if trigger == ShakeTrigger::AutomaticEscalated {
-        format!("⛭ shake (auto, escalated): {}", result.summary_line(mode))
+        format!("⛭ shake (auto, escalated): {reduction_summary}")
     } else if trigger == ShakeTrigger::AutomaticColdResume {
-        format!("⛭ shake (auto, cold resume): {}", result.summary_line(mode))
+        format!("⛭ shake (auto, cold resume): {reduction_summary}")
     } else if trigger == ShakeTrigger::Automatic {
         // Distinguishable in the transcript as well as in the rollout record.
-        format!("⛭ shake (auto): {}", result.summary_line(mode))
+        format!("⛭ shake (auto): {reduction_summary}")
     } else {
-        format!("⛭ shake: {}", result.summary_line(mode))
+        format!("⛭ shake: {reduction_summary}")
     };
     let history_changed = !result.is_noop();
     let watermark_changed = u64::try_from(new_watermark)
@@ -314,7 +325,7 @@ pub(crate) async fn apply_shake(
                 }),
             )
             .await;
-            return crate::shake::ShakeResult::default();
+            return ShakeOutcome::Failed(ShakeFailure::ReplacementRefused);
         }
         if history_changed {
             sess.recompute_token_usage(turn_context).await;
@@ -353,7 +364,15 @@ pub(crate) async fn apply_shake(
     if let Err(err) = sess.flush_rollout().await {
         warn!("failed to flush thread persistence after shake: {err}");
     }
-    result
+    if history_changed {
+        ShakeOutcome::Applied(result)
+    } else if ephemeral_elide {
+        ShakeOutcome::Skipped(ShakeSkipReason::EphemeralThread)
+    } else if artifact_save_failed {
+        ShakeOutcome::Failed(ShakeFailure::ArtifactRecovery)
+    } else {
+        ShakeOutcome::Noop
+    }
 }
 
 pub async fn clean_background_terminals(sess: &Arc<Session>) {

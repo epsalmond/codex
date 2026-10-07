@@ -1,3 +1,4 @@
+use crate::compact_invocation::CompactionInvocation;
 use std::sync::Arc;
 
 use crate::Prompt;
@@ -78,20 +79,19 @@ const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
-pub(crate) async fn run_inline_remote_auto_compact_task(
+pub(crate) async fn run_inline_remote_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    invocation: CompactionInvocation,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
-        CompactionTrigger::Auto,
-        reason,
+        invocation.trigger,
+        invocation.reason,
         CompactionImplementation::ResponsesCompactionV2,
-        phase,
+        invocation.phase,
     );
     run_remote_compact_task_inner(
         &sess,

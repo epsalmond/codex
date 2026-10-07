@@ -258,7 +258,7 @@ it didn't) — so escalation uses the identical enabled / persistent-thread /
 context-window / threshold logic, just evaluated a second time. At most one
 escalated pass runs per pre-sampling point; only after it (or its skip) does
 `run_pre_sampling_compact` re-check `token_limit_reached` and fall through to
-`run_auto_compact`. There is no separate config for this: escalation is on
+`run_inline_compact`. There is no separate config for this: escalation is on
 whenever `auto_shake` is on for the model. See management-plane#988; the
 one-tier-then-fallback shape mirrors oh-my-pi PR #9705's proposed escalation
 (open/unmerged upstream at the time this landed).
@@ -369,7 +369,7 @@ point. It is nevertheless safe at this exact point, and calls
   (`run_hooks_and_record_inputs(.., TurnStart)` comes later), so the rewritten
   history is exactly the settled history of previous turns.
 - Auto-compaction already replaces history wholesale at this same point via
-  `run_auto_compact` → `replace_compacted_history`.
+  `run_inline_compact` → `replace_compacted_history`.
 
 No expected fingerprint is passed: the preview and the shake run back-to-back in
 the same turn with no wait on client input, so there is no stale-confirmation
@@ -429,6 +429,21 @@ Ephemeral children never shake: auto-shake requires a persistent thread (step
 3 of the decision sequence above) because `elide` needs artifact recovery, so
 an ephemeral child falls straight through to compaction like any other
 ephemeral thread.
+
+Manual `/shake` remains an operator command for the current idle thread. Children
+cannot request Shake themselves, and a parent cannot manually reduce a child's
+history through a tool or RPC. Child reduction still runs automatically at the
+existing safe request boundaries. Inline compaction now carries its trigger
+through local, remote V2 and token-budget implementations, with user-request
+reason and phase metadata on local and remote summarization requests. This does
+not add a child maintenance entrypoint or change automatic eligibility.
+
+Internally, Shake distinguishes applied content reductions, actual no-ops,
+ephemeral skips, stale previews and failures (invalid seals, refused replacements
+or an artifact save failure with no reduced content). A successful scan that only
+advances the verified boundary is a no-op. A partially successful artifact pass
+reports only committed reductions; its unprocessed suffix remains available for retry. Root
+completion notices and manual protection windows retain their existing behavior.
 
 A parent can inspect a child's context state without waiting for a failure:
 `list_agents` reports a `context` field per agent
