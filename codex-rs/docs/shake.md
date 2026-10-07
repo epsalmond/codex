@@ -668,6 +668,66 @@ threshold_tokens = 120000
 enabled = false
 ```
 
+## Thread context selections
+
+The core thread-settings contract now accepts a sparse
+`ContextSettingsUpdate::Patch { overrides }` or named `Reset`. This stage adds
+storage, policy readback and application to subsequent turns. Self tools, new
+operator update fields, `/context`, and updates to the next request within an
+already running turn are subsequent stages (#129/#131). An accepted write does
+not run Shake or compaction. Existing captured turns retain their settings.
+
+| Thread field | Values and baseline |
+| --- | --- |
+| `shake_threshold` | `Off`, `Percent { percent: 1..=100 }`, or positive `Tokens`; omission uses the family-resolved startup baseline above. The thread choice wins after family resolution. |
+| `shake_cold_resume` | Boolean; baseline enabled. `Off` suppresses this trigger too. |
+| `shake_min_elidable_percent` | 0–100; baseline 30%, with configured family/global safeguards retained. |
+| `shake_min_savings_tokens` | Nonnegative tokens; baseline 4,000. |
+| `compaction_threshold` | Positive `Tokens` or explicit `ModelDefault`; omission follows configured/inherited tokens or the catalog default. There is no automatic compaction Off. |
+| `compaction_scope` | Existing `Total` or `BodyAfterPrefix`; baseline Total. |
+| `post_turn_compaction_percent` | 0–100 percent of usable full model window; baseline zero. Zero disables the post-turn trigger, as in startup configuration. |
+| `child_reduction_enabled`, `child_reduction_threshold_tokens` | Boolean and positive tokens; configured baseline enabled at 272,000, bounded by a smaller usable model window. |
+
+Shake percentages use the resolved raw model window. Shake token triggers are
+bounded by a known raw window and any internal child cap. Total compaction
+retains the model's 90% upper bound; BodyAfterPrefix retains its configured body
+limit. Full prepared-request admission remains independent and uses the usable
+model window. Provider/family maps and cache TTL remain startup configuration,
+not thread controls; the internal Shake maximum is not exposed as a setter.
+
+Omitted fields preserve the current selection. Reset removes this thread's
+choices and recovers the configured/inherited baseline. Explicit ModelDefault
+instead bypasses a configured compaction token limit and resolves the captured
+model's catalog default. Invalid multi-field patches commit no fields.
+`CodexThread::context_settings()` returns requested choices, a scalar baseline,
+effective values, the selected model/provider and both window bases. It does
+not prepare a request or refresh usage observations. A root's child threshold
+is a descendant default; only children report an inherited active cap.
+
+New children inherit the invoking step's sparse choices, then resolve them
+against their final selected model. The original compaction and internal Shake
+limits survive the inherited minimum clamp, nesting and saved state. Raising a
+child threshold or disabling its reduction clamp can therefore recover those
+limits. Reset restores its inherited choices. Mandatory usable model-window
+admission and ephemeral-thread recovery restrictions still apply.
+
+For example, with a raw 400,000-token window, a thread Shake override of 50%
+selects 200,000 tokens. A child threshold of 120,000 caps that child at 120,000;
+a later raise to 250,000 allows the Shake threshold to return to 200,000. The
+root retains the 200,000-token trigger. Compaction body-scope readback does not
+represent the child's full active-context admission limit.
+
+Selections and the retained child baseline use existing owned
+`ThreadSettingsApplied` checkpoints and explicit runtime restore. Resume uses
+the latest snapshot belonging to the resumed thread; old snapshots without the
+field load defaults. Full and partial forks use the supplied history boundary,
+then checkpoint the new thread's own settings. A root fork retains saved
+descendant defaults and un-clamped inputs without acquiring a child active cap.
+A later source update or copied parent event cannot overwrite its owned selection. In-memory
+acceptance precedes event persistence. For persistent threads, disk durability
+is only established by the existing successful checkpoint/flush barrier. A persistence failure does
+not roll back settings already consumed by a request.
+
 ## Maintenance
 
 `[auto_shake]` lives in `ConfigToml` (`codex-rs/config/src/config_toml.rs`), so

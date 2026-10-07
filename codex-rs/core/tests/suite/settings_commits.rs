@@ -204,6 +204,14 @@ async fn settings_notifications_keep_their_commit_across_postcommit_work(
     let thread_settings = ThreadSettingsOverrides {
         model: Some(COMMITTED_MODEL.to_string()),
         disabled_plugin_ids: Some(vec!["slack@openai".to_string()]),
+        context_settings: Some(
+            codex_protocol::context_settings::ContextSettingsUpdate::Patch {
+                overrides: codex_protocol::context_settings::ContextSettingsOverrides {
+                    shake_threshold: Some(codex_protocol::context_settings::ShakeThreshold::Off),
+                    ..Default::default()
+                },
+            },
+        ),
         ..Default::default()
     };
     let submission = tokio::spawn({
@@ -337,6 +345,16 @@ async fn compaction_checkpoints_settings_changed_during_its_model_request() -> R
             environments: Some(local_selections(updated_cwd_path.clone())),
             model: Some(COMMITTED_MODEL.to_string()),
             disabled_plugin_ids: Some(vec!["slack@openai".to_string()]),
+            context_settings: Some(
+                codex_protocol::context_settings::ContextSettingsUpdate::Patch {
+                    overrides: codex_protocol::context_settings::ContextSettingsOverrides {
+                        shake_threshold: Some(
+                            codex_protocol::context_settings::ShakeThreshold::Off,
+                        ),
+                        ..Default::default()
+                    },
+                },
+            ),
             ..Default::default()
         },
     )
@@ -372,5 +390,260 @@ async fn compaction_checkpoints_settings_changed_during_its_model_request() -> R
         Some((Some(test.session_configured.thread_id), &expected))
     );
     server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn context_settings_commit_reset_validation_and_restore_are_atomic() -> Result<()> {
+    use codex_protocol::context_settings::CompactionThreshold;
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
+    use codex_protocol::context_settings::ShakeThreshold;
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let test = test_codex()
+        .with_model("gpt-5.6")
+        .with_config(|config| {
+            config.model_auto_compact_token_limit = Some(12345);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let initial = test.codex.thread_settings_snapshot().await;
+    let initial_view = test.codex.context_settings().await;
+    let mut legacy = serde_json::to_value(&initial)?;
+    legacy.as_object_mut().unwrap().remove("context_settings");
+    let mut legacy_expected = initial.clone();
+    legacy_expected.context_settings = None;
+    assert_eq!(
+        serde_json::from_value::<ThreadSettingsSnapshot>(legacy)?,
+        legacy_expected
+    );
+    let selection = ContextSettingsOverrides {
+        shake_threshold: Some(ShakeThreshold::Percent { percent: 37 }),
+        shake_cold_resume: Some(false),
+        shake_min_elidable_percent: Some(9),
+        shake_min_savings_tokens: Some(123),
+        compaction_threshold: Some(CompactionThreshold::ModelDefault),
+        post_turn_compaction_percent: Some(0),
+        child_reduction_enabled: Some(false),
+        child_reduction_threshold_tokens: Some(98765),
+        ..Default::default()
+    };
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: selection.clone(),
+            }),
+            ..Default::default()
+        })
+        .await?;
+    let mut expected = initial.clone();
+    expected.context_settings.as_mut().unwrap().overrides = selection.clone();
+    assert_eq!(test.codex.thread_settings_snapshot().await, expected);
+    let view = test.codex.context_settings().await;
+    assert_eq!(view.requested, selection);
+    assert_eq!(
+        view.shake_threshold_tokens,
+        view.resolved_context_window.map(|window| window * 37 / 100)
+    );
+    assert_ne!(view.compaction_scope_token_limit, Some(12345));
+    assert_eq!(view.inherited_child_active_cap, None);
+    let saved = codex_core::CodexThreadSettingsOverrides {
+        restored_context_settings: expected.context_settings.clone(),
+        ..Default::default()
+    };
+    let invalid = test
+        .codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            model: Some(COMMITTED_MODEL.into()),
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    shake_threshold: Some(ShakeThreshold::Percent { percent: 0 }),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await;
+    assert!(invalid.is_err());
+    assert_eq!(test.codex.thread_settings_snapshot().await, expected);
+    test.codex.checkpoint_thread_settings().await?;
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Reset),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(test.codex.thread_settings_snapshot().await, initial);
+    assert_eq!(test.codex.context_settings().await, initial_view);
+    test.codex.restore_thread_settings(saved).await?;
+    assert_eq!(test.codex.thread_settings_snapshot().await, expected);
+    // An empty restore is replacement, rather than leaving the previous patch behind.
+    let empty = codex_core::CodexThreadSettingsOverrides {
+        restored_context_settings: initial.context_settings.clone(),
+        ..Default::default()
+    };
+    test.codex.restore_thread_settings(empty).await?;
+    assert_eq!(test.codex.thread_settings_snapshot().await, initial);
+    Ok(())
+}
+
+#[tokio::test]
+async fn context_patch_and_reset_preserve_automatic_continuation_identity() -> Result<()> {
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
+    use codex_protocol::context_settings::ShakeThreshold;
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    responses::mount_sse_once(&server, responses::sse_completed("initial")).await;
+    let TurnInputSubmission::Started { mut turn_id } = test
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Work".into(),
+            text_elements: vec![],
+        }]))
+        .await?
+    else {
+        panic!("expected started turn")
+    };
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    for update in [
+        ContextSettingsUpdate::Patch {
+            overrides: ContextSettingsOverrides {
+                shake_threshold: Some(ShakeThreshold::Off),
+                ..Default::default()
+            },
+        },
+        ContextSettingsUpdate::Reset,
+    ] {
+        test.codex
+            .update_thread_settings(ThreadSettingsOverrides {
+                context_settings: Some(update),
+                ..Default::default()
+            })
+            .await?;
+        responses::mount_sse_once(&server, responses::sse_completed("continue")).await;
+        let submission = test
+            .codex
+            .continue_turn_if_idle(
+                TurnInputRequest::new(codex_core::TurnInput::ResponseItem(
+                    responses::user_message_item("Continue"),
+                )),
+                turn_id.clone(),
+            )
+            .await?;
+        let TurnInputSubmission::Started { turn_id: next } = submission else {
+            panic!("continuation was superseded: {submission:?}")
+        };
+        turn_id = next;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            model: Some(INITIAL_MODEL.into()),
+            context_settings: Some(ContextSettingsUpdate::Reset),
+            ..Default::default()
+        })
+        .await?;
+    assert!(matches!(
+        test.codex
+            .continue_turn_if_idle(
+                TurnInputRequest::new(codex_core::TurnInput::ResponseItem(
+                    responses::user_message_item("Continue")
+                )),
+                turn_id
+            )
+            .await?,
+        TurnInputSubmission::NotSubmitted { .. }
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn context_settings_checkpoint_failure_does_not_revert_consumed_selection() -> Result<()> {
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
+    use codex_protocol::context_settings::ShakeThreshold;
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    shake_threshold: Some(ShakeThreshold::Off),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await?;
+    responses::mount_sse_once(&server, responses::sse_completed("consumed")).await;
+    test.submit_text_turn("Consume the accepted settings")
+        .await?;
+    let expected = test.codex.thread_settings_snapshot().await;
+    // Use the existing store's owned writer teardown, rather than a new failure-injection API.
+    test.thread_store
+        .shutdown_thread(test.session_configured.thread_id)
+        .await?;
+    assert!(test.codex.checkpoint_thread_settings().await.is_err());
+    assert_eq!(test.codex.thread_settings_snapshot().await, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn context_settings_direct_child_start_retains_basis_and_owned_selection() -> Result<()> {
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsState;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let test = test_codex()
+        .with_session_source(SessionSource::SubAgent(SubAgentSource::Other(
+            "context-start".into(),
+        )))
+        .with_config(|config| {
+            config.model_auto_compact_token_limit = Some(90000);
+            config.subagent_context_reduction.threshold_tokens = 30000;
+            config.context_settings = Some(ContextSettingsState {
+                overrides: ContextSettingsOverrides {
+                    child_reduction_threshold_tokens: Some(70000),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let initial = test.codex.context_settings().await;
+    assert_eq!(
+        (
+            initial.requested.child_reduction_threshold_tokens,
+            initial.inherited_child_default_tokens,
+            initial.inherited_child_active_cap,
+            initial.compaction_scope_token_limit,
+        ),
+        (Some(70000), Some(30000), Some(70000), Some(70000))
+    );
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Reset),
+            ..Default::default()
+        })
+        .await?;
+    let reset = test.codex.context_settings().await;
+    assert_eq!(
+        (reset.requested, reset.compaction_scope_token_limit),
+        (ContextSettingsOverrides::default(), Some(30000))
+    );
     Ok(())
 }

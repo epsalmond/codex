@@ -33,16 +33,24 @@ pub(super) async fn update(
     session: &Session,
     overrides: ThreadSettingsOverrides,
 ) -> ConstraintResult<ThreadSettingsSnapshot> {
+    let context_only = overrides.context_settings.is_some() && {
+        let mut other = overrides.clone();
+        other.context_settings = None;
+        other == ThreadSettingsOverrides::default()
+    };
     let updates = prepare_update(overrides);
     let commit = session.update_settings(updates).await?;
     // Standalone settings changes supersede a pending automatic continuation.
-    session.state.lock().await.last_started_turn_id = None;
+    if !context_only {
+        session.state.lock().await.last_started_turn_id = None;
+    }
     Ok(commit.snapshot)
 }
 
 /// Converts protocol overrides into the internal settings update shape.
 pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSettingsUpdate {
     let ThreadSettingsOverrides {
+        context_settings,
         environments,
         runtime_workspace_roots,
         profile_workspace_roots,
@@ -61,6 +69,7 @@ pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSetti
         disabled_plugin_ids,
     } = overrides;
     SessionSettingsUpdate {
+        context_settings,
         step_settings: StepSettingsUpdate {
             model,
             effort,
