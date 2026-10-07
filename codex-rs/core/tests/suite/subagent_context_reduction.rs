@@ -890,14 +890,172 @@ async fn child_compaction_failure_reports_unknown_post_size(cancel: bool) -> Res
     Ok(())
 }
 
+#[test_case(false; "persistent")]
+#[test_case(true; "ephemeral")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn captured_child_selection_can_raise_disable_and_restore_without_losing_baseline(
+    ephemeral: bool,
+) -> Result<()> {
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
+    use codex_protocol::context_settings::ShakeThreshold;
+    use codex_protocol::protocol::ThreadSettingsOverrides;
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    mount_root_spawn(&server, "worker", CHILD_TASK).await;
+    mount(
+        &server,
+        "child-done",
+        is_child,
+        vec![ev_assistant_message("child-done", "finished")],
+    )
+    .await;
+    let test = reduction_test(/*enabled*/ true, /*threshold_tokens*/ 30000)
+        .with_config(move |config| {
+            config.ephemeral = ephemeral;
+            config.model_auto_compact_token_limit = Some(90000);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    shake_threshold: Some(ShakeThreshold::Percent { percent: 37 }),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await?;
+    test.submit_turn(ROOT_PROMPT).await?;
+    wait_for_child_turn(&test).await?;
+    let child_id = test
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .find(|id| *id != test.session_configured.thread_id)
+        .context("child")?;
+    let child = test.thread_manager.get_thread(child_id).await?;
+    let before = child.context_settings().await;
+    assert_eq!(
+        (
+            before.effective.shake_threshold,
+            before.compaction_scope_token_limit
+        ),
+        (ShakeThreshold::Percent { percent: 37 }, Some(30000))
+    );
+    let initial = child.restorable_thread_settings().await;
+    child
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    child_reduction_threshold_tokens: Some(70000),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(
+        child.context_settings().await.compaction_scope_token_limit,
+        Some(70000)
+    );
+    let raised_snapshot = child.thread_settings_snapshot().await;
+    child
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    child_reduction_enabled: Some(false),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(
+        child.context_settings().await.compaction_scope_token_limit,
+        Some(90000)
+    );
+    let disabled = child.restorable_thread_settings().await;
+    let disabled_view = child.context_settings().await;
+    let mut fork_config = test.config.clone();
+    fork_config.context_settings = child.thread_settings_snapshot().await.context_settings;
+    let earlier = codex_history::InitialHistory::Resumed(codex_history::ResumedHistory {
+        conversation_id: child_id,
+        history: Arc::new(vec![codex_history::RolloutItem::EventMsg(
+            EventMsg::ThreadSettingsApplied(codex_protocol::protocol::ThreadSettingsAppliedEvent {
+                thread_id: Some(child_id),
+                thread_settings: raised_snapshot,
+            }),
+        )]),
+        rollout_path: None,
+        last_activity_at: None,
+    });
+    let fork = test
+        .thread_manager
+        .fork_thread_from_history(
+            codex_core::ForkSnapshot::Interrupted,
+            codex_core::StartThreadOptions::new(fork_config),
+            earlier,
+        )
+        .await?;
+    let root_fork = fork.thread.context_settings().await;
+    assert_eq!(
+        (
+            root_fork.compaction_scope_token_limit,
+            root_fork.effective.child_reduction_threshold_tokens,
+            root_fork.effective.child_reduction_enabled,
+            root_fork.inherited_child_active_cap,
+        ),
+        (Some(90000), 70000, true, None)
+    );
+    fork.thread.shutdown_and_wait().await?;
+
+    child.restore_thread_settings(initial).await?;
+    assert_eq!(child.context_settings().await, before);
+    child.checkpoint_thread_settings().await?;
+    if !ephemeral {
+        child.restore_thread_settings(disabled).await?;
+        child.checkpoint_thread_settings().await?;
+        let rollout_path = child.rollout_path();
+        child.shutdown_and_wait().await?;
+        let history = codex_rollout::RolloutRecorder::get_rollout_history(
+            rollout_path.as_ref().context("persistent child rollout")?,
+        )
+        .await?;
+        // Reload config can be built from a parent whose defaults changed after the spawn.
+        let mut reload = test.config.clone();
+        reload.subagent_context_reduction.threshold_tokens = 5000;
+        reload.model_auto_compact_token_limit = Some(1000);
+        let resumed = test
+            .thread_manager
+            .resume_thread_with_history(
+                reload,
+                history,
+                test.thread_manager.auth_manager(),
+                /*parent_trace*/ None,
+                codex_protocol::mcp::ClientMcpExtensions::default(),
+            )
+            .await?;
+        assert_eq!(resumed.thread.context_settings().await, disabled_view);
+        resumed.thread.shutdown_and_wait().await?;
+    }
+    Ok(())
+}
+
 #[test_case(true; "off_to_percent")]
 #[test_case(false; "percent_to_off")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn saved_child_global_shake_threshold_survives_reload_and_reset(off: bool) -> Result<()> {
     use codex_config::config_toml::AutoShakeThresholdToml;
     use codex_core::TurnInputRequest;
+    use codex_protocol::context_settings::ContextSettingsOverrides;
+    use codex_protocol::context_settings::ContextSettingsUpdate;
     use codex_protocol::context_settings::ShakeThreshold;
     use codex_protocol::models::ResponseItem;
+    use codex_protocol::protocol::ThreadSettingsOverrides;
     use codex_protocol::user_input::UserInput;
     use core_test_support::responses::mount_sse_once;
     skip_if_no_network!(Ok(()));
@@ -966,18 +1124,32 @@ async fn saved_child_global_shake_threshold_survives_reload_and_reset(off: bool)
         )
         .await?;
     let thread = resumed.thread;
-    let saved = thread
-        .thread_settings_snapshot()
-        .await
-        .context_settings
-        .context("saved child settings")?;
+    let view = thread.context_settings().await;
     assert_eq!(
-        saved
-            .inherited
-            .context("saved child baseline")?
-            .shake_threshold,
-        Some(expected)
+        (
+            view.requested.shake_threshold,
+            view.effective.shake_threshold
+        ),
+        (None, expected)
     );
+    thread
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    shake_threshold: Some(ShakeThreshold::Tokens { tokens: 99999 }),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        })
+        .await?;
+    thread
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(ContextSettingsUpdate::Reset),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(thread.context_settings().await, view);
     const MARKER: &str = "BASELINE_SHAKE_MARKER";
     let items: Vec<ResponseItem> = serde_json::from_value(json!([
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "read the output"}]},

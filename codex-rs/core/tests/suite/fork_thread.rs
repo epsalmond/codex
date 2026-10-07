@@ -214,6 +214,16 @@ async fn fork_thread_restores_history_selection_and_preserves_explicit_clear() -
         &test.codex,
         ThreadSettingsOverrides {
             disabled_plugin_ids: Some(selected.clone()),
+            context_settings: Some(
+                codex_protocol::context_settings::ContextSettingsUpdate::Patch {
+                    overrides: codex_protocol::context_settings::ContextSettingsOverrides {
+                        shake_threshold: Some(
+                            codex_protocol::context_settings::ShakeThreshold::Off,
+                        ),
+                        ..Default::default()
+                    },
+                },
+            ),
             ..Default::default()
         },
     )
@@ -231,6 +241,7 @@ async fn fork_thread_restores_history_selection_and_preserves_explicit_clear() -
         &test.codex,
         ThreadSettingsOverrides {
             disabled_plugin_ids: Some(Vec::new()),
+            context_settings: Some(codex_protocol::context_settings::ContextSettingsUpdate::Reset),
             ..Default::default()
         },
     )
@@ -253,6 +264,16 @@ async fn fork_thread_restores_history_selection_and_preserves_explicit_clear() -
         selected
     );
 
+    assert_eq!(
+        inherited
+            .thread
+            .context_settings()
+            .await
+            .requested
+            .shake_threshold,
+        Some(codex_protocol::context_settings::ShakeThreshold::Off)
+    );
+    // This supplied history ends before the source reset; the fork cannot read later settings.
     let explicit = test
         .thread_manager
         .fork_thread_from_history(

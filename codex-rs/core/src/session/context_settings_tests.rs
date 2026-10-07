@@ -107,6 +107,116 @@ async fn compaction_scope_keeps_body_limit_distinct_from_full_admission() {
 }
 
 #[tokio::test]
+async fn child_clamp_can_raise_disable_reset_and_reload_without_becoming_ancestor_limit() {
+    let (_, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config.model_auto_compact_token_limit = Some(9000);
+    config.auto_shake.max_threshold_tokens = Some(8500);
+    config.subagent_context_reduction.threshold_tokens = 3000;
+    let mut model = (**turn.model_info()).clone();
+    model.context_window = Some(20000);
+    model.max_context_window = Some(20000);
+    inherit(&mut config, &ContextSettingsState::default());
+    let child = config.context_settings.clone().unwrap();
+    // A root fork keeps the saved descendant default without inheriting an active cap.
+    let mut root_fork = config.clone();
+    project(&mut root_fork, &child, ContextSettingsTarget::Root);
+    let view = resolve(&root_fork, &child, &model, ContextSettingsTarget::Root).1;
+    assert_eq!(
+        (
+            root_fork.model_auto_compact_token_limit,
+            view.compaction_scope_token_limit,
+            view.inherited_child_default_tokens,
+            view.inherited_child_active_cap,
+        ),
+        (Some(9000), Some(9000), None, None)
+    );
+
+    assert_eq!(
+        resolve(&config, &child, &model, ContextSettingsTarget::Child)
+            .1
+            .compaction_scope_token_limit,
+        Some(3000)
+    );
+    model.auto_compact_token_limit = Some(2000);
+    let model_default = apply(
+        &child,
+        &ContextSettingsUpdate::Patch {
+            overrides: ContextSettingsOverrides {
+                compaction_threshold: Some(CompactionThreshold::ModelDefault),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        resolve(
+            &config,
+            &model_default,
+            &model,
+            ContextSettingsTarget::Child
+        )
+        .1
+        .compaction_scope_token_limit,
+        Some(2000)
+    );
+    let raised = apply(
+        &child,
+        &ContextSettingsUpdate::Patch {
+            overrides: ContextSettingsOverrides {
+                child_reduction_threshold_tokens: Some(7000),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        resolve(&config, &raised, &model, ContextSettingsTarget::Child)
+            .1
+            .compaction_scope_token_limit,
+        Some(7000)
+    );
+    // Nesting preserves the original compaction and internal Shake caps.
+    inherit(&mut config, &raised);
+    let nested = config.context_settings.clone().unwrap();
+    let disabled = apply(
+        &nested,
+        &ContextSettingsUpdate::Patch {
+            overrides: ContextSettingsOverrides {
+                child_reduction_enabled: Some(false),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let reloaded: ContextSettingsState =
+        serde_json::from_value(serde_json::to_value(&disabled).unwrap()).unwrap();
+    let view = resolve(&config, &reloaded, &model, ContextSettingsTarget::Child).1;
+    assert_eq!(
+        (
+            view.compaction_scope_token_limit,
+            view.inherited_child_active_cap
+        ),
+        (Some(9000), None)
+    );
+    let reset = apply(&disabled, &ContextSettingsUpdate::Reset).unwrap();
+    assert_eq!(
+        resolve(&config, &reset, &model, ContextSettingsTarget::Child)
+            .1
+            .compaction_scope_token_limit,
+        Some(7000)
+    );
+    model.context_window = Some(5000);
+    model.max_context_window = Some(5000);
+    assert_eq!(
+        resolve(&config, &reset, &model, ContextSettingsTarget::Child)
+            .1
+            .inherited_child_active_cap,
+        model.usable_context_window()
+    );
+}
+
+#[tokio::test]
 async fn future_turn_projects_context_choices_while_captured_turn_stays_immutable() {
     let (session, _) = make_session_and_context().await;
     let initial = session.new_default_turn().await;
