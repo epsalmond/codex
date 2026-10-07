@@ -944,6 +944,11 @@ impl CodexThread {
         }
     }
 
+    /// Resolves current future-turn policy without preparing a request or observing usage.
+    pub async fn context_settings(&self) -> codex_protocol::context_settings::ContextSettingsView {
+        self.session.context_settings_view().await
+    }
+
     /// Returns thread-owned settings suitable for rollout persistence and resume.
     pub async fn thread_settings_snapshot(&self) -> ThreadSettingsSnapshot {
         self.session.thread_settings_snapshot().await

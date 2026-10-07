@@ -1192,7 +1192,7 @@ impl Session {
             .as_ref()
             .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let per_turn_config = self.build_per_turn_config(
+        let mut per_turn_config = self.build_per_turn_config(
             &session_configuration,
             cwd.clone(),
             turn_environments.primary_workspace_roots(),
@@ -1202,11 +1202,25 @@ impl Session {
             .cloned()
             .unwrap_or_else(|| session_configuration.permission_profile());
         let mut model_overrides = session_configuration.model_info_overrides.clone();
-        model_overrides.auto_compact_token_limit = per_turn_config.model_auto_compact_token_limit;
-        let model_info = session_configuration
+        // Keep catalog compaction metadata available for explicit ModelDefault.
+        model_overrides.auto_compact_token_limit = None;
+        let catalog_model = session_configuration
             .step_settings
             .resolve_model_info(self.services.models_manager.as_ref(), &model_overrides)
             .await;
+        let (model_info, context_view) = super::context_settings::resolve(
+            &session_configuration.original_config_do_not_use,
+            &session_configuration.context_settings,
+            &catalog_model,
+            super::context_settings::ContextSettingsTarget::from(
+                &session_configuration.session_source,
+            ),
+        );
+        if let codex_protocol::context_settings::CompactionThreshold::Tokens { tokens } =
+            context_view.effective.compaction_threshold
+        {
+            per_turn_config.model_auto_compact_token_limit = Some(tokens);
+        }
         let multi_agent_version = match build_mode {
             TurnContextBuildMode::Full => {
                 // Only execution and initial context creation publish model metadata.
@@ -1262,6 +1276,7 @@ impl Session {
             Arc::new(model_info),
             self.features.enabled(Feature::FastMode),
         );
+        step_settings.context_settings = Some(Arc::new(context_view));
         step_settings.context_selection = session_configuration.context_settings.clone();
         let step_settings = Arc::new(step_settings);
         let mut turn_context: TurnContext = Self::make_turn_context(

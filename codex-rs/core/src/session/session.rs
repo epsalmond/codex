@@ -373,6 +373,7 @@ impl SessionConfiguration {
         &self,
         environments: &[TurnEnvironmentSelection],
     ) -> ConstraintResult<()> {
+        super::context_settings::validate_state(&self.context_settings)?;
         self.step_settings
             .validate(&self.step_settings_constraints(environments))?;
         super::environment::validate_environment_configs(environments)
@@ -406,6 +407,7 @@ impl SessionConfiguration {
     ) -> ConstraintResult<Self> {
         let mut next_configuration = self.clone();
         if let Some(state) = &updates.restored_context_settings {
+            super::context_settings::validate_state(state)?;
             next_configuration.context_settings = state.clone();
         }
         if let Some(disabled_plugin_ids) = &updates.disabled_plugin_ids {

@@ -199,6 +199,7 @@ impl AutoShakeConfig {
                 })
                 .collect(),
             max_threshold_tokens: None,
+            thread_overrides: Default::default(),
         })
     }
 
@@ -243,7 +244,7 @@ impl AutoShakeConfig {
     /// a percent, or an absolute token count, whether from the user or the
     /// built-in family default), then `inherit` resolving to the global
     /// value.
-    pub(crate) fn settings_for_model(&self, model_slug: &str) -> AutoShakeSettings {
+    pub(crate) fn configured_settings_for_model(&self, model_slug: &str) -> AutoShakeSettings {
         let (enabled, threshold) = match self.resolved_threshold(model_slug) {
             AutoShakeThresholdToml::Off => (
                 false,
@@ -299,6 +300,13 @@ impl AutoShakeConfig {
                 .map(auto_shake_duration),
             global_override: self.cache_ttl.map(auto_shake_duration),
         })
+    }
+
+    /// Apply the thread overlay only after resolving the configured model family.
+    pub(crate) fn settings_for_model(&self, model_slug: &str) -> AutoShakeSettings {
+        let mut settings = self.configured_settings_for_model(model_slug);
+        crate::session::context_settings::overlay_shake(&mut settings, &self.thread_overrides);
+        settings
     }
 
     /// Decide whether this thread should measure a shake because its prompt
