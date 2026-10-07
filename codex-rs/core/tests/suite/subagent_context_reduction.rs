@@ -136,6 +136,7 @@ fn reduction_test(enabled: bool, threshold_tokens: u64) -> TestCodexBuilder {
         .with_model(MODEL)
         .with_model_info_override(MODEL, |model| {
             model.truncation_policy = TruncationPolicyConfig::tokens(/*limit*/ 96_000);
+            model.tool_mode = Some(codex_protocol::openai_models::ToolMode::Direct);
         })
         .with_config(move |config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
@@ -145,6 +146,9 @@ fn reduction_test(enabled: bool, threshold_tokens: u64) -> TestCodexBuilder {
                     .expect("test config should allow collaboration features");
             }
             config.tool_output_token_limit = Some(100_000);
+            // Keep the root idle until the fixture explicitly starts its next turn.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
+            config.multi_agent_v2.exec_root_wakes_on_report = false;
             // `wait_agent` waits for new mailbox activity; a child that already finished
             // may have delivered its completion before the call.
             config.multi_agent_v2.default_wait_timeout_ms = 1_000;
@@ -254,7 +258,10 @@ async fn listed_last_reduction(
     threshold: i64,
 ) -> Result<(String, bool, bool)> {
     let bodies = root_tool_turn(test, server, "list_agents").await?;
-    let output = call_output(&bodies[0], "root-list_agents")
+    let body = bodies
+        .first()
+        .context("root should sample list_agents output")?;
+    let output = call_output(body, "root-list_agents")
         .and_then(|item| item["output"].as_str())
         .context("list_agents output should reach the root")?;
     let listed: Value = serde_json::from_str(output)?;
@@ -605,6 +612,11 @@ async fn initial_task_over_child_cap_is_recorded_without_ordinary_sampling(
     )
     .await;
     let test = reduction_test(/*enabled*/ true, /*threshold_tokens*/ 50_000)
+        .with_model_info_override(MODEL, |model| {
+            // The root must have room to inspect the deliberately oversized child task.
+            model.context_window = Some(2_000_000);
+            model.max_context_window = Some(2_000_000);
+        })
         .with_config(move |config| config.model_auto_compact_token_limit_scope = scope)
         .build_with_auto_env(&server)
         .await?;
@@ -669,6 +681,7 @@ async fn tool_output_crossing_cap_compacts_before_the_next_sample(code_mode: boo
         })
         .with_config(move |config| {
             if code_mode {
+                assert!(config.features.enable(Feature::CodeModeHost).is_ok());
                 assert!(config.features.enable(Feature::CodeMode).is_ok());
                 assert!(
                     config
@@ -874,5 +887,128 @@ async fn child_compaction_failure_reports_unknown_post_size(cancel: bool) -> Res
         listed_last_reduction(&test, &server, 50_000).await?,
         (outcome.to_string(), true, false)
     );
+    Ok(())
+}
+
+#[test_case(true; "off_to_percent")]
+#[test_case(false; "percent_to_off")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saved_child_global_shake_threshold_survives_reload_and_reset(off: bool) -> Result<()> {
+    use codex_config::config_toml::AutoShakeThresholdToml;
+    use codex_core::TurnInputRequest;
+    use codex_protocol::context_settings::ShakeThreshold;
+    use codex_protocol::models::ResponseItem;
+    use codex_protocol::user_input::UserInput;
+    use core_test_support::responses::mount_sse_once;
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    mount_root_spawn(&server, "worker", CHILD_TASK).await;
+    mount(
+        &server,
+        "child-done",
+        is_child,
+        vec![ev_assistant_message("child-done", "finished")],
+    )
+    .await;
+    let original = if off {
+        AutoShakeThresholdToml::Off
+    } else {
+        AutoShakeThresholdToml::Percent(1)
+    };
+    let expected = if off {
+        ShakeThreshold::Off
+    } else {
+        ShakeThreshold::Percent { percent: 1 }
+    };
+    let test = reduction_test(/*enabled*/ false, /*threshold_tokens*/ 30000)
+        .with_config(move |config| {
+            config.model_context_window = Some(100000);
+            config.model_auto_compact_token_limit = Some(900000);
+            config.auto_shake.threshold = Some(original);
+            config.auto_shake.models.insert(
+                "gpt-5.6".into(),
+                codex_core::config::AutoShakeModelConfig {
+                    threshold: Some(AutoShakeThresholdToml::Inherit),
+                    min_elidable_percent: None,
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn(ROOT_PROMPT).await?;
+    wait_for_child_turn(&test).await?;
+    let child_id = test
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .find(|id| *id != test.session_configured.thread_id)
+        .context("child")?;
+    let child = test.thread_manager.get_thread(child_id).await?;
+    child.checkpoint_thread_settings().await?;
+    let path = child.rollout_path().context("persistent child rollout")?;
+    child.shutdown_and_wait().await?;
+    let history = codex_rollout::RolloutRecorder::get_rollout_history(&path).await?;
+    let mut reload = test.config.clone();
+    reload.auto_shake.threshold = Some(if off {
+        AutoShakeThresholdToml::Percent(1)
+    } else {
+        AutoShakeThresholdToml::Off
+    });
+    let resumed = test
+        .thread_manager
+        .resume_thread_with_history(
+            reload,
+            history,
+            test.thread_manager.auth_manager(),
+            /*parent_trace*/ None,
+            codex_protocol::mcp::ClientMcpExtensions::default(),
+        )
+        .await?;
+    let thread = resumed.thread;
+    let saved = thread
+        .thread_settings_snapshot()
+        .await
+        .context_settings
+        .context("saved child settings")?;
+    assert_eq!(
+        saved
+            .inherited
+            .context("saved child baseline")?
+            .shake_threshold,
+        Some(expected)
+    );
+    const MARKER: &str = "BASELINE_SHAKE_MARKER";
+    let items: Vec<ResponseItem> = serde_json::from_value(json!([
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "read the output"}]},
+        {"type": "function_call", "id": "baseline-call", "call_id": "baseline-call", "name": "exec_command", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "baseline-call", "output": format!("{MARKER}\n").repeat(/*n*/ 8000)},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "tail context ".repeat(/*n*/ 6000)}]}
+    ]))?;
+    thread.inject_response_items(items).await?;
+    let request = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("next", "done"),
+            ev_completed("next"),
+        ]),
+    )
+    .await;
+    thread
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert_eq!(
+        request
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(MARKER),
+        off
+    );
+    thread.shutdown_and_wait().await?;
     Ok(())
 }

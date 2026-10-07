@@ -144,6 +144,9 @@ impl ThreadConfigSnapshot {
 /// Thread settings overrides that app-server validates before starting a turn.
 #[derive(Clone, Default)]
 pub struct CodexThreadSettingsOverrides {
+    /// Exact retained state for runtime replacement, including an empty selection.
+    #[doc(hidden)]
+    pub restored_context_settings: Option<codex_protocol::context_settings::ContextSettingsState>,
     pub environments: Option<TurnEnvironmentSelections>,
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,
@@ -688,6 +691,7 @@ impl CodexThread {
 
     fn thread_settings_update(overrides: CodexThreadSettingsOverrides) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
+            restored_context_settings,
             environments,
             runtime_workspace_roots,
             profile_workspace_roots,
@@ -706,6 +710,7 @@ impl CodexThread {
             disabled_plugin_ids,
         } = overrides;
         SessionSettingsUpdate {
+            restored_context_settings,
             step_settings: StepSettingsUpdate {
                 model,
                 effort,

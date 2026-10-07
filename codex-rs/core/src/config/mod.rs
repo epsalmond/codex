@@ -640,6 +640,11 @@ pub struct Config {
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
+    /// Retained thread selection; absent in startup TOML and old rollouts.
+    pub context_settings: Option<codex_protocol::context_settings::ContextSettingsState>,
+    /// Fresh spawn selection wins over copied parent checkpoints. Cleared at startup.
+    #[doc(hidden)]
+    pub context_settings_from_spawn: bool,
 
     /// Controls whether `model_auto_compact_token_limit` applies to the full
     /// active context or only tokens after the carried compaction-window prefix.
@@ -4416,6 +4421,8 @@ impl Config {
             review_model,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
+            context_settings: None,
+            context_settings_from_spawn: false,
             model_auto_compact_token_limit_scope: cfg
                 .model_auto_compact_token_limit_scope
                 .unwrap_or_default(),

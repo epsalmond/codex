@@ -4848,6 +4848,24 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = Some(ReasoningEffort::High);
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+    expected.context_settings = Some(codex_protocol::context_settings::ContextSettingsState {
+        inherited: Some(codex_protocol::context_settings::InheritedContextBaseline {
+            compaction_token_limit: expected.model_auto_compact_token_limit,
+            shake_threshold: None,
+            shake_max_threshold_tokens: expected.auto_shake.max_threshold_tokens,
+            shake_cold_resume: expected.auto_shake.cold_resume,
+            shake_min_elidable_percent: expected.auto_shake.min_elidable_percent,
+            shake_min_savings_tokens: expected.auto_shake.min_savings_tokens,
+            compaction_scope: expected.model_auto_compact_token_limit_scope,
+            post_turn_compaction_percent: expected.model_post_turn_compact_threshold_percent,
+            child_reduction_enabled: expected.subagent_context_reduction.enabled,
+            child_reduction_threshold_tokens: i64::try_from(
+                expected.subagent_context_reduction.threshold_tokens,
+            )
+            .unwrap(),
+        }),
+    });
+    expected.context_settings_from_spawn = true;
     expected.model_auto_compact_token_limit = Some(272_000);
     expected.auto_shake.max_threshold_tokens = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
@@ -4950,6 +4968,24 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort().cloned();
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
+    expected.context_settings = Some(codex_protocol::context_settings::ContextSettingsState {
+        inherited: Some(codex_protocol::context_settings::InheritedContextBaseline {
+            compaction_token_limit: expected.model_auto_compact_token_limit,
+            shake_threshold: None,
+            shake_max_threshold_tokens: expected.auto_shake.max_threshold_tokens,
+            shake_cold_resume: expected.auto_shake.cold_resume,
+            shake_min_elidable_percent: expected.auto_shake.min_elidable_percent,
+            shake_min_savings_tokens: expected.auto_shake.min_savings_tokens,
+            compaction_scope: expected.model_auto_compact_token_limit_scope,
+            post_turn_compaction_percent: expected.model_post_turn_compact_threshold_percent,
+            child_reduction_enabled: expected.subagent_context_reduction.enabled,
+            child_reduction_threshold_tokens: i64::try_from(
+                expected.subagent_context_reduction.threshold_tokens,
+            )
+            .unwrap(),
+        }),
+    });
+    expected.context_settings_from_spawn = true;
     expected.model_auto_compact_token_limit = Some(272_000);
     expected.auto_shake.max_threshold_tokens = Some(272_000);
     expected.developer_instructions = turn.developer_instructions.clone();
