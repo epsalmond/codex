@@ -53,6 +53,9 @@ enum Outcome {
     Cancelled,
     Compatibility,
     Compacted,
+    CompletedOnly,
+    Rejected,
+    Interrupted,
 }
 
 #[test_case::test_case(Outcome::Success; "success")]
@@ -60,6 +63,9 @@ enum Outcome {
 #[test_case::test_case(Outcome::Cancelled; "cancelled")]
 #[test_case::test_case(Outcome::Compatibility; "compatibility")]
 #[test_case::test_case(Outcome::Compacted; "compacted")]
+#[test_case::test_case(Outcome::CompletedOnly; "completed_only")]
+#[test_case::test_case(Outcome::Rejected; "rejected_before_created")]
+#[test_case::test_case(Outcome::Interrupted; "interrupted_before_created")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     outcome: Outcome,
@@ -70,8 +76,14 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         "basic PowerShell execution through Wine is unavailable"
     );
     let enabled = outcome != Outcome::Compatibility;
+    let cancelled_native = matches!(
+        outcome,
+        Outcome::Cancelled | Outcome::CompletedOnly | Outcome::Rejected | Outcome::Interrupted
+    );
+    let recovery = matches!(outcome, Outcome::Rejected | Outcome::Interrupted);
+    let manual_compact = recovery || outcome == Outcome::CompletedOnly;
     let exit_code = if outcome == Outcome::Nonzero { 7 } else { 0 };
-    let seconds = if outcome == Outcome::Cancelled {
+    let seconds = if cancelled_native {
         30
     } else if cfg!(windows) {
         11
@@ -99,14 +111,43 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
             "type":"response.output_item.done", "item":{"type":"compaction", "encrypted_content":"ASYNC_RESULT_SUMMARY"},
         }), ev_completed("compact")]));
     }
-    bodies.extend([assistant_response("r3"), assistant_response("r4")]);
+    bodies.push(match outcome {
+        Outcome::Rejected => core_test_support::responses::sse_failed(
+            "r3",
+            "invalid_prompt",
+            "rejected before creation",
+        ),
+        Outcome::CompletedOnly | Outcome::Interrupted => sse(vec![
+            ev_assistant_message("r3", "continued"),
+            ev_completed("r3"),
+        ]),
+        Outcome::Success
+        | Outcome::Nonzero
+        | Outcome::Cancelled
+        | Outcome::Compatibility
+        | Outcome::Compacted => assistant_response("r3"),
+    });
+    if manual_compact {
+        bodies.push(sse(vec![ev_response_created("manual"), json!({
+            "type":"response.output_item.done", "item":{"type":"compaction", "encrypted_content":"ASYNC_RESULT_SUMMARY"},
+        }), ev_completed("manual")]));
+    }
+    bodies.push(assistant_response("r4"));
+    let (response_release, response_gate) = tokio::sync::oneshot::channel();
+    let mut response_gate = Some(response_gate);
     let mut gate = Some(gate);
     let chunks = bodies
         .into_iter()
         .enumerate()
         .map(|(index, body)| {
             vec![StreamingSseChunk {
-                gate: if index == 1 { gate.take() } else { None },
+                gate: if index == 1 {
+                    gate.take()
+                } else if index == 2 && outcome == Outcome::Interrupted {
+                    response_gate.take()
+                } else {
+                    None
+                },
                 body,
             }]
         })
@@ -145,7 +186,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     let initial = wait_for_raw_unified_exec_output(&test, "finite").await?;
     assert!(initial.process_id.is_some());
     server.wait_for_request_count(2).await;
-    if outcome == Outcome::Cancelled {
+    if cancelled_native {
         assert!(
             test.codex
                 .terminate_background_terminal(initial.process_id.unwrap().parse()?)
@@ -158,7 +199,12 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     )
     .await;
     release.send(()).unwrap();
+    if outcome == Outcome::Interrupted {
+        server.wait_for_request_count(3).await;
+        test.codex.submit(Op::Interrupt).await?;
+    }
     let mut recorded_id = None;
+    let mut rejected = false;
     wait_for_event(&test.codex, |event| {
         if let EventMsg::RawResponseItem(raw) = event {
             let value = serde_json::to_value(&raw.item).unwrap();
@@ -169,9 +215,15 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
                 recorded_id.get_or_insert(value["id"].clone());
             }
         }
+        rejected |= matches!(event, EventMsg::Error(_));
         matches!(event, EventMsg::TurnComplete(_))
+            || (outcome == Outcome::Interrupted && matches!(event, EventMsg::TurnAborted(_)))
     })
     .await;
+    if outcome == Outcome::Rejected {
+        assert!(rejected);
+    }
+    drop(response_release);
     let requests = request_bodies(&server).await;
     let final_request = requests.last().unwrap();
     if outcome != Outcome::Compacted {
@@ -187,17 +239,32 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     let delivered = completions(final_request);
     assert_eq!(delivered.len(), usize::from(enabled));
     if let Some(text) = delivered.first() {
-        let status = if outcome == Outcome::Cancelled {
+        let status = if cancelled_native {
             "cancelled".to_owned()
         } else {
             format!("exited({exit_code})")
         };
         assert!(text.contains(&format!("status={status}")));
         assert!(text.contains("call=finite"));
-        if outcome != Outcome::Cancelled {
+        if !cancelled_native {
             assert!(text.contains("terminal-tail"));
         }
-        assert!(text.len() <= 768);
+        let item = final_request["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["content"][0]["text"].as_str() == Some(text.as_str()))
+            .unwrap();
+        assert!(serde_json::to_vec(item)?.len() <= 768);
+        assert!(item["internal_chat_message_metadata_passthrough"]["create_time"].is_number());
+        assert!(item["internal_chat_message_metadata_passthrough"]["turn_id"].is_string());
+    }
+    if manual_compact {
+        test.codex.submit(Op::Compact).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
     }
     submit_unified_exec_turn(&test, "continue again", PermissionProfile::Disabled).await?;
     wait_for_event(&test.codex, |event| {
@@ -205,7 +272,27 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     })
     .await;
     let requests = request_bodies(&server).await;
-    assert_eq!(completions(requests.last().unwrap()), delivered);
+    if outcome == Outcome::CompletedOnly {
+        assert!(completions(requests.last().unwrap()).is_empty());
+    } else {
+        assert_eq!(completions(requests.last().unwrap()), delivered);
+        if recovery {
+            let receipt = |request: &Value| {
+                request["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| {
+                        item["content"][0]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.starts_with("<async_tool_completion>"))
+                    })
+                    .unwrap()
+                    .clone()
+            };
+            assert_eq!(receipt(final_request), receipt(requests.last().unwrap()));
+        }
+    }
     if outcome == Outcome::Compacted {
         let compact = requests
             .iter()
