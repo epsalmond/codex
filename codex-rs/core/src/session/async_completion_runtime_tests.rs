@@ -7,11 +7,10 @@ enum Rejection {
     Metadata,
 }
 
-#[rstest::rstest]
-#[case(Rejection::Capacity)]
-#[case(Rejection::Metadata)]
+#[test_case::test_case(Rejection::Capacity; "capacity")]
+#[test_case::test_case(Rejection::Metadata; "metadata")]
 #[tokio::test]
-async fn native_admission_rejects_before_side_effects(#[case] rejection: Rejection) {
+async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;

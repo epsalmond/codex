@@ -4,6 +4,7 @@ use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::StreamingSseServer;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_target_os;
+use pretty_assertions::assert_eq;
 
 fn finite_command(delay_seconds: u32, exit_code: i32) -> String {
     match test_target_os() {
@@ -54,15 +55,14 @@ enum Outcome {
     Compacted,
 }
 
-#[rstest::rstest]
-#[case(Outcome::Success)]
-#[case(Outcome::Nonzero)]
-#[case(Outcome::Cancelled)]
-#[case(Outcome::Compatibility)]
-#[case(Outcome::Compacted)]
+#[test_case::test_case(Outcome::Success; "success")]
+#[test_case::test_case(Outcome::Nonzero; "nonzero")]
+#[test_case::test_case(Outcome::Cancelled; "cancelled")]
+#[test_case::test_case(Outcome::Compatibility; "compatibility")]
+#[test_case::test_case(Outcome::Compacted; "compacted")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_completion_is_appended_in_the_active_turn_without_stdin(
-    #[case] outcome: Outcome,
+    outcome: Outcome,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(
