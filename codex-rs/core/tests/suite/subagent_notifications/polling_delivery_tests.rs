@@ -257,16 +257,13 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
     grandchild_thread.shutdown_and_wait().await?;
     let before_resume = server.requests().await;
     assert_eq!(before_resume.iter().filter_map(|request| serde_json::from_slice::<Value>(request).ok()).filter(|request| streaming_request_has_thread_id(request, child_thread_id)).count(), 2);
-    reloaded_child.start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+    let submission = reloaded_child.start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
         text: "explicit polling continuation".into(), text_elements: vec![],
     }])).await?;
+    assert!(matches!(submission, codex_core::TurnInputSubmission::Started { .. }), "{submission:?}");
     let child_final_request = wait_for_streaming_request_matching(&server, |request| {
         streaming_request_has_thread_id(request, child_thread_id)
-            && streaming_request_has_input_type_with_text(
-                request,
-                "agent_message",
-                "grandchild result marker",
-            )
+            && request.to_string().contains("explicit polling continuation")
     })
     .await
     .context("waiting for the reloaded child's report-processing request")?;
@@ -279,7 +276,7 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
             item["type"] == "agent_message" && item.to_string().contains("grandchild result marker")
         })
         .count();
-    assert_eq!(child_report_count, 1);
+    assert_eq!(child_report_count, 1, "model input: {}", child_final_request["input"]);
     let report = child_final_request["input"].as_array().expect("child model input").iter()
         .find(|item| item["type"] == "agent_message" && item.to_string().contains("grandchild result marker"))
         .expect("accepted completion report");
