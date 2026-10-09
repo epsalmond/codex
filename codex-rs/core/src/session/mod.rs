@@ -1,4 +1,3 @@
-#[cfg(test)]
 pub(crate) mod async_completion;
 pub(crate) mod startup;
 

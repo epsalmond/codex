@@ -867,6 +867,9 @@
                 }
               ]
             },
+            "async_process_completion": {
+              "type": "boolean"
+            },
             "auth_elicitation": {
               "type": "boolean"
             },
@@ -6997,6 +7000,9 @@
               "type": "object"
             }
           ]
+        },
+        "async_process_completion": {
+          "type": "boolean"
         },
         "auth_elicitation": {
           "type": "boolean"

@@ -51,6 +51,7 @@ pub(crate) struct SessionServices {
     /// Immutable MCP handlers scoped to this thread's current binding.
     pub(crate) mcp_handler_cache: McpHandlerCache,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
+    pub(crate) async_completions: Arc<crate::session::async_completion::AsyncCompletions>,
     pub(crate) elicitations: ElicitationService,
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) shell_zsh_path: Option<PathBuf>,

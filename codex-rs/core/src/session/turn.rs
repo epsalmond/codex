@@ -2047,6 +2047,15 @@ async fn run_sampling_request(
     let mut executed_tool_calls_by_output = HashMap::new();
     let mut admission = super::request_admission::ChildRequestAdmission::default();
     loop {
+        if super::async_completion::record_ready(
+            &sess,
+            &turn_context,
+            &step_context.settings.model_info,
+        )
+        .await
+        {
+            initial_input = None;
+        }
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
         let history_snapshot = sess.clone_history().await;
@@ -2142,6 +2151,11 @@ async fn run_sampling_request(
             }
         }
         let report_candidates = sess.coordinator_report_candidates(&turn_context, &prompt.input);
+        let completion_candidates = sess.services.async_completions.candidates(
+            sess.thread_id(),
+            &turn_context,
+            &prompt.input,
+        );
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
@@ -2152,6 +2166,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             &prompt,
             &report_candidates,
+            &completion_candidates,
             cancellation_token.child_token(),
         )
         .await
@@ -3008,6 +3023,7 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     report_candidates: &[ResponseItemId],
+    completion_candidates: &[ResponseItemId],
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
@@ -3167,6 +3183,9 @@ async fn try_run_sampling_request(
         match event {
             ResponseEvent::Created { response_id } => {
                 sess.accept_coordinator_report_candidates(&turn_context, report_candidates);
+                sess.services
+                    .async_completions
+                    .accept(completion_candidates);
                 if let Some(response_id) = response_id {
                     turn_context
                         .extension_data
@@ -3436,6 +3455,9 @@ async fn try_run_sampling_request(
                 end_turn,
             } => {
                 sess.accept_coordinator_report_candidates(&turn_context, report_candidates);
+                sess.services
+                    .async_completions
+                    .accept(completion_candidates);
                 sess.services
                     .analytics_events_client
                     .track_code_mode_tool_call(

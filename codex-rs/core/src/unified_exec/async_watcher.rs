@@ -15,6 +15,8 @@ use super::process::UnifiedExecProcess;
 use super::take_plugin_metrics_sidecar;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
 use crate::plugins::metrics::finish_and_track_measurements;
+use crate::session::async_completion::CompletionPublisher;
+use crate::session::async_completion::CompletionStatus;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::events::ToolEmitter;
@@ -166,6 +168,7 @@ pub(crate) fn spawn_exit_watcher(
     started_at: Instant,
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
+    completion_publisher: Option<CompletionPublisher>,
 ) {
     let session_ref = Arc::clone(&context.session);
     let turn_ref = Arc::clone(&context.step_context.turn);
@@ -187,6 +190,24 @@ pub(crate) fn spawn_exit_watcher(
         }
         let _interaction_guard = interaction_lock.lock_owned().await;
 
+        if let Some(publisher) = completion_publisher {
+            let failure = process.failure_message();
+            let status = if failure.is_some() {
+                CompletionStatus::Failed
+            } else if process.timed_out() {
+                CompletionStatus::TimedOut
+            } else if process.termination_requested() {
+                CompletionStatus::Cancelled
+            } else {
+                CompletionStatus::Exited(process.exit_code().unwrap_or(-1))
+            };
+            let buffers = output_buffer.lock().await;
+            let mut output = buffers.transcript.to_bytes();
+            if let Some(message) = failure {
+                output.extend_from_slice(message.as_bytes());
+            }
+            publisher.publish(status, &output, buffers.transcript.omitted_bytes());
+        }
         let duration = Instant::now().saturating_duration_since(started_at);
         let plugin_metrics_sidecar = plugin_metrics_sidecar
             .as_ref()
