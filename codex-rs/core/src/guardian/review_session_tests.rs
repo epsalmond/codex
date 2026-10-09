@@ -83,8 +83,8 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
     parent
         .replace_compacted_history(
             vec![checkpoint.into()],
-            turn.to_turn_context_item(),
-            crate::context::world_state::WorldStateSnapshot::default(),
+            Some(turn.to_turn_context_item()),
+            Some(crate::context::world_state::WorldStateSnapshot::default()),
             crate::compact::CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: String::new(),

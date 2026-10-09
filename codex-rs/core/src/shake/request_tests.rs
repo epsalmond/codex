@@ -25,7 +25,6 @@ fn message(text: &str) -> ResponseItem {
 fn request(input: Vec<ResponseItem>) -> ResponsesApiRequest {
     ResponsesApiRequest {
         model: "gpt-test".to_string(),
-        instructions: "instructions A".to_string(),
         input,
         tools: None,
         tool_choice: "auto".to_string(),
@@ -121,7 +120,6 @@ fn dynamic_request_changes_rotate_expectation_without_moving_history_watermark()
 
     let mut changed_inputs = request(sealed.clone());
     changed_inputs.model = "gpt-next".to_string();
-    changed_inputs.instructions = "instructions B".to_string();
     changed_inputs.reasoning = Some(Reasoning {
         effort: None,
         summary: None,
@@ -174,8 +172,7 @@ fn changed_tools_instructions_and_modalities_each_start_a_new_request_epoch() {
         .dynamic_identity
         .clone();
 
-    let mut changed_instructions = request(sealed.clone());
-    changed_instructions.instructions = "changed instructions".to_string();
+    let changed_instructions = request(sealed.clone());
     let mut instructions_check = check(sealed.clone(), "history-1");
     instructions_check.base_instructions = "changed base instructions".to_string();
     validate_shake_request_prefix_epoch(

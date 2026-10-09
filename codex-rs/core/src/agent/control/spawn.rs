@@ -816,21 +816,19 @@ impl LocalAgentControl {
             fork_context,
             child_create,
         } = match (session_source, options.fork_mode.as_ref(), inheritance) {
-            (Some(session_source), Some(_), inheritance) => {
-                Box::pin(self.spawn_forked_thread(
-                    &state,
-                    SpawnForkedThreadArgs {
-                        config,
-                        session_source,
-                        options: &options,
-                        inheritance,
-                        multi_agent_version,
-                        reserved_thread_id,
-                    },
-                ))
-                .await
-                .map_err(|err| err.with_agent_context(AgentErrorContext::ForkHistory))?
-            }
+            (Some(session_source), Some(_), inheritance) => Box::pin(self.spawn_forked_thread(
+                &state,
+                SpawnForkedThreadArgs {
+                    config,
+                    session_source,
+                    options: &options,
+                    inheritance,
+                    multi_agent_version,
+                    reserved_thread_id,
+                },
+            ))
+            .await
+            .map_err(|err| err.with_agent_context(AgentErrorContext::ForkHistory))?,
             (Some(session_source), None, inheritance) => {
                 let (history_mode, dynamic_tools) = if let Some(parent_thread_id) =
                     options.parent_thread_id

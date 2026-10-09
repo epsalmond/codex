@@ -4414,6 +4414,7 @@ async fn multi_agent_v2_completion_marks_only_root_parent_wake(
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
+                root_turn_id: None,
             }),
         )
         .await;

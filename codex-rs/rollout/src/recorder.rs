@@ -1165,8 +1165,7 @@ impl RolloutRecorder {
                     }
                 };
 
-                if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&rollout_line.timestamp)
-                {
+                if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&rollout_line.timestamp) {
                     last_line_timestamp = Some(parsed.with_timezone(&chrono::Utc));
                 }
 

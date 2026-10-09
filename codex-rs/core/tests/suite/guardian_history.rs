@@ -639,6 +639,7 @@ async fn guardian_answers_survive_compaction_and_eviction() -> Result<()> {
                 history: Arc::new(model_context.items),
                 rollout_path: None,
                 last_activity_at: None,
+                history_revision: None,
             }),
             test.thread_manager.auth_manager(),
             /*parent_trace*/ None,

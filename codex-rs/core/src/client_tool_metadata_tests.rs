@@ -328,7 +328,7 @@ fn websocket_full_bound_must_reject_metadata_loss_inside_the_sealed_prefix() {
             sealed_prefix_digest: "0".repeat(40),
         },
         prefix_items: sealed_prefix,
-        base_instructions: request.instructions.clone(),
+        base_instructions: String::new(),
         provider_id: "openai".to_string(),
         input_modalities: Vec::new(),
         use_responses_lite: false,

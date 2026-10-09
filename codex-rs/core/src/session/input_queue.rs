@@ -1,6 +1,6 @@
-use crate::session::multi_agents::ChildReportMode;
 use crate::agent::api::AgentControl;
 use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
+use crate::session::multi_agents::ChildReportMode;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;

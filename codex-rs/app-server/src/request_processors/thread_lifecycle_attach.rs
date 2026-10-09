@@ -93,47 +93,46 @@ async fn ensure_conversation_listener_inner(
         {
             Some(thread_state) => (thread_state, EnsureConversationListenerResult::Attached),
             None => {
-            if lifecycle
-                .as_ref()
-                .is_some_and(|(session_source, observation)| {
-                    matches!(session_source, SessionSource::Exec) && observation.is_some()
-                })
-            {
-                return Err(internal_error(format!(
-                    "failed to attach lifecycle observer to root thread {conversation_id}"
-                )));
-            }
-            // Startup can outlast connection cleanup; the thread still needs a
-            // listener to unload once it is idle and has no subscribers.
-            let thread_state = listener_task_context
-                .thread_state_manager
-                .thread_state(conversation_id)
-                .await;
-            (
-                thread_state,
-                EnsureConversationListenerResult::ConnectionClosed,
-            )
+                if lifecycle
+                    .as_ref()
+                    .is_some_and(|(session_source, observation)| {
+                        matches!(session_source, SessionSource::Exec) && observation.is_some()
+                    })
+                {
+                    return Err(internal_error(format!(
+                        "failed to attach lifecycle observer to root thread {conversation_id}"
+                    )));
+                }
+                // Startup can outlast connection cleanup; the thread still needs a
+                // listener to unload once it is idle and has no subscribers.
+                let thread_state = listener_task_context
+                    .thread_state_manager
+                    .thread_state(conversation_id)
+                    .await;
+                (
+                    thread_state,
+                    EnsureConversationListenerResult::ConnectionClosed,
+                )
             }
         }
     };
     let attached = matches!(result, EnsureConversationListenerResult::Attached);
-    let lifecycle_observer_active = if attached
-        && let Some((session_source, observation)) = lifecycle
-    {
-        matches!(
-            super::thread_lifecycle_observer::bind_exec_root_lifecycle_observer(
-                &listener_task_context.thread_state_manager,
-                session_source,
-                conversation_id,
-                connection_id,
-                observation,
+    let lifecycle_observer_active =
+        if attached && let Some((session_source, observation)) = lifecycle {
+            matches!(
+                super::thread_lifecycle_observer::bind_exec_root_lifecycle_observer(
+                    &listener_task_context.thread_state_manager,
+                    session_source,
+                    conversation_id,
+                    connection_id,
+                    observation,
+                )
+                .await?,
+                super::thread_lifecycle_observer::LifecycleObserverRegistration::Active
             )
-            .await?,
-            super::thread_lifecycle_observer::LifecycleObserverRegistration::Active
-        )
-    } else {
-        false
-    };
+        } else {
+            false
+        };
     if let Err(error) = super::thread_lifecycle::ensure_listener_task_running(
         listener_task_context.clone(),
         conversation_id,

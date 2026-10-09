@@ -853,6 +853,7 @@ async fn disabled_capture_stays_incomplete_after_compaction_and_enabled_resume()
                 history: Arc::new(items),
                 rollout_path: None,
                 last_activity_at: None,
+                history_revision: None,
             }),
             test.thread_manager.auth_manager(),
             /*parent_trace*/ None,

@@ -504,12 +504,6 @@ impl App {
                 self.app_event_tx.clone(),
                 self.chat_widget.security_setup_request_id,
             );
-            crate::daybreak::prefetch_notice(
-                &self.config,
-                app_server,
-                self.app_event_tx.clone(),
-                self.chat_widget.security_setup_request_id,
-            );
         }
         self.feedback_audience = bootstrap.feedback_audience;
         if displayed.is_some_and(|id| !self.thread_unavailable(id)) {

@@ -379,13 +379,6 @@ impl HistoryCell for SessionHeaderHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        if self.greeting.get().is_some() {
-            return self
-                .display_lines(u16::MAX)
-                .into_iter()
-                .map(|line| Line::from(line.to_string()))
-                .collect();
-        }
         let title = self
             .feature_version
             .map(|feature_version| {

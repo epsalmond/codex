@@ -133,7 +133,10 @@ async fn failure_waits_for_yielded_cell_termination_without_interrupt_feature(
         })
         .build_with_streaming_server(&server)
         .await?;
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "start a yielded cell".to_owned(),

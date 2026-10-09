@@ -3376,6 +3376,7 @@ fn resumed_history_from(source: SessionSource) -> InitialHistory {
         })]),
         rollout_path: None,
         last_activity_at: None,
+        history_revision: None,
     })
 }
 

@@ -207,6 +207,7 @@ fn root_turn_completed(
             started_at: None,
             completed_at: Some(0),
             duration_ms: None,
+            root_turn_id: None,
         },
     })
 }

@@ -1078,6 +1078,7 @@ mod tests {
                     started_at: Some(0),
                     completed_at: None,
                     duration_ms: None,
+                    root_turn_id: None,
                 },
             })
         ));

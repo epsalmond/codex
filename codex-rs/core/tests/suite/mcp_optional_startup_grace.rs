@@ -404,7 +404,11 @@ async fn refreshed_mcp_schema_is_charged_against_prior_provider_usage(
         }))?,
     );
     refreshed_config.mcp_servers.set(servers)?;
-    fixture.codex.refresh_mcp_config(refreshed_config).await;
+    let current_config = fixture.codex.config().await;
+    let _ = fixture
+        .codex
+        .refresh_mcp_config(current_config, refreshed_config)
+        .await;
     let compact = responses::mount_sse_once(&responses_server, responses::sse(vec![
         responses::ev_response_created("compact"),
         json!({"type": "response.output_item.done", "item": {"type": "compaction", "encrypted_content": "refreshed-schema-summary"}}),

@@ -6081,7 +6081,10 @@ async fn code_mode_interrupt_terminates_active_cells_and_nested_tools(
     )
     .await;
 
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "start a long-running nested tool".to_string(),

@@ -390,6 +390,7 @@ async fn failed_turn_completion_preserves_queued_review_start() {
                     misalignment: None,
                 }),
             ),
+            context_usage: None,
         }),
         /*replay_kind*/ None,
     );

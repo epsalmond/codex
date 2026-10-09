@@ -1749,9 +1749,3 @@ pub(crate) enum FeedbackCategory {
     SafetyCheck,
     Other,
 }
-
-#[derive(Debug, Default)]
-pub(crate) struct AgentPickerThreadRefresh {
-    pub(crate) threads: Vec<Thread>,
-    pub(crate) archived_thread_ids: std::collections::HashSet<ThreadId>,
-}

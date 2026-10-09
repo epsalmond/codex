@@ -178,7 +178,9 @@ async fn terminal_root_turn_stays_busy_until_output_is_forwarded() {
         .register_root_turn_lifecycle(&turn_context)
         .expect("root turn should be admitted");
 
-    session.emit_turn_started(&turn_context).await;
+    session
+        .emit_turn_started(&turn_context, crate::state::TaskKind::Regular)
+        .await;
     let started = events
         .recv()
         .await
@@ -196,6 +198,7 @@ async fn terminal_root_turn_stays_busy_until_output_is_forwarded() {
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
+                root_turn_id: None,
             }),
         )
         .await;

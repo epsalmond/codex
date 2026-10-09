@@ -1170,15 +1170,15 @@ impl Session {
         cancellation: &TaskCancellation,
     ) -> bool {
         let sub_id = task.turn_context.sub_id.clone();
-        if task.cancellation_token.is_cancelled() {
-            if let TaskCancellation::Aborted(reason) = cancellation {
-                self.emit_turn_abort_lifecycle(
-                    reason.clone(),
-                    task.turn_context.extension_data.as_ref(),
-                )
-                .await;
-                return false;
-            }
+        if task.cancellation_token.is_cancelled()
+            && let TaskCancellation::Aborted(reason) = cancellation
+        {
+            self.emit_turn_abort_lifecycle(
+                reason.clone(),
+                task.turn_context.extension_data.as_ref(),
+            )
+            .await;
+            return false;
         }
 
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");

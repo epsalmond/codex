@@ -5960,8 +5960,8 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
     let mut checkpoint = Box::pin(tokio::task::unconstrained(
         session.replace_compacted_history(
             vec![ResponseItemEnvelope::new(user_message("compacted history"))],
-            turn_context.to_turn_context_item(),
-            WorldStateSnapshot::default(),
+            Some(turn_context.to_turn_context_item()),
+            Some(WorldStateSnapshot::default()),
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: "summary".to_string(),
@@ -6095,8 +6095,8 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
     session
         .replace_compacted_history(
             vec![ResponseItemEnvelope::new(user_message("compacted history"))],
-            turn_context.to_turn_context_item(),
-            WorldStateSnapshot::default(),
+            Some(turn_context.to_turn_context_item()),
+            Some(WorldStateSnapshot::default()),
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: "summary".to_string(),

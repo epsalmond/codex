@@ -208,6 +208,10 @@ impl Borrow<ResponseItem> for ResponseItemEnvelope {
 }
 
 /// Persisted rollout item used by core history and rollout storage.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Shake's CompactedItem boundary pushes compaction records past the lint threshold; rollout items are short-lived"
+)]
 #[derive(Debug, Clone)]
 pub enum RolloutItem {
     SessionMeta(SessionMetaLine),

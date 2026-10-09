@@ -2154,6 +2154,7 @@ async fn archived_untracked_threads_do_not_appear_in_agent_picker() -> Result<()
         &app_server,
         primary_thread_id,
         request_id,
+        app.agent_navigation.status_revision_snapshot(),
         Ok(crate::app_event::AgentPickerThreadRefresh {
             threads: Vec::new(),
             archived_thread_ids: std::collections::HashSet::from([archived_thread_id]),
