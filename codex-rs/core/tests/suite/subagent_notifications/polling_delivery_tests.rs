@@ -65,6 +65,11 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
             vec![
                 finished("polling-child-after-spawn", "child yielded for grandchild result"),
                 vec![
+                    streaming_event_chunk(ev_response_created("polling-child-wait")),
+                    streaming_event_chunk(ev_function_call_with_namespace("polling-child-wait-call", MULTI_AGENT_V2_NAMESPACE, "wait_agent", "{}")),
+                    streaming_event_chunk(ev_completed("polling-child-wait")),
+                ],
+                vec![
                     streaming_event_chunk(ev_response_created("polling-child-resume")),
                     streaming_event_chunk(ev_assistant_message(
                         "polling-child-final",
@@ -264,6 +269,7 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
     let child_final_request = wait_for_streaming_request_matching(&server, |request| {
         streaming_request_has_thread_id(request, child_thread_id)
             && request.to_string().contains("explicit polling continuation")
+            && request.to_string().contains("polling-child-wait-call")
     })
     .await
     .context("waiting for the reloaded child's report-processing request")?;
@@ -276,7 +282,7 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
             item["type"] == "agent_message" && item.to_string().contains("grandchild result marker")
         })
         .count();
-    assert_eq!(child_report_count, 1, "model input: {}", child_final_request["input"]);
+    assert_eq!(child_report_count, 1, "model input after polling wait: {}", child_final_request["input"]);
     let report = child_final_request["input"].as_array().expect("child model input").iter()
         .find(|item| item["type"] == "agent_message" && item.to_string().contains("grandchild result marker"))
         .expect("accepted completion report");
