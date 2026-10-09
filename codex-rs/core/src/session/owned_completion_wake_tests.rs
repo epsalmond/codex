@@ -7,6 +7,36 @@ use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn native_only_root_is_registered_before_completion_dispatch() {
+    let (session, _, _) = make_session_and_context_with_auth_and_config_and_session_source_and_rx(
+        CodexAuth::from_api_key("test-key"),
+        Vec::new(),
+        SessionSource::Cli,
+        |_| {},
+    )
+    .await;
+    let runtime = &session.services.local_agent_runtime;
+    runtime.enable_wake_mode();
+    assert!(runtime.ensure_agent_known(session.thread_id()).is_err());
+    runtime
+        .begin_wake_assignment_for_turn(
+            session.thread_id(),
+            &SessionSource::Cli,
+            "native-root",
+            /*allow_new_generation*/ true,
+        )
+        .unwrap();
+    let metadata = runtime.ensure_agent_known(session.thread_id()).unwrap();
+    assert_eq!(metadata.agent_id, Some(session.thread_id()));
+    assert!(
+        metadata
+            .agent_path
+            .as_ref()
+            .is_some_and(codex_protocol::AgentPath::is_root)
+    );
+}
+
+#[tokio::test]
 async fn rejected_owned_completion_start_without_mail_pauses_and_retains_result() {
     let (session, turn, _) =
         make_session_and_context_with_auth_and_config_and_session_source_and_rx(

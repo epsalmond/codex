@@ -442,6 +442,10 @@ impl LocalAgentRuntime {
             return Ok(None);
         }
 
+        if !source.is_non_root_agent() {
+            self.register_session_root(thread_id, /*current_parent_thread_id*/ None);
+        }
+
         let current = self.wake_coordinator.current_assignment(thread_id);
         let existing_parent = current
             .as_ref()
