@@ -72,6 +72,8 @@ pub(crate) async fn handoff_scenario() -> Result<Vec<ResponsesRequest>> {
                     .expect("enable multi-agent feature");
             }
             config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+            // The fork wakes roots on child reports by default; this fixture covers polling.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config

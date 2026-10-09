@@ -77,6 +77,13 @@ impl ChildRequestAdmission {
             }
             return Err(err);
         }
+        // Consumed by the first admission after the compaction, whether or not it applies.
+        let budget_compacted = crate::guardian::is_basic_session_source(&turn.session_source)
+            && sess
+                .services
+                .thread_extension_data
+                .remove::<crate::guardian::ReviewBudgetCompacted>()
+                .is_some();
         let history = sess.clone_history().await;
         let status = &context.status;
         let additions = context.additions;
@@ -135,6 +142,22 @@ impl ChildRequestAdmission {
                 record_reduction(sess, attempt.outcome, attempt.before_tokens, active).await;
             }
             sess.state.lock().await.insufficient_child_context = None;
+            return Ok(Admission::Proceed);
+        }
+        // Pre-turn budget compaction already fitted this Guardian review; estimates alone
+        // must not compact it again while it still fits the complete context window.
+        if budget_compacted
+            && !status
+                .full_context_window_limit
+                .is_some_and(|limit| active >= limit)
+        {
+            return Ok(Admission::Proceed);
+        }
+        // Guardian reviewers recover from the parent checkpoint instead of compacting,
+        // exactly as the pre-turn path does.
+        if crate::guardian::is_basic_session_source(&turn.session_source)
+            && !crate::guardian::should_compact_guardian_input(sess)?
+        {
             return Ok(Admission::Proceed);
         }
         let mut content = DefaultHasher::new();

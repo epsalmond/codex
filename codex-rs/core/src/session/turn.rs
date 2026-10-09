@@ -376,6 +376,9 @@ pub(crate) async fn run_turn(
             codex_guardian_context::HistoryTruncation::Allow,
         )
         .await?;
+        sess.services
+            .thread_extension_data
+            .insert(crate::guardian::ReviewBudgetCompacted);
     }
     let mut can_drain_pending_input = input.is_empty();
     let blocked = run_hooks_and_record_inputs(
