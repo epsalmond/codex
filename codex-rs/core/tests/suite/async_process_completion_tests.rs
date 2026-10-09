@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::protocol::MultiAgentVersion;
 use core_test_support::TestTargetOs;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::StreamingSseServer;
@@ -56,6 +57,8 @@ enum Outcome {
     CompletedOnly,
     Rejected,
     Interrupted,
+    RejectedReplacement,
+    InterruptedReplacement,
 }
 
 #[test_case::test_case(Outcome::Success; "success")]
@@ -66,6 +69,8 @@ enum Outcome {
 #[test_case::test_case(Outcome::CompletedOnly; "completed_only")]
 #[test_case::test_case(Outcome::Rejected; "rejected_before_created")]
 #[test_case::test_case(Outcome::Interrupted; "interrupted_before_created")]
+#[test_case::test_case(Outcome::RejectedReplacement; "rejected_root_replacement")]
+#[test_case::test_case(Outcome::InterruptedReplacement; "interrupted_root_replacement")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     outcome: Outcome,
@@ -76,12 +81,19 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         "basic PowerShell execution through Wine is unavailable"
     );
     let enabled = outcome != Outcome::Compatibility;
-    let cancelled_native = matches!(
-        outcome,
-        Outcome::Cancelled | Outcome::CompletedOnly | Outcome::Rejected | Outcome::Interrupted
-    );
     let recovery = matches!(outcome, Outcome::Rejected | Outcome::Interrupted);
-    let manual_compact = recovery || outcome == Outcome::CompletedOnly;
+    let replacement = matches!(
+        outcome,
+        Outcome::RejectedReplacement | Outcome::InterruptedReplacement
+    );
+    let interrupted = matches!(
+        outcome,
+        Outcome::Interrupted | Outcome::InterruptedReplacement
+    );
+    let rejection = matches!(outcome, Outcome::Rejected | Outcome::RejectedReplacement);
+    let cancelled_native =
+        recovery || replacement || matches!(outcome, Outcome::Cancelled | Outcome::CompletedOnly);
+    let manual_compact = recovery || replacement || outcome == Outcome::CompletedOnly;
     let exit_code = if outcome == Outcome::Nonzero { 7 } else { 0 };
     let seconds = if cancelled_native {
         30
@@ -112,15 +124,19 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         }), ev_completed("compact")]));
     }
     bodies.push(match outcome {
-        Outcome::Rejected => core_test_support::responses::sse_failed(
-            "r3",
-            "invalid_prompt",
-            "rejected before creation",
-        ),
-        Outcome::CompletedOnly | Outcome::Interrupted => sse(vec![
-            ev_assistant_message("r3", "continued"),
-            ev_completed("r3"),
-        ]),
+        Outcome::Rejected | Outcome::RejectedReplacement => {
+            core_test_support::responses::sse_failed(
+                "r3",
+                "invalid_prompt",
+                "rejected before creation",
+            )
+        }
+        Outcome::CompletedOnly | Outcome::Interrupted | Outcome::InterruptedReplacement => {
+            sse(vec![
+                ev_assistant_message("r3", "continued"),
+                ev_completed("r3"),
+            ])
+        }
         Outcome::Success
         | Outcome::Nonzero
         | Outcome::Cancelled
@@ -143,7 +159,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
             vec![StreamingSseChunk {
                 gate: if index == 1 {
                     gate.take()
-                } else if index == 2 && outcome == Outcome::Interrupted {
+                } else if index == 2 && interrupted {
                     response_gate.take()
                 } else {
                     None
@@ -158,7 +174,10 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     let bootstrap = start_mock_server().await;
     let mut builder = test_codex()
         .with_model("gpt-5.6-sol")
-        .with_model_info_override("gpt-5.6-sol", |model| {
+        .with_model_info_override("gpt-5.6-sol", move |model| {
+            if recovery {
+                model.multi_agent_version = Some(MultiAgentVersion::V1);
+            }
             model.truncation_policy =
                 codex_protocol::openai_models::TruncationPolicyConfig::tokens(100000);
         })
@@ -167,6 +186,10 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
                 .features
                 .set_enabled(Feature::AsyncProcessCompletion, enabled);
             config.model_provider.base_url = Some(base_url);
+            if recovery {
+                // These retries retain the same assignment; V2 root replacement is held below.
+                config.features.disable(Feature::MultiAgentV2);
+            }
             if outcome == Outcome::Compacted {
                 config.tool_output_token_limit = Some(100000);
                 config.subagent_context_reduction =
@@ -185,6 +208,17 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     submit_unified_exec_turn(&test, "start finite work", PermissionProfile::Disabled).await?;
     let initial = wait_for_raw_unified_exec_output(&test, "finite").await?;
     assert!(initial.process_id.is_some());
+    if recovery {
+        assert_eq!(
+            test.codex.multi_agent_version(),
+            Some(MultiAgentVersion::V1)
+        );
+    } else if replacement {
+        assert_eq!(
+            test.codex.multi_agent_version(),
+            Some(MultiAgentVersion::V2)
+        );
+    }
     server.wait_for_request_count(2).await;
     if cancelled_native {
         assert!(
@@ -199,7 +233,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     )
     .await;
     release.send(()).unwrap();
-    if outcome == Outcome::Interrupted {
+    if interrupted {
         server.wait_for_request_count(3).await;
         test.codex.submit(Op::Interrupt).await?;
     }
@@ -217,10 +251,10 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         }
         rejected |= matches!(event, EventMsg::Error(_));
         matches!(event, EventMsg::TurnComplete(_))
-            || (outcome == Outcome::Interrupted && matches!(event, EventMsg::TurnAborted(_)))
+            || (interrupted && matches!(event, EventMsg::TurnAborted(_)))
     })
     .await;
-    if outcome == Outcome::Rejected {
+    if rejection {
         assert!(rejected);
     }
     drop(response_release);
@@ -246,6 +280,11 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         };
         assert!(text.contains(&format!("status={status}")));
         assert!(text.contains("call=finite"));
+        if recovery {
+            assert!(text.contains("assignment=none"));
+        } else if replacement {
+            assert!(!text.contains("assignment=none"));
+        }
         if !cancelled_native {
             assert!(text.contains("terminal-tail"));
         }
@@ -272,7 +311,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     })
     .await;
     let requests = request_bodies(&server).await;
-    if outcome == Outcome::CompletedOnly {
+    if outcome == Outcome::CompletedOnly || replacement {
         assert!(completions(requests.last().unwrap()).is_empty());
     } else {
         assert_eq!(completions(requests.last().unwrap()), delivered);
