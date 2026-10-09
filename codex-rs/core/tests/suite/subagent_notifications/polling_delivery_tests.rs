@@ -4,6 +4,9 @@ use test_case::test_case;
 use codex_extension_api::ExtensionRegistryBuilder;
 use core_test_support::ThreadIdle;
 
+#[path = "polling_read_gate_tests.rs"]
+mod read_gate;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeliveryScenario { Recover, ExplicitResumeRace, NoCapacity, Archived, Closed, MissingHistory }
 
@@ -131,7 +134,8 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
     .await;
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
-    let test = test_codex()
+    let gated_store = Arc::new(read_gate::GatedCompletionReadStore::default());
+    let mut builder = test_codex()
         .with_model("koffing")
         .with_extensions(Arc::new(extensions.build()))
         .with_session_source(SessionSource::Cli)
@@ -144,9 +148,11 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
-        })
-        .build_with_streaming_server(&server)
-        .await?;
+        });
+    if scenario == DeliveryScenario::ExplicitResumeRace {
+        builder = builder.with_thread_store(gated_store.clone());
+    }
+    let test = builder.build_with_streaming_server(&server).await?;
 
     let root_thread_id = test.session_configured.thread_id;
     test.submit_turn("start the nested polling assignment").await?;
@@ -208,8 +214,18 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
     }
     let mut created = test.thread_manager.subscribe_thread_created();
     let explicit_resume = (scenario == DeliveryScenario::ExplicitResumeRace).then(|| {
+        let (started, recovery_started) = oneshot::channel();
+        let (release, recovery_release) = oneshot::channel();
+        *gated_store.gate.lock().expect("arm recovery read") = Some(read_gate::ReadGate {
+            thread_id: child_thread_id, started, release: recovery_release,
+        });
         let manager = Arc::clone(&test.thread_manager);
-        tokio::spawn(async move { manager.ensure_multi_agent_v2_child_loaded(child_thread_id).await })
+        tokio::spawn(async move {
+            timeout(Duration::from_secs(5), recovery_started).await??;
+            manager.ensure_multi_agent_v2_child_loaded(child_thread_id).await?;
+            release.send(()).expect("release paused completion");
+            Ok::<_, anyhow::Error>(())
+        })
     });
     // Register while the turn is active; idle then follows delivery or its warning.
     tokio::join!(ThreadIdle::wait(&grandchild_thread), async {
@@ -261,7 +277,7 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
         })
         .count();
     assert_eq!(child_report_count, 1);
-    let report = child_final_request["input"].as_array().unwrap().iter()
+    let report = child_final_request["input"].as_array().expect("child model input").iter()
         .find(|item| item["type"] == "agent_message" && item.to_string().contains("grandchild result marker"))
         .expect("accepted completion report");
     assert!(report["id"].as_str().expect("completion identity").starts_with("msg_"));

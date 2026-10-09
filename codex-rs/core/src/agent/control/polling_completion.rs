@@ -60,12 +60,19 @@ impl LocalAgentControl {
         {
             return Err(CodexErr::InvalidRequest("completion target has no open parent edge".into()));
         }
-        let config = self.runtime.registry.evicted_config(parent_thread_id).ok_or_else(|| {
-            CodexErr::InvalidRequest("completion target has no saved eviction settings".into())
-        })?;
-        // An owner-driven resume replaces target settings. Restore this target's own snapshot.
-        self.ensure_v2_agent_loaded(config, parent_thread_id, /*parent*/ None).await?;
-        let parent = state.get_thread(parent_thread_id).await?;
+        let parent = match state.get_thread(parent_thread_id).await {
+            Ok(parent) => parent,
+            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
+                if let Some(config) = self.runtime.registry.evicted_config(parent_thread_id) {
+                    // An owner-driven resume replaces target settings. Restore this target's own snapshot.
+                    self.ensure_v2_agent_loaded(config, parent_thread_id, /*parent*/ None).await?;
+                }
+                // Explicit resume publishes its runtime before clearing the saved settings.
+                // Resolve that winner even if it raced our first lookup and cache read.
+                state.get_thread(parent_thread_id).await?
+            }
+            Err(err) => return Err(err),
+        };
         if parent.multi_agent_version() != Some(MultiAgentVersion::V2)
             || parent.session_source != stored.source
             || !Arc::ptr_eq(&self.runtime.registry, &parent.session.services.local_agent_runtime.registry)
