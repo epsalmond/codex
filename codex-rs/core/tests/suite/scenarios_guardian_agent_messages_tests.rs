@@ -65,6 +65,11 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews() -> anyho
         .with_model("gpt-5.5")
         .with_config(|config| {
             super::configure_scenario_catalog(config);
+            // The fork enables MultiAgentV2 by default; this scenario is single-agent.
+            config
+                .features
+                .disable(codex_features::Feature::MultiAgentV2)
+                .expect("keep the scenario single-agent");
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config

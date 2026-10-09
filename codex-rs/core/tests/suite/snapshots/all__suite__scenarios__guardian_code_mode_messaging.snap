@@ -68,11 +68,11 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
     Child agents can also spawn their own sub-agents.
 
     When you provide a response in the final channel, that content is immediately delivered back to your parent agent.
-    <OMITTED 15 LINES; ~225 TOKENS; hash=fa366829bdb214be>
-    - All agents use the same current working directory.
-    - As a result, edits made by one agent are immediately visible to all other agents.
+    <OMITTED 19 LINES; ~283 TOKENS; hash=c9a0d425a79e3881>
 
-    When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.
+    If you are blocked, end your turn with your question; your parent will reply with a follow-up.
+
+    Your context budget is 244800 tokens; keep tool output focused and report partial results before you exceed it.
 
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 
@@ -86,8 +86,8 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
 
 ## Window 3 (after request 6: input diverged at item 00, settings changed (model, parallel_tool_calls, prompt_cache_key, reasoning, text, tools))
 -- request 7 (turn) --
-00:additional_tools/developer (1; hash=65a86311792f6c71):
-        - namespace/functions; hash=dcfbcf0da1c2d607
+00:additional_tools/developer (1; hash=29ad9a440fcf59d3):
+        - namespace/functions; hash=a22720eaf5a3f6bf
           - custom/exec
           - function/wait
 01:message/developer:
@@ -156,8 +156,8 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
 
 ## Window 4 (after request 7: input diverged at item 04, settings changed (prompt_cache_key))
 -- request 8 (turn) --
-00:additional_tools/developer (1; hash=65a86311792f6c71):
-        - namespace/functions; hash=dcfbcf0da1c2d607
+00:additional_tools/developer (1; hash=29ad9a440fcf59d3):
+        - namespace/functions; hash=a22720eaf5a3f6bf
           - custom/exec
           - function/wait
 01:message/developer:

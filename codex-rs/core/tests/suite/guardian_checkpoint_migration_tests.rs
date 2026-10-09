@@ -208,6 +208,11 @@ pub(super) async fn migration_scenario() -> Result<Vec<responses::ResponsesReque
                 .features
                 .enable(Feature::DefaultModeRequestUserInput)
                 .expect("enable user input");
+            // The fork enables MultiAgentV2 by default; this scenario is single-agent.
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("keep the scenario single-agent");
             config.model_auto_compact_token_limit = Some(100_000);
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;

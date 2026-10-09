@@ -16,6 +16,7 @@ pub(crate) use input_budget::should_compact as should_compact_guardian_input;
 pub(crate) use permissions::for_tool as tool_permission_context;
 mod request_budget;
 pub(crate) use request_budget::ExhaustedReviewBudget;
+pub(crate) use request_budget::ReviewBudgetCompacted;
 pub(crate) use request_budget::estimate_request_overhead_tokens;
 pub(crate) use request_budget::estimate_request_tokens;
 pub(crate) use request_budget::observe as observe_guardian_request;

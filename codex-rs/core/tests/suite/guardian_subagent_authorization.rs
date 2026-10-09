@@ -371,6 +371,8 @@ async fn code_mode_messaging_fixture(
             ] {
                 config.features.enable(feature).expect("enable feature");
             }
+            // The fork wakes roots on child reports by default; this fixture covers polling.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config

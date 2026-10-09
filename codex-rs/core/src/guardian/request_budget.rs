@@ -33,6 +33,10 @@ pub(crate) enum ExhaustedReviewBudget {
     Compacting,
 }
 
+/// Set after the pre-turn budget compaction already fitted this review. The first
+/// request admission must not compact the same input again on estimates alone.
+pub(crate) struct ReviewBudgetCompacted;
+
 pub(crate) fn observe(telemetry: &SessionTelemetry, request: &ResponsesApiRequest) -> usize {
     let total = estimate_request_tokens(request);
     // The assembled input already includes inherited history and the current

@@ -76,6 +76,11 @@ guardian_extra_policy = "Draft reminders without sending them."
         )
         .with_config(|config| {
             super::configure_scenario_catalog(config);
+            // The fork enables MultiAgentV2 by default; this scenario is single-agent.
+            config
+                .features
+                .disable(codex_features::Feature::MultiAgentV2)
+                .expect("keep the scenario single-agent");
             config.guardian_policy_template = Some(
                 ResolvedModelMessages::bundled()
                     .auto_review()
