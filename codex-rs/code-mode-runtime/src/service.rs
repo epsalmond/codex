@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::CellTerminalStatus;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSession;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
@@ -15,6 +18,7 @@ use codex_code_mode_protocol::FunctionCallOutputContentItem;
 use codex_code_mode_protocol::ImageDetail;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminalReadySupport;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::WaitToPendingOutcome;
@@ -90,7 +94,9 @@ impl InProcessCodeModeSession {
                 .and_then(|event| runtime_response(&response_cell_id, event));
             let _ = response_tx.send(response);
         });
-        Ok(StartedCell::from_result_receiver(cell_id, response_rx))
+        let mut started = StartedCell::from_result_receiver(cell_id, response_rx);
+        started.terminal_ready_support = TerminalReadySupport::Supported;
+        Ok(started)
     }
 
     pub async fn execute_to_pending(
@@ -308,6 +314,19 @@ impl runtime::SessionRuntimeDelegate for ProtocolDelegate {
 
     fn cell_closed(&self, cell_id: &runtime::CellId) {
         self.delegate.cell_closed(&protocol_cell_id(cell_id));
+    }
+
+    fn cell_terminal_ready(
+        &self,
+        cell_id: &runtime::CellId,
+        status: CellTerminalStatus,
+        output_kind: CellOutputKind,
+    ) {
+        self.delegate.cell_terminal_ready(CellTerminalReady {
+            cell_id: protocol_cell_id(cell_id),
+            status,
+            output_kind,
+        });
     }
 }
 
