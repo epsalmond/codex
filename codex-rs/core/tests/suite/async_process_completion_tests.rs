@@ -185,11 +185,15 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         .with_config(move |config| {
             config
                 .features
-                .set_enabled(Feature::AsyncProcessCompletion, enabled);
+                .set_enabled(Feature::AsyncProcessCompletion, enabled)
+                .expect("native completion fixture can select the feature");
             config.model_provider.base_url = Some(base_url);
             if same_assignment {
                 // These retries retain the same assignment; V2 root replacement is held below.
-                config.features.disable(Feature::MultiAgentV2);
+                config
+                    .features
+                    .disable(Feature::MultiAgentV2)
+                    .expect("same-assignment fixture can select V1");
             }
             if outcome == Outcome::Compacted {
                 config.tool_output_token_limit = Some(100000);

@@ -69,6 +69,7 @@ use tokio::time::Duration;
 
 const UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(test)]
 #[path = "async_process_completion_tests.rs"]
 mod async_process_completion_tests;
 

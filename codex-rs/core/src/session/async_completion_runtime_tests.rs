@@ -19,7 +19,8 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
     let (session, mut turn) = make_session_and_context().await;
     Arc::make_mut(&mut turn.config)
         .features
-        .enable(codex_features::Feature::AsyncProcessCompletion);
+        .enable(codex_features::Feature::AsyncProcessCompletion)
+        .expect("native completion fixture can enable the feature");
     let (call_id, expected) = match rejection {
         Rejection::Capacity => ("rejected".to_owned(), "capacity exhausted"),
         Rejection::Metadata => {
@@ -84,7 +85,8 @@ async fn history_append_is_retained_until_model_acceptance() {
     let (session, mut turn) = make_session_and_context().await;
     Arc::make_mut(&mut turn.config)
         .features
-        .enable(codex_features::Feature::AsyncProcessCompletion);
+        .enable(codex_features::Feature::AsyncProcessCompletion)
+        .expect("native completion fixture can enable the feature");
     turn.sub_id = "quoted\"turn\\\n".repeat(3);
     let original_turn = turn.sub_id.clone();
     let store = &session.services.async_completions;
