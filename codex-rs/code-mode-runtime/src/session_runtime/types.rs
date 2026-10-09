@@ -2,6 +2,8 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalStatus;
 use serde_json::Value as JsonValue;
 use tokio_util::sync::CancellationToken;
 
@@ -156,6 +158,14 @@ pub(crate) trait SessionRuntimeDelegate: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), String>> + Send;
 
     fn cell_closed(&self, cell_id: &CellId);
+
+    fn cell_terminal_ready(
+        &self,
+        _cell_id: &CellId,
+        _status: CellTerminalStatus,
+        _output_kind: CellOutputKind,
+    ) {
+    }
 }
 
 /// A failure reported by a session runtime operation.

@@ -57,6 +57,8 @@ impl fmt::Display for CellId {
 
 pub struct StartedCell {
     pub cell_id: CellId,
+    /// Negotiated for this execution's binding, including after host reconnection.
+    pub terminal_ready_support: TerminalReadySupport,
     initial_response: CodeModeSessionResultFuture<'static, RuntimeResponse>,
 }
 
@@ -86,6 +88,7 @@ impl StartedCell {
     ) -> Self {
         Self {
             cell_id,
+            terminal_ready_support: TerminalReadySupport::Unsupported,
             initial_response: Box::pin(initial_response),
         }
     }
@@ -93,6 +96,33 @@ impl StartedCell {
     pub async fn initial_response(self) -> Result<RuntimeResponse, String> {
         self.initial_response.await
     }
+}
+
+/// Whether this execution can report retained terminal output without observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalReadySupport {
+    Unsupported,
+    Supported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellTerminalStatus {
+    Completed,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellOutputKind {
+    Text,
+    Media,
+}
+
+/// Immutable metadata for committed, buffered output; never contains the payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CellTerminalReady {
+    pub cell_id: CellId,
+    pub status: CellTerminalStatus,
+    pub output_kind: CellOutputKind,
 }
 
 /// Host callbacks owned by one code-mode execution.
@@ -114,7 +144,17 @@ pub trait CodeModeSessionDelegate: Send + Sync {
         cancellation_token: CancellationToken,
     ) -> NotificationFuture<'a>;
 
-    /// Releases delegate state associated with a cell after it reaches a terminal state.
+    /// Reports buffered completion after callbacks settle, at most once per cell.
+    ///
+    /// May precede receipt of the initial Yielded response. Consumers must latch it
+    /// until the initial disposition is known. Inline delivery and owned termination
+    /// do not report readiness. This is neither acknowledgement nor an observer
+    /// lease: competing waits, termination, or shutdown can still consume the result.
+    /// Text consumers must leave Media output available to compatibility retrieval.
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
+
+    /// Releases delegate state after terminal consumption or owned cancellation.
+    /// A closed cell no longer has retrievable terminal output.
     fn cell_closed(&self, cell_id: &CellId);
 }
 

@@ -5,6 +5,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::CellTerminalStatus;
 use codex_code_mode_protocol::grpc;
 use codex_protocol::protocol::W3cTraceContext;
 use futures::FutureExt;
@@ -90,6 +93,41 @@ impl SessionInner {
                 self.handle_notification(notification)
             }
             grpc::session_event::Event::NotificationCancelled(_) => Ok(()),
+            grpc::session_event::Event::CellTerminalReady(ready) => {
+                if !self.terminal_ready_supported || ready.session_id != self.id {
+                    return Err(
+                        "code-mode terminal readiness belongs to an unsupported or foreign session"
+                            .to_string(),
+                    );
+                }
+                let status = match grpc::CellTerminalStatus::try_from(ready.status) {
+                    Ok(grpc::CellTerminalStatus::Completed) => CellTerminalStatus::Completed,
+                    Ok(grpc::CellTerminalStatus::Error) => CellTerminalStatus::Error,
+                    Ok(grpc::CellTerminalStatus::Unspecified) | Err(_) => {
+                        return Err("invalid code-mode terminal readiness status".to_string());
+                    }
+                };
+                let output_kind = match grpc::CellOutputKind::try_from(ready.output_kind) {
+                    Ok(grpc::CellOutputKind::Text) => CellOutputKind::Text,
+                    Ok(grpc::CellOutputKind::Media) => CellOutputKind::Media,
+                    Ok(grpc::CellOutputKind::Unspecified) | Err(_) => {
+                        return Err("invalid code-mode terminal output kind".to_string());
+                    }
+                };
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.admit_terminal_ready(
+                    &ready.execution_id,
+                    CellTerminalReady {
+                        cell_id: CellId::new(ready.cell_id),
+                        status,
+                        output_kind,
+                    },
+                )?;
+                let ready = state.take_terminal_ready(&ready.execution_id);
+                drop(state);
+                self.report_terminal_ready(ready);
+                Ok(())
+            }
             grpc::session_event::Event::CellClosed(closed) => {
                 let cell = self
                     .state
@@ -207,10 +245,11 @@ impl SessionInner {
                 }
             }
         }
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .finish_invocation(&invocation_id);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let execution_id = state.finish_invocation(&invocation_id);
+        let ready = execution_id.and_then(|execution_id| state.take_terminal_ready(&execution_id));
+        drop(state);
+        self.report_terminal_ready(ready);
     }
 
     fn handle_notification(
@@ -256,13 +295,26 @@ impl SessionInner {
                 Ok(Err(error)) => warn!("code-mode notification delegate failed: {error}"),
                 Err(_) => warn!("code-mode notification delegate panicked"),
             }
-            let cell = inner
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .finish_notification(&execution_id);
+            let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let cell = state.finish_notification(&execution_id);
+            let ready = state.take_terminal_ready(&execution_id);
+            drop(state);
+            inner.report_terminal_ready(ready);
             inner.report_closed_cell(cell);
         });
         Ok(())
+    }
+
+    fn report_terminal_ready(
+        &self,
+        ready: Option<(
+            CellTerminalReady,
+            Arc<dyn codex_code_mode_protocol::CodeModeSessionDelegate>,
+        )>,
+    ) {
+        if let Some((ready, delegate)) = ready {
+            let _ =
+                std::panic::catch_unwind(AssertUnwindSafe(|| delegate.cell_terminal_ready(ready)));
+        }
     }
 }

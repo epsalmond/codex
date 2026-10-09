@@ -38,6 +38,9 @@ pub use runtime::WaitRequest;
 pub use runtime::WaitToPendingOutcome;
 pub use runtime::WaitToPendingRequest;
 pub use session::CellId;
+pub use session::CellOutputKind;
+pub use session::CellTerminalReady;
+pub use session::CellTerminalStatus;
 pub use session::CodeModeSession;
 pub use session::CodeModeSessionCellExecutionLimits;
 pub use session::CodeModeSessionDelegate;
@@ -47,6 +50,7 @@ pub use session::CodeModeSessionResultFuture;
 pub use session::NoopCodeModeSessionDelegate;
 pub use session::NotificationFuture;
 pub use session::StartedCell;
+pub use session::TerminalReadySupport;
 pub use session::ToolInvocationFuture;
 
 pub const PUBLIC_TOOL_NAME: &str = "exec";

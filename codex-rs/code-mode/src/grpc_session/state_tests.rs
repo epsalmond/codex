@@ -1,4 +1,7 @@
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::CellTerminalStatus;
 use codex_code_mode_protocol::NoopCodeModeSessionDelegate;
 use codex_code_mode_protocol::grpc;
 use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
@@ -8,6 +11,84 @@ use uuid::Uuid;
 
 use super::CallbackAdmission;
 use super::SessionState;
+
+#[test]
+fn terminal_ready_is_correlated_latched_and_delivered_once_after_callbacks() {
+    let mut state = SessionState::default();
+    let delegate: Arc<dyn codex_code_mode_protocol::CodeModeSessionDelegate> =
+        Arc::new(NoopCodeModeSessionDelegate);
+    state
+        .begin_execution(&request("execution"), Arc::clone(&delegate))
+        .unwrap();
+    let ready = CellTerminalReady {
+        cell_id: CellId::new("cell".into()),
+        status: CellTerminalStatus::Error,
+        output_kind: CellOutputKind::Media,
+    };
+    state
+        .admit_terminal_ready("foreign", ready.clone())
+        .unwrap();
+    assert!(state.take_terminal_ready("foreign").is_none());
+    assert!(state.admit_terminal_ready("", ready.clone()).is_err());
+    state
+        .admit_notification(&notification("execution", /*notification_id*/ 1))
+        .unwrap();
+    state
+        .admit_terminal_ready("execution", ready.clone())
+        .unwrap();
+    state
+        .admit_terminal_ready("execution", ready.clone())
+        .unwrap();
+    assert!(state.take_terminal_ready("execution").is_none());
+    state.finish_notification("execution");
+    let (actual, actual_delegate) = state.take_terminal_ready("execution").unwrap();
+    assert_eq!(actual, ready);
+    assert!(Arc::ptr_eq(&actual_delegate, &delegate));
+    assert!(state.take_terminal_ready("execution").is_none());
+    let changed = CellTerminalReady {
+        cell_id: CellId::new("changed".into()),
+        ..ready
+    };
+    assert!(state.admit_terminal_ready("execution", changed).is_err());
+    state.close(/*failure*/ None);
+    assert!(state.take_terminal_ready("execution").is_none());
+}
+
+#[test]
+fn late_readiness_after_abandonment_does_not_fail_or_attach_to_a_new_execution() {
+    let mut state = SessionState::default();
+    state
+        .begin_execution(&request("abandoned"), Arc::new(NoopCodeModeSessionDelegate))
+        .unwrap();
+    state.admit_execution("abandoned", "cell").unwrap();
+    // ExecutionOwnership::drop removes the record before the host sees Terminate.
+    state.remove_execution("abandoned");
+    let ready = CellTerminalReady {
+        cell_id: CellId::new("cell".into()),
+        status: CellTerminalStatus::Completed,
+        output_kind: CellOutputKind::Text,
+    };
+    state
+        .admit_terminal_ready("abandoned", ready.clone())
+        .unwrap();
+    assert!(state.take_terminal_ready("abandoned").is_none());
+    state
+        .begin_execution(&request("next"), Arc::new(NoopCodeModeSessionDelegate))
+        .unwrap();
+    state.admit_execution("next", "next-cell").unwrap();
+    assert!(state.take_terminal_ready("next").is_none());
+    state
+        .admit_terminal_ready(
+            "next",
+            CellTerminalReady {
+                cell_id: CellId::new("next-cell".into()),
+                ..ready
+            },
+        )
+        .unwrap();
+    assert!(state.take_terminal_ready("next").is_some());
+    state.require_open().unwrap();
+}
 
 fn request(execution_id: &str) -> grpc::ExecuteRequest {
     grpc::ExecuteRequest {
@@ -316,7 +397,7 @@ fn invocation_cancellation_revokes_delegate_and_late_completion() {
         .expect("cancel invocation");
 
     assert!(cancellation.is_cancelled());
-    state.finish_invocation(&invocation.invocation_id);
+    let _ = state.finish_invocation(&invocation.invocation_id);
     assert_eq!(
         state
             .close_cell(grpc::CellClosed {
@@ -343,7 +424,7 @@ fn duplicate_invocation_ids_are_rejected() {
     state
         .admit_invocation(&invocation)
         .expect("accept invocation");
-    state.finish_invocation(&invocation.invocation_id);
+    let _ = state.finish_invocation(&invocation.invocation_id);
 
     assert!(state.admit_invocation(&invocation).is_err());
 }

@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::CellTerminalStatus;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::NotificationFuture;
@@ -15,11 +18,15 @@ use super::session::GrpcSession;
 
 pub(super) struct GrpcDelegate {
     session: Weak<GrpcSession>,
+    execution_id: String,
 }
 
 impl GrpcDelegate {
-    pub(super) fn new(session: Weak<GrpcSession>) -> Self {
-        Self { session }
+    pub(super) fn new(session: Weak<GrpcSession>, execution_id: String) -> Self {
+        Self {
+            session,
+            execution_id,
+        }
     }
 }
 
@@ -113,6 +120,29 @@ impl CodeModeSessionDelegate for GrpcDelegate {
     fn cell_closed(&self, cell_id: &CellId) {
         if let Some(session) = self.session.upgrade() {
             session.close_cell(cell_id.as_str());
+        }
+    }
+
+    fn cell_terminal_ready(&self, ready: CellTerminalReady) {
+        if let Some(session) = self.session.upgrade()
+            && session.terminal_ready_supported
+        {
+            let _ = session.send_event_now(
+                proto::session_event::Event::CellTerminalReady(proto::CellTerminalReady {
+                    session_id: session.id.to_string(),
+                    execution_id: self.execution_id.clone(),
+                    cell_id: ready.cell_id.to_string(),
+                    status: match ready.status {
+                        CellTerminalStatus::Completed => proto::CellTerminalStatus::Completed,
+                        CellTerminalStatus::Error => proto::CellTerminalStatus::Error,
+                    } as i32,
+                    output_kind: match ready.output_kind {
+                        CellOutputKind::Text => proto::CellOutputKind::Text,
+                        CellOutputKind::Media => proto::CellOutputKind::Media,
+                    } as i32,
+                }),
+                /*cell_permit*/ None,
+            );
         }
     }
 }
