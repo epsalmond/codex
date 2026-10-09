@@ -1,3 +1,4 @@
+pub(crate) mod async_completion;
 pub(crate) mod startup;
 
 use std::borrow::Cow;
