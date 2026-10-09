@@ -157,6 +157,11 @@ async fn child_retains_owned_helper_until_one_terminal_report(evict_pending: boo
             |event| matches!(event, EventMsg::AgentWakeupsUpdated(update) if update.paused),
         )
         .await;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnStarted(_))
+        })
+        .await;
+        wait_for_turn_complete(&test.codex).await;
     }
     // Residency pressure must not shut down the owner of its in-memory producer/store.
     if !evict_pending {
