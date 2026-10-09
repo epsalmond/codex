@@ -51,6 +51,7 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
+use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
@@ -150,7 +151,7 @@ impl ThreadConfigSnapshot {
 pub struct CodexThreadSettingsOverrides {
     /// Replaces the data captured by future turns. Omission preserves it.
     pub turn_extension_init: Option<codex_extension_api::ExtensionDataInit>,
-    pub environments: Option<TurnEnvironmentSelections>,
+    pub environments: Option<TurnEnvironmentRequests>,
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,
     pub approval_policy: Option<AskForApproval>,
@@ -320,6 +321,17 @@ impl CodexThread {
         task.turn_context.extension_data.get::<T>()
     }
 
+    /// Returns the model selected for the named running turn's next step, not future turns.
+    /// Returns `None` if that turn is no longer running.
+    pub async fn current_turn_model(&self, expected_turn_id: &str) -> Option<String> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        if task.turn_context.sub_id != expected_turn_id || task.cancellation_token.is_cancelled() {
+            return None;
+        }
+        Some(task.turn_context.capture_current_model_info().slug.clone())
+    }
+
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
         self.io.shutdown_and_wait().await
     }
@@ -430,9 +442,13 @@ impl CodexThread {
             .submit_turn_input_with_mode(request, TurnInputMode::StartIfIdle)
             .await?
         {
-            TurnInputSubmission::Started { turn_id } => {
-                Ok(StartIfIdleSubmission::Started { turn_id })
-            }
+            TurnInputSubmission::Started {
+                turn_id,
+                root_turn_id,
+            } => Ok(StartIfIdleSubmission::Started {
+                turn_id,
+                root_turn_id,
+            }),
             TurnInputSubmission::NotSubmitted { reason } => {
                 Ok(StartIfIdleSubmission::NotSubmitted { reason })
             }
@@ -479,16 +495,9 @@ impl CodexThread {
             trace,
             cyber_access_program,
         } = request;
-        let root_turn_id = self
-            .session
-            .reference_context_item()
-            .await
-            .filter(|context| context.turn_id.as_deref() == Some(turn_id.as_str()))
-            .and_then(|context| context.root_turn_id);
         let start_options = TurnStartOptions {
             cyber_access_program,
-            root_turn_id,
-            ..Default::default()
+            ..self.session.recovered_turn_start_options(&turn_id).await
         };
         match self
             .io
@@ -501,9 +510,13 @@ impl CodexThread {
             )
             .await?
         {
-            TurnInputSubmission::Started { turn_id } => {
-                Ok(StartIfIdleSubmission::Started { turn_id })
-            }
+            TurnInputSubmission::Started {
+                turn_id,
+                root_turn_id,
+            } => Ok(StartIfIdleSubmission::Started {
+                turn_id,
+                root_turn_id,
+            }),
             TurnInputSubmission::NotSubmitted { reason } => {
                 Ok(StartIfIdleSubmission::NotSubmitted { reason })
             }
@@ -566,7 +579,9 @@ impl CodexThread {
             .submit_turn_input_with_mode(request, TurnInputMode::Steer { expected_turn_id })
             .await?
         {
-            TurnInputSubmission::Steered { turn_id } => Ok(SteerSubmission::Steered { turn_id }),
+            TurnInputSubmission::Steered { turn_id, .. } => {
+                Ok(SteerSubmission::Steered { turn_id })
+            }
             TurnInputSubmission::NotSubmitted { reason } => {
                 Ok(SteerSubmission::NotSubmitted { reason })
             }
@@ -587,11 +602,12 @@ impl CodexThread {
             )
             .await?;
         }
+        let request = request.into();
         let explicit_input = matches!(
-            &request.input,
+            &request.request.input,
             TurnInput::UserInput { content, .. } if !content.is_empty()
         ) || matches!(
-            &request.input,
+            &request.request.input,
             TurnInput::ResponseItem(ResponseItem::FunctionCallOutput { call_id: None, .. })
         );
         if explicit_input
@@ -690,7 +706,7 @@ impl CodexThread {
         &self,
         overrides: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
-        let updates = Self::thread_settings_update(overrides);
+        let updates = self.thread_settings_update(overrides);
         self.session.preview_settings(&updates).await
     }
 
@@ -725,7 +741,7 @@ impl CodexThread {
         &self,
         settings: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<()> {
-        let updates = Self::thread_settings_update(settings);
+        let updates = self.thread_settings_update(settings);
         self.session.update_settings(updates).await.map(|_| ())
     }
 
@@ -736,10 +752,13 @@ impl CodexThread {
         self.session.checkpoint_thread_settings().await
     }
 
-    fn thread_settings_update(overrides: CodexThreadSettingsOverrides) -> SessionSettingsUpdate {
+    fn thread_settings_update(
+        &self,
+        overrides: CodexThreadSettingsOverrides,
+    ) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
             turn_extension_init,
-            environments,
+            environments: environment_requests,
             runtime_workspace_roots,
             profile_workspace_roots,
             approval_policy,
@@ -768,7 +787,8 @@ impl CodexThread {
                 approval_policy,
                 approvals_reviewer,
             },
-            environments,
+            environments: environment_requests
+                .map(|requests| requests.select(&self.session.services.selected_capability_roots)),
             runtime_workspace_roots,
             profile_workspace_roots,
             sandbox_policy,

@@ -63,28 +63,24 @@ pub(crate) fn estimate_request_overhead_tokens(
     prompt: &crate::client_common::Prompt,
     model: &codex_protocol::openai_models::ModelInfo,
 ) -> usize {
-    // build_responses_request prepends AdditionalTools and, when nonempty, base
-    // instructions in Lite mode. They are overhead, not new recorded-history items.
-    let prefix = if model.use_responses_lite {
-        request
-            .input
-            .iter()
-            .take(1 + usize::from(!prompt.base_instructions.text.is_empty()))
-            .map(estimate_item_token_count)
-            .fold(/*init*/ 0i64, i64::saturating_add)
-    } else {
-        0
-    };
+    // build_responses_request prepends AdditionalTools (Lite mode with tools) and,
+    // when nonempty, base instructions. They are overhead, not recorded-history items.
+    let prefix_items = usize::from(model.use_responses_lite && !prompt.tools.is_empty())
+        + usize::from(!prompt.base_instructions.text.is_empty());
+    let prefix = request
+        .input
+        .iter()
+        .take(prefix_items)
+        .map(estimate_item_token_count)
+        .fold(/*init*/ 0i64, i64::saturating_add);
     estimate_request_metadata_tokens(request)
         .saturating_add(usize::try_from(prefix).unwrap_or(usize::MAX))
 }
 
 fn estimate_request_metadata_tokens(request: &ResponsesApiRequest) -> usize {
-    let instructions = TruncationPolicy::Bytes(request.instructions.len()).token_budget();
-    let metadata = serde_json::to_vec(&(&request.tools, &request.text))
+    serde_json::to_vec(&(&request.tools, &request.text))
         .map(|bytes| TruncationPolicy::Bytes(bytes.len()).token_budget())
-        .unwrap_or(usize::MAX);
-    instructions.saturating_add(metadata)
+        .unwrap_or(usize::MAX)
 }
 
 /// Restores originals lost during this review, then checks the complete request.

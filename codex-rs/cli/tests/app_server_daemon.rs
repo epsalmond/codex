@@ -501,7 +501,6 @@ enum InitialDaemon {
 }
 
 fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let mut daemon = TestDaemon::new()?;
     let standalone = daemon.home.path().join("packages/standalone");
     let package = if action == "start" && initial == InitialDaemon::Missing {
@@ -519,8 +518,7 @@ fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
         "codex-path/rg",
         "codex-resources/bwrap",
     ] {
-        std::fs::write(package.join(helper), b"runtime fixture")?;
-        std::fs::set_permissions(package.join(helper), std::fs::Permissions::from_mode(0o755))?;
+        codex_utils_cargo_bin::write_executable(&package.join(helper), "runtime fixture")?;
     }
     let target = format!(
         "{}-{}",
@@ -618,13 +616,9 @@ fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
         if initial == InitialDaemon::Legacy {
             assert!(!current.exists());
         }
-        std::fs::write(
-            package.join("bin/codex-code-mode-host"),
-            b"replacement helper",
-        )?;
-        std::fs::set_permissions(
-            package.join("bin/codex-code-mode-host"),
-            std::fs::Permissions::from_mode(0o755),
+        codex_utils_cargo_bin::write_executable(
+            &package.join("bin/codex-code-mode-host"),
+            "replacement helper",
         )?;
         let replaced = daemon
             .command()

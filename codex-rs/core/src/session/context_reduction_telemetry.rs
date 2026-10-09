@@ -55,6 +55,7 @@ impl Session {
                 .for_prompt(&step.settings.model_info.input_modalities),
             step,
             prompt.base_instructions.clone(),
+            self.current_window_uses_incremental_tools(step).await,
         );
         let baseline = self.services.model_client.build_responses_request(
             &baseline,

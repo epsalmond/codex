@@ -5,7 +5,7 @@ use crate::without_update_plan_instructions;
 use codex_context_fragments::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
-const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
+const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"`.";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str = "When calling `wait_agent`, use long timeouts (minutes); it returns as soon as an agent reports.";
 const ROOT_WAKE_ON_REPORT_USAGE_HINT_TEXT: &str = "Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.";
 pub const SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT: &str = "When delegated work remains and you have no independent task, end your turn. A child report resumes your assignment in a new turn.";
@@ -45,10 +45,6 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
 
     fn role(&self) -> &'static str {
         "developer"
-    }
-
-    fn requires_separate_message(&self) -> bool {
-        true
     }
 
     fn markers(&self) -> (&'static str, &'static str) {

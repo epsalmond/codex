@@ -183,7 +183,6 @@ pub(crate) struct SelectionItem {
     /// Wrapped content below the list for the highlighted row.
     pub details: Option<Box<dyn Renderable>>,
     pub is_current: bool,
-    pub is_default: bool,
     pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
     pub secondary_action: Option<SelectionSecondaryAction>,
@@ -209,6 +208,7 @@ pub(crate) struct SelectionItem {
 /// `row_display` controls whether rows can wrap or stay single-line with ellipsis truncation
 /// `description_layout` optionally hides descriptions when their column would become too narrow.
 pub(crate) struct SelectionViewParams {
+    pub presentation: super::ViewPresentation,
     pub picker_surface: PickerSurface,
     /// Upper row budget; compact completion menus retain the default of eight.
     pub max_visible_rows: usize,
@@ -274,6 +274,7 @@ impl Default for SelectionViewParams {
             picker_surface: PickerSurface::default(),
             max_visible_rows: MAX_POPUP_ROWS,
             reserve_result_rows: false,
+            presentation: super::ViewPresentation::Inline,
             view_id: None,
             title: None,
             subtitle: None,
@@ -312,6 +313,7 @@ impl Default for SelectionViewParams {
 /// visible rows and source items and for preserving selection while filters
 /// change.
 pub(crate) struct ListSelectionView {
+    presentation: super::ViewPresentation,
     picker_surface: PickerSurface,
     max_visible_rows: usize,
     reserve_result_rows: bool,
@@ -458,6 +460,7 @@ impl ListSelectionView {
             picker_surface: params.picker_surface,
             max_visible_rows: params.max_visible_rows.max(/*other*/ 1),
             reserve_result_rows: params.reserve_result_rows,
+            presentation: params.presentation,
             view_id: params.view_id,
             footer_note: params.footer_note,
             footer_hint: params.footer_hint,
@@ -703,13 +706,7 @@ impl ListSelectionView {
                     let is_selected = self.state.selected_idx == Some(visible_idx);
                     let prefix = if is_selected { '›' } else { ' ' };
                     let name = item.name.as_str();
-                    let marker = if item.is_current {
-                        " (current)"
-                    } else if item.is_default {
-                        " (default)"
-                    } else {
-                        ""
-                    };
+                    let marker = if item.is_current { " (current)" } else { "" };
                     let name_with_marker = format!("{name}{marker}");
                     let is_disabled = item.is_disabled || item.disabled_reason.is_some();
                     let wrap_prefix = if self.search_active {
@@ -1139,6 +1136,10 @@ impl ListSelectionView {
 impl BottomPaneView for ListSelectionView {
     fn update_selection_items(&mut self, items: Vec<SelectionItem>) -> bool {
         self.replace_items_preserving_state(items)
+    }
+
+    fn presentation(&self) -> super::ViewPresentation {
+        self.presentation
     }
 
     fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {

@@ -79,18 +79,20 @@ async fn ensure_conversation_listener_inner(
             )));
         }
     };
-    let thread_state = {
+    let (thread_state, result) = {
         let pending_thread_unloads = listener_task_context.pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
             return Err(invalid_request(format!(
                 "thread {conversation_id} is closing; retry after the thread is closed"
             )));
         }
-        let Some(thread_state) = listener_task_context
+        match listener_task_context
             .thread_state_manager
             .try_ensure_connection_subscribed(conversation_id, connection_id, raw_events_enabled)
             .await
-        else {
+        {
+            Some(thread_state) => (thread_state, EnsureConversationListenerResult::Attached),
+            None => {
             if lifecycle
                 .as_ref()
                 .is_some_and(|(session_source, observation)| {
@@ -101,14 +103,23 @@ async fn ensure_conversation_listener_inner(
                     "failed to attach lifecycle observer to root thread {conversation_id}"
                 )));
             }
-            return Ok((
-                Ok(EnsureConversationListenerResult::ConnectionClosed),
-                false,
-            ));
-        };
-        thread_state
+            // Startup can outlast connection cleanup; the thread still needs a
+            // listener to unload once it is idle and has no subscribers.
+            let thread_state = listener_task_context
+                .thread_state_manager
+                .thread_state(conversation_id)
+                .await;
+            (
+                thread_state,
+                EnsureConversationListenerResult::ConnectionClosed,
+            )
+            }
+        }
     };
-    let lifecycle_observer_active = if let Some((session_source, observation)) = lifecycle {
+    let attached = matches!(result, EnsureConversationListenerResult::Attached);
+    let lifecycle_observer_active = if attached
+        && let Some((session_source, observation)) = lifecycle
+    {
         matches!(
             super::thread_lifecycle_observer::bind_exec_root_lifecycle_observer(
                 &listener_task_context.thread_state_manager,
@@ -137,8 +148,5 @@ async fn ensure_conversation_listener_inner(
             .await;
         return Ok((Err(error), lifecycle_observer_active));
     }
-    Ok((
-        Ok(EnsureConversationListenerResult::Attached),
-        lifecycle_observer_active,
-    ))
+    Ok((Ok(result), lifecycle_observer_active))
 }

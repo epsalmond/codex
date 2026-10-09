@@ -21,8 +21,6 @@ use super::turn::maybe_run_auto_shake;
 use super::turn::run_auto_compact;
 use crate::agent::types::ContextReductionOutcome;
 use crate::client::ModelClientSession;
-use crate::compact::InitialContextInjection;
-use crate::context::world_state::WorldState;
 
 /// A bounded marker based on post-reduction content, rather than turn IDs or generations.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +54,6 @@ impl ChildRequestAdmission {
         &mut self,
         sess: &Arc<Session>,
         step: &Arc<StepContext>,
-        world_state: &Arc<WorldState>,
         client: &mut ModelClientSession,
         context: &PreparedContext,
         cancellation: &CancellationToken,
@@ -198,12 +195,8 @@ impl ChildRequestAdmission {
         if let Err(err) = run_auto_compact(
             sess,
             Arc::clone(step),
-            /*fallback_step_context*/ None,
+            Arc::clone(step),
             client,
-            InitialContextInjection::BeforeLastUserMessage {
-                world_state: Arc::clone(world_state),
-                step_context: Arc::clone(step),
-            },
             CompactionReason::ContextLimit,
             CompactionPhase::MidTurn,
         )
