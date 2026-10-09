@@ -204,7 +204,8 @@ async fn thread_archive_shuts_down_resumed_archived_descendant() -> Result<()> {
             request_id,
             params: ThreadResumeParams {
                 thread_id: parent_id.clone(),
-                model: Some("gpt-5.4".to_string()),
+                // This fixture intentionally exercises the V1 archived-child resume tool.
+                model: Some("gpt-5.6-luna".to_string()),
                 ..Default::default()
             },
         })

@@ -69,7 +69,8 @@ impl LocalAgentControl {
             }
         }
         let completion_inhibition = state
-            .inhibit_automatic_agent_completions(&subtree_thread_ids).await;
+            .inhibit_automatic_agent_completions(&subtree_thread_ids)
+            .await;
         self.runtime
             .wake_coordinator
             .cancel_subtree(&subtree_thread_ids);

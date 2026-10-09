@@ -21,7 +21,10 @@ pub(crate) struct CompletionDeliveryState {
 
 impl CompletionDeliveryGates {
     pub(crate) fn for_thread(&self, thread_id: ThreadId) -> Arc<CompletionDeliveryState> {
-        let mut states = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut states = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         states.retain(|_, state| state.strong_count() > 0);
         if let Some(state) = states.get(&thread_id).and_then(Weak::upgrade) {
             return state;

@@ -206,9 +206,10 @@ impl LocalAgentControl {
             message,
             trigger_turn,
         );
-        if let Err(err) = self.deliver_polling_completion(
-            parent_thread_id, outcome.thread_id, communication,
-        ).await {
+        if let Err(err) = self
+            .deliver_polling_completion(parent_thread_id, outcome.thread_id, communication)
+            .await
+        {
             warn!("failed to notify parent thread {parent_thread_id}: {err}");
             return;
         }

@@ -13,13 +13,24 @@ impl LocalAgentControl {
         let lifecycle = state.completion_delivery.for_thread(parent_thread_id);
         let _guard = lifecycle.lock().await;
         if lifecycle.is_inhibited()
-            || self.runtime.registry.completion_delivery_closed(parent_thread_id)
+            || self
+                .runtime
+                .registry
+                .completion_delivery_closed(parent_thread_id)
         {
-            return Err(CodexErr::InvalidRequest("completion target is closing or archiving".into()));
+            return Err(CodexErr::InvalidRequest(
+                "completion target is closing or archiving".into(),
+            ));
         }
-        let context = AgentCommunicationContext::new(AgentCommunicationKind::Result, sender_thread_id);
+        let context =
+            AgentCommunicationContext::new(AgentCommunicationKind::Result, sender_thread_id);
         self.send_inter_agent_communication(
-            parent_thread_id, communication, context, TurnStartOptions::default(),
-        ).await.map(|_| ())
+            parent_thread_id,
+            communication,
+            context,
+            TurnStartOptions::default(),
+        )
+        .await
+        .map(|_| ())
     }
 }

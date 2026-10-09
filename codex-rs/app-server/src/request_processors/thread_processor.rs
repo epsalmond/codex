@@ -1795,8 +1795,10 @@ impl ThreadRequestProcessor {
 
         archive_thread_ids[1..].reverse();
         // Guard starts before teardown and rolls back on errors or cancellation.
-        let _completion_inhibition = self.thread_manager
-            .inhibit_automatic_agent_completions(&subtree_thread_ids).await;
+        let _completion_inhibition = self
+            .thread_manager
+            .inhibit_automatic_agent_completions(&subtree_thread_ids)
+            .await;
         // Collaboration may resume an archived descendant without unarchiving it.
         self.prepare_thread_for_archive(thread_id).await?;
         for &descendant_thread_id in subtree_thread_ids.iter().skip(1).rev() {
