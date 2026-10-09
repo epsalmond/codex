@@ -149,6 +149,8 @@ async fn terminal_tail_is_bounded_and_assignment_replacements_are_held() {
 async fn encoded_metadata_is_admitted_before_publication_and_output_is_bounded() {
     let (session, mut turn) = make_session_and_context().await;
     let store = Arc::new(AsyncCompletions::default());
+    turn.sub_id.clear();
+    assert!(reserve(&store, &session, &turn, "empty-origin").is_err());
     turn.sub_id = "\n".repeat(128);
     assert!(
         store
@@ -171,5 +173,11 @@ async fn encoded_metadata_is_admitted_before_publication_and_output_is_bounded()
     drop(reservation);
     let (_, items) = current_items(&store, &session, &turn);
     assert_eq!(items.len(), 1);
+    assert_eq!(items[0].item.turn_id(), Some("bounded-turn"));
+    assert!(
+        serde_json::to_value(&items[0].item).unwrap()["internal_chat_message_metadata_passthrough"]
+            ["create_time"]
+            .is_number()
+    );
     assert!(serde_json::to_vec(&items[0].item).unwrap().len() <= MAX_FRAGMENT_BYTES);
 }

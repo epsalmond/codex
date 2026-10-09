@@ -32,6 +32,7 @@ struct CompletionState {
 struct Record {
     owner: ThreadId,
     turn_id: String,
+    create_time: serde_json::Number,
     call_id: String,
     process_id: i32,
     cell_id: Option<String>,
@@ -84,7 +85,8 @@ impl AsyncCompletions {
         cell_id: Option<&str>,
     ) -> Result<CompletionReservation, &'static str> {
         // Preserve correlation exactly; do not silently truncate identifiers.
-        if call_id.len() > 128
+        if turn.sub_id.is_empty()
+            || call_id.len() > 128
             || turn.sub_id.len() > 128
             || cell_id.is_some_and(|id| id.len() > 128)
         {
@@ -104,6 +106,7 @@ impl AsyncCompletions {
         let record = Record {
             owner,
             turn_id: turn.sub_id.clone(),
+            create_time: Session::response_item_create_time(),
             call_id: call_id.to_owned(),
             process_id,
             cell_id: cell_id.map(str::to_owned),
@@ -115,7 +118,7 @@ impl AsyncCompletions {
         };
         // Preserve every identifier; reject before launch if escaped metadata cannot fit.
         let metadata = record.fragment(&id, "exited(-2147483648)", "", usize::MAX);
-        if encoded_size(&metadata, &id) > MAX_FRAGMENT_BYTES {
+        if record.encoded_size(&metadata, &id) > MAX_FRAGMENT_BYTES {
             return Err("async completion metadata exceeds the encoded fragment limit");
         }
         records.insert(id.clone(), record);
@@ -162,7 +165,7 @@ impl AsyncCompletions {
             if let Some(fragment) = &record.terminal {
                 record.claimed = true;
                 ids.push(id.clone());
-                items.push(ResponseItemEnvelope::new(completion_item(fragment, id)));
+                items.push(ResponseItemEnvelope::new(record.item(fragment, id)));
             }
         }
         (
@@ -262,7 +265,7 @@ impl CompletionPublisher {
         loop {
             let omitted = omitted_bytes.saturating_add(start).saturating_add(trim);
             let fragment = record.fragment(&self.id, &status, &tail[trim..], omitted);
-            let encoded = encoded_size(&fragment, &self.id);
+            let encoded = record.encoded_size(&fragment, &self.id);
             if encoded <= MAX_FRAGMENT_BYTES {
                 record.terminal = Some(fragment);
                 break;
@@ -277,6 +280,21 @@ impl CompletionPublisher {
 }
 
 impl Record {
+    fn item(&self, fragment: &AsyncToolCompletion, id: &ResponseItemId) -> ResponseItem {
+        let mut item = ContextualUserFragment::into(fragment.clone());
+        item.set_id(Some(id.clone()));
+        // Immutable originating metadata prevents history preparation from growing replayed items.
+        item.set_turn_id_if_missing(&self.turn_id);
+        item.set_create_time_if_missing(self.create_time.clone());
+        item
+    }
+
+    fn encoded_size(&self, fragment: &AsyncToolCompletion, id: &ResponseItemId) -> usize {
+        serde_json::to_vec(&self.item(fragment, id))
+            .expect("completion item serializes")
+            .len()
+    }
+
     fn fragment(
         &self,
         id: &ResponseItemId,
@@ -306,18 +324,6 @@ impl Record {
             text: format!("{header}{truncation}{tail}"),
         }
     }
-}
-
-fn completion_item(fragment: &AsyncToolCompletion, id: &ResponseItemId) -> ResponseItem {
-    let mut item = ContextualUserFragment::into(fragment.clone());
-    item.set_id(Some(id.clone()));
-    item
-}
-
-fn encoded_size(fragment: &AsyncToolCompletion, id: &ResponseItemId) -> usize {
-    serde_json::to_vec(&completion_item(fragment, id))
-        .expect("completion item serializes")
-        .len()
 }
 
 impl CompletionClaim {
