@@ -147,9 +147,9 @@ impl ChildRequestAdmission {
         // Pre-turn budget compaction already fitted this Guardian review; estimates alone
         // must not compact it again while it still fits the complete context window.
         if budget_compacted
-            && !status
+            && status
                 .full_context_window_limit
-                .is_some_and(|limit| active >= limit)
+                .is_none_or(|limit| active < limit)
         {
             return Ok(Admission::Proceed);
         }
