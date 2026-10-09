@@ -370,10 +370,12 @@ fn portable_tool_schema_normalizes_embedded_code_mode_shell_guidance() {
     ));
     let normalized = portable_tool_schema(&windows);
     assert_eq!(portable_tool_schema(&unix), normalized);
-    assert!(normalized["tools"][0]["description"]
-        .as_str()
-        .expect("embedded exec description")
-        .contains("Session IDs are local to this agent"));
+    assert!(
+        normalized["tools"][0]["description"]
+            .as_str()
+            .expect("embedded exec description")
+            .contains("Session IDs are local to this agent")
+    );
 
     // Direct tool descriptions use the same exact Windows suffix and retain
     // the common ownership guidance after normalization.

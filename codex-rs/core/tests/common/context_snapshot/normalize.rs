@@ -451,8 +451,7 @@ fn normalize_json(value: &mut Value, normalize: &mut impl FnMut(&str) -> String)
 // Shell guidance and its yield-time wording intentionally differ on Windows. Compare all other
 // tool schema fields, while keeping the context snapshots identical across operating systems.
 pub(super) fn portable_tool_schema(tool: &Value) -> Value {
-    const BASE: &str =
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions.";
+    const BASE: &str = "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions.";
     // Exact current Windows-only suffix. A change to its wording must be reviewed explicitly.
     const WINDOWS_SAFETY_SUFFIX_HASH: u64 = 0x6de3_23e4_7060_6128;
     const UNIX_WAIT: &str =
