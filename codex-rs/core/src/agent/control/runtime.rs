@@ -365,6 +365,21 @@ impl LocalAgentRuntime {
             .is_current_waiting_assignment(assignment)
     }
 
+    pub(crate) fn current_wake_assignment(&self, thread_id: ThreadId) -> Option<AgentAssignmentId> {
+        self.wake_coordinator.current_assignment(thread_id)
+    }
+
+    pub(crate) fn admit_owned_completion<T>(
+        &self,
+        assignment: &AgentAssignmentId,
+        turn_id: &str,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+        admit: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        self.wake_coordinator
+            .admit_owned_completion(assignment, turn_id, store, admit)
+    }
+
     pub(crate) fn accept_wake_reports(
         &self,
         assignment: &AgentAssignmentId,

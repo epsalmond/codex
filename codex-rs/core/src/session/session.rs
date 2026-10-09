@@ -1840,6 +1840,7 @@ impl Session {
                 next_internal_sub_id: AtomicU64::new(0),
                 prompt_cache_clock: Default::default(),
             });
+            sess.services.async_completions.attach_owner(&sess);
             if sess.services.local_agent_runtime.wake_mode_enabled()
                 && let Some(status) = sess
                     .services
