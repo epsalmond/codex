@@ -5880,3 +5880,6 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }
+
+#[path = "control_tests/polling_completion_tests.rs"]
+mod polling_completion_tests;
