@@ -6,10 +6,7 @@
 use super::LocalAgentControl;
 use super::coordinator::AgentAssignmentId;
 use super::coordinator::TerminalReportPublication;
-use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
-use crate::agent_communication::AgentCommunicationContext;
-use crate::agent_communication::AgentCommunicationKind;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
@@ -209,17 +206,9 @@ impl LocalAgentControl {
             message,
             trigger_turn,
         );
-        let context =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
-        if let Err(err) = self
-            .send_inter_agent_communication(
-                parent_thread_id,
-                communication,
-                context,
-                TurnStartOptions::default(),
-            )
-            .await
-        {
+        if let Err(err) = self.deliver_polling_completion(
+            parent_thread_id, outcome.thread_id, communication,
+        ).await {
             warn!("failed to notify parent thread {parent_thread_id}: {err}");
             return;
         }

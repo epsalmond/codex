@@ -68,6 +68,8 @@ impl LocalAgentControl {
                 }
             }
         }
+        let completion_inhibition = state
+            .inhibit_automatic_agent_completions(&subtree_thread_ids).await;
         self.runtime
             .wake_coordinator
             .cancel_subtree(&subtree_thread_ids);
@@ -132,6 +134,11 @@ impl LocalAgentControl {
             }
             Err(err) => return Err(err),
         };
+        for thread_id in &subtree_thread_ids {
+            self.runtime.registry.close_completion_delivery(*thread_id);
+        }
+        // Shutdown callbacks can report to these members; do not hold their gates while waiting.
+        drop(completion_inhibition);
         match Box::pin(self.shutdown_agent_tree_with_ids(&subtree_thread_ids)).await {
             Err(err)
                 if known_agent

@@ -73,6 +73,7 @@ mod delivery;
 mod dispatcher;
 mod execution;
 mod inspection;
+mod polling_completion;
 mod interrupt;
 mod legacy;
 mod residency;

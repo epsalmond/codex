@@ -39,6 +39,7 @@ struct ActiveAgents {
 struct RegisteredAgent {
     path: String,
     evicted_environments: Option<Vec<TurnEnvironmentSelection>>,
+    completion_closed: bool,
 }
 
 impl RegisteredAgent {
@@ -46,6 +47,7 @@ impl RegisteredAgent {
         Self {
             path,
             evicted_environments: None,
+            completion_closed: false,
         }
     }
 }
@@ -205,6 +207,18 @@ impl AgentRegistry {
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = None;
         }
+    }
+
+    pub(crate) fn close_completion_delivery(&self, thread_id: ThreadId) {
+        if let Some(agent) = self.active_agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths.get_mut(&thread_id) {
+            agent.completion_closed = true;
+        }
+    }
+
+    pub(crate) fn completion_delivery_closed(&self, thread_id: ThreadId) -> bool {
+        self.active_agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths.get(&thread_id).is_some_and(|agent| agent.completion_closed)
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {
