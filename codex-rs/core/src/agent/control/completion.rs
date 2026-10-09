@@ -11,13 +11,13 @@ use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::WarningEvent;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::WarningEvent;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
@@ -210,12 +210,14 @@ impl LocalAgentControl {
             trigger_turn,
         );
         communication.id = Some(codex_protocol::ResponseItemId::new("msg"));
-        if let Err(err) = self.deliver_polling_completion(
-            parent_thread_id, outcome.thread_id, communication,
-        ).await {
+        if let Err(err) = self
+            .deliver_polling_completion(parent_thread_id, outcome.thread_id, communication)
+            .await
+        {
             warn!("failed to notify parent thread {parent_thread_id}: {err}");
             if let Ok(state) = self.runtime.upgrade()
-                && let Ok(sender) = state.get_thread(outcome.thread_id).await {
+                && let Ok(sender) = state.get_thread(outcome.thread_id).await
+            {
                 let diagnostic: String = err.to_string().chars().take(512).collect();
                 sender.session.send_event_raw(Event {
                     id: outcome.turn_id.clone(),

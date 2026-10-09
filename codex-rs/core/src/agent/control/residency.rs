@@ -185,9 +185,13 @@ impl V2Residency {
                 continue;
             }
             // The original config omits live settings; this context-only builder keeps them.
-            let config = candidate_thread.session
+            let config = candidate_thread
+                .session
                 .new_startup_prewarm_turn_with_sub_id(uuid::Uuid::now_v7().to_string())
-                .await.config.as_ref().clone();
+                .await
+                .config
+                .as_ref()
+                .clone();
             if let Some(assignment) = candidate_thread
                 .session
                 .services
@@ -200,7 +204,10 @@ impl V2Residency {
                     .services
                     .local_agent_runtime
                     .wake_coordinator
-                    .store_reload_config(&assignment, candidate_thread.session.get_config().await.as_ref().clone());
+                    .store_reload_config(
+                        &assignment,
+                        candidate_thread.session.get_config().await.as_ref().clone(),
+                    );
             }
             // Once shutdown is submitted, cancellation cannot revoke it. The eviction task
             // must keep delivery excluded and capacity reserved through registry removal.

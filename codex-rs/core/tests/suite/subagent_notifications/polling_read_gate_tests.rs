@@ -3,9 +3,9 @@
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_thread_store as store;
-use store::ThreadStore;
 use std::any::Any;
 use std::sync::Mutex;
+use store::ThreadStore;
 use tokio::sync::oneshot;
 
 pub(super) struct ReadGate {
@@ -30,8 +30,12 @@ macro_rules! delegate_store_methods {
 }
 
 impl ThreadStore for GatedCompletionReadStore {
-    fn as_any(&self) -> &dyn Any { self }
-    fn default_history_mode(&self) -> ThreadHistoryMode { self.inner.default_history_mode() }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn default_history_mode(&self) -> ThreadHistoryMode {
+        self.inner.default_history_mode()
+    }
 
     delegate_store_methods! {
         fn create_thread(params: store::CreateThreadParams) -> ();
@@ -50,17 +54,29 @@ impl ThreadStore for GatedCompletionReadStore {
         fn delete_thread(params: store::DeleteThreadParams) -> ();
     }
 
-    fn persist_thread(&self, thread_id: ThreadId, context: store::PersistContext) -> store::ThreadStoreFuture<'_, ()> {
+    fn persist_thread(
+        &self,
+        thread_id: ThreadId,
+        context: store::PersistContext,
+    ) -> store::ThreadStoreFuture<'_, ()> {
         self.inner.persist_thread(thread_id, context)
     }
 
-    fn read_thread(&self, params: store::ReadThreadParams) -> store::ThreadStoreFuture<'_, store::StoredThread> {
+    fn read_thread(
+        &self,
+        params: store::ReadThreadParams,
+    ) -> store::ThreadStoreFuture<'_, store::StoredThread> {
         Box::pin(async move {
             let gate = {
                 let mut gate = self.gate.lock().expect("recovery read gate");
-                if gate.as_ref().is_some_and(|gate| gate.thread_id == params.thread_id && gate.include_archived == params.include_archived) {
+                if gate.as_ref().is_some_and(|gate| {
+                    gate.thread_id == params.thread_id
+                        && gate.include_archived == params.include_archived
+                }) {
                     gate.take()
-                } else { None }
+                } else {
+                    None
+                }
             };
             if let Some(gate) = gate {
                 assert!(!params.include_history);
