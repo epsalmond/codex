@@ -221,6 +221,7 @@ fn turn_completed_notification() -> ServerNotification {
             started_at: None,
             completed_at: Some(123),
             duration_ms: Some(456),
+            root_turn_id: None,
         },
         context_usage: None,
     })

@@ -1,10 +1,12 @@
+use crate::agent::api::AgentControl;
+use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use crate::session::multi_agents::ChildReportMode;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
-use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::TurnAbortReason;
@@ -20,8 +22,6 @@ use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
-
-static PENDING_MAILBOX_MESSAGES: Gauge = Gauge::new("core.mailbox.pending");
 
 /// Host capture metadata belonging to one input, including steers within another turn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,13 +98,14 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
     /// Holds trigger-turn mail after an interrupt until the next user message.
     wakeups_paused: AtomicBool,
 }
 
-struct PendingMailboxCommunication {
-    communication: InterAgentCommunication,
+pub(crate) struct PendingMailboxCommunication {
+    pub(crate) communication: InterAgentCommunication,
     start_options: TurnStartOptions,
     _diagnostics_guard: GaugeGuard,
 }
@@ -114,8 +115,42 @@ impl InputQueue {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
+            controller: None,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
             wakeups_paused: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn with_controller(thread_id: ThreadId, control: Arc<dyn AgentControl>) -> Self {
+        let updates = control.watch_mailbox(thread_id);
+        Self {
+            controller: Some((thread_id, control, updates)),
+            ..Self::new()
+        }
+    }
+
+    pub(crate) fn mailbox_updates(&self) -> Option<watch::Receiver<bool>> {
+        self.controller
+            .as_ref()
+            .map(|(_, _, updates)| updates.clone())
+    }
+
+    pub(crate) fn notify_mailbox(&self) {
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    fn read_mailbox(&self, pending: &mut VecDeque<PendingMailboxCommunication>) {
+        if let Some((thread_id, control, _)) = &self.controller {
+            pending.extend(
+                control
+                    .take_mailbox(*thread_id)
+                    .into_iter()
+                    .map(|communication| PendingMailboxCommunication {
+                        communication,
+                        start_options: TurnStartOptions::default(),
+                        _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+                    }),
+            );
         }
     }
 
@@ -150,9 +185,16 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
         communication: InterAgentCommunication,
+        expected_turn_id: Option<&str>,
     ) -> bool {
         let active = active_turn.lock().await;
-        let Some(active_turn) = active.as_ref().filter(|turn| turn.task.is_some()) else {
+        let Some(active_turn) = active.as_ref().filter(|turn| {
+            turn.task.as_ref().is_some_and(|task| {
+                expected_turn_id.is_none_or(|id| {
+                    task.turn_context.sub_id == id && !task.cancellation_token.is_cancelled()
+                })
+            })
+        }) else {
             return false;
         };
         let mut turn_state = active_turn.turn_state.lock().await;
@@ -186,6 +228,8 @@ impl InputQueue {
     ) -> bool {
         let held = communication.trigger_turn && self.wakeups_paused();
         let mut pending = self.mailbox_pending_mails.lock().await;
+        // Mail retained while unloaded precedes new submissions to the loaded session.
+        self.read_mailbox(&mut pending);
         pending.push_back(PendingMailboxCommunication {
             communication,
             start_options,
@@ -211,6 +255,10 @@ impl InputQueue {
             .await
             .iter()
             .any(|mail| !(paused && mail.communication.trigger_turn))
+            || self
+                .controller
+                .as_ref()
+                .is_some_and(|(_, _, updates)| *updates.borrow())
     }
 
     /// Returns whether pending mail should start a turn. Paused wakeups hold it.
@@ -240,11 +288,19 @@ impl InputQueue {
         self.wakeups_paused.load(Ordering::SeqCst)
     }
 
+    /// Drains all mail, including mail held by paused wakeups.
+    pub(crate) async fn drain_mailbox(&self) -> Vec<PendingMailboxCommunication> {
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        self.read_mailbox(&mut pending);
+        pending.drain(..).collect()
+    }
+
     /// Drains deliverable mail. Paused wakeups leave trigger-turn mail queued.
     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
         let pending_mails = {
             let paused = self.wakeups_paused();
             let mut mails = self.mailbox_pending_mails.lock().await;
+            self.read_mailbox(&mut mails);
             let (held, deliverable): (VecDeque<_>, VecDeque<_>) = mails
                 .drain(..)
                 .partition(|mail| paused && mail.communication.trigger_turn);

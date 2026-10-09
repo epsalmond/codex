@@ -1,6 +1,7 @@
 //! Checkpoint replay preserves retained evidence across migration and independent review rollback.
 //! A retired managed opt-out cannot disable capture or later checkpoint promotion.
 
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -73,8 +74,14 @@ pub(super) async fn resume(
     Ok(test
         .thread_manager
         .start_thread(StartThreadOptions {
-            environments: Some(environments),
+            environments: Some(
+                environments
+                    .into_iter()
+                    .map(TurnEnvironmentSelection::into_request)
+                    .collect(),
+            ),
             initial_history: InitialHistory::Resumed(ResumedHistory {
+                history_revision: None,
                 conversation_id: thread_id,
                 history: Arc::new(history),
                 rollout_path: None,
@@ -201,6 +208,11 @@ pub(super) async fn migration_scenario() -> Result<Vec<responses::ResponsesReque
                 .features
                 .enable(Feature::DefaultModeRequestUserInput)
                 .expect("enable user input");
+            // The fork enables MultiAgentV2 by default; this scenario is single-agent.
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("keep the scenario single-agent");
             config.model_auto_compact_token_limit = Some(100_000);
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;

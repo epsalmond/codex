@@ -21,8 +21,6 @@ use super::turn::maybe_run_auto_shake;
 use super::turn::run_auto_compact;
 use crate::agent::types::ContextReductionOutcome;
 use crate::client::ModelClientSession;
-use crate::compact::InitialContextInjection;
-use crate::context::world_state::WorldState;
 
 /// A bounded marker based on post-reduction content, rather than turn IDs or generations.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +54,6 @@ impl ChildRequestAdmission {
         &mut self,
         sess: &Arc<Session>,
         step: &Arc<StepContext>,
-        world_state: &Arc<WorldState>,
         client: &mut ModelClientSession,
         context: &PreparedContext,
         cancellation: &CancellationToken,
@@ -80,6 +77,13 @@ impl ChildRequestAdmission {
             }
             return Err(err);
         }
+        // Consumed by the first admission after the compaction, whether or not it applies.
+        let budget_compacted = crate::guardian::is_basic_session_source(&turn.session_source)
+            && sess
+                .services
+                .thread_extension_data
+                .remove::<crate::guardian::ReviewBudgetCompacted>()
+                .is_some();
         let history = sess.clone_history().await;
         let status = &context.status;
         let additions = context.additions;
@@ -140,6 +144,22 @@ impl ChildRequestAdmission {
             sess.state.lock().await.insufficient_child_context = None;
             return Ok(Admission::Proceed);
         }
+        // Pre-turn budget compaction already fitted this Guardian review; estimates alone
+        // must not compact it again while it still fits the complete context window.
+        if budget_compacted
+            && status
+                .full_context_window_limit
+                .is_none_or(|limit| active < limit)
+        {
+            return Ok(Admission::Proceed);
+        }
+        // Guardian reviewers recover from the parent checkpoint instead of compacting,
+        // exactly as the pre-turn path does.
+        if crate::guardian::is_basic_session_source(&turn.session_source)
+            && !crate::guardian::should_compact_guardian_input(sess)?
+        {
+            return Ok(Admission::Proceed);
+        }
         let mut content = DefaultHasher::new();
         step.settings.model_info.slug.hash(&mut content);
         for envelope in history.annotated_items() {
@@ -198,12 +218,8 @@ impl ChildRequestAdmission {
         if let Err(err) = run_auto_compact(
             sess,
             Arc::clone(step),
-            /*fallback_step_context*/ None,
+            Arc::clone(step),
             client,
-            InitialContextInjection::BeforeLastUserMessage {
-                world_state: Arc::clone(world_state),
-                step_context: Arc::clone(step),
-            },
             CompactionReason::ContextLimit,
             CompactionPhase::MidTurn,
         )

@@ -160,6 +160,7 @@ async fn stale_failure_finalizer_does_not_pause_newer_generation() {
         completed_at: None,
         duration_ms: None,
         time_to_first_token_ms: None,
+        root_turn_id: None,
     });
     session.classify_wake_turn_end(&context, &event).await;
     assert!(session.input_queue.wakeups_paused());

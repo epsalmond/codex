@@ -248,14 +248,21 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     );
 
     let refreshed_grace = Duration::from_millis(250);
+    let current_config = fixture.codex.config().await;
     let mut refreshed_config = fixture.config.clone();
     refreshed_config.mcp_optional_startup_grace = refreshed_grace;
     match refresh_path {
         ConfigRefreshPath::Runtime => {
-            fixture.codex.refresh_runtime_config(refreshed_config).await;
+            let _ = fixture
+                .codex
+                .refresh_runtime_config(current_config, refreshed_config)
+                .await;
         }
         ConfigRefreshPath::Mcp => {
-            fixture.codex.refresh_mcp_config(refreshed_config).await;
+            let _ = fixture
+                .codex
+                .refresh_mcp_config(current_config, refreshed_config)
+                .await;
         }
     }
     assert_eq!(
@@ -397,7 +404,11 @@ async fn refreshed_mcp_schema_is_charged_against_prior_provider_usage(
         }))?,
     );
     refreshed_config.mcp_servers.set(servers)?;
-    fixture.codex.refresh_mcp_config(refreshed_config).await;
+    let current_config = fixture.codex.config().await;
+    let _ = fixture
+        .codex
+        .refresh_mcp_config(current_config, refreshed_config)
+        .await;
     let compact = responses::mount_sse_once(&responses_server, responses::sse(vec![
         responses::ev_response_created("compact"),
         json!({"type": "response.output_item.done", "item": {"type": "compaction", "encrypted_content": "refreshed-schema-summary"}}),

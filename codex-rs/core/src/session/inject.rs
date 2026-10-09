@@ -81,7 +81,10 @@ impl Session {
             .map(|item| self.annotate_client_response_item(item))
             .collect::<Vec<_>>();
         let mut active = self.active_turn.lock().await;
-        if let Some(active_turn) = active.as_mut() {
+        // A reservation without a task is an idle thread whose turn has not started yet. Record
+        // directly so the items are in history when callers observe the injection, and so the
+        // turn that is starting sees them ahead of its own input.
+        if let Some(active_turn) = active.as_mut().filter(|turn| turn.task.is_some()) {
             self.input_queue
                 .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                     active_turn.turn_state.as_ref(),

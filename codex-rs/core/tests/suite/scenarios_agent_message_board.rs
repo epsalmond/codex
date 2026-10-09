@@ -33,6 +33,9 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+#[path = "scenarios_agent_message_board_remote.rs"]
+mod remote;
+
 enum BoardClock {
     Available,
     Unavailable,

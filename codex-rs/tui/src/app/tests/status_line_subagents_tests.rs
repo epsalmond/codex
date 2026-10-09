@@ -20,6 +20,8 @@ fn activity_notification(
             kind,
             agent_thread_id: child.to_string(),
             agent_path: path.to_string(),
+            model: None,
+            reasoning_effort: None,
         },
     })
 }
