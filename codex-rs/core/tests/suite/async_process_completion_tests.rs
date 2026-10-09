@@ -608,9 +608,12 @@ print("{{}}")
             ))
             .await?;
     }
-    tokio::time::timeout(Duration::from_secs(20), hook_server.wait_for_request_count(1))
-        .await
-        .context("local Stop hook must reach the late-steer gate")?;
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        hook_server.wait_for_request_count(1),
+    )
+    .await
+    .context("local Stop hook must reach the late-steer gate")?;
     let turn = request_bodies(&hook_server).await[0]["turn_id"]
         .as_str()
         .unwrap()
