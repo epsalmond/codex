@@ -3,6 +3,7 @@ use codex_code_mode::CellOutputKind;
 use codex_code_mode::CellTerminalReady;
 use codex_code_mode::CellTerminalStatus;
 use codex_code_mode::TerminalReadySupport;
+use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq)]
