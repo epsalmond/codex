@@ -14,7 +14,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 
 const MAX_RESERVATIONS: usize = 64;
-// One UTF-8 byte costs at most one byte-fallback token, including the markers.
+// Byte-fallback bounds tokens by encoded UTF-8 bytes, including IDs, metadata and escapes.
 const MAX_FRAGMENT_BYTES: usize = 768;
 const MAX_NEW_REQUEST_FRAGMENTS: usize = 8;
 
@@ -99,21 +99,24 @@ impl AsyncCompletions {
             );
         }
         let id = ResponseItemId::new("msg");
-        records.insert(
-            id.clone(),
-            Record {
-                owner,
-                turn_id: turn.sub_id.clone(),
-                call_id: call_id.to_owned(),
-                process_id,
-                cell_id: cell_id.map(str::to_owned),
-                assignment: turn.agent_assignment.get().cloned(),
-                yielded: false,
-                claimed: false,
-                terminal: None,
-                recorded: false,
-            },
-        );
+        let record = Record {
+            owner,
+            turn_id: turn.sub_id.clone(),
+            call_id: call_id.to_owned(),
+            process_id,
+            cell_id: cell_id.map(str::to_owned),
+            assignment: turn.agent_assignment.get().cloned(),
+            yielded: false,
+            claimed: false,
+            terminal: None,
+            recorded: false,
+        };
+        // Preserve every identifier; reject before launch if escaped metadata cannot fit.
+        let metadata = record.fragment(&id, "exited(-2147483648)", "", usize::MAX);
+        if encoded_size(&metadata, &id) > MAX_FRAGMENT_BYTES {
+            return Err("async completion metadata exceeds the encoded fragment limit");
+        }
+        records.insert(id.clone(), record);
         Ok(CompletionReservation {
             store: Arc::clone(self),
             id,
@@ -157,9 +160,7 @@ impl AsyncCompletions {
             if let Some(fragment) = &record.terminal {
                 record.claimed = true;
                 ids.push(id.clone());
-                let mut item = ContextualUserFragment::into(fragment.clone());
-                item.set_id(Some(id.clone()));
-                items.push(ResponseItemEnvelope::new(item));
+                items.push(ResponseItemEnvelope::new(completion_item(fragment, id)));
             }
         }
         (
@@ -253,42 +254,68 @@ impl CompletionPublisher {
             CompletionStatus::Cancelled => "cancelled".to_owned(),
             CompletionStatus::TimedOut => "timedOut".to_owned(),
         };
-        let generation = record
+        let start = output.len().saturating_sub(MAX_FRAGMENT_BYTES);
+        let tail = String::from_utf8_lossy(&output[start..]);
+        let mut trim = 0;
+        loop {
+            let omitted = omitted_bytes.saturating_add(start).saturating_add(trim);
+            let fragment = record.fragment(&self.id, &status, &tail[trim..], omitted);
+            let encoded = encoded_size(&fragment, &self.id);
+            if encoded <= MAX_FRAGMENT_BYTES {
+                record.terminal = Some(fragment);
+                break;
+            }
+            // Escapes can expand bytes; trim whole UTF-8 characters from the oldest end.
+            trim = (trim + encoded - MAX_FRAGMENT_BYTES).min(tail.len());
+            while !tail.is_char_boundary(trim) {
+                trim += 1;
+            }
+        }
+    }
+}
+
+impl Record {
+    fn fragment(
+        &self,
+        id: &ResponseItemId,
+        status: &str,
+        tail: &str,
+        omitted: usize,
+    ) -> AsyncToolCompletion {
+        let generation = self
             .assignment
             .as_ref()
             .map(|assignment| assignment.generation.to_string())
             .unwrap_or_else(|| "none".to_owned());
         let header = format!(
-            "id={} owner={} turn={} call={} kind=process process={} cell={} assignment={generation} status={status}\n",
-            self.id,
-            record.owner,
-            record.turn_id,
-            record.call_id,
-            record.process_id,
-            record.cell_id.as_deref().unwrap_or("none"),
+            "id={id} owner={} turn={} call={} kind=process process={} cell={} assignment={generation} status={status}\n",
+            self.owner,
+            self.turn_id,
+            self.call_id,
+            self.process_id,
+            self.cell_id.as_deref().unwrap_or("none"),
         );
-        let markers = AsyncToolCompletion::type_markers();
-        let marker_bytes = markers.0.len() + markers.1.len() + 2;
-        // Reserve space for the largest possible omission counter before selecting a tail.
-        let budget = MAX_FRAGMENT_BYTES.saturating_sub(header.len() + marker_bytes + 64);
-        let start = output.len().saturating_sub(budget);
-        let mut tail = String::from_utf8_lossy(&output[start..]).into_owned();
-        // Lossy UTF-8 conversion can expand invalid bytes; preserve the newest valid tail.
-        let mut trim = tail.len().saturating_sub(budget);
-        while !tail.is_char_boundary(trim) {
-            trim += 1;
-        }
-        tail.drain(..trim);
-        let omitted = omitted_bytes.saturating_add(start).saturating_add(trim);
         let truncation = if omitted > 0 {
             format!("[output truncated; omitted about {omitted} bytes]\n")
         } else {
             String::new()
         };
-        record.terminal = Some(AsyncToolCompletion {
+        AsyncToolCompletion {
             text: format!("{header}{truncation}{tail}"),
-        });
+        }
     }
+}
+
+fn completion_item(fragment: &AsyncToolCompletion, id: &ResponseItemId) -> ResponseItem {
+    let mut item = ContextualUserFragment::into(fragment.clone());
+    item.set_id(Some(id.clone()));
+    item
+}
+
+fn encoded_size(fragment: &AsyncToolCompletion, id: &ResponseItemId) -> usize {
+    serde_json::to_vec(&completion_item(fragment, id))
+        .expect("completion item serializes")
+        .len()
 }
 
 impl CompletionClaim {

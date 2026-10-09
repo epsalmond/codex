@@ -145,3 +145,32 @@ async fn terminal_tail_is_bounded_and_assignment_replacements_are_held() {
     assert!(current_items(&store, &session, &replacement).1.is_empty());
     assert_eq!(current_items(&store, &session, &turn).1, items);
 }
+
+#[tokio::test]
+async fn encoded_metadata_is_admitted_before_publication_and_output_is_bounded() {
+    let (session, mut turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    turn.sub_id = "\n".repeat(128);
+    assert!(
+        store
+            .reserve(
+                session.thread_id(),
+                &turn,
+                &"\"".repeat(128),
+                /*process_id*/ 1,
+                Some(&"\\".repeat(128))
+            )
+            .is_err()
+    );
+    turn.sub_id = "bounded-turn".to_owned();
+    let mut reservation = reserve(&store, &session, &turn, "bounded-call").unwrap();
+    reservation.register().publish(
+        CompletionStatus::Exited(i32::MIN),
+        "\n\"\\世界".repeat(1000).as_bytes(),
+        /*omitted_bytes*/ usize::MAX,
+    );
+    drop(reservation);
+    let (_, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
+    assert!(serde_json::to_vec(&items[0].item).unwrap().len() <= MAX_FRAGMENT_BYTES);
+}
