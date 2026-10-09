@@ -132,6 +132,8 @@ pub enum Feature {
     CodeModeOnly,
     /// Use the single unified PTY-backed exec tool.
     UnifiedExec,
+    /// Retain native terminal results for the next request in the owning assignment.
+    AsyncProcessCompletion,
     /// Allow unified exec commands to allocate an interactive terminal.
     UnifiedExecTty,
     /// Route shell tool execution through the zsh exec bridge.
@@ -993,6 +995,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "unified_exec",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::AsyncProcessCompletion,
+        key: "async_process_completion",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::UnifiedExecTty,

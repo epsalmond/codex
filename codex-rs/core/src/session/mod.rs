@@ -1,3 +1,4 @@
+pub(crate) mod async_completion;
 pub(crate) mod startup;
 
 use std::borrow::Cow;
@@ -3734,6 +3735,7 @@ impl Session {
             model_info,
             items,
             image_preparations,
+            /*completion_claim*/ None,
         )
         .await;
     }
@@ -3744,6 +3746,7 @@ impl Session {
         model_info: &ModelInfo,
         mut items: Vec<ResponseItemEnvelope>,
         image_preparations: Vec<ImagePreparationMetadata>,
+        completion_claim: Option<async_completion::CompletionClaim>,
     ) {
         // Save the originating history budget for replay.
         // Preserve any existing tool-specific override.
@@ -3832,6 +3835,9 @@ impl Session {
             state
                 .history
                 .record_annotated_items(&mut items, model_info.truncation_policy.into());
+            if let Some(claim) = completion_claim {
+                claim.recorded();
+            }
         }
         for image in image_preparations {
             self.services
@@ -5252,6 +5258,7 @@ impl Session {
             model_info,
             prepared_items,
             image_preparations,
+            /*completion_claim*/ None,
         )
         .await;
         user_message_item.client_id = client_id;
