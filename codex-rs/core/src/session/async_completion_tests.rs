@@ -27,12 +27,11 @@ fn reserve(
     )
 }
 
-#[rstest::rstest]
-#[case(CompletionStatus::Exited(7))]
-#[case(CompletionStatus::Failed)]
-#[case(CompletionStatus::TimedOut)]
+#[test_case::test_case(CompletionStatus::Exited(7); "nonzero")]
+#[test_case::test_case(CompletionStatus::Failed; "failed")]
+#[test_case::test_case(CompletionStatus::TimedOut; "timed_out")]
 #[tokio::test]
-async fn inline_and_initial_publication_races_have_one_consumer(#[case] status: CompletionStatus) {
+async fn inline_and_initial_publication_races_have_one_consumer(status: CompletionStatus) {
     let (session, turn) = make_session_and_context().await;
     let store = Arc::new(AsyncCompletions::default());
     let mut inline = reserve(&store, &session, &turn, "inline").unwrap();
