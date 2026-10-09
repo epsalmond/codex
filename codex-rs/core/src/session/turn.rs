@@ -38,6 +38,7 @@ use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
+use crate::session::async_completion::CompletionDrain;
 use crate::session::daemon_recovery::RecordedTurnInput;
 use crate::session::handlers;
 use crate::session::handlers::ShakeTrigger;
@@ -180,6 +181,7 @@ pub(crate) async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     mut input: Vec<TurnInput>,
+    completion_drain: CompletionDrain,
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
@@ -560,6 +562,7 @@ pub(crate) async fn run_turn(
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 sampling_request_input,
+                completion_drain,
                 &world_state,
                 cancellation_token.child_token(),
             )
@@ -2016,6 +2019,7 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     input: Vec<ResponseItem>,
+    completion_drain: CompletionDrain,
     world_state: &Arc<WorldState>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestOutcome> {
@@ -2050,6 +2054,7 @@ async fn run_sampling_request(
         if super::async_completion::record_ready(
             &sess,
             &turn_context,
+            completion_drain,
             &step_context.settings.model_info,
         )
         .await
@@ -2154,6 +2159,7 @@ async fn run_sampling_request(
         let completion_candidates = sess.services.async_completions.candidates(
             sess.thread_id(),
             &turn_context,
+            completion_drain,
             &prompt.input,
         );
         let err = match try_run_sampling_request(

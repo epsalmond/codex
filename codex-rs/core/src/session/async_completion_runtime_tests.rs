@@ -105,15 +105,36 @@ async fn history_append_is_retained_until_model_acceptance() {
         /*omitted_bytes*/ 0,
     );
     drop(yielded);
-    let (claim, expected) = store.claim(session.thread_id(), &turn, &[]);
+    let (claim, expected) = store.claim(
+        session.thread_id(),
+        &turn,
+        CompletionDrain::ExactAssignment,
+        &[],
+    );
     drop(claim);
     let expected = expected
         .into_iter()
         .map(ResponseItemEnvelope::into_item)
         .collect::<Vec<_>>();
     turn.sub_id = "later-owner-turn".to_owned();
-    assert!(record_ready(&session, &turn, &turn.capture_current_model_info()).await);
-    assert!(!record_ready(&session, &turn, &turn.capture_current_model_info()).await);
+    assert!(
+        record_ready(
+            &session,
+            &turn,
+            CompletionDrain::ExactAssignment,
+            &turn.capture_current_model_info()
+        )
+        .await
+    );
+    assert!(
+        !record_ready(
+            &session,
+            &turn,
+            CompletionDrain::ExactAssignment,
+            &turn.capture_current_model_info()
+        )
+        .await
+    );
     let history = session
         .clone_history()
         .await
@@ -121,8 +142,23 @@ async fn history_append_is_retained_until_model_acceptance() {
     assert_eq!(history, expected);
     assert_eq!(history[0].turn_id(), Some(original_turn.as_str()));
     assert!(serde_json::to_vec(&history[0]).unwrap().len() <= MAX_FRAGMENT_BYTES);
-    let ids = store.candidates(session.thread_id(), &turn, &history);
+    let ids = store.candidates(
+        session.thread_id(),
+        &turn,
+        CompletionDrain::ExactAssignment,
+        &history,
+    );
     assert_eq!(ids.len(), 1);
     store.accept(&ids);
-    assert!(store.claim(session.thread_id(), &turn, &[]).1.is_empty());
+    assert!(
+        store
+            .claim(
+                session.thread_id(),
+                &turn,
+                CompletionDrain::ExactAssignment,
+                &[]
+            )
+            .1
+            .is_empty()
+    );
 }

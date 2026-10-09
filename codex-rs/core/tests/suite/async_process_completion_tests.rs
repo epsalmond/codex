@@ -150,6 +150,12 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         }), ev_completed("manual")]));
     }
     bodies.push(assistant_response("r4"));
+    if recovery || replacement {
+        bodies.push(sse(vec![ev_response_created("accepted-compact"), json!({
+            "type":"response.output_item.done", "item":{"type":"compaction", "encrypted_content":"ACCEPTED_SUMMARY"},
+        }), ev_completed("accepted-compact")]));
+        bodies.push(assistant_response("r5"));
+    }
     let (response_release, response_gate) = tokio::sync::oneshot::channel();
     let mut response_gate = Some(response_gate);
     let mut gate = Some(gate);
@@ -189,7 +195,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
                 .expect("native completion fixture can select the feature");
             config.model_provider.base_url = Some(base_url);
             if same_assignment {
-                // These retries retain the same assignment; V2 root replacement is held below.
+                // These compatibility retries retain the legacy assignment.
                 config
                     .features
                     .disable(Feature::MultiAgentV2)
@@ -316,11 +322,11 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     })
     .await;
     let requests = request_bodies(&server).await;
-    if outcome == Outcome::CompletedOnly || replacement {
+    if outcome == Outcome::CompletedOnly {
         assert!(completions(requests.last().unwrap()).is_empty());
     } else {
         assert_eq!(completions(requests.last().unwrap()), delivered);
-        if recovery {
+        if recovery || replacement {
             let receipt = |request: &Value| {
                 request["input"]
                     .as_array()
@@ -336,6 +342,24 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
             };
             assert_eq!(receipt(final_request), receipt(requests.last().unwrap()));
         }
+    }
+    if recovery || replacement {
+        test.codex.submit(Op::Compact).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        submit_unified_exec_turn(
+            &test,
+            "after accepted recovery",
+            PermissionProfile::Disabled,
+        )
+        .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        assert!(completions(request_bodies(&server).await.last().unwrap()).is_empty());
     }
     if outcome == Outcome::Compacted {
         let compact = requests
@@ -389,4 +413,257 @@ async fn request_bodies(server: &StreamingSseServer) -> Vec<Value> {
         .iter()
         .map(|body| serde_json::from_slice(body).unwrap())
         .collect()
+}
+
+#[test_case::test_case(Outcome::Success; "created")]
+#[test_case::test_case(Outcome::CompletedOnly; "completed_only")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_native_completion_is_recovered_by_an_explicit_v2_root(
+    outcome: Outcome,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    let seconds = if cfg!(windows) { 11 } else { 3 };
+    let args = json!({ "cmd": finite_command(seconds, 0), "yield_time_ms": 250 });
+    let bootstrap = start_mock_server().await;
+    let recovery = if outcome == Outcome::CompletedOnly {
+        sse(vec![
+            ev_assistant_message("recovered", "continued"),
+            ev_completed("recovered"),
+        ])
+    } else {
+        assistant_response("recovered")
+    };
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk { gate: None, body: tool_response("idle-finite", &args) }],
+        vec![StreamingSseChunk { gate: None, body: assistant_response("idle") }],
+        vec![StreamingSseChunk { gate: None, body: recovery }],
+        vec![StreamingSseChunk { gate: None, body: sse(vec![ev_response_created("compact"), json!({
+            "type":"response.output_item.done", "item":{"type":"compaction", "encrypted_content":"IDLE_RESULT_SUMMARY"},
+        }), ev_completed("compact")]) }],
+        vec![StreamingSseChunk { gate: None, body: assistant_response("after-compact") }],
+    ]).await;
+    let base_url = format!("{}/v1", server.uri());
+    let test = test_codex()
+        .with_model("gpt-5.6-sol")
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::AsyncProcessCompletion)
+                .expect("idle completion fixture can enable the feature");
+            config.model_provider.base_url = Some(base_url);
+        })
+        .build_with_auto_env(&bootstrap)
+        .await?;
+    assert_eq!(
+        test.codex.multi_agent_version(),
+        Some(MultiAgentVersion::V2)
+    );
+    submit_unified_exec_turn(
+        &test,
+        "start finite work and finish the turn",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+    let initial = wait_for_raw_unified_exec_output(&test, "idle-finite").await?;
+    assert!(initial.process_id.is_some());
+    let origin = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(turn) => Some(turn.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::ExecCommandEnd(end) if end.call_id == "idle-finite"),
+    )
+    .await;
+    assert!(completions(request_bodies(&server).await.last().unwrap()).is_empty());
+    submit_unified_exec_turn(&test, "recover retained work", PermissionProfile::Disabled).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let requests = request_bodies(&server).await;
+    let delivered = completions(requests.last().unwrap());
+    assert_eq!(delivered.len(), 1);
+    assert!(delivered[0].contains("call=idle-finite"));
+    assert!(delivered[0].contains("status=exited(0)"));
+    assert!(delivered[0].contains("terminal-tail"));
+    assert!(!delivered[0].contains("assignment=none"));
+    assert!(delivered[0].contains(&format!("turn={origin}")));
+    let item = requests.last().unwrap()["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["content"][0]["text"].as_str() == Some(delivered[0].as_str()))
+        .unwrap();
+    assert_eq!(
+        item["internal_chat_message_metadata_passthrough"]["turn_id"],
+        origin
+    );
+    assert!(item["internal_chat_message_metadata_passthrough"]["create_time"].is_number());
+    assert!(serde_json::to_vec(item)?.len() <= 768);
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    submit_unified_exec_turn(
+        &test,
+        "after accepted completion",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(completions(request_bodies(&server).await.last().unwrap()).is_empty());
+    server.shutdown().await;
+    Ok(())
+}
+
+#[test_case::test_case(Outcome::Success; "explicit_authority_survives")]
+#[test_case::test_case(Outcome::Compatibility; "automatic_authority_is_not_promoted")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_steering_reentry_keeps_the_original_completion_policy(
+    outcome: Outcome,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    let explicit = outcome == Outcome::Success;
+    let (release, gate) = tokio::sync::oneshot::channel();
+    // Stop runs after run_turn's final pending-input check. Hold it until a late steer is queued.
+    let (hook_server, _) = start_streaming_sse_server(vec![vec![StreamingSseChunk {
+        gate: Some(gate),
+        body: String::new(),
+    }]])
+    .await;
+    let hook_url = format!("{}/v1/responses", hook_server.uri());
+    let bootstrap = start_mock_server().await;
+    let args = json!({ "cmd": finite_command(30, 0), "yield_time_ms": 250 });
+    let pause = sse(vec![
+        ev_response_created("pause"),
+        ev_assistant_message("pause", "pause-before-reentry"),
+        ev_completed("pause"),
+    ]);
+    let bodies = [
+        tool_response("reentry-finite", &args),
+        assistant_response("idle"),
+        pause,
+        assistant_response("reentered"),
+        assistant_response("explicit-recovery"),
+    ];
+    let (server, _) = start_streaming_sse_server(
+        bodies
+            .into_iter()
+            .map(|body| vec![StreamingSseChunk { gate: None, body }])
+            .collect(),
+    )
+    .await;
+    let base_url = format!("{}/v1", server.uri());
+    // Command hooks run on the app host and require a host-native working directory.
+    let test = test_codex().with_model("gpt-5.6-sol")
+        .with_pre_build_hook(move |home| {
+            let script = home.join("reentry_stop.py");
+            fs::write(&script, format!(r#"import json, sys, urllib.request
+payload = json.load(sys.stdin)
+if payload.get("last_assistant_message") == "pause-before-reentry":
+    urllib.request.urlopen(urllib.request.Request({hook_url:?}, data=json.dumps(payload).encode()), timeout=30).read()
+print("{{}}")
+"#)).unwrap();
+            fs::write(home.join("hooks.json"), json!({ "hooks": { "Stop": [{ "hooks": [{
+                "type": "command", "command": format!("python3 \"{}\"", script.display()),
+            }] }] } }).to_string()).unwrap();
+        }).with_config(move |config| {
+            config.features.enable(Feature::AsyncProcessCompletion).expect("reentry fixture can enable completion");
+            core_test_support::hooks::trust_discovered_hooks(config);
+            config.model_provider.base_url = Some(base_url);
+        }).build(&bootstrap).await?;
+    assert_eq!(
+        test.codex.multi_agent_version(),
+        Some(MultiAgentVersion::V2)
+    );
+    submit_unified_exec_turn(&test, "start work", PermissionProfile::Disabled).await?;
+    let initial = wait_for_raw_unified_exec_output(&test, "reentry-finite").await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    if explicit {
+        submit_unified_exec_turn(&test, "continue", PermissionProfile::Disabled).await?;
+    } else {
+        let item = serde_json::from_value(
+            json!({ "type": "message", "role": "user", "content": [{"type": "input_text", "text": "automatic context"}] }),
+        )?;
+        test.codex
+            .start_turn_if_idle(TurnInputRequest::new(
+                codex_protocol::turn_input::TurnInput::ResponseItem(item),
+            ))
+            .await?;
+    }
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        hook_server.wait_for_request_count(1),
+    )
+    .await
+    .context("local Stop hook must reach the late-steer gate")?;
+    let turn = request_bodies(&hook_server).await[0]["turn_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        test.codex
+            .terminate_background_terminal(initial.process_id.unwrap().parse()?)
+            .await
+    );
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::ExecCommandEnd(end) if end.call_id == "reentry-finite"),
+    )
+    .await;
+    let steer = test
+        .codex
+        .steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "late human steer".to_owned(),
+                text_elements: Vec::new(),
+            }]),
+            turn.clone(),
+        )
+        .await?;
+    assert_eq!(
+        steer,
+        codex_protocol::turn_input::SteerSubmission::Steered { turn_id: turn }
+    );
+    release.send(()).unwrap();
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let requests = request_bodies(&server).await;
+    assert_eq!(requests.len(), 4);
+    assert!(completions(&requests[2]).is_empty());
+    assert_eq!(completions(&requests[3]).len(), usize::from(explicit));
+    assert!(requests[3].to_string().contains("late human steer"));
+    if !explicit {
+        submit_unified_exec_turn(&test, "recover now", PermissionProfile::Disabled).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        assert_eq!(
+            completions(request_bodies(&server).await.last().unwrap()).len(),
+            1
+        );
+    }
+    server.shutdown().await;
+    hook_server.shutdown().await;
+    Ok(())
 }

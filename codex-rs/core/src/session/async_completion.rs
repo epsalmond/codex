@@ -7,18 +7,59 @@ use std::sync::Weak;
 use crate::agent::control::AgentAssignmentId;
 use crate::context::AsyncToolCompletion;
 use crate::context::ContextualUserFragment;
+use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_history::ResponseItemEnvelope;
+use codex_history::UserInputOrigin;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::user_input::UserInput;
 
 const MAX_RESERVATIONS: usize = 64;
 // Byte-fallback bounds tokens by encoded UTF-8 bytes, including IDs, metadata and escapes.
 const MAX_FRAGMENT_BYTES: usize = 768;
 const MAX_NEW_REQUEST_FRAGMENTS: usize = 8;
+
+/// Fixed at regular-task entry; steering and reentry cannot grant recovery authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompletionDrain {
+    ExactAssignment,
+    ExplicitRootRecovery,
+}
+
+impl CompletionDrain {
+    pub(crate) fn for_original_input(source: &SessionSource, input: &[TurnInput]) -> Self {
+        let explicit = input.iter().any(|input| match input {
+            TurnInput::UserInput {
+                content, metadata, ..
+            } => {
+                metadata.origin == UserInputOrigin::User
+                    && content.iter().any(|item| match item {
+                        UserInput::Text { text, .. } => !text.trim().is_empty(),
+                        _ => true,
+                    })
+            }
+            TurnInput::FunctionCallOutput(_)
+            | TurnInput::ResponseItem(_)
+            | TurnInput::InterAgentCommunication(_) => false,
+        });
+        if !source.is_non_root_agent() && explicit {
+            Self::ExplicitRootRecovery
+        } else {
+            Self::ExactAssignment
+        }
+    }
+
+    fn permits(self, record: &Record, owner: ThreadId, turn: &TurnContext) -> bool {
+        record.owner == owner
+            && (self == Self::ExplicitRootRecovery
+                || record.assignment.as_ref() == turn.agent_assignment.get())
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct AsyncCompletions(Mutex<CompletionState>);
@@ -133,6 +174,7 @@ impl AsyncCompletions {
         self: &Arc<Self>,
         owner: ThreadId,
         turn: &TurnContext,
+        drain: CompletionDrain,
         history: &[ResponseItem],
     ) -> (CompletionClaim, Vec<ResponseItemEnvelope>) {
         let mut state = self.state();
@@ -141,8 +183,7 @@ impl AsyncCompletions {
             record.yielded
                 && !record.claimed
                 && record.terminal.is_some()
-                && record.owner == owner
-                && record.assignment.as_ref() == turn.agent_assignment.get()
+                && drain.permits(record, owner, turn)
         };
         let mut remaining = MAX_NEW_REQUEST_FRAGMENTS;
         for (id, record) in records.iter_mut() {
@@ -181,6 +222,7 @@ impl AsyncCompletions {
         &self,
         owner: ThreadId,
         turn: &TurnContext,
+        drain: CompletionDrain,
         input: &[ResponseItem],
     ) -> Vec<ResponseItemId> {
         let state = self.state();
@@ -188,11 +230,10 @@ impl AsyncCompletions {
             .iter()
             .filter_map(ResponseItem::id)
             .filter(|id| {
-                state.records.get(*id).is_some_and(|record| {
-                    record.recorded
-                        && record.owner == owner
-                        && record.assignment.as_ref() == turn.agent_assignment.get()
-                })
+                state
+                    .records
+                    .get(*id)
+                    .is_some_and(|record| record.recorded && drain.permits(record, owner, turn))
             })
             .cloned()
             .collect()
@@ -358,7 +399,12 @@ impl Drop for CompletionClaim {
 #[path = "async_completion_tests.rs"]
 mod tests;
 
-pub(super) async fn record_ready(sess: &Session, turn: &TurnContext, model: &ModelInfo) -> bool {
+pub(super) async fn record_ready(
+    sess: &Session,
+    turn: &TurnContext,
+    drain: CompletionDrain,
+    model: &ModelInfo,
+) -> bool {
     if !turn
         .config
         .features
@@ -370,10 +416,10 @@ pub(super) async fn record_ready(sess: &Session, turn: &TurnContext, model: &Mod
         .clone_history()
         .await
         .for_prompt(&model.input_modalities);
-    let (claim, items) = sess
-        .services
-        .async_completions
-        .claim(sess.thread_id(), turn, &history);
+    let (claim, items) =
+        sess.services
+            .async_completions
+            .claim(sess.thread_id(), turn, drain, &history);
     if items.is_empty() {
         return false;
     }

@@ -9,7 +9,12 @@ fn current_items(
     session: &Session,
     turn: &TurnContext,
 ) -> (CompletionClaim, Vec<ResponseItemEnvelope>) {
-    store.claim(session.thread_id(), turn, &[])
+    store.claim(
+        session.thread_id(),
+        turn,
+        CompletionDrain::ExactAssignment,
+        &[],
+    )
 }
 
 fn reserve(
@@ -66,11 +71,21 @@ async fn inline_and_initial_publication_races_have_one_consumer(status: Completi
         .collect::<Vec<_>>();
     assert!(
         store
-            .claim(session.thread_id(), &turn, &history)
+            .claim(
+                session.thread_id(),
+                &turn,
+                CompletionDrain::ExactAssignment,
+                &history
+            )
             .1
             .is_empty()
     );
-    let ids = store.candidates(session.thread_id(), &turn, &history);
+    let ids = store.candidates(
+        session.thread_id(),
+        &turn,
+        CompletionDrain::ExactAssignment,
+        &history,
+    );
     assert_eq!(ids.len(), 1);
     store.accept(&ids);
     assert!(current_items(&store, &session, &turn).1.is_empty());
@@ -98,11 +113,26 @@ async fn admission_and_claims_keep_capacity_until_accepted() {
         .into_iter()
         .map(ResponseItemEnvelope::into_item)
         .collect::<Vec<_>>();
-    assert!(store.claim(session.thread_id(), &turn, &input).1.is_empty());
+    assert!(
+        store
+            .claim(
+                session.thread_id(),
+                &turn,
+                CompletionDrain::ExactAssignment,
+                &input
+            )
+            .1
+            .is_empty()
+    );
     let (replay, repeated) = current_items(&store, &session, &turn);
     assert_eq!(repeated.len(), 8);
     drop(replay);
-    store.accept(&store.candidates(session.thread_id(), &turn, &input));
+    store.accept(&store.candidates(
+        session.thread_id(),
+        &turn,
+        CompletionDrain::ExactAssignment,
+        &input,
+    ));
     assert!(reserve(&store, &session, &turn, "accepted").is_ok());
     store.retire();
     assert!(reserve(&store, &session, &turn, "closed").is_err());
@@ -180,4 +210,149 @@ async fn encoded_metadata_is_admitted_before_publication_and_output_is_bounded()
             .is_number()
     );
     assert!(serde_json::to_vec(&items[0].item).unwrap().len() <= MAX_FRAGMENT_BYTES);
+}
+
+#[tokio::test]
+async fn explicit_root_recovery_uses_the_same_owner_policy_for_claim_and_acceptance() {
+    use crate::session::input_queue::UserInputMetadata;
+    use codex_protocol::AgentPath;
+    use codex_protocol::protocol::InterAgentCommunication;
+    use codex_protocol::protocol::InternalSessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+
+    let (session, turn) = make_session_and_context().await;
+    let (_, replacement) = make_session_and_context().await;
+    for context in [&turn, &replacement] {
+        context
+            .agent_assignment
+            .set(AgentAssignmentId {
+                thread_id: session.thread_id(),
+                generation: Uuid::new_v4(),
+            })
+            .unwrap();
+    }
+    let store = Arc::new(AsyncCompletions::default());
+    let mut reservation = reserve(&store, &session, &turn, "original").unwrap();
+    reservation.register().publish(
+        CompletionStatus::Exited(0),
+        b"done",
+        /*omitted_bytes*/ 0,
+    );
+    drop(reservation);
+    let (claim, original) = current_items(&store, &session, &turn);
+    claim.recorded();
+    let user = |content| TurnInput::UserInput {
+        content,
+        client_id: None,
+        metadata: UserInputMetadata::default(),
+    };
+    let explicit = vec![user(vec![UserInput::Text {
+        text: "recover".to_owned(),
+        text_elements: Vec::new(),
+    }])];
+    let mail = TurnInput::InterAgentCommunication(InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").unwrap(),
+        AgentPath::root(),
+        Vec::new(),
+        "recover".to_owned(),
+        /*trigger_turn*/ true,
+    ));
+    let response = TurnInput::ResponseItem(original[0].clone());
+    let function_output = TurnInput::FunctionCallOutput(ResponseItemEnvelope::new(
+        serde_json::from_value(serde_json::json!({
+            "type": "function_call_output", "call_id": "injected", "output": "recover",
+        }))
+        .unwrap(),
+    ));
+    let mut heartbeat = explicit[0].clone();
+    if let TurnInput::UserInput { metadata, .. } = &mut heartbeat {
+        metadata.origin = UserInputOrigin::Heartbeat;
+    }
+    let empty = vec![user(vec![])];
+    let blank = vec![user(vec![UserInput::Text {
+        text: " \n".to_owned(),
+        text_elements: Vec::new(),
+    }])];
+    for (source, input) in [
+        (SessionSource::Cli, vec![]),
+        (SessionSource::Cli, empty),
+        (SessionSource::Cli, blank),
+        (SessionSource::Cli, vec![response]),
+        (SessionSource::Cli, vec![function_output]),
+        (SessionSource::Cli, vec![mail]),
+        (SessionSource::Cli, vec![heartbeat.clone()]),
+        (
+            SessionSource::SubAgent(SubAgentSource::Review),
+            explicit.clone(),
+        ),
+        (
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: session.thread_id(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            explicit.clone(),
+        ),
+        (
+            SessionSource::Internal(InternalSessionSource::Guardian),
+            explicit.clone(),
+        ),
+    ] {
+        let drain = CompletionDrain::for_original_input(&source, &input);
+        assert_eq!(drain, CompletionDrain::ExactAssignment);
+        assert!(
+            store
+                .claim(session.thread_id(), &replacement, drain, &[])
+                .1
+                .is_empty()
+        );
+        assert!(
+            store
+                .candidates(
+                    session.thread_id(),
+                    &replacement,
+                    drain,
+                    &[original[0].item.clone()]
+                )
+                .is_empty()
+        );
+    }
+    let drain = CompletionDrain::for_original_input(&SessionSource::Cli, &explicit);
+    assert_eq!(drain, CompletionDrain::ExplicitRootRecovery);
+    let mut mixed = explicit.clone();
+    mixed.push(heartbeat);
+    assert_eq!(
+        CompletionDrain::for_original_input(&SessionSource::Cli, &mixed),
+        drain
+    );
+    let (foreign, _) = make_session_and_context().await;
+    assert!(
+        store
+            .claim(foreign.thread_id(), &replacement, drain, &[])
+            .1
+            .is_empty()
+    );
+    let (claim, recovered) = store.claim(session.thread_id(), &replacement, drain, &[]);
+    assert_eq!(recovered, original);
+    claim.recorded();
+    let input = recovered
+        .into_iter()
+        .map(ResponseItemEnvelope::into_item)
+        .collect::<Vec<_>>();
+    assert!(
+        store
+            .candidates(foreign.thread_id(), &replacement, drain, &input)
+            .is_empty()
+    );
+    let ids = store.candidates(session.thread_id(), &replacement, drain, &input);
+    assert_eq!(ids, vec![input[0].id().unwrap().clone()]);
+    store.accept(&ids);
+    assert!(
+        store
+            .claim(session.thread_id(), &replacement, drain, &[])
+            .1
+            .is_empty()
+    );
 }
