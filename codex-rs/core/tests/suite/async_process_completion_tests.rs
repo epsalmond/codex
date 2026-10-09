@@ -82,6 +82,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     );
     let enabled = outcome != Outcome::Compatibility;
     let recovery = matches!(outcome, Outcome::Rejected | Outcome::Interrupted);
+    let same_assignment = recovery || outcome == Outcome::CompletedOnly;
     let replacement = matches!(
         outcome,
         Outcome::RejectedReplacement | Outcome::InterruptedReplacement
@@ -175,7 +176,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     let mut builder = test_codex()
         .with_model("gpt-5.6-sol")
         .with_model_info_override("gpt-5.6-sol", move |model| {
-            if recovery {
+            if same_assignment {
                 model.multi_agent_version = Some(MultiAgentVersion::V1);
             }
             model.truncation_policy =
@@ -186,7 +187,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
                 .features
                 .set_enabled(Feature::AsyncProcessCompletion, enabled);
             config.model_provider.base_url = Some(base_url);
-            if recovery {
+            if same_assignment {
                 // These retries retain the same assignment; V2 root replacement is held below.
                 config.features.disable(Feature::MultiAgentV2);
             }
@@ -208,7 +209,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
     submit_unified_exec_turn(&test, "start finite work", PermissionProfile::Disabled).await?;
     let initial = wait_for_raw_unified_exec_output(&test, "finite").await?;
     assert!(initial.process_id.is_some());
-    if recovery {
+    if same_assignment {
         assert_eq!(
             test.codex.multi_agent_version(),
             Some(MultiAgentVersion::V1)
@@ -280,7 +281,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
         };
         assert!(text.contains(&format!("status={status}")));
         assert!(text.contains("call=finite"));
-        if recovery {
+        if same_assignment {
             assert!(text.contains("assignment=none"));
         } else if replacement {
             assert!(!text.contains("assignment=none"));

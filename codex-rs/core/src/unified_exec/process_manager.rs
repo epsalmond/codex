@@ -559,7 +559,7 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
         mut completion: Option<&mut Completion<'_>>,
-        mut reservation: Option<&mut CompletionReservation>,
+        reservation: Option<&mut CompletionReservation>,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
         let cwd = request.cwd.clone();
         let process = self
@@ -652,7 +652,7 @@ impl UnifiedExecProcessManager {
                 metrics_sidecar,
                 Arc::clone(&output_buffer),
                 Arc::clone(&initial_exec_command_active),
-                reservation.as_deref_mut(),
+                reservation,
             )
             .await;
             InitialExecCommandGuard {
