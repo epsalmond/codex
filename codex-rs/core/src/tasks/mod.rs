@@ -1,6 +1,7 @@
 mod compact;
 mod failed_start;
 mod lifecycle;
+mod owned_completion;
 mod recorded_report_wake;
 mod regular;
 mod review;
@@ -59,6 +60,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_thread_store::PersistContext;
+use owned_completion::PendingWorkCause;
 
 use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
@@ -534,13 +536,19 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
-        if self.input_queue.wakeups_paused()
-            || !self.input_queue.has_pending_mailbox_items().await
-            || (!self.input_queue.has_trigger_turn_mailbox_items().await
-                && !self.has_outstanding_durable_sleep())
-        {
+        if self.input_queue.wakeups_paused() {
             return PendingWorkStartResult::Stale;
         }
+        let cause = if self.input_queue.has_pending_mailbox_items().await
+            && (self.input_queue.has_trigger_turn_mailbox_items().await
+                || self.has_outstanding_durable_sleep())
+        {
+            PendingWorkCause::Mailbox
+        } else if let Some(cause) = self.ready_owned_completion().await {
+            cause
+        } else {
+            return PendingWorkStartResult::Stale;
+        };
 
         let config = self.get_config().await;
         let source = self.session_source().await;
@@ -626,19 +634,45 @@ impl Session {
         if let Some(id) = start_options.root_turn_id {
             turn_context.turn_metadata_state.set_root_turn_id(id);
         }
-        if let Err(error) = self.bind_wake_assignment_for_input(&turn_context, &input) {
+        let binding = match &cause {
+            PendingWorkCause::Mailbox => self.bind_wake_assignment_for_input(&turn_context, &input),
+            PendingWorkCause::OwnedCompletion(assignment) => {
+                if self.input_queue.wakeups_paused()
+                    || !self
+                        .services
+                        .async_completions
+                        .has_ready(self.thread_id(), assignment.as_ref())
+                    || self
+                        .services
+                        .local_agent_runtime
+                        .current_wake_assignment(self.thread_id())
+                        != *assignment
+                {
+                    self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+                    self.input_queue
+                        .return_to_mailbox_with_start_options(&mut input, retained_start_options)
+                        .await;
+                    self.clear_reserved_idle_turn(&turn_state).await;
+                    return PendingWorkStartResult::Stale;
+                }
+                self.bind_owned_completion(&turn_context, assignment.as_ref())
+            }
+        };
+        if let Err(error) = binding {
             self.abandon_root_turn_lifecycle(&turn_context.sub_id);
             // Binding already discards fenced coordinator reports. Ordinary accepted mail must
             // survive failed startup, without automatically repeating a deterministic rejection.
             input.retain(|item| Self::coordinator_report_id(item).is_none());
             let has_accepted_mail = !input.is_empty();
+            let has_held_work =
+                has_accepted_mail || matches!(cause, PendingWorkCause::OwnedCompletion(_));
             let initiator = input.iter().rev().find_map(|item| match item {
                 TurnInput::InterAgentCommunication(mail) if mail.trigger_turn => {
                     Some(mail.author.clone())
                 }
                 _ => None,
             });
-            if has_accepted_mail {
+            if has_held_work {
                 self.input_queue.pause_wakeups();
                 self.input_queue
                     .return_to_mailbox_with_start_options(&mut input, retained_start_options)
@@ -647,7 +681,7 @@ impl Session {
             // Release startup's reservation before notifying an orchestrator that may recover
             // immediately by sending another explicit follow-up.
             self.clear_reserved_idle_turn(&turn_state).await;
-            if has_accepted_mail {
+            if has_held_work {
                 self.send_event(
                     turn_context.as_ref(),
                     EventMsg::Warning(WarningEvent {

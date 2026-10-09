@@ -257,6 +257,9 @@ mod mcp_refresh;
 mod mcp_runtime;
 mod mid_turn_reduction;
 pub(crate) mod multi_agents;
+#[cfg(test)]
+#[path = "owned_completion_wake_tests.rs"]
+mod owned_completion_wake_tests;
 mod plugin_selection;
 pub(crate) mod prompt_cache_clock;
 mod realtime_history;

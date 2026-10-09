@@ -7,6 +7,9 @@ use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_target_os;
 use pretty_assertions::assert_eq;
 
+#[path = "async_process_completion/idle_tests.rs"]
+mod idle_tests;
+
 fn finite_command(delay_seconds: u32, exit_code: i32) -> String {
     match test_target_os() {
         TestTargetOs::Windows => {

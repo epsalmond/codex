@@ -369,6 +369,23 @@ impl LocalAgentRuntime {
         self.wake_coordinator.current_assignment(thread_id)
     }
 
+    pub(crate) fn continue_owned_completion(
+        &self,
+        id: &AgentAssignmentId,
+        turn_id: &str,
+    ) -> Result<(), &'static str> {
+        self.wake_coordinator.continue_owned_completion(id, turn_id)
+    }
+
+    pub(crate) fn observe_owned_completions(
+        &self,
+        assignment: &AgentAssignmentId,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+    ) {
+        self.wake_coordinator
+            .observe_owned_completions(assignment, store);
+    }
+
     pub(crate) fn admit_owned_completion<T>(
         &self,
         assignment: &AgentAssignmentId,
