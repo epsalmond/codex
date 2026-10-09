@@ -10,7 +10,7 @@ use crate::context::ContextualUserFragment;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_protocol::ThreadId;
-use codex_protocol::models::ResponseItemEnvelope;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::openai_models::ModelInfo;
 use uuid::Uuid;
 
