@@ -141,10 +141,14 @@ impl AgentRegistry {
                 ..Default::default()
             })
             .agent_id;
+        // Re-registering an already known root must keep the state retained on its entry.
         if let Some(root_thread_id) = root_thread_id {
-            active_agents
-                .thread_paths
-                .insert(root_thread_id, RegisteredAgent::new(root_path));
+            match active_agents.thread_paths.entry(root_thread_id) {
+                Entry::Occupied(mut entry) => entry.get_mut().path = root_path,
+                Entry::Vacant(entry) => {
+                    entry.insert(RegisteredAgent::new(root_path));
+                }
+            }
         }
     }
 

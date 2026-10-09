@@ -399,6 +399,21 @@ fn register_root_thread_indexes_root_path() {
 }
 
 #[test]
+fn register_root_thread_again_preserves_retained_root_state() {
+    let registry = AgentRegistry::default();
+    let root_thread_id = ThreadId::new();
+    registry.register_root_thread(root_thread_id);
+    registry.save_evicted_environments(root_thread_id, Vec::new());
+
+    registry.register_root_thread(root_thread_id);
+
+    assert_eq!(
+        registry.evicted_environments(root_thread_id),
+        Some(Vec::new())
+    );
+}
+
+#[test]
 fn reserved_agent_path_is_released_when_spawn_fails() {
     let registry = Arc::new(AgentRegistry::default());
     let mut first = registry
