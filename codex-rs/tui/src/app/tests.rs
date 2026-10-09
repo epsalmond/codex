@@ -4873,13 +4873,29 @@ fn agent_picker_item_name_snapshot() {
 
 #[tokio::test]
 async fn side_fork_config_is_ephemeral_and_appends_developer_guardrails() {
-    let app = make_test_app().await;
+    let mut app = make_test_app().await;
+    app.chat_widget
+        .set_feature_enabled(Feature::Collab, /*enabled*/ true);
+    app.chat_widget
+        .set_feature_enabled(Feature::MultiAgentV2, /*enabled*/ true);
+    let parent_features = app.chat_widget.config_ref().features.clone();
+    assert!(app.chat_widget.config_ref().agents_enabled);
     let original_approval_policy = app.config.permissions.approval_policy.value();
     let original_sandbox_policy = app.config.legacy_sandbox_policy();
 
     let fork_config = app.side_fork_config();
 
     assert!(fork_config.ephemeral);
+    assert_eq!(
+        (
+            fork_config.features.enabled(Feature::Collab),
+            fork_config.features.enabled(Feature::MultiAgentV2),
+            fork_config.agents_enabled,
+        ),
+        (false, false, false)
+    );
+    assert_eq!(app.chat_widget.config_ref().features, parent_features);
+    assert!(app.chat_widget.config_ref().agents_enabled);
     assert_eq!(
         fork_config.permissions.approval_policy.value(),
         original_approval_policy
