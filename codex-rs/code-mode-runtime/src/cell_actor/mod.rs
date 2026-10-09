@@ -129,6 +129,7 @@ async fn run_cell<H: CellHost>(
     let mut observer = Some(initial_observer);
     let mut termination = false;
     let mut runtime_closed = false;
+    let mut terminal_ready_reported = false;
     let mut runtime_paused = false;
     let mut runtime_failure_reported = false;
     let mut yield_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
@@ -136,6 +137,15 @@ async fn run_cell<H: CellHost>(
     let mut tool_tasks = JoinSet::new();
     let mut command_rx = Some(command_rx);
     loop {
+        // Completed output stays in CellState. Publish metadata outside its mutex
+        // only after settlement and failed/absent foreground delivery.
+        if runtime_closed
+            && !terminal_ready_reported
+            && let Some((status, output_kind)) = cell_state.terminal_ready_metadata()
+        {
+            terminal_ready_reported = true;
+            host.terminal_ready(status, output_kind);
+        }
         let yield_deadline_elapsed = yield_timer
             .as_ref()
             .is_some_and(|yield_timer| yield_timer.deadline() <= tokio::time::Instant::now());

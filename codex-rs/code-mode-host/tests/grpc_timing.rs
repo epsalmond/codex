@@ -40,6 +40,7 @@ async fn execution_timing_includes_javascript_but_excludes_delayed_reads() -> Re
     let mut events = client
         .open_session(grpc::OpenSessionRequest {
             cell_execution_limits: None,
+            terminal_ready_requested: false,
         })
         .await?
         .into_inner();

@@ -50,6 +50,8 @@ mod large_tool_delegate;
 mod network_policy_tests;
 #[path = "support/recording_delegate.rs"]
 mod recording_delegate;
+#[path = "grpc/terminal_ready_tests.rs"]
+mod terminal_ready_tests;
 
 use host::HostHarness;
 use large_tool_delegate::LargeToolResultDelegate;
@@ -1145,6 +1147,7 @@ async fn dropping_a_grpc_lease_retires_its_server_session() -> Result<()> {
     let mut lease = client
         .open_session(grpc::OpenSessionRequest {
             cell_execution_limits: None,
+            terminal_ready_requested: false,
         })
         .await
         .context("open raw gRPC session")?
