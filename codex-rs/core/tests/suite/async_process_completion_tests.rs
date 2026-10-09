@@ -568,6 +568,7 @@ async fn late_steering_reentry_keeps_the_original_completion_policy(
     )
     .await;
     let base_url = format!("{}/v1", server.uri());
+    // Command hooks run on the app host and require a host-native working directory.
     let test = test_codex().with_model("gpt-5.6-sol")
         .with_pre_build_hook(move |home| {
             let script = home.join("reentry_stop.py");
@@ -584,7 +585,7 @@ print("{{}}")
             config.features.enable(Feature::AsyncProcessCompletion).expect("reentry fixture can enable completion");
             core_test_support::hooks::trust_discovered_hooks(config);
             config.model_provider.base_url = Some(base_url);
-        }).build_with_auto_env(&bootstrap).await?;
+        }).build(&bootstrap).await?;
     assert_eq!(
         test.codex.multi_agent_version(),
         Some(MultiAgentVersion::V2)
@@ -607,7 +608,9 @@ print("{{}}")
             ))
             .await?;
     }
-    hook_server.wait_for_request_count(1).await;
+    tokio::time::timeout(Duration::from_secs(20), hook_server.wait_for_request_count(1))
+        .await
+        .context("local Stop hook must reach the late-steer gate")?;
     let turn = request_bodies(&hook_server).await[0]["turn_id"]
         .as_str()
         .unwrap()
