@@ -7,11 +7,13 @@ use std::sync::Weak;
 use crate::agent::control::AgentAssignmentId;
 use crate::context::AsyncToolCompletion;
 use crate::context::ContextualUserFragment;
+use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 
 const MAX_RESERVATIONS: usize = 64;
 // Byte-fallback bounds tokens by encoded UTF-8 bytes, including IDs, metadata and escapes.
@@ -347,3 +349,32 @@ impl Drop for CompletionClaim {
 #[cfg(test)]
 #[path = "async_completion_tests.rs"]
 mod tests;
+
+pub(super) async fn record_ready(sess: &Session, turn: &TurnContext, model: &ModelInfo) -> bool {
+    if !turn
+        .config
+        .features
+        .enabled(codex_features::Feature::AsyncProcessCompletion)
+    {
+        return false;
+    }
+    let history = sess
+        .clone_history()
+        .await
+        .for_prompt(&model.input_modalities);
+    let (claim, items) = sess
+        .services
+        .async_completions
+        .claim(sess.thread_id(), turn, &history);
+    if items.is_empty() {
+        return false;
+    }
+    sess.record_annotated_conversation_items(turn, model, items)
+        .await;
+    claim.recorded();
+    true
+}
+
+#[cfg(test)]
+#[path = "async_completion_runtime_tests.rs"]
+mod runtime_tests;
