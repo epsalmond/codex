@@ -290,8 +290,10 @@ impl Record {
     }
 
     fn encoded_size(&self, fragment: &AsyncToolCompletion, id: &ResponseItemId) -> usize {
+        // This fixed Message contains UTF-8 strings, a finite JSON Number and string metadata.
+        // Serialization to a Vec has neither fallible I/O nor unsupported map keys.
         serde_json::to_vec(&self.item(fragment, id))
-            .expect("completion item serializes")
+            .unwrap_or_else(|error| unreachable!("fixed completion message serialization: {error}"))
             .len()
     }
 
