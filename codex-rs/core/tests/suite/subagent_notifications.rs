@@ -3568,3 +3568,6 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
 
     Ok(())
 }
+
+#[path = "subagent_notifications/polling_delivery_tests.rs"]
+mod polling_delivery_tests;

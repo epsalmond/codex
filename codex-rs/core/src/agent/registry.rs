@@ -1,4 +1,5 @@
 use crate::agent::types::AgentMetadata;
+use crate::config::Config;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -39,6 +40,7 @@ struct ActiveAgents {
 struct RegisteredAgent {
     path: String,
     evicted_environments: Option<Vec<TurnEnvironmentSelection>>,
+    evicted_config: Option<Config>,
     completion_closed: bool,
 }
 
@@ -47,6 +49,7 @@ impl RegisteredAgent {
         Self {
             path,
             evicted_environments: None,
+            evicted_config: None,
             completion_closed: false,
         }
     }
@@ -171,10 +174,11 @@ impl AgentRegistry {
             .cloned()
     }
 
-    pub(crate) fn save_evicted_environments(
+    pub(crate) fn save_evicted_settings(
         &self,
         thread_id: ThreadId,
         environments: Vec<TurnEnvironmentSelection>,
+        config: Config,
     ) {
         let mut active_agents = self
             .active_agents
@@ -182,6 +186,7 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = Some(environments);
+            agent.evicted_config = Some(config);
         }
     }
 
@@ -206,28 +211,25 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = None;
+            agent.evicted_config = None;
         }
     }
 
+    pub(crate) fn evicted_config(&self, thread_id: ThreadId) -> Option<Config> {
+        self.active_agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths.get(&thread_id).and_then(|agent| agent.evicted_config.clone())
+    }
+
     pub(crate) fn close_completion_delivery(&self, thread_id: ThreadId) {
-        if let Some(agent) = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .thread_paths
-            .get_mut(&thread_id)
-        {
+        if let Some(agent) = self.active_agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths.get_mut(&thread_id) {
             agent.completion_closed = true;
         }
     }
 
     pub(crate) fn completion_delivery_closed(&self, thread_id: ThreadId) -> bool {
-        self.active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .thread_paths
-            .get(&thread_id)
-            .is_some_and(|agent| agent.completion_closed)
+        self.active_agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths.get(&thread_id).is_some_and(|agent| agent.completion_closed)
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {
