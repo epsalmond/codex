@@ -45,6 +45,9 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config.guardian_circuit_break_action = action;
+            // Wake mode (the fork default) reports interrupted children to the root; this test
+            // covers the upstream wait_agent flow, where only the strict action notifies.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.model_provider.stream_max_retries = Some(0);
         })
         .build_with_auto_env(&server)
