@@ -60,16 +60,21 @@ impl LocalAgentControl {
         {
             return Err(CodexErr::InvalidRequest("completion target has no open parent edge".into()));
         }
-        let parent = match state.get_thread(parent_thread_id).await {
-            Ok(parent) => parent,
+        let (parent, reload_error) = match state.get_thread(parent_thread_id).await {
+            Ok(parent) => (parent, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
-                if let Some(config) = self.runtime.registry.evicted_config(parent_thread_id) {
+                let reload_error = if let Some(config) = self.runtime.registry.evicted_config(parent_thread_id) {
                     // An owner-driven resume replaces target settings. Restore this target's own snapshot.
-                    self.ensure_v2_agent_loaded(config, parent_thread_id, /*parent*/ None).await?;
-                }
+                    self.ensure_v2_agent_loaded(config, parent_thread_id, /*parent*/ None).await.err()
+                } else { None };
                 // Explicit resume publishes its runtime before clearing the saved settings.
-                // Resolve that winner even if it raced our first lookup and cache read.
-                state.get_thread(parent_thread_id).await?
+                // It can also fill capacity while our loader prepares history. Validate that
+                // winner before delivery, preserving the loader error if no valid runtime exists.
+                let parent = match state.get_thread(parent_thread_id).await {
+                    Ok(parent) => parent,
+                    Err(err) => return Err(reload_error.unwrap_or(err)),
+                };
+                (parent, reload_error)
             }
             Err(err) => return Err(err),
         };
@@ -77,7 +82,7 @@ impl LocalAgentControl {
             || parent.session_source != stored.source
             || !Arc::ptr_eq(&self.runtime.registry, &parent.session.services.local_agent_runtime.registry)
         {
-            return Err(CodexErr::InvalidRequest("recovered completion target is not owned by this tree".into()));
+            return Err(reload_error.unwrap_or_else(|| CodexErr::InvalidRequest("recovered completion target is not owned by this tree".into())));
         }
         // Reuse the same identity and send once. Other failures may be ambiguous acceptance.
         self.send_inter_agent_communication(parent_thread_id, communication, context, TurnStartOptions::default())

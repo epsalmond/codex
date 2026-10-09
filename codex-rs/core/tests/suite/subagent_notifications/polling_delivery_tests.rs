@@ -8,10 +8,11 @@ use core_test_support::ThreadIdle;
 mod read_gate;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum DeliveryScenario { Recover, ExplicitResumeRace, NoCapacity, Archived, Closed, MissingHistory }
+enum DeliveryScenario { Recover, ExplicitResumeRace, ExplicitResumeDuringReload, NoCapacity, Archived, Closed, MissingHistory }
 
 #[test_case(DeliveryScenario::Recover; "recover")]
 #[test_case(DeliveryScenario::ExplicitResumeRace; "explicit resume race")]
+#[test_case(DeliveryScenario::ExplicitResumeDuringReload; "explicit resume during reload")]
 #[test_case(DeliveryScenario::NoCapacity; "no capacity")]
 #[test_case(DeliveryScenario::Archived; "archived")]
 #[test_case(DeliveryScenario::Closed; "closed edge")]
@@ -149,7 +150,7 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
         });
-    if scenario == DeliveryScenario::ExplicitResumeRace {
+    if matches!(scenario, DeliveryScenario::ExplicitResumeRace | DeliveryScenario::ExplicitResumeDuringReload) {
         builder = builder.with_thread_store(gated_store.clone());
     }
     let test = builder.build_with_streaming_server(&server).await?;
@@ -210,14 +211,16 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
         DeliveryScenario::MissingHistory => {
             test.thread_store.delete_thread(codex_thread_store::DeleteThreadParams { thread_id: child_thread_id }).await?;
         }
-        DeliveryScenario::Recover | DeliveryScenario::ExplicitResumeRace | DeliveryScenario::NoCapacity => {}
+        DeliveryScenario::Recover | DeliveryScenario::ExplicitResumeRace | DeliveryScenario::ExplicitResumeDuringReload | DeliveryScenario::NoCapacity => {}
     }
     let mut created = test.thread_manager.subscribe_thread_created();
-    let explicit_resume = (scenario == DeliveryScenario::ExplicitResumeRace).then(|| {
+    let explicit_resume = matches!(scenario, DeliveryScenario::ExplicitResumeRace | DeliveryScenario::ExplicitResumeDuringReload).then(|| {
         let (started, recovery_started) = oneshot::channel();
         let (release, recovery_release) = oneshot::channel();
         *gated_store.gate.lock().expect("arm recovery read") = Some(read_gate::ReadGate {
-            thread_id: child_thread_id, started, release: recovery_release,
+            thread_id: child_thread_id,
+            include_archived: scenario == DeliveryScenario::ExplicitResumeDuringReload,
+            started, release: recovery_release,
         });
         let manager = Arc::clone(&test.thread_manager);
         tokio::spawn(async move {
@@ -231,7 +234,7 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
     tokio::join!(ThreadIdle::wait(&grandchild_thread), async {
         let _ = grandchild_release_tx.send(());
     });
-    if !matches!(scenario, DeliveryScenario::Recover | DeliveryScenario::ExplicitResumeRace) {
+    if !matches!(scenario, DeliveryScenario::Recover | DeliveryScenario::ExplicitResumeRace | DeliveryScenario::ExplicitResumeDuringReload) {
         wait_for_event(&grandchild_thread, |event| matches!(event, EventMsg::Warning(warning) if warning.message.contains("Could not deliver completion to parent"))).await;
         assert!(test.thread_manager.get_thread(child_thread_id).await.is_err());
         grandchild_thread.shutdown_and_wait().await?;

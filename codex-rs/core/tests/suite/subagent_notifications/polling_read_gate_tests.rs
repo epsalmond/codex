@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 
 pub(super) struct ReadGate {
     pub thread_id: ThreadId,
+    pub include_archived: bool,
     pub started: oneshot::Sender<()>,
     pub release: oneshot::Receiver<()>,
 }
@@ -57,12 +58,12 @@ impl ThreadStore for GatedCompletionReadStore {
         Box::pin(async move {
             let gate = {
                 let mut gate = self.gate.lock().expect("recovery read gate");
-                if gate.as_ref().is_some_and(|gate| gate.thread_id == params.thread_id) {
+                if gate.as_ref().is_some_and(|gate| gate.thread_id == params.thread_id && gate.include_archived == params.include_archived) {
                     gate.take()
                 } else { None }
             };
             if let Some(gate) = gate {
-                assert!(!params.include_archived && !params.include_history);
+                assert!(!params.include_history);
                 gate.started.send(()).expect("recovery started receiver");
                 gate.release.await.expect("release recovery metadata read");
             }
