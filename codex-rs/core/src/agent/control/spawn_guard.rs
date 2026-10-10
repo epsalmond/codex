@@ -1,24 +1,30 @@
 //! Owns a spawned child until its initial input is accepted.
 
+use super::AgentTreeMembership;
 use crate::thread_manager::ThreadManagerState;
 use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_protocol::ThreadId;
+use codex_thread_store::ThreadStoreError;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
 pub(super) struct PendingSpawn {
     state: Arc<ThreadManagerState>,
-    child: Option<ThreadId>,
+    pending: Option<(ThreadId, AgentTreeMembership)>,
     edge_write: Option<JoinHandle<()>>,
     pub(super) operation: Option<Arc<crate::agent::control::GenerationOperation>>,
 }
 
 impl PendingSpawn {
-    pub(super) fn new(state: Arc<ThreadManagerState>, child: ThreadId) -> Self {
+    pub(super) fn new(
+        state: Arc<ThreadManagerState>,
+        child: ThreadId,
+        membership: AgentTreeMembership,
+    ) -> Self {
         Self {
             state,
-            child: Some(child),
+            pending: Some((child, membership)),
             edge_write: None,
             operation: None,
         }
@@ -38,30 +44,39 @@ impl PendingSpawn {
         self.edge_write = None;
     }
 
-    pub(super) fn disarm(mut self) {
-        self.child = None;
+    pub(super) fn disarm(mut self) -> AgentTreeMembership {
+        let Some((_child, membership)) = self.pending.take() else {
+            unreachable!("pending spawn must own agent-tree membership");
+        };
+        membership
     }
 }
 
 impl Drop for PendingSpawn {
     fn drop(&mut self) {
-        let Some(child) = self.child.take() else {
+        let Some((child, membership)) = self.pending.take() else {
             return;
         };
         let state = Arc::clone(&self.state);
+        let teardown = membership.into_teardown_guard();
         let edge_write = self.edge_write.take();
         let operation = self.operation.take();
         drop(tokio::spawn(async move {
             let _operation = operation;
             if let Some(thread) = state.remove_thread(&child).await {
                 if let Err(error) = thread.shutdown_and_wait().await {
+                    teardown.record_shutdown_failure();
                     warn!("failed to stop cancelled child spawn: {error}");
                 }
                 thread.wait_until_terminated().await;
-                if let Some(live_thread) = thread.session.live_thread()
-                    && let Err(error) = live_thread.discard().await
-                {
-                    warn!("failed to discard cancelled child spawn: {error}");
+                if let Some(live_thread) = thread.session.live_thread() {
+                    match live_thread.discard().await {
+                        Ok(()) | Err(ThreadStoreError::ThreadNotFound { .. }) => {}
+                        Err(error) => {
+                            teardown.record_shutdown_failure();
+                            warn!("failed to discard cancelled child spawn: {error}");
+                        }
+                    }
                 }
             }
             // A pending Open write must finish before cleanup writes Closed.
@@ -73,8 +88,10 @@ impl Drop for PendingSpawn {
                     .set_thread_spawn_edge_status(child, ThreadSpawnEdgeStatus::Closed)
                     .await
             {
+                teardown.record_shutdown_failure();
                 warn!("failed to close cancelled child spawn edge: {error}");
             }
+            teardown.complete();
         }));
     }
 }

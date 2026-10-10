@@ -1,9 +1,11 @@
 //! Pauses the recovery metadata read after a definite missing-runtime send failure.
 
+use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_thread_store as store;
 use std::any::Any;
+use std::sync::Arc;
 use std::sync::Mutex;
 use store::ThreadStore;
 use tokio::sync::oneshot;
@@ -39,7 +41,7 @@ impl ThreadStore for GatedCompletionReadStore {
 
     delegate_store_methods! {
         fn create_thread(params: store::CreateThreadParams) -> ();
-        fn resume_thread(params: store::ResumeThreadParams) -> ();
+        fn resume_thread(params: store::ResumeThreadParams) -> Arc<Vec<RolloutItem>>;
         fn append_items(params: store::AppendThreadItemsParams) -> ();
         fn flush_thread(thread_id: ThreadId) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();

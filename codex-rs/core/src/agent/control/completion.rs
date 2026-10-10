@@ -7,10 +7,12 @@ use super::LocalAgentControl;
 use super::coordinator::AgentAssignmentId;
 use super::coordinator::TerminalReportPublication;
 use crate::agent::api::AgentTurnOutcome;
+use crate::session_prefix::format_guardian_interruption_message;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -134,11 +136,21 @@ impl LocalAgentControl {
             }
         }
 
-        let Some(message) = format_inter_agent_completion_message(
-            parent_agent_path.clone(),
-            child_agent_path.clone(),
-            &status,
-        ) else {
+        let message = match (&status, outcome.error_info) {
+            (AgentStatus::Errored(error), Some(CodexErrorInfo::TooManyDenials)) => {
+                Some(format_guardian_interruption_message(
+                    parent_agent_path.clone(),
+                    child_agent_path.clone(),
+                    error,
+                ))
+            }
+            _ => format_inter_agent_completion_message(
+                parent_agent_path.clone(),
+                child_agent_path.clone(),
+                &status,
+            ),
+        };
+        let Some(message) = message else {
             return;
         };
         if self.runtime.wake_mode_enabled() {

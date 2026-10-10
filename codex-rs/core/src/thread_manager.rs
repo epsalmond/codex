@@ -2,6 +2,9 @@ mod completion_delivery;
 mod managed;
 pub use completion_delivery::CompletionDeliveryInhibition;
 mod shared_instructions;
+mod shutdown;
+
+pub use shutdown::AgentTreeShutdown;
 
 use crate::CodexAppsToolsCache;
 use crate::agent::LocalAgentControl;
@@ -25,6 +28,8 @@ use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
 use crate::session::resolve_multi_agent_version;
 use crate::session::session::Session;
+use crate::session::startup::SessionStartup;
+use crate::session::startup::SessionStartupGuard;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
@@ -287,6 +292,8 @@ pub struct StartThreadOptions {
     /// Explicit global instructions carried by an internal caller instead of loading them again.
     pub user_instructions: Option<LoadedUserInstructions>,
     pub thread_extension_init: ExtensionDataInit,
+    /// Host-supplied data captured by each new turn. This is not persisted.
+    pub turn_extension_init: ExtensionDataInit,
     pub client_mcp_extensions: ClientMcpExtensions,
     /// Thread ID reserved before startup so the caller can associate host-owned state with it.
     pub reserved_thread_id: Option<ThreadId>,
@@ -312,6 +319,7 @@ impl StartThreadOptions {
             inherited_environments: None,
             user_instructions: None,
             thread_extension_init: ExtensionDataInit::default(),
+            turn_extension_init: ExtensionDataInit::default(),
             client_mcp_extensions: ClientMcpExtensions::default(),
             reserved_thread_id: None,
             disabled_plugin_ids: None,
@@ -1542,6 +1550,7 @@ impl ThreadManager {
         prepared: PreparedFork,
     ) -> CodexResult<NewThread> {
         let history = InitialHistory::Resumed(ResumedHistory {
+            history_revision: None,
             conversation_id: prepared.source_thread_id,
             history: Arc::clone(&prepared.model_context),
             rollout_path: None,
@@ -2112,34 +2121,54 @@ impl ThreadManagerState {
 
     /// Spawn a new thread with optional history and register it with the manager.
     async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        let runtime = request.agent_control.runtime().clone();
+        let membership = runtime.admit_start()?;
+        let owns_startup = request.startup.is_none();
+        let startup_state = Arc::clone(
+            request
+                .startup
+                .get_or_insert_with(|| Arc::new(SessionStartup::default())),
+        );
+        startup_state.hold_membership(membership);
+
         let operation = request.generation_operation.take();
-        let guard = operation.as_ref().map(|operation| {
+        let generation_startup = operation.as_ref().map(|operation| {
             crate::session::startup::GenerationStartup::new(
                 Arc::clone(operation),
                 Arc::clone(&self.threads),
+                Arc::clone(&startup_state),
             )
         });
-        if let Some(guard) = &guard {
-            request.startup = Some(Arc::clone(&guard.startup));
-        }
+        let startup_guard = (owns_startup && generation_startup.is_none())
+            .then(|| SessionStartupGuard::new(Arc::clone(&startup_state)));
         let result = if let Some(operation) = operation {
             tokio::select! {
                 biased;
                 _ = operation.cancelled() => Err(CodexErr::TurnAborted),
-                result = self.spawn_thread_inner(request) => result,
+                result = self.spawn_thread_inner(
+                    request,
+                    Arc::clone(&startup_state),
+                    startup_guard,
+                ) => result,
             }
         } else {
-            self.spawn_thread_inner(request).await
+            self.spawn_thread_inner(request, startup_state, startup_guard)
+                .await
         };
         if result.is_ok()
-            && let Some(guard) = guard
+            && let Some(guard) = generation_startup
         {
             guard.disarm().await;
         }
         result
     }
 
-    async fn spawn_thread_inner(&self, request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+    async fn spawn_thread_inner(
+        &self,
+        request: ThreadSpawnRequest,
+        startup_state: Arc<SessionStartup>,
+        startup_guard: Option<SessionStartupGuard>,
+    ) -> CodexResult<NewThread> {
         let ThreadSpawnRequest {
             generation_operation: _,
             startup,
@@ -2171,6 +2200,7 @@ impl ThreadManagerState {
             inherited_environments: captured_environments,
             user_instructions: supplied_user_instructions,
             mut thread_extension_init,
+            turn_extension_init,
             client_mcp_extensions,
             mut reserved_thread_id,
             disabled_plugin_ids,
@@ -2235,10 +2265,13 @@ impl ThreadManagerState {
                             resumed.conversation_id
                         )));
                     }
-                    drop(threads);
                     let session_configured = thread
                         .startup_metadata()
                         .to_session_configured_event(initial_history.get_event_msgs());
+                    startup_state.release_membership();
+                    if let Some(startup_guard) = startup_guard {
+                        startup_guard.disarm();
+                    }
                     return Ok(NewThread {
                         thread_id: resumed.conversation_id,
                         session_configured,
@@ -2370,7 +2403,7 @@ impl ThreadManagerState {
         };
         let attachment_source =
             forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
-        let (session, io) = Session::spawn(SessionSpawnArgs {
+        let spawn_result = Session::spawn(SessionSpawnArgs {
             startup,
             config,
             allow_provider_model_fallback,
@@ -2413,6 +2446,7 @@ impl ThreadManagerState {
             parent_trace,
             environment_selections: environments,
             thread_extension_init,
+            turn_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
             analytics_events_client: self.analytics_events_client.clone(),
@@ -2431,7 +2465,16 @@ impl ThreadManagerState {
             },
             windows_sandbox_proxy_settings_mode,
         })
-        .await?;
+        .await;
+        let (session, io) = match spawn_result {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                if let Some(startup_guard) = startup_guard {
+                    startup_guard.cleanup().await;
+                }
+                return Err(error);
+            }
+        };
         if let Some(source_thread_id) = attachment_source
             && session.live_thread().is_some()
             && self.thread_store.supports_thread_attachments()
@@ -2458,15 +2501,28 @@ impl ThreadManagerState {
         {
             session.services.mcp_runtime.enable_full_access_form_input();
         }
-        let new_thread = self
+        let finalize_result = self
             .finalize_thread_spawn(session, io, tracked_session_source, initial_host_config)
-            .await?;
+            .await;
+        let new_thread = match finalize_result {
+            Ok(new_thread) => new_thread,
+            Err(error) => {
+                if let Some(startup_guard) = startup_guard {
+                    startup_guard.cleanup().await;
+                }
+                return Err(error);
+            }
+        };
         new_thread.thread.emit_thread_ready_lifecycle().await;
         if source_changed_during_startup.load(Ordering::Acquire) {
             new_thread.thread.session.request_mcp_runtime_refresh();
         }
         if is_resumed_thread {
             new_thread.thread.emit_thread_resume_lifecycle().await;
+        }
+        startup_state.release_membership();
+        if let Some(startup_guard) = startup_guard {
+            startup_guard.disarm();
         }
         Ok(new_thread)
     }
@@ -2570,6 +2626,7 @@ fn stored_thread_to_initial_history(
     })?;
     let last_activity_at = Some(stored_thread.updated_at);
     Ok(InitialHistory::Resumed(ResumedHistory {
+        history_revision: history.revision,
         conversation_id: thread_id,
         history: Arc::new(history.items),
         rollout_path: rollout_path.or(stored_thread.rollout_path),

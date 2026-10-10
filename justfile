@@ -5,7 +5,7 @@ export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
 set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 
-rust_min_stack := "8388608" # 8 MiB
+rust_min_stack := "16777216" # 16 MiB; merged debug app-server request futures exceed 8 MiB.
 python := if os_family() == "windows" { "python" } else { "python3" }
 
 # Display help

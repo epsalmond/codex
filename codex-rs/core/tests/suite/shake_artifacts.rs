@@ -314,6 +314,7 @@ fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + 
             history: Arc::new(stored_history.items),
             rollout_path: Some(source_rollout.clone()),
             last_activity_at: None,
+            history_revision: None,
         });
         let ephemeral_fork = Box::pin(rolled_back.thread_manager.fork_thread_from_history(
             ForkSnapshot::Interrupted,

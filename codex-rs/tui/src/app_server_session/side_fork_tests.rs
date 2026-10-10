@@ -63,7 +63,7 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
                 ])
                 .build()
                 .await?;
-            let launch_overrides = config_request_overrides_from_config(&config);
+            let launch_overrides = config_request_overrides_from_config(&config, mode);
             let mut session =
                 AppServerSession::new(crate::connect_remote_app_server(endpoint).await?, mode);
             let local_settings = LocalSettings::from(&config);
@@ -71,7 +71,12 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
             let result = match presentation {
                 ForkPresentation::SideConversation => {
                     session
-                        .fork_side_thread(&local_settings, config.clone(), thread_id)
+                        .fork_side_thread(
+                            &local_settings,
+                            config.clone(),
+                            thread_id,
+                            /*selected_profile*/ None,
+                        )
                         .await
                 }
                 ForkPresentation::Regular => {
@@ -114,7 +119,7 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
                 assert_eq!(requests[1], fallback);
             }
             assert_eq!(
-                config_request_overrides_from_config(&config),
+                config_request_overrides_from_config(&config, mode),
                 launch_overrides
             );
         }

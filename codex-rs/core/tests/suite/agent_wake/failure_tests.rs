@@ -159,7 +159,7 @@ async fn failed_root_quiesces_descendants_and_allows_explicit_followup(
     // Hold the active followup until Core has processed the stale failure submission.
     test.codex.submit(Op::FailTurn { turn_id, error }).await?;
     test.codex
-        .update_thread_settings(Default::default())
+        .update_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides::default())
         .await?;
     release_followup.send(()).expect("followup remains active");
     let EventMsg::TurnComplete(completed) = wait_for_event(&test.codex, |event| {

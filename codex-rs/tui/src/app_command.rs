@@ -14,7 +14,6 @@ use codex_config::types::ApprovalsReviewer;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
 use codex_protocol::config_types::CollaborationMode;
-use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
@@ -129,7 +128,6 @@ pub(crate) enum AppCommand {
         service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
-        personality: Option<Personality>,
     },
     OverrideTurnContext {
         cwd: Option<PathBuf>,
@@ -142,7 +140,6 @@ pub(crate) enum AppCommand {
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
-        personality: Option<Personality>,
     },
     ExecApproval {
         id: String,
@@ -234,7 +231,6 @@ impl AppCommand {
         service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
-        personality: Option<Personality>,
     ) -> Self {
         Self::UserTurn {
             client_user_message_id,
@@ -249,7 +245,6 @@ impl AppCommand {
             service_tier,
             final_output_json_schema,
             collaboration_mode,
-            personality,
         }
     }
 
@@ -265,7 +260,6 @@ impl AppCommand {
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
-        personality: Option<Personality>,
     ) -> Self {
         Self::OverrideTurnContext {
             cwd,
@@ -278,7 +272,6 @@ impl AppCommand {
             summary,
             service_tier,
             collaboration_mode,
-            personality,
         }
     }
 

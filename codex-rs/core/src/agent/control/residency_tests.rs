@@ -50,9 +50,15 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         .runtime
         .upgrade()
         .expect("thread manager should be live");
+    let membership = control.runtime.admit_start().expect("admit residency work");
 
     let first_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &membership,
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("first resident slot");
     let first =
@@ -61,7 +67,12 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
     mark_thread_completed(first.thread.as_ref()).await;
 
     let second_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &membership,
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("second resident slot should evict the first idle agent");
     match manager.get_thread(first.thread_id).await {
@@ -101,9 +112,15 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
         .runtime
         .upgrade()
         .expect("thread manager should be live");
+    let membership = control.runtime.admit_start().expect("admit residency work");
 
     let first_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &membership,
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("first resident slot");
     let first =
@@ -112,7 +129,12 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     mark_thread_interrupted(first.thread.as_ref()).await;
 
     let second_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &membership,
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("second resident slot should evict the first interrupted idle agent");
     match manager.get_thread(first.thread_id).await {
@@ -182,7 +204,12 @@ async fn evicted_waiting_wake_agent_reports_interruption_once() {
         )
         .expect("root assignment starts");
     let first_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &control.runtime.admit_start().expect("admit residency work"),
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("first resident slot");
     let first_agent_path = AgentPath::try_from("/root/worker_1").expect("agent path");
@@ -270,7 +297,12 @@ async fn evicted_waiting_wake_agent_reports_interruption_once() {
     assert_eq!(first.thread.agent_status().await, AgentStatus::Waiting);
 
     let second_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &control.runtime.admit_start().expect("admit residency work"),
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("second resident slot evicts the waiting agent");
     assert!(manager.get_thread(first.thread_id).await.is_err());
@@ -344,7 +376,12 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
     let child_path = AgentPath::try_from("/root/worker").expect("child path");
     let grandchild_path = AgentPath::try_from("/root/worker/helper").expect("grandchild path");
     let child_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &control.runtime.admit_start().expect("admit residency work"),
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("reserve child residency");
     let child = spawn_v2_thread_spawn_agent(
@@ -375,7 +412,12 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         });
 
     let grandchild_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &control.runtime.admit_start().expect("admit residency work"),
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("reserve grandchild residency");
     let grandchild = spawn_v2_thread_spawn_agent(
@@ -411,7 +453,12 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         .await;
 
     let eviction_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &control.runtime.admit_start().expect("admit residency work"),
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("third reservation evicts the least-recently-used grandchild");
     drop(eviction_slot);
@@ -528,7 +575,12 @@ async fn internal_agent_died_interrupt_publishes_one_upward_report() {
 
     let child_path = AgentPath::try_from("/root/worker").expect("child path");
     let child_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .reserve_v2_residency_slot(
+            &state,
+            &config,
+            &control.runtime.admit_start().expect("admit residency work"),
+            /*protected_thread_id*/ None,
+        )
         .await
         .expect("reserve child residency");
     let child = spawn_v2_thread_spawn_agent(
