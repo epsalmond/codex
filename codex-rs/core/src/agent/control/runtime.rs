@@ -72,6 +72,14 @@ impl LocalAgentRuntime {
         self.wake_coordinator.claim_next_mailbox_report(parent)
     }
 
+    /// Takes the oldest wake request off the queue, for tests that have no dispatcher.
+    #[cfg(test)]
+    pub(crate) fn claim_next_wake_assignment(&self) -> Option<AgentAssignmentId> {
+        self.wake_coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned())
+    }
+
     pub(super) fn new(
         manager: Weak<ThreadManagerState>,
         thread_id_generator: ThreadIdGenerator,

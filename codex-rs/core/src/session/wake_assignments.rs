@@ -16,7 +16,8 @@ use tracing::warn;
 /// Held by a start from the moment it reserves the active-turn slot until its task is
 /// installed. Dropping it any other way gives back the assignment its turn id still holds, whether
 /// the start bound it or inherited it from a reservation it replaced, so no exit leaves an
-/// assignment running under a turn that never runs.
+/// assignment running under a turn that never runs. Explicit input whose reservation is lost
+/// carries it to its next attempt under the same turn id, which keeps the assignment.
 #[must_use]
 pub(crate) struct UnstartedTurnAssignment<'a> {
     session: &'a Session,

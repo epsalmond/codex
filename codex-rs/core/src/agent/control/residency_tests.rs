@@ -493,8 +493,8 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
     );
     assert_eq!(
         coordinator.assignment_status(child.thread_id),
-        None,
-        "closed assignment state is retired"
+        Some(AgentStatus::Interrupted),
+        "the child was interrupted before the close, so it stays for the report that publishes"
     );
     let _ = control.shutdown_live_agent(root.thread_id).await;
     let _ = grandchild_assignment;

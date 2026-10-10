@@ -120,8 +120,10 @@ impl AgentWakeCoordinator {
 
     /// Releases every generation of the closed threads and their descendants. A subtree root whose
     /// parent is outside the subtree is that parent's child, so the parent must still hear from
-    /// it: a report it already published is kept for delivery, and if the parent is waiting on it
-    /// with no report yet, it is interrupted instead and returned for its report to be published.
+    /// it. A root that already has its result keeps it: a published report is kept for delivery,
+    /// and a root whose turn ended but has not published yet is kept so that its own publish still
+    /// finds it. An open root its parent is waiting on is interrupted instead and returned for its
+    /// report to be published.
     pub(crate) fn cancel_subtree(&self, thread_ids: &[ThreadId]) -> Vec<InterruptedChild> {
         let mut state = self.lock_state();
         let mut pending = state
@@ -165,7 +167,7 @@ impl AgentWakeCoordinator {
             if !parent_is_current_and_open {
                 continue;
             }
-            if record.terminal_report_id.is_some() {
+            if record.terminal_report_id.is_some() || record.phase.is_terminal() {
                 kept.push(assignment.clone());
                 continue;
             }

@@ -565,7 +565,7 @@ impl Session {
     /// Ends a turn whose reservation lost the slot before its task was installed: requeues its
     /// mail, releases its root-turn registration and reports `TurnAborted`, which also releases
     /// an assignment the turn still holds. A reservation that asked for its input back gets it
-    /// instead, and its caller's assignment guard releases the assignment.
+    /// instead, and its caller's assignment guard keeps the assignment for a retry or releases it.
     async fn abort_unstarted_task(
         &self,
         turn_context: &TurnContext,

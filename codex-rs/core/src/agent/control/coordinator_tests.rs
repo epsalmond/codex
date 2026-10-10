@@ -1226,3 +1226,51 @@ fn lost_wake_start_with_an_enqueued_report_wakes_its_parent_again() {
         "the enqueued report still needs a turn"
     );
 }
+
+#[test]
+fn closing_a_child_that_ended_but_has_not_reported_keeps_it_for_its_own_report() {
+    for (disposition, phase) in [
+        (TurnEndDisposition::Succeeded, AssignmentPhase::Completed),
+        (TurnEndDisposition::Errored, AssignmentPhase::Errored),
+    ] {
+        for parent_waits in [true, false] {
+            let coordinator = Arc::new(AgentWakeCoordinator::default());
+            let root = new_root(&coordinator);
+            let child = new_child(&coordinator, &root, "child-turn");
+            if parent_waits {
+                assert_eq!(
+                    coordinator.classify_turn_end(
+                        &root,
+                        "root-turn",
+                        TurnEndDisposition::Succeeded
+                    ),
+                    Ok(AssignmentPhase::Waiting)
+                );
+            }
+            // The child's turn has ended, but its finalization has not published the report yet.
+            assert_eq!(
+                coordinator.classify_turn_end(&child, "child-turn", disposition),
+                Ok(phase)
+            );
+
+            // Its result is already decided, so closing it neither replaces nor drops it.
+            assert_eq!(coordinator.cancel_subtree(&[child.thread_id]), Vec::new());
+            assert_eq!(
+                coordinator.terminal_assignment_for_turn(child.thread_id, "child-turn"),
+                Some(child.clone()),
+                "{disposition:?}, parent waits: {parent_waits}"
+            );
+            assert!(matches!(
+                coordinator.publish_terminal_report(&child, "child-turn", interruption_report()),
+                Some(TerminalReportPublication::Published(_))
+            ));
+            assert_eq!(pending_reports(&coordinator, &root), 1);
+            assert_eq!(
+                coordinator
+                    .claim_next_wake_request()
+                    .and_then(|request| request.assignment().cloned()),
+                Some(root)
+            );
+        }
+    }
+}
