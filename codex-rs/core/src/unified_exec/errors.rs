@@ -10,7 +10,9 @@ pub(crate) enum UnifiedExecError {
     #[error("Unified exec process failed: {message}")]
     ProcessFailed { message: String },
     // The model is trained on `session_id`, but internally we track a `process_id`.
-    #[error("Unknown process id {process_id}")]
+    #[error(
+        "Session ID {process_id} is unavailable in this agent. Use a session_id returned by this agent's exec_command; IDs from other agents cannot be used here. If another agent launched the command, ask that agent to interact with it. A previously returned session may have completed or been removed."
+    )]
     UnknownProcessId { process_id: i32 },
     #[error("stdin approval failed: {0:?}")]
     StdinApproval(crate::tools::sandboxing::ToolError),

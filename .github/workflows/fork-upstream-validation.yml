@@ -91,6 +91,7 @@ jobs:
       - name: Test merge, metadata, and release helpers
         run: |
           bash .github/scripts/test_fork_upstream_merge.sh
+          bash .github/scripts/test_fork_recovery_handoff_status.sh
           bash .github/scripts/test_fork_release_metadata.sh
           bash .github/scripts/test_fork_release_notes.sh
           bash .github/scripts/test_build_fork_deb.sh

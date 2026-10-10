@@ -35,9 +35,11 @@ impl CodeModeSessionDelegate for Delegate {
         cancel: CancellationToken,
     ) -> NotificationFuture<'a> {
         Box::pin(async move {
-            self.events.send(Event::Notification).unwrap();
+            assert!(self.events.send(Event::Notification).is_ok());
             tokio::select! {
-                permit = self.notifications.acquire() => { permit.unwrap().forget(); }
+                permit = self.notifications.acquire() => {
+                    permit.unwrap_or_else(|error| panic!("gate closed: {error}")).forget();
+                }
                 _ = cancel.cancelled() => {}
             }
             Ok(())
@@ -45,16 +47,20 @@ impl CodeModeSessionDelegate for Delegate {
     }
 
     fn cell_terminal_ready(&self, ready: CellTerminalReady) {
-        self.events.send(Event::Ready(ready)).unwrap();
+        assert!(self.events.send(Event::Ready(ready)).is_ok());
     }
 
     fn cell_closed(&self, cell_id: &CellId) {
-        self.events.send(Event::Closed(cell_id.clone())).unwrap();
+        assert!(self.events.send(Event::Closed(cell_id.clone())).is_ok());
     }
 }
 
 async fn next(events: &mut mpsc::UnboundedReceiver<Event>) -> Event {
-    timeout(TEST_TIMEOUT, events.recv()).await.unwrap().unwrap()
+    match timeout(TEST_TIMEOUT, events.recv()).await {
+        Ok(Some(event)) => event,
+        Ok(None) => panic!("event channel closed"),
+        Err(error) => panic!("event timeout: {error}"),
+    }
 }
 
 #[tokio::test]

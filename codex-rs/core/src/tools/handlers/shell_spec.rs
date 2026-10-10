@@ -96,11 +96,11 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         name: "exec_command".to_string(),
         description: if include_windows_shell_guidance {
             format!(
-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
+                "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions.\n\n{}",
                 windows_shell_guidance()
             )
         } else {
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions."
                 .to_string()
         },
         strict: false,
@@ -119,7 +119,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
-                "Identifier of the running unified exec session.".to_string(),
+                "Session ID returned by this agent's exec_command. IDs are local to each agent; use only this agent's IDs.".to_string(),
             )),
         ),
         (
@@ -145,7 +145,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
         description:
-            "Writes characters to an existing unified exec session and returns recent output."
+            "Writes characters to an existing unified exec session owned by this agent and returns recent output. Ask the launching agent to interact with its sessions."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -213,7 +213,7 @@ fn unified_exec_output_schema() -> Value {
             },
             "session_id": {
                 "type": "number",
-                "description": "Session identifier to pass to write_stdin when the process is still running."
+                "description": "Session identifier to pass to write_stdin in this agent when the process is still running. IDs are local to each agent; ask the launching agent to interact with its sessions."
             },
             "original_token_count": {
                 "type": "number",

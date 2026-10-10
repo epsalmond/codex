@@ -133,6 +133,9 @@ async fn thread_archive_shuts_down_resumed_archived_descendant() -> Result<()> {
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Collab)
+        .disable_feature(Feature::MultiAgentV2)
+        .disable_feature(Feature::CodeMode)
+        .disable_feature(Feature::CodeModeOnly)
         .write(codex_home.path())?;
     let parent_id = create_fake_paginated_rollout(
         codex_home.path(),
@@ -204,7 +207,8 @@ async fn thread_archive_shuts_down_resumed_archived_descendant() -> Result<()> {
             request_id,
             params: ThreadResumeParams {
                 thread_id: parent_id.clone(),
-                model: Some("gpt-5.4".to_string()),
+                // Use direct V1 tools without a catalog model overriding the tool mode.
+                model: Some("mock-model".to_string()),
                 ..Default::default()
             },
         })
