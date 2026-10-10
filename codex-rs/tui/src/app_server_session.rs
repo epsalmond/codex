@@ -19,6 +19,10 @@ mod thread_list;
 #[path = "app_server_session/collaboration_catalog_tests.rs"]
 mod collaboration_catalog_tests;
 
+#[cfg(test)]
+#[path = "app_server_session/side_fork_tests.rs"]
+mod side_fork_tests;
+
 pub(crate) use history::HISTORY_ITEM_PAGE_LIMIT;
 pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
@@ -977,6 +981,25 @@ impl AppServerSession {
         }
         self.thread_tool_transport()
             .configure_mcp(&mut params.config);
+        if presentation == ForkPresentation::SideConversation {
+            let overrides = params.config.get_or_insert_with(HashMap::new);
+            // Launch features can arrive as a nested object. Keep it consistent with the
+            // dotted overrides so unordered server-side application cannot re-enable agents.
+            if let Some(features) = overrides
+                .get_mut("features")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                features.insert("multi_agent".to_string(), serde_json::Value::Bool(false));
+                features.insert("multi_agent_v2".to_string(), serde_json::Value::Bool(false));
+            }
+            for key in [
+                "features.multi_agent",
+                "features.multi_agent_v2",
+                "agents.enabled",
+            ] {
+                overrides.insert(key.to_string(), serde_json::Value::Bool(false));
+            }
+        }
         let response: ThreadForkResponse = match self
             .client
             .request_typed(ClientRequest::ThreadFork {

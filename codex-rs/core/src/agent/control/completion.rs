@@ -6,18 +6,18 @@
 use super::LocalAgentControl;
 use super::coordinator::AgentAssignmentId;
 use super::coordinator::TerminalReportPublication;
-use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
-use crate::agent_communication::AgentCommunicationContext;
-use crate::agent_communication::AgentCommunicationKind;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::WarningEvent;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
@@ -202,25 +202,30 @@ impl LocalAgentControl {
         // wake mode. The root is exempt from the capacity check a triggered send adds.
         // Non-root parents keep `wait_agent`.
         let trigger_turn = parent_agent_path.is_root();
-        let communication = InterAgentCommunication::new(
+        let mut communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
             Vec::new(),
             message,
             trigger_turn,
         );
-        let context =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
+        communication.id = Some(codex_protocol::ResponseItemId::new("msg"));
         if let Err(err) = self
-            .send_inter_agent_communication(
-                parent_thread_id,
-                communication,
-                context,
-                TurnStartOptions::default(),
-            )
+            .deliver_polling_completion(parent_thread_id, outcome.thread_id, communication)
             .await
         {
             warn!("failed to notify parent thread {parent_thread_id}: {err}");
+            if let Ok(state) = self.runtime.upgrade()
+                && let Ok(sender) = state.get_thread(outcome.thread_id).await
+            {
+                let diagnostic: String = err.to_string().chars().take(512).collect();
+                sender.session.send_event_raw(Event {
+                    id: outcome.turn_id.clone(),
+                    msg: EventMsg::Warning(WarningEvent {
+                        message: format!("Could not deliver completion to parent {parent_thread_id}: {diagnostic}"),
+                    }),
+                }).await;
+            }
             return;
         }
         if let Some(message) = trace_message {

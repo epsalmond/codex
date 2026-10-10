@@ -401,6 +401,82 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_session_ids_resolve_in_the_current_agent_only() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (owner, owner_turn) = test_session_and_turn().await;
+    let (other, other_turn) = test_session_and_turn().await;
+    let command = "read -r value; printf 'received:%s\\n' \"$value\"";
+    let owner_output = exec_command(
+        &owner,
+        &owner_turn,
+        command,
+        /*yield_time_ms*/ 100,
+        /*workdir*/ None,
+    )
+    .await?;
+    let owner_id = owner_output.process_id.expect("owner process is running");
+
+    let error = write_stdin(
+        &other,
+        &other_turn,
+        owner_id,
+        "foreign\n",
+        /*yield_time_ms*/ 100,
+    )
+    .await
+    .expect_err("other agent must not access the owner's process");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Session ID {owner_id} is unavailable in this agent. Use a session_id returned by this agent's exec_command; IDs from other agents cannot be used here. If another agent launched the command, ask that agent to interact with it. A previously returned session may have completed or been removed."
+        )
+    );
+
+    // Numeric IDs are local to each manager. A collision names the current
+    // agent's process; it does not grant access to the original owner's process.
+    let other_output = exec_command(
+        &other,
+        &other_turn,
+        command,
+        /*yield_time_ms*/ 100,
+        /*workdir*/ None,
+    )
+    .await?;
+    let other_id = other_output.process_id.expect("other process is running");
+    assert_eq!((owner_id, other_id), (1000, 1000));
+
+    let other_result = write_stdin(
+        &other,
+        &other_turn,
+        owner_id,
+        "other-value\n",
+        /*yield_time_ms*/ 2_500,
+    )
+    .await?;
+    let owner_result = write_stdin(
+        &owner,
+        &owner_turn,
+        owner_id,
+        "owner-value\n",
+        /*yield_time_ms*/ 2_500,
+    )
+    .await?;
+    assert_eq!(
+        (other_result.exit_code, owner_result.exit_code),
+        (Some(0), Some(0))
+    );
+    let other_text = other_result.truncated_output(DEFAULT_MAX_OUTPUT_TOKENS);
+    let owner_text = owner_result.truncated_output(DEFAULT_MAX_OUTPUT_TOKENS);
+    assert!(other_text.contains("received:other-value"), "{other_text}");
+    assert!(owner_text.contains("received:owner-value"), "{owner_text}");
+    assert!(!owner_text.contains("foreign"), "{owner_text}");
+    assert!(!owner_text.contains("other-value"), "{owner_text}");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
 

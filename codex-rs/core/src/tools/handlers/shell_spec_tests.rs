@@ -22,11 +22,11 @@ fn exec_command_tool_matches_expected_spec() {
 
     let description = if cfg!(windows) {
         format!(
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions.{}",
             windows_shell_guidance_description()
         )
     } else {
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions."
             .to_string()
     };
     let yield_time_ms_description = if cfg!(windows) {
@@ -122,7 +122,7 @@ fn write_stdin_tool_matches_expected_spec() {
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
-                "Identifier of the running unified exec session.".to_string(),
+                "Session ID returned by this agent's exec_command. IDs are local to each agent; use only this agent's IDs.".to_string(),
             )),
         ),
         (
@@ -150,7 +150,7 @@ fn write_stdin_tool_matches_expected_spec() {
         ToolSpec::Function(ResponsesApiTool {
             name: "write_stdin".to_string(),
             description:
-                "Writes characters to an existing unified exec session and returns recent output."
+                "Writes characters to an existing unified exec session owned by this agent and returns recent output. Ask the launching agent to interact with its sessions."
                     .to_string(),
             strict: false,
             defer_loading: None,

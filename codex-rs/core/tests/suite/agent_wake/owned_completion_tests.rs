@@ -24,7 +24,7 @@ async fn child_retains_owned_helper_until_one_terminal_report(evict_pending: boo
             config
                 .features
                 .enable(Feature::AsyncProcessCompletion)
-                .unwrap();
+                .expect("test config should allow feature update");
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
         })
         .build_with_auto_env(&server)
@@ -145,7 +145,7 @@ async fn child_retains_owned_helper_until_one_terminal_report(evict_pending: boo
         .await
         .into_iter()
         .find(|id| *id != root)
-        .unwrap();
+        .expect("root should have spawned a child thread");
     let child = test.thread_manager.get_thread(child_id).await?;
     wait_for_turn_complete(&child).await;
     assert_eq!(child.agent_status().await, AgentStatus::Waiting);
@@ -205,7 +205,7 @@ async fn child_retains_owned_helper_until_one_terminal_report(evict_pending: boo
     let bodies = server
         .received_requests()
         .await
-        .unwrap()
+        .expect("mock server should record requests")
         .iter()
         .filter_map(request_json)
         .collect::<Vec<_>>();
@@ -216,14 +216,14 @@ async fn child_retains_owned_helper_until_one_terminal_report(evict_pending: boo
     assert_eq!(child_bodies.len(), 3);
     let terminal = child_bodies[2]["input"]
         .as_array()
-        .unwrap()
+        .expect("child request input should be an array")
         .iter()
         .find(|item| {
             item["content"][0]["text"]
                 .as_str()
                 .is_some_and(|text| text.starts_with("<async_tool_completion>"))
         })
-        .unwrap();
+        .expect("child request should carry the async completion");
     assert!(terminal.to_string().contains("child-terminal"));
     assert!(terminal.to_string().contains(&child_id.to_string()));
     let root_bodies = root_request_bodies(&server, root).await;
