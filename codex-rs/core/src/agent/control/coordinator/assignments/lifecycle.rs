@@ -112,8 +112,9 @@ impl AgentWakeCoordinator {
     /// assignment returns to how the turn found it, so the next wake or input can take it. A turn
     /// that resumed a waiting assignment leaves it waiting again (and requests the wake its ready
     /// work needs), one that took an unheld running assignment leaves it unheld, and one that
-    /// created the generation ends it as interrupted. Does nothing unless `turn_id` still holds
-    /// the thread's running assignment.
+    /// created the generation releases it, as a reservation that never commits is rolled back: no
+    /// turn ran in it, so it leaves its parent's children and no report is owed. Does nothing
+    /// unless `turn_id` still holds the thread's running assignment.
     pub(crate) fn release_unstarted_turn(&self, thread_id: ThreadId, turn_id: &str) {
         let mut state = self.lock_state();
         let Some(current) = state.current_by_thread.get(&thread_id).cloned() else {
@@ -129,8 +130,8 @@ impl AgentWakeCoordinator {
         }
         match assignment.active_turn_origin {
             ActiveTurnOrigin::NewGeneration => {
-                drop(state);
-                let _ = self.classify_turn_end(&current, turn_id, TurnEndDisposition::Interrupted);
+                Self::release_assignment(&mut state, &current);
+                state.signal_wake_event();
             }
             ActiveTurnOrigin::Unheld => {
                 assignment.active_turn_id = None;

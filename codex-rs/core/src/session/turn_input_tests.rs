@@ -1365,3 +1365,83 @@ async fn start_or_steer_whose_reservation_is_lost_before_its_task_starts_steers_
     }
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
+
+/// A delegated followup creates a fresh child generation, loses its reservation to an interrupt
+/// before its task starts, and its retry fails before binding. No turn ran in that generation, so
+/// the parent must not be left waiting for a report from it.
+#[tokio::test(start_paused = true)]
+async fn child_generation_whose_start_is_lost_and_whose_retry_fails_does_not_hold_its_parent() {
+    let parent_thread_id = codex_protocol::ThreadId::new();
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let (mut session, _) =
+        crate::session::tests::make_session_and_context_with_session_source(source).await;
+    session.multi_agent_version =
+        std::sync::OnceLock::from(codex_protocol::protocol::MultiAgentVersion::V2);
+    let session = Arc::new(session);
+    let runtime = &session.services.local_agent_runtime;
+    runtime.enable_wake_mode();
+    let parent = runtime
+        .begin_wake_assignment_for_turn(
+            parent_thread_id,
+            &SessionSource::Cli,
+            "parent-turn",
+            /*allow_new_generation*/ true,
+        )
+        .expect("parent assignment starts")
+        .expect("wake mode binds the parent");
+
+    let mut install_hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+    let (submission, ()) = tokio::join!(
+        handle(
+            &session,
+            explicit_turn("followup").on_start(TurnStartOptions {
+                parent_turn_id: Some("parent-turn".to_string()),
+                ..Default::default()
+            }),
+            TurnInputMode::StartOrSteer,
+            "followup".to_string(),
+        ),
+        async {
+            install_hold.reached().await;
+            assert!(
+                runtime.current_wake_assignment(session.thread_id).is_some(),
+                "the first attempt creates a generation under the parent"
+            );
+            // The retry fails before it binds.
+            let mut bind_hold = crate::tasks::hold_next_turn_start(
+                session.thread_id,
+                crate::tasks::TurnStartHoldPoint::InputBeforeBind,
+            );
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+            install_hold.release();
+            bind_hold.reached().await;
+            bind_hold.fail_and_wait().await;
+        },
+    );
+    assert!(
+        submission.is_err(),
+        "the retry's bind failed: {submission:?}"
+    );
+
+    assert_eq!(runtime.current_wake_assignment(session.thread_id), None);
+    assert_eq!(
+        runtime
+            .classify_wake_turn_end(
+                &parent,
+                "parent-turn",
+                crate::agent::control::TurnEndDisposition::Succeeded,
+            )
+            .await,
+        Ok(crate::agent::control::AssignmentPhase::Completed),
+        "the parent must not wait on a generation no turn ran"
+    );
+}

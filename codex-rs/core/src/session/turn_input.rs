@@ -389,13 +389,14 @@ async fn start_or_steer(
         additional_context,
     };
     let mut retries_left = LOST_RESERVATION_RETRIES;
+    // Input never races a starting turn, one that reserved the slot without installing its task
+    // yet, such as an automatic wake binding its assignment. It steers into that turn once it
+    // runs, or starts after the turn releases the slot. A finishing turn, or a start that outlives
+    // the wait, is replaced as before. A free slot is reserved before this turn binds its
+    // assignment. One deadline covers every attempt, so retries cannot stretch how long this
+    // input holds the submission loop.
+    let deadline = Instant::now() + STARTING_TURN_WAIT_TIMEOUT;
     loop {
-        // Input never races a starting turn, one that reserved the slot without installing its
-        // task yet, such as an automatic wake binding its assignment. It steers into that turn
-        // once it runs, or starts after the turn releases the slot. A finishing turn, or a start
-        // that outlives the wait, is replaced as before. A free slot is reserved before this turn
-        // binds its assignment.
-        let deadline = Instant::now() + STARTING_TURN_WAIT_TIMEOUT;
         let (turn_state, assignment_guard, _admission) = loop {
             match session
                 .steer_input(
