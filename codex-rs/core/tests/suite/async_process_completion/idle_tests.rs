@@ -534,3 +534,96 @@ async fn wake_held_before_bind_cannot_bind_after_explicit_input_replaced_it() ->
     );
     assert_wake_replaced_before_bind_ends_quietly(/*explicit_binds_first*/ false).await
 }
+
+/// Explicit input takes over a starting wake's running assignment, then fails to bind. The
+/// assignment must not stay running under a turn id that never runs: the completion it waits for
+/// wakes a new turn, later explicit input starts, and automatic wakeups never pause.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_turn_that_fails_after_taking_over_a_wake_gives_its_assignment_back() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    let (test, server, wake) =
+        park_idle_wake_with_ready_completion(TurnStartHoldPoint::WakeBeforeInstall).await?;
+    let thread_id = test.session_configured.thread_id;
+    let mut input = hold_next_turn_start(thread_id, TurnStartHoldPoint::InputBeforeBind);
+    let codex = Arc::clone(&test.codex);
+    let explicit =
+        tokio::spawn(async move { codex.start_or_steer_turn(user_turn("explicit fails")).await });
+    // The input waits out its bound, replaces the bound wake and takes its assignment over.
+    tokio::time::timeout(Duration::from_secs(10), input.reached())
+        .await
+        .expect("explicit input should replace the parked wake");
+    input.fail_and_wait().await;
+    assert!(
+        explicit.await?.is_err(),
+        "the injected bind failure fails the explicit input"
+    );
+    // The replaced wake ends without starting, and the completion wakes a turn of its own.
+    wake.release_and_wait().await;
+    let mut seen = Vec::new();
+    wait_for_event(&test.codex, |event| {
+        seen.push(event.clone());
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let requests = request_bodies(&server).await;
+    let delivered = completions(requests.last().unwrap());
+    assert_eq!(delivered.len(), 1);
+    assert!(delivered[0].contains("call=race-finite"));
+    assert!(delivered[0].contains("terminal-tail"));
+
+    // Later explicit input starts normally and sees the completion once, in history.
+    let TurnInputSubmission::Started { turn_id } = test
+        .codex
+        .start_or_steer_turn(user_turn("after the race"))
+        .await?
+    else {
+        panic!("idle follow-up must start a turn");
+    };
+    wait_for_event(&test.codex, |event| {
+        seen.push(event.clone());
+        matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id)
+    })
+    .await;
+    let requests = request_bodies(&server).await;
+    let last = requests.last().unwrap();
+    assert_eq!(completions(last).len(), 1);
+    let texts = last["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["content"][0]["text"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        texts
+            .iter()
+            .filter(|text| **text == "after the race")
+            .count(),
+        1
+    );
+    assert!(!texts.contains(&"explicit fails"));
+    assert!(
+        requests
+            .iter()
+            .all(|request| completions(request).len() <= 1)
+    );
+    for event in &seen {
+        match event {
+            EventMsg::Warning(warning) => assert!(
+                !warning.message.contains("Automatic turn did not start"),
+                "no automatic start may fail: {}",
+                warning.message
+            ),
+            EventMsg::AgentWakeupsUpdated(update) => {
+                assert!(!update.paused, "automatic wakeups must not pause");
+            }
+            _ => {}
+        }
+    }
+    server.shutdown().await;
+    Ok(())
+}

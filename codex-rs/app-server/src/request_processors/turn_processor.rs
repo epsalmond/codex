@@ -673,8 +673,8 @@ impl TurnRequestProcessor {
             TurnInputSubmission::Started { turn_id } => (turn_id, true),
             TurnInputSubmission::Steered { turn_id } => (turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
-                let error =
-                    crate::error_code::retryable_turn_start_error(&reason).unwrap_or_else(|| {
+                let error = crate::error_code::retryable_start_or_steer_error(&reason)
+                    .unwrap_or_else(|| {
                         internal_error(format!("failed to submit turn input: {reason:?}"))
                     });
                 self.track_error_response(&request_id, &error, /*error_type*/ None);

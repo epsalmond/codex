@@ -1,5 +1,6 @@
 //! Generation transitions, terminal classification, and reservation commit.
 
+use super::super::ActiveTurnOrigin;
 use super::super::AgentAssignmentId;
 use super::super::AgentWakeCoordinator;
 use super::super::Assignment;
@@ -55,10 +56,14 @@ impl AgentWakeCoordinator {
                         Some(_) => {
                             return Err("another turn is already active for this assignment");
                         }
-                        None => assignment.active_turn_id = Some(turn_id),
+                        None => {
+                            assignment.active_turn_id = Some(turn_id);
+                            assignment.active_turn_origin = ActiveTurnOrigin::Unheld;
+                        }
                     }
                 } else {
                     assignment.active_turn_id = Some(turn_id);
+                    assignment.active_turn_origin = ActiveTurnOrigin::Waiting;
                 }
                 assignment.phase = AssignmentPhase::Running;
                 return Ok(current);
@@ -81,8 +86,10 @@ impl AgentWakeCoordinator {
         Ok(assignment)
     }
 
-    /// Moves a running assignment from a wake turn that lost its reserved slot before its task
-    /// started to the turn that replaced it, so the wake's later abort cannot end the assignment.
+    /// Moves a running assignment from a turn that lost its reserved slot before its task started
+    /// to the turn that replaced it, so the replaced turn's later abort cannot end the assignment.
+    /// The new turn holds it as the old one found it; if the new turn never starts either,
+    /// `release_unstarted_turn` gives it back.
     pub(crate) fn hand_off_running_turn(
         &self,
         thread_id: ThreadId,
@@ -98,6 +105,61 @@ impl AgentWakeCoordinator {
             && assignment.active_turn_id.as_deref() == Some(from_turn_id)
         {
             assignment.active_turn_id = Some(to_turn_id.to_owned());
+        }
+    }
+
+    /// Undoes the binding of a turn that held a running assignment but never started: the
+    /// assignment returns to how the turn found it, so the next wake or input can take it. A turn
+    /// that resumed a waiting assignment leaves it waiting again (and requests the wake its ready
+    /// work needs), one that took an unheld running assignment leaves it unheld, and one that
+    /// created the generation ends it as interrupted. Does nothing unless `turn_id` still holds
+    /// the thread's running assignment.
+    pub(crate) fn release_unstarted_turn(&self, thread_id: ThreadId, turn_id: &str) {
+        let mut state = self.lock_state();
+        let Some(current) = state.current_by_thread.get(&thread_id).cloned() else {
+            return;
+        };
+        let Some(assignment) = state.assignments.get_mut(&current) else {
+            return;
+        };
+        if assignment.phase != AssignmentPhase::Running
+            || assignment.active_turn_id.as_deref() != Some(turn_id)
+        {
+            return;
+        }
+        match assignment.active_turn_origin {
+            ActiveTurnOrigin::NewGeneration => {
+                drop(state);
+                let _ = self.classify_turn_end(&current, turn_id, TurnEndDisposition::Interrupted);
+            }
+            ActiveTurnOrigin::Unheld => {
+                assignment.active_turn_id = None;
+                state.signal_wake_event();
+            }
+            ActiveTurnOrigin::Waiting => {
+                assignment.active_turn_id = None;
+                assignment.phase = AssignmentPhase::Waiting;
+                let has_ready_completions = assignment
+                    .owned_completions
+                    .upgrade()
+                    .is_some_and(|store| store.has_ready(thread_id, Some(&current)));
+                let has_recorded_reports =
+                    state
+                        .pending_by_parent
+                        .get(&current)
+                        .is_some_and(|report_ids| {
+                            report_ids.iter().any(|report_id| {
+                                state.reports.get(report_id).is_some_and(|report| {
+                                    report.delivery == ReportDeliveryState::Recorded
+                                })
+                            })
+                        });
+                state.signal_wake_event();
+                drop(state);
+                if has_ready_completions || has_recorded_reports {
+                    self.request_wake(current);
+                }
+            }
         }
     }
 
@@ -218,6 +280,7 @@ impl AgentWakeCoordinator {
                 phase: AssignmentPhase::Reserved,
                 direct_children: HashSet::new(),
                 active_turn_id: None,
+                active_turn_origin: ActiveTurnOrigin::Unheld,
                 terminal_turn_id: None,
                 terminal_disposition: None,
                 last_classified_phase: None,
@@ -439,6 +502,7 @@ impl AgentWakeCoordinator {
                 phase: AssignmentPhase::Running,
                 direct_children: HashSet::new(),
                 active_turn_id: Some(active_turn_id),
+                active_turn_origin: ActiveTurnOrigin::NewGeneration,
                 terminal_turn_id: None,
                 terminal_disposition: None,
                 last_classified_phase: None,

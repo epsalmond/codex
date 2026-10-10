@@ -441,6 +441,11 @@ impl LocalAgentRuntime {
             .hand_off_running_turn(thread_id, from_turn_id, to_turn_id);
     }
 
+    pub(crate) fn release_unstarted_wake_turn(&self, thread_id: ThreadId, turn_id: &str) {
+        self.wake_coordinator
+            .release_unstarted_turn(thread_id, turn_id);
+    }
+
     pub(crate) fn begin_wake_assignment_for_turn(
         &self,
         thread_id: ThreadId,

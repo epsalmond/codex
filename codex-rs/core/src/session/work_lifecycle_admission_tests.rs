@@ -213,6 +213,7 @@ async fn rejected_task_start_releases_its_reservation_and_requeues_its_mail() {
     let reservation = crate::tasks::TurnReservation {
         turn_state: Arc::clone(&reserved.turn_state),
         mail_start_options: Default::default(),
+        return_input_if_lost: false,
     };
     session
         .input_queue

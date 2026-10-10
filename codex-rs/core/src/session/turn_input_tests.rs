@@ -1114,6 +1114,7 @@ async fn explicit_input_steers_into_a_starting_turn_once_its_task_is_installed()
                     TurnReservation {
                         turn_state: starting_state,
                         mail_start_options: Default::default(),
+                        return_input_if_lost: false,
                     },
                 )
                 .await
@@ -1214,36 +1215,36 @@ async fn explicit_input_replaces_a_starting_turn_that_never_installs_its_task() 
 enum Replacer {
     SpawnTask,
     LaterInput,
+    Interrupt,
 }
 
-#[test_case(TurnInputMode::StartIfIdle, Replacer::SpawnTask; "start_if_idle_replaced_by_spawn_task")]
-#[test_case(TurnInputMode::StartOrSteer, Replacer::LaterInput; "start_or_steer_replaced_by_later_input")]
-#[tokio::test(start_paused = true)]
-async fn input_whose_reservation_is_replaced_before_its_task_starts_is_not_submitted(
+/// Parks `mode` input after it reserved the slot and bound its assignment, lets `replacer` take
+/// or clear the slot, then lets the input try to install its task. Returns the input's
+/// submission and the replacing turn's id, if any.
+async fn replace_reservation_before_install(
+    session: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
     mode: TurnInputMode,
     replacer: Replacer,
-) {
-    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+) -> (TurnInputSubmission, Option<String>) {
     let mut hold = crate::tasks::hold_next_turn_start(
         session.thread_id,
         crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
     );
-
-    let (submission, ()) = tokio::join!(
+    let (submission, replacing_turn_id) = tokio::join!(
         handle(
-            &session,
+            session,
             explicit_turn("must stay with its caller"),
             mode,
             "replaced".to_string(),
         ),
         async {
-            // The input has reserved the slot and bound its assignment, but not started.
             hold.reached().await;
-            match replacer {
+            let replacing_turn_id = match replacer {
                 Replacer::SpawnTask => {
                     session
                         .spawn_task(
-                            Arc::clone(&turn_context),
+                            Arc::clone(turn_context),
                             Vec::new(),
                             NeverEndingTask {
                                 kind: TaskKind::Regular,
@@ -1251,12 +1252,13 @@ async fn input_whose_reservation_is_replaced_before_its_task_starts_is_not_submi
                             },
                         )
                         .await;
+                    Some(turn_context.sub_id.clone())
                 }
                 Replacer::LaterInput => {
                     // Waits out the starting-turn bound, then takes the slot.
                     assert_eq!(
                         handle(
-                            &session,
+                            session,
                             explicit_turn("later input"),
                             TurnInputMode::StartOrSteer,
                             "later".to_string(),
@@ -1267,18 +1269,99 @@ async fn input_whose_reservation_is_replaced_before_its_task_starts_is_not_submi
                             turn_id: "later".to_string(),
                         }
                     );
+                    Some("later".to_string())
                 }
-            }
+                Replacer::Interrupt => {
+                    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+                    None
+                }
+            };
             hold.release();
+            replacing_turn_id
         },
     );
+    (
+        submission.expect("input should be valid"),
+        replacing_turn_id,
+    )
+}
 
+#[tokio::test(start_paused = true)]
+async fn start_if_idle_whose_reservation_is_replaced_before_its_task_starts_is_not_submitted() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let (submission, _) = replace_reservation_before_install(
+        &session,
+        &turn_context,
+        TurnInputMode::StartIfIdle,
+        Replacer::SpawnTask,
+    )
+    .await;
     // Reporting `Started` would let the caller drop input that no turn received.
     assert_eq!(
-        submission.expect("input should be valid"),
+        submission,
         TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::NotIdle,
         }
     );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[test_case(Replacer::LaterInput; "replaced_by_later_input")]
+#[test_case(Replacer::SpawnTask; "replaced_by_spawn_task")]
+#[test_case(Replacer::Interrupt; "slot_cleared_by_interrupt")]
+#[tokio::test(start_paused = true)]
+async fn start_or_steer_whose_reservation_is_lost_before_its_task_starts_steers_or_starts_again(
+    replacer: Replacer,
+) {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let (submission, replacing_turn_id) = replace_reservation_before_install(
+        &session,
+        &turn_context,
+        TurnInputMode::StartOrSteer,
+        replacer,
+    )
+    .await;
+    match replacing_turn_id {
+        // Steers into the turn that took its slot.
+        Some(turn_id) => {
+            assert_eq!(submission, TurnInputSubmission::Steered { turn_id });
+        }
+        // Starts in the slot the interrupt freed, under the id it was submitted with.
+        None => assert_eq!(
+            submission,
+            TurnInputSubmission::Started {
+                turn_id: "replaced".to_string(),
+            }
+        ),
+    }
+    if matches!(replacer, Replacer::SpawnTask) {
+        // The never-ending task leaves steered input queued for it.
+        let pending = session
+            .input_queue
+            .get_pending_input(&session.active_turn)
+            .await
+            .0;
+        assert!(
+            pending.iter().any(|item| matches!(
+                item,
+                TurnInput::UserInput { content, .. }
+                    if content == &vec![UserInput::Text {
+                        text: "must stay with its caller".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+            )),
+            "steered input must reach the replacing turn: {pending:?}"
+        );
+    }
+    // The first attempt's turn was never reported, so nothing may abort it.
+    while let Ok(event) = rx.try_recv() {
+        if let EventMsg::TurnAborted(aborted) = &event.msg {
+            assert_ne!(
+                aborted.turn_id.as_deref(),
+                Some("replaced"),
+                "no TurnAborted for a turn the client never saw"
+            );
+        }
+    }
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }

@@ -26,6 +26,21 @@ pub(crate) fn retryable_turn_start_error(reason: &NotSubmittedReason) -> Option<
     }
 }
 
+/// The retryable error for `turn/start` input Core declined, or `None` for a reason that is not
+/// retryable. Besides admission refusals, input can lose its slot to other turns several times
+/// in a row while it starts; retrying then steers into or starts after them.
+pub(crate) fn retryable_start_or_steer_error(
+    reason: &NotSubmittedReason,
+) -> Option<JSONRPCErrorError> {
+    match reason {
+        NotSubmittedReason::NotIdle => Some(error(
+            OVERLOADED_ERROR_CODE,
+            "Other turns kept taking this thread while the turn started; retry.",
+        )),
+        reason => retryable_turn_start_error(reason),
+    }
+}
+
 pub(crate) fn invalid_request(message: impl Into<String>) -> JSONRPCErrorError {
     error(INVALID_REQUEST_ERROR_CODE, message)
 }
@@ -67,6 +82,24 @@ mod tests {
             codes,
             [
                 Some(INVALID_REQUEST_ERROR_CODE),
+                Some(OVERLOADED_ERROR_CODE),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn start_or_steer_that_kept_losing_its_slot_maps_to_a_retryable_code() {
+        let codes = [
+            NotSubmittedReason::NotIdle,
+            NotSubmittedReason::RootTurnCapacityReached,
+            NotSubmittedReason::EmptyInput,
+        ]
+        .map(|reason| retryable_start_or_steer_error(&reason).map(|error| error.code));
+        assert_eq!(
+            codes,
+            [
+                Some(OVERLOADED_ERROR_CODE),
                 Some(OVERLOADED_ERROR_CODE),
                 None
             ]

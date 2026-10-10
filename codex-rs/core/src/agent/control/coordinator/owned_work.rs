@@ -41,6 +41,7 @@ impl AgentWakeCoordinator {
             .get_mut(id)
             .ok_or("async completion assignment is missing")?;
         record.active_turn_id = Some(turn_id.to_owned());
+        record.active_turn_origin = super::ActiveTurnOrigin::Waiting;
         record.phase = super::AssignmentPhase::Running;
         state.signal_wake_event();
         Ok(())

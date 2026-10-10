@@ -56,6 +56,7 @@ impl Session {
             });
             Arc::clone(&active_turn.turn_state)
         };
+        let assignment_guard = self.guard_unstarted_turn_assignment(&turn_id);
 
         self.services
             .models_manager
@@ -118,16 +119,20 @@ impl Session {
         let reservation = TurnReservation {
             turn_state,
             mail_start_options,
+            return_input_if_lost: false,
         };
         match self
             .start_task(turn_context, Vec::new(), RegularTask::new(), reservation)
             .await
         {
-            TaskStartOutcome::Started => RecordedReportWakeResult::Started,
-            // The reports stay in history for whichever turn holds the slot next.
-            TaskStartOutcome::Rejected(_) | TaskStartOutcome::Aborted => {
-                RecordedReportWakeResult::NoLongerNeeded
+            TaskStartOutcome::Started => {
+                assignment_guard.started();
+                RecordedReportWakeResult::Started
             }
+            // The reports stay in history for whichever turn holds the slot next.
+            TaskStartOutcome::Rejected(_)
+            | TaskStartOutcome::Aborted
+            | TaskStartOutcome::Lost(_) => RecordedReportWakeResult::NoLongerNeeded,
         }
     }
 }

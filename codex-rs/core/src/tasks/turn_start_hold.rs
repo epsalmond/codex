@@ -25,7 +25,8 @@ pub enum TurnStartHoldPoint {
 
 struct HoldPoint {
     reached: oneshot::Sender<()>,
-    release: oneshot::Receiver<()>,
+    /// Carries whether the step after the hold point should fail.
+    release: oneshot::Receiver<bool>,
     finished: oneshot::Sender<()>,
 }
 
@@ -36,7 +37,7 @@ static HOLDS: LazyLock<Mutex<HashMap<(ThreadId, TurnStartHoldPoint), HoldPoint>>
 /// held start, so a failing test cannot leave it parked.
 pub struct TurnStartHold {
     reached: oneshot::Receiver<()>,
-    release: oneshot::Sender<()>,
+    release: oneshot::Sender<bool>,
     finished: oneshot::Receiver<()>,
 }
 
@@ -48,12 +49,20 @@ impl TurnStartHold {
 
     /// Lets the parked start continue.
     pub fn release(self) {
-        let _ = self.release.send(());
+        let _ = self.release.send(false);
     }
 
     /// Lets the parked start continue and waits until its start attempt returns.
     pub async fn release_and_wait(self) {
-        let _ = self.release.send(());
+        let _ = self.release.send(false);
+        let _ = self.finished.await;
+    }
+
+    /// Lets the parked start continue as though the step after its hold point failed, and waits
+    /// until its start attempt returns. Only `InputBeforeBind` honors the failure: the bind
+    /// fails.
+    pub async fn fail_and_wait(self) {
+        let _ = self.release.send(true);
         let _ = self.finished.await;
     }
 }
@@ -88,11 +97,21 @@ pub(crate) fn hold_next_turn_start(
 /// Signals the hold's owner when the held start attempt returns. Keep it alive for the rest of
 /// the start attempt.
 #[must_use]
-pub(crate) struct HeldTurnStart(Option<oneshot::Sender<()>>);
+pub(crate) struct HeldTurnStart {
+    finished: Option<oneshot::Sender<()>>,
+    fail: bool,
+}
+
+impl HeldTurnStart {
+    /// Whether the test asked the step after this hold point to fail.
+    pub(crate) fn injected_failure(&self) -> bool {
+        self.fail
+    }
+}
 
 impl Drop for HeldTurnStart {
     fn drop(&mut self) {
-        if let Some(finished) = self.0.take() {
+        if let Some(finished) = self.finished.take() {
             let _ = finished.send(());
         }
     }
@@ -109,9 +128,15 @@ pub(crate) async fn wait_if_held(thread_id: ThreadId, point: TurnStartHoldPoint)
         finished,
     }) = hold
     else {
-        return HeldTurnStart(None);
+        return HeldTurnStart {
+            finished: None,
+            fail: false,
+        };
     };
     let _ = reached.send(());
-    let _ = release.await;
-    HeldTurnStart(Some(finished))
+    let fail = release.await.unwrap_or(false);
+    HeldTurnStart {
+        finished: Some(finished),
+        fail,
+    }
 }

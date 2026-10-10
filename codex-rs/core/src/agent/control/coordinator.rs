@@ -94,6 +94,18 @@ struct SpawnCleanup {
     completion: tokio::sync::watch::Receiver<()>,
 }
 
+/// How a running assignment's active turn came to hold it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveTurnOrigin {
+    /// The turn created this generation.
+    NewGeneration,
+    /// The turn resumed the assignment from `Waiting`.
+    Waiting,
+    /// The turn took over a running assignment no turn held, such as a committed child's first
+    /// turn.
+    Unheld,
+}
+
 pub(crate) struct TurnEndClassification {
     pub(crate) phase: AssignmentPhase,
     pub(crate) newly_classified: bool,
@@ -122,6 +134,9 @@ struct Assignment {
     phase: AssignmentPhase,
     direct_children: HashSet<AgentAssignmentId>,
     active_turn_id: Option<String>,
+    /// What `active_turn_id` found when it took the assignment, so a turn that never starts can
+    /// leave the assignment as it found it.
+    active_turn_origin: ActiveTurnOrigin,
     terminal_turn_id: Option<String>,
     terminal_disposition: Option<TurnEndDisposition>,
     last_classified_phase: Option<AssignmentPhase>,

@@ -93,6 +93,9 @@ pub(crate) enum PendingWorkStartResult {
 pub(crate) struct TurnReservation {
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
     pub(crate) mail_start_options: TurnStartOptions,
+    /// The caller has not yet told anyone this turn's id, so a start that loses the slot returns
+    /// its input instead of ending the turn with `TurnAborted`.
+    pub(crate) return_input_if_lost: bool,
 }
 
 /// What `start_task` did with a task.
@@ -105,6 +108,9 @@ pub(crate) enum TaskStartOutcome {
     /// The reservation was released or replaced before the task was installed. The turn ended
     /// with `TurnAborted` and its mail is requeued.
     Aborted,
+    /// As `Aborted`, for a reservation that asked for its input back: no `TurnAborted` was sent,
+    /// and the caller gets the input to deliver elsewhere.
+    Lost(Vec<TurnInput>),
 }
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
@@ -356,6 +362,7 @@ impl Session {
             TurnReservation {
                 turn_state,
                 mail_start_options: TurnStartOptions::default(),
+                return_input_if_lost: false,
             },
         )
         .await;
@@ -417,7 +424,9 @@ impl Session {
         if !owns_reservation {
             // Interrupted, or replaced by input that stopped waiting for this start. Never
             // install into a reservation this caller does not hold.
-            return self.abort_unstarted_task(&turn_context, &reservation).await;
+            return self
+                .abort_unstarted_task(&turn_context, &reservation, input)
+                .await;
         }
         let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
         let turn_state = Arc::clone(&reservation.turn_state);
@@ -451,7 +460,9 @@ impl Session {
                 turn_context.extension_data.as_ref(),
             )
             .await;
-            return self.abort_unstarted_task(&turn_context, &reservation).await;
+            return self
+                .abort_unstarted_task(&turn_context, &reservation, input)
+                .await;
         };
         debug_assert!(turn.task.is_none());
         let done_clone = Arc::clone(&done);
@@ -553,14 +564,19 @@ impl Session {
 
     /// Ends a turn whose reservation lost the slot before its task was installed: requeues its
     /// mail, releases its root-turn registration and reports `TurnAborted`, which also releases
-    /// an assignment the turn still holds.
+    /// an assignment the turn still holds. A reservation that asked for its input back gets it
+    /// instead, and its caller's assignment guard releases the assignment.
     async fn abort_unstarted_task(
         &self,
         turn_context: &TurnContext,
         reservation: &TurnReservation,
+        input: Vec<TurnInput>,
     ) -> TaskStartOutcome {
         self.requeue_reserved_mail(reservation).await;
         self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+        if reservation.return_input_if_lost {
+            return TaskStartOutcome::Lost(input);
+        }
         let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
         let (completed_at, duration_ms, profile) = turn_context
             .turn_timing_state
@@ -662,6 +678,7 @@ impl Session {
             });
             Arc::clone(&active_turn.turn_state)
         };
+        let assignment_guard = self.guard_unstarted_turn_assignment(&sub_id);
 
         self.services
             .models_manager
@@ -812,15 +829,19 @@ impl Session {
         let reservation = TurnReservation {
             turn_state,
             mail_start_options: retained_start_options,
+            return_input_if_lost: false,
         };
         match self
             .start_task(turn_context, Vec::new(), RegularTask::new(), reservation)
             .await
         {
-            TaskStartOutcome::Started => PendingWorkStartResult::Started,
-            TaskStartOutcome::Rejected(_) | TaskStartOutcome::Aborted => {
-                PendingWorkStartResult::Stale
+            TaskStartOutcome::Started => {
+                assignment_guard.started();
+                PendingWorkStartResult::Started
             }
+            TaskStartOutcome::Rejected(_)
+            | TaskStartOutcome::Aborted
+            | TaskStartOutcome::Lost(_) => PendingWorkStartResult::Stale,
         }
     }
 
