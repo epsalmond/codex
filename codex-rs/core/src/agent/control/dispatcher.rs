@@ -87,10 +87,15 @@ impl LocalAgentControl {
     }
 
     async fn deliver_pending_reports(&self, assignment: &AgentAssignmentId) -> WakeDispatchResult {
-        if !self
+        let owned_ready = self
             .runtime
             .wake_coordinator
-            .has_pending_reports(assignment)
+            .has_ready_owned_completions(assignment);
+        if !owned_ready
+            && !self
+                .runtime
+                .wake_coordinator
+                .has_pending_reports(assignment)
         {
             return WakeDispatchResult::Complete;
         }
@@ -155,10 +160,12 @@ impl LocalAgentControl {
             .input_queue
             .has_trigger_turn_mailbox_items()
             .await;
-        if trigger_mail_pending && target.session.active_turn.lock().await.is_some() {
+        if (trigger_mail_pending || owned_ready)
+            && target.session.active_turn.lock().await.is_some()
+        {
             return WakeDispatchResult::Defer;
         }
-        if trigger_mail_pending {
+        if trigger_mail_pending || owned_ready {
             let config = target.session.get_config().await;
             let version = target
                 .session

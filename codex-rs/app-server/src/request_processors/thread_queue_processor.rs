@@ -205,11 +205,13 @@ impl ThreadQueueRequestProcessor {
             )
             .await
             .map_err(queue_error)?;
+        if let StartIfIdleSubmission::NotSubmitted { reason } = &submission
+            && let Some(error) = crate::error_code::retryable_turn_start_error(reason)
+        {
+            return Err(error);
+        }
         let turn_id = match submission {
             StartIfIdleSubmission::Started { turn_id } => turn_id,
-            StartIfIdleSubmission::NotSubmitted {
-                reason: NotSubmittedReason::ServerDraining,
-            } => return Err(crate::error_code::server_draining_error()),
             StartIfIdleSubmission::NotSubmitted {
                 reason: NotSubmittedReason::NotIdle | NotSubmittedReason::PendingTriggerTurn,
             } => {

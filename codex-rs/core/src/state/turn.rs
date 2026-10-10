@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -32,6 +33,16 @@ use codex_protocol::protocol::TokenUsage;
 pub(crate) struct ActiveTurn {
     pub(crate) task: Option<RunningTask>,
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
+    /// Signals once when `task` is installed. Dropping the turn closes it, so input that found
+    /// this turn reserved but not yet running can wait for it to start or release the slot.
+    pub(crate) task_installed: watch::Sender<()>,
+    /// Set once the task has finished and the turn holds the slot only for end-of-turn work
+    /// (stop hooks, `TurnComplete`, rollout flush). Input replaces such a turn instead of waiting.
+    pub(crate) finishing: bool,
+    /// Turn id of the start that reserved this slot. A reserving start binds its assignment only
+    /// while it still holds the slot, under the active-turn lock, so input that replaces the
+    /// reservation under that lock takes over any binding the start already made.
+    pub(crate) reserved_turn_id: Option<String>,
 }
 
 /// Whether mailbox deliveries should still be folded into the current turn.
@@ -60,6 +71,9 @@ impl Default for ActiveTurn {
         Self {
             task: None,
             turn_state: Arc::new(Mutex::new(TurnState::default())),
+            task_installed: watch::Sender::new(()),
+            finishing: false,
+            reserved_turn_id: None,
         }
     }
 }

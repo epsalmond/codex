@@ -66,6 +66,14 @@ impl CompletionDrain {
 pub(crate) struct AsyncCompletions {
     state: Mutex<CompletionState>,
     owner: OnceLock<Weak<Session>>,
+    root_owner: OnceLock<bool>,
+    wake: Mutex<CompletionWake>,
+}
+
+#[derive(Default)]
+struct CompletionWake {
+    revision: u64,
+    scheduled: bool,
 }
 
 #[derive(Default)]
@@ -121,7 +129,8 @@ impl AsyncCompletions {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(crate) fn attach_owner(&self, owner: &Arc<Session>) {
+    pub(crate) fn attach_owner(&self, owner: &Arc<Session>, source: &SessionSource) {
+        let _ = self.root_owner.set(!source.is_non_root_agent());
         let _ = self.owner.set(Arc::downgrade(owner));
     }
 
@@ -133,6 +142,59 @@ impl AsyncCompletions {
         self.state().records.values().any(|record| {
             record.owner == assignment.thread_id && record.assignment.as_ref() == Some(assignment)
         })
+    }
+
+    pub(crate) fn has_ready(
+        &self,
+        owner: ThreadId,
+        assignment: Option<&AgentAssignmentId>,
+    ) -> bool {
+        self.state().records.values().any(|record| {
+            record.owner == owner
+                && record.assignment.as_ref() == assignment
+                && record.yielded
+                && record.terminal.is_some()
+        })
+    }
+
+    // Never acquire the coordinator or start a turn while holding the record mutex.
+    fn changed(self: &Arc<Self>) {
+        let Some(owner) = self.owner.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let runtime = &owner.services.local_agent_runtime;
+        if let Some(assignment) = runtime.current_wake_assignment(owner.thread_id()) {
+            runtime.observe_owned_completions(&assignment, self);
+        } else if self.root_owner.get() == Some(&true) && self.has_ready(owner.thread_id(), None) {
+            let Some(revision) = self
+                .wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .request()
+            else {
+                return;
+            };
+            let store = Arc::downgrade(self);
+            let owner = Arc::downgrade(&owner);
+            tokio::spawn(async move {
+                let Some(store) = store.upgrade() else {
+                    return;
+                };
+                if let Some(owner) = owner.upgrade() {
+                    owner.maybe_start_turn_for_pending_work().await;
+                }
+                let changed = store
+                    .wake
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .finish(revision);
+                // Only a new publication can request another bounded attempt. Busy, capacity
+                // rejection and failure never retry themselves; finalization rechecks active work.
+                if changed {
+                    store.changed();
+                }
+            });
+        }
     }
 
     pub(crate) fn reserve(
@@ -211,6 +273,7 @@ impl AsyncCompletions {
         } else {
             admit()?
         };
+        self.changed();
         Ok(reservation)
     }
 
@@ -305,6 +368,7 @@ impl AsyncCompletions {
             state.records.remove(id);
         }
         drop(state);
+        self.changed();
     }
 
     pub(crate) fn retire(self: &Arc<Self>) {
@@ -312,6 +376,23 @@ impl AsyncCompletions {
         state.closed = true;
         state.records.clear();
         drop(state);
+        self.changed();
+    }
+}
+
+impl CompletionWake {
+    fn request(&mut self) -> Option<u64> {
+        self.revision = self.revision.wrapping_add(1);
+        if self.scheduled {
+            return None;
+        }
+        self.scheduled = true;
+        Some(self.revision)
+    }
+
+    fn finish(&mut self, observed_revision: u64) -> bool {
+        self.scheduled = false;
+        self.revision != observed_revision
     }
 }
 
@@ -341,6 +422,7 @@ impl Drop for CompletionReservation {
             records.remove(&self.id);
         }
         drop(state);
+        self.store.changed();
     }
 }
 
@@ -381,6 +463,7 @@ impl CompletionPublisher {
             }
         }
         drop(state);
+        store.changed();
     }
 }
 

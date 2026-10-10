@@ -12,7 +12,45 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::TurnAbortReason;
 use tracing::warn;
 
+/// Held by a start from the moment it reserves the active-turn slot until its task is
+/// installed. Dropping it any other way gives back the assignment its turn id still holds, whether
+/// the start bound it or inherited it from a reservation it replaced, so no exit leaves an
+/// assignment running under a turn that never runs.
+#[must_use]
+pub(crate) struct UnstartedTurnAssignment<'a> {
+    session: &'a Session,
+    turn_id: Option<String>,
+}
+
+impl UnstartedTurnAssignment<'_> {
+    /// The task is installed; its turn now ends the assignment through normal finalization.
+    pub(crate) fn started(mut self) {
+        self.turn_id = None;
+    }
+}
+
+impl Drop for UnstartedTurnAssignment<'_> {
+    fn drop(&mut self) {
+        if let Some(turn_id) = self.turn_id.take() {
+            self.session
+                .services
+                .local_agent_runtime
+                .release_unstarted_wake_turn(self.session.thread_id, &turn_id);
+        }
+    }
+}
+
 impl Session {
+    pub(crate) fn guard_unstarted_turn_assignment(
+        &self,
+        turn_id: &str,
+    ) -> UnstartedTurnAssignment<'_> {
+        UnstartedTurnAssignment {
+            session: self,
+            turn_id: Some(turn_id.to_owned()),
+        }
+    }
+
     pub(crate) fn bind_wake_assignment(
         &self,
         turn_context: &TurnContext,

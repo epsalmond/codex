@@ -1,9 +1,11 @@
 mod compact;
 mod failed_start;
 mod lifecycle;
+mod owned_completion;
 mod recorded_report_wake;
 mod regular;
 mod review;
+mod turn_start_hold;
 mod user_shell;
 
 use std::sync::Arc;
@@ -26,6 +28,7 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
+use crate::agent::control::WorkAdmissionError;
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
@@ -58,7 +61,9 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_thread_store::PersistContext;
+use owned_completion::PendingWorkCause;
 
 use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
@@ -67,6 +72,10 @@ pub(crate) use compact::CompactTask;
 pub(crate) use recorded_report_wake::RecordedReportWakeResult;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
+pub use turn_start_hold::TurnStartHold;
+pub use turn_start_hold::TurnStartHoldPoint;
+pub(crate) use turn_start_hold::hold_next_turn_start;
+pub(crate) use turn_start_hold::wait_if_held as wait_if_turn_start_held;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
@@ -77,6 +86,31 @@ pub(crate) enum PendingWorkStartResult {
     AlreadyActive,
     Deferred,
     Stale,
+}
+
+/// The active-turn slot a caller reserved for `start_task`, with the start options of any mail
+/// the caller already moved into it, so a start that does not run can requeue that mail as taken.
+pub(crate) struct TurnReservation {
+    pub(crate) turn_state: Arc<Mutex<TurnState>>,
+    pub(crate) mail_start_options: TurnStartOptions,
+    /// The caller has not yet told anyone this turn's id, so a start that loses the slot returns
+    /// its input instead of ending the turn with `TurnAborted`.
+    pub(crate) return_input_if_lost: bool,
+}
+
+/// What `start_task` did with a task.
+#[derive(Debug)]
+pub(crate) enum TaskStartOutcome {
+    /// The task is installed in the caller's reservation.
+    Started,
+    /// Root-turn admission refused the task. The reservation is released and its mail requeued.
+    Rejected(WorkAdmissionError),
+    /// The reservation was released or replaced before the task was installed. The turn ended
+    /// with `TurnAborted` and its mail is requeued.
+    Aborted,
+    /// As `Aborted`, for a reservation that asked for its input back: no `TurnAborted` was sent,
+    /// and the caller gets the input to deliver elsewhere.
+    Lost(Vec<TurnInput>),
 }
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
@@ -305,14 +339,37 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
-        if !self.admit_root_task_or_emit_error(&turn_context).await {
+        if self
+            .admit_root_task_or_emit_error(&turn_context)
+            .await
+            .is_err()
+        {
             return;
         }
-        self.abort_all_tasks(TurnAbortReason::Replaced).await;
+        let turn_state = loop {
+            self.abort_all_tasks(TurnAbortReason::Replaced).await;
+            let mut active = self.active_turn.lock().await;
+            // A reservation that has not installed its task yet aborts its own start.
+            if active.as_ref().is_none_or(|turn| turn.task.is_none()) {
+                break Arc::clone(&active.insert(ActiveTurn::default()).turn_state);
+            }
+        };
         self.clear_connector_selection().await;
-        self.start_task(turn_context, input, task).await;
+        self.start_task(
+            turn_context,
+            input,
+            task,
+            TurnReservation {
+                turn_state,
+                mail_start_options: TurnStartOptions::default(),
+                return_input_if_lost: false,
+            },
+        )
+        .await;
     }
 
+    /// Installs `task` in the caller's reserved active-turn slot. The task runs only while that
+    /// reservation still holds the slot; a start that does not run releases what it holds.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "record the started turn atomically with its active reservation"
@@ -322,9 +379,15 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) {
-        if !self.admit_root_task_or_emit_error(&turn_context).await {
-            return;
+        reservation: TurnReservation,
+    ) -> TaskStartOutcome {
+        if let Err(error) = self.admit_root_task_or_emit_error(&turn_context).await {
+            // Leaving the reservation taskless would make later input wait for a turn that never
+            // runs. Another caller's reservation is left alone.
+            self.clear_reserved_idle_turn(&reservation.turn_state).await;
+            self.requeue_reserved_mail(&reservation).await;
+            self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+            return TaskStartOutcome::Rejected(error);
         }
         self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
@@ -348,14 +411,25 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
-        let turn_state = {
-            let mut active = self.active_turn.lock().await;
-            self.record_started_turn(&turn_context.sub_id).await;
-            let turn = active.get_or_insert_with(ActiveTurn::default);
-            debug_assert!(turn.task.is_none());
-            Arc::clone(&turn.turn_state)
+        let owns_reservation = {
+            let active = self.active_turn.lock().await;
+            let owns_reservation = active.as_ref().is_some_and(|turn| {
+                turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &reservation.turn_state)
+            });
+            if owns_reservation {
+                self.record_started_turn(&turn_context.sub_id).await;
+            }
+            owns_reservation
         };
+        if !owns_reservation {
+            // Interrupted, or replaced by input that stopped waiting for this start. Never
+            // install into a reservation this caller does not hold.
+            return self
+                .abort_unstarted_task(&turn_context, &reservation, input)
+                .await;
+        }
+        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
+        let turn_state = Arc::clone(&reservation.turn_state);
         turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
@@ -381,40 +455,14 @@ impl Session {
             .filter(|turn| Arc::ptr_eq(&turn.turn_state, &turn_state));
         let Some(turn) = turn else {
             drop(active);
-            let mut pending_input = self
-                .input_queue
-                .take_pending_input_for_turn_state(&turn_state)
+            self.emit_turn_abort_lifecycle(
+                TurnAbortReason::Interrupted,
+                turn_context.extension_data.as_ref(),
+            )
+            .await;
+            return self
+                .abort_unstarted_task(&turn_context, &reservation, input)
                 .await;
-            self.input_queue.return_to_mailbox(&mut pending_input).await;
-            let reason = TurnAbortReason::Interrupted;
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
-                .await;
-            let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
-            let (completed_at, duration_ms, profile) = turn_context
-                .turn_timing_state
-                .complete_profile_and_duration_ms()
-                .await;
-            self.services
-                .analytics_events_client
-                .track_turn_profile(TurnProfileFact {
-                    turn_id: turn_context.sub_id.clone(),
-                    profile,
-                });
-            let event = EventMsg::TurnAborted(TurnAbortedEvent {
-                turn_id: Some(turn_context.sub_id.clone()),
-                reason,
-                error: None,
-                started_at,
-                completed_at,
-                duration_ms,
-            });
-            self.classify_wake_turn_end(turn_context.as_ref(), &event)
-                .await;
-            self.send_event(turn_context.as_ref(), event).await;
-            if let Err(err) = self.flush_rollout().await {
-                warn!("failed to flush rollout after cancelling a capacity-waiting turn: {err}");
-            }
-            return;
         };
         debug_assert!(turn.task.is_none());
         let done_clone = Arc::clone(&done);
@@ -497,6 +545,63 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        turn.task_installed.send_replace(());
+        TaskStartOutcome::Started
+    }
+
+    async fn requeue_reserved_mail(&self, reservation: &TurnReservation) {
+        let mut pending_input = self
+            .input_queue
+            .take_pending_input_for_turn_state(&reservation.turn_state)
+            .await;
+        self.input_queue
+            .return_to_mailbox_with_start_options(
+                &mut pending_input,
+                reservation.mail_start_options.clone(),
+            )
+            .await;
+    }
+
+    /// Ends a turn whose reservation lost the slot before its task was installed: requeues its
+    /// mail, releases its root-turn registration and reports `TurnAborted`, which also releases
+    /// an assignment the turn still holds. A reservation that asked for its input back gets it
+    /// instead, and its caller's assignment guard releases the assignment.
+    async fn abort_unstarted_task(
+        &self,
+        turn_context: &TurnContext,
+        reservation: &TurnReservation,
+        input: Vec<TurnInput>,
+    ) -> TaskStartOutcome {
+        self.requeue_reserved_mail(reservation).await;
+        self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+        if reservation.return_input_if_lost {
+            return TaskStartOutcome::Lost(input);
+        }
+        let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
+        let (completed_at, duration_ms, profile) = turn_context
+            .turn_timing_state
+            .complete_profile_and_duration_ms()
+            .await;
+        self.services
+            .analytics_events_client
+            .track_turn_profile(TurnProfileFact {
+                turn_id: turn_context.sub_id.clone(),
+                profile,
+            });
+        let event = EventMsg::TurnAborted(TurnAbortedEvent {
+            turn_id: Some(turn_context.sub_id.clone()),
+            reason: TurnAbortReason::Interrupted,
+            error: None,
+            started_at,
+            completed_at,
+            duration_ms,
+        });
+        self.classify_wake_turn_end(turn_context, &event).await;
+        self.send_event(turn_context, event).await;
+        if let Err(err) = self.flush_rollout().await {
+            warn!("failed to flush rollout after ending a turn that never started: {err}");
+        }
+        TaskStartOutcome::Aborted
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -534,13 +639,19 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
-        if self.input_queue.wakeups_paused()
-            || !self.input_queue.has_pending_mailbox_items().await
-            || (!self.input_queue.has_trigger_turn_mailbox_items().await
-                && !self.has_outstanding_durable_sleep())
-        {
+        if self.input_queue.wakeups_paused() {
             return PendingWorkStartResult::Stale;
         }
+        let cause = if self.input_queue.has_pending_mailbox_items().await
+            && (self.input_queue.has_trigger_turn_mailbox_items().await
+                || self.has_outstanding_durable_sleep())
+        {
+            PendingWorkCause::Mailbox
+        } else if let Some(cause) = self.ready_owned_completion().await {
+            cause
+        } else {
+            return PendingWorkStartResult::Stale;
+        };
 
         let config = self.get_config().await;
         let source = self.session_source().await;
@@ -561,9 +672,13 @@ impl Session {
             if active_turn.is_some() {
                 return PendingWorkStartResult::AlreadyActive;
             }
-            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            let active_turn = active_turn.insert(ActiveTurn {
+                reserved_turn_id: Some(sub_id.clone()),
+                ..ActiveTurn::default()
+            });
             Arc::clone(&active_turn.turn_state)
         };
+        let assignment_guard = self.guard_unstarted_turn_assignment(&sub_id);
 
         self.services
             .models_manager
@@ -626,19 +741,57 @@ impl Session {
         if let Some(id) = start_options.root_turn_id {
             turn_context.turn_metadata_state.set_root_turn_id(id);
         }
-        if let Err(error) = self.bind_wake_assignment_for_input(&turn_context, &input) {
+        let _held =
+            turn_start_hold::wait_if_held(self.thread_id(), TurnStartHoldPoint::WakeBeforeBind)
+                .await;
+        let binding = self
+            .bind_in_reservation(&turn_state, || match &cause {
+                PendingWorkCause::Mailbox => {
+                    Some(self.bind_wake_assignment_for_input(&turn_context, &input))
+                }
+                PendingWorkCause::OwnedCompletion(assignment) => {
+                    let still_ready = !self.input_queue.wakeups_paused()
+                        && self
+                            .services
+                            .async_completions
+                            .has_ready(self.thread_id(), assignment.as_ref())
+                        && self
+                            .services
+                            .local_agent_runtime
+                            .current_wake_assignment(self.thread_id())
+                            == *assignment;
+                    still_ready
+                        .then(|| self.bind_owned_completion(&turn_context, assignment.as_ref()))
+                }
+            })
+            .await
+            .flatten();
+        // Input that replaced this reservation, an interrupt that cleared it, or a completion
+        // that went stale leaves this wake nothing to start. It bound nothing, so it ends quietly
+        // and the replacing turn, if any, takes the mail and the completion.
+        let Some(binding) = binding else {
+            self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+            self.input_queue
+                .return_to_mailbox_with_start_options(&mut input, retained_start_options)
+                .await;
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return PendingWorkStartResult::Stale;
+        };
+        if let Err(error) = binding {
             self.abandon_root_turn_lifecycle(&turn_context.sub_id);
             // Binding already discards fenced coordinator reports. Ordinary accepted mail must
             // survive failed startup, without automatically repeating a deterministic rejection.
             input.retain(|item| Self::coordinator_report_id(item).is_none());
             let has_accepted_mail = !input.is_empty();
+            let has_held_work =
+                has_accepted_mail || matches!(cause, PendingWorkCause::OwnedCompletion(_));
             let initiator = input.iter().rev().find_map(|item| match item {
                 TurnInput::InterAgentCommunication(mail) if mail.trigger_turn => {
                     Some(mail.author.clone())
                 }
                 _ => None,
             });
-            if has_accepted_mail {
+            if has_held_work {
                 self.input_queue.pause_wakeups();
                 self.input_queue
                     .return_to_mailbox_with_start_options(&mut input, retained_start_options)
@@ -647,7 +800,7 @@ impl Session {
             // Release startup's reservation before notifying an orchestrator that may recover
             // immediately by sending another explicit follow-up.
             self.clear_reserved_idle_turn(&turn_state).await;
-            if has_accepted_mail {
+            if has_held_work {
                 self.send_event(
                     turn_context.as_ref(),
                     EventMsg::Warning(WarningEvent {
@@ -670,9 +823,26 @@ impl Session {
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
             .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
-            .await;
-        PendingWorkStartResult::Started
+        let _held =
+            turn_start_hold::wait_if_held(self.thread_id(), TurnStartHoldPoint::WakeBeforeInstall)
+                .await;
+        let reservation = TurnReservation {
+            turn_state,
+            mail_start_options: retained_start_options,
+            return_input_if_lost: false,
+        };
+        match self
+            .start_task(turn_context, Vec::new(), RegularTask::new(), reservation)
+            .await
+        {
+            TaskStartOutcome::Started => {
+                assignment_guard.started();
+                PendingWorkStartResult::Started
+            }
+            TaskStartOutcome::Rejected(_)
+            | TaskStartOutcome::Aborted
+            | TaskStartOutcome::Lost(_) => PendingWorkStartResult::Stale,
+        }
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
@@ -853,6 +1023,7 @@ impl Session {
                     })
                     .flatten();
                 let task = active_turn.task.take()?;
+                active_turn.finishing = true;
                 if failed {
                     if self.services.async_completions.has_owned_work() {
                         self.input_queue.pause_wakeups();

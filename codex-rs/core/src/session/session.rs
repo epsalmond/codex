@@ -1805,6 +1805,7 @@ impl Session {
                 turn_environments: Arc::clone(&turn_environments),
             };
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
+            let completion_source = state.session_configuration.session_source.clone();
             let sess = Arc::new(Session {
                 thread_id,
                 installation_id,
@@ -1840,7 +1841,7 @@ impl Session {
                 next_internal_sub_id: AtomicU64::new(0),
                 prompt_cache_clock: Default::default(),
             });
-            sess.services.async_completions.attach_owner(&sess);
+            sess.services.async_completions.attach_owner(&sess, &completion_source);
             if sess.services.local_agent_runtime.wake_mode_enabled()
                 && let Some(status) = sess
                     .services

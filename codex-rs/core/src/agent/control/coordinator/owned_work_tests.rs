@@ -6,7 +6,7 @@ use crate::session::tests::make_session_and_context;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
-async fn owned_admission_retains_exact_generation_until_retirement() {
+async fn owned_admission_retains_exact_generation_until_acceptance() {
     let (session, turn) = make_session_and_context().await;
     let coordinator = AgentWakeCoordinator::default();
     let assignment = coordinator
@@ -46,21 +46,21 @@ async fn owned_admission_retains_exact_generation_until_retirement() {
     );
     drop(reservation);
     coordinator
-        .begin_or_continue_assignment(
-            assignment.thread_id,
-            None,
-            "manual",
-            /*allow_new_generation*/ false,
-        )
+        .continue_owned_completion(&assignment, "automatic")
         .unwrap();
     assert_eq!(
         coordinator.current_assignment(session.thread_id()),
         Some(assignment.clone())
     );
     assert_eq!(
-        coordinator.classify_turn_end(&assignment, "manual", TurnEndDisposition::Succeeded),
+        coordinator.classify_turn_end(&assignment, "automatic", TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Waiting)
     );
     store.retire();
+    assert!(
+        coordinator
+            .continue_owned_completion(&assignment, "retired")
+            .is_err()
+    );
     assert!(!store.has_owned_work());
 }

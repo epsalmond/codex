@@ -912,3 +912,97 @@ async fn reload_config_lives_with_open_assignment_and_is_cleaned_up() {
 
 #[path = "coordinator_invariant_tests.rs"]
 mod invariant_tests;
+
+#[test]
+fn unstarted_turn_gives_its_assignment_back_as_it_found_it() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    // Only the turn that holds the running assignment can give it back.
+    coordinator.release_unstarted_turn(root.thread_id, "other-turn");
+    assert_eq!(
+        coordinator.active_assignment_for_turn(root.thread_id, "root-turn"),
+        Some(root.clone())
+    );
+
+    // A committed child's first turn leaves the assignment running and unheld.
+    let child = new_child(&coordinator, &root, "child-first-turn");
+    coordinator.release_unstarted_turn(child.thread_id, "child-first-turn");
+    assert_eq!(
+        coordinator.active_assignment_for_turn(child.thread_id, "child-first-turn"),
+        None
+    );
+    assert!(coordinator.is_current_open_assignment(&child));
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            child.thread_id,
+            Some(root.clone()),
+            "child-retry-turn",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(child)
+    );
+
+    // A turn that resumed a waiting assignment, even one handed over to it, leaves it waiting.
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            root.thread_id,
+            None,
+            "root-wake-turn",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(root.clone())
+    );
+    coordinator.hand_off_running_turn(root.thread_id, "root-wake-turn", "root-input-turn");
+    coordinator.release_unstarted_turn(root.thread_id, "root-input-turn");
+    assert!(coordinator.is_current_waiting_assignment(&root));
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            root.thread_id,
+            None,
+            "root-next-turn",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(root)
+    );
+
+    // A turn that created its generation releases it.
+    let fresh = new_root(&coordinator);
+    coordinator.release_unstarted_turn(fresh.thread_id, "root-turn");
+    assert_eq!(coordinator.current_assignment(fresh.thread_id), None);
+}
+
+#[test]
+fn unstarted_turn_that_created_a_child_generation_releases_it_from_its_parent() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    // An explicit followup to an idle child creates a fresh generation under the parent.
+    let child_thread_id = ThreadId::new();
+    coordinator
+        .begin_or_continue_assignment(
+            child_thread_id,
+            Some(root.clone()),
+            "followup-turn",
+            /*allow_new_generation*/ true,
+        )
+        .expect("followup creates a child generation");
+    assert_eq!(direct_children(&coordinator, &root), 1);
+    assert_eq!(outstanding(&coordinator), 1);
+    let epoch = coordinator.wake_event_epoch();
+
+    // Its turn never runs, so the generation is released rather than left for a report that no
+    // turn will publish.
+    coordinator.release_unstarted_turn(child_thread_id, "followup-turn");
+    assert_eq!(coordinator.current_assignment(child_thread_id), None);
+    assert_eq!(direct_children(&coordinator, &root), 0);
+    assert_eq!(outstanding(&coordinator), 0);
+    assert_ne!(coordinator.wake_event_epoch(), epoch);
+    // The parent does not wait on it.
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Completed)
+    );
+}

@@ -1,4 +1,18 @@
 use super::*;
+
+#[test]
+fn ready_event_after_admission_returns_is_retained_across_wake_handoff() {
+    let mut wake = CompletionWake::default();
+    let admission = wake.request().unwrap();
+    // The helper already returned AlreadyActive. A second producer publishes after the
+    // active turn's final check, before the original worker can release its scheduled bit.
+    assert_eq!(wake.request(), None);
+    assert!(wake.finish(admission));
+    let new_event_attempt = wake.request().unwrap();
+    assert!(!wake.finish(new_event_attempt));
+    // Busy/deferred/paused admission alone cannot create another attempt.
+    assert!(!wake.scheduled);
+}
 use crate::session::session::Session;
 use crate::session::tests::make_session_and_context;
 use pretty_assertions::assert_eq;

@@ -196,20 +196,6 @@ async fn child_retains_owned_helper_until_one_terminal_report(evict_pending: boo
         test.codex.shutdown_and_wait().await?;
         return Ok(());
     }
-    wait_for_event(
-        &child,
-        |event| matches!(event, EventMsg::ExecCommandEnd(end) if end.call_id == "child-finite"),
-    )
-    .await;
-    assert_eq!(child.agent_status().await, AgentStatus::Waiting);
-    child
-        .start_or_steer_turn(codex_core::TurnInputRequest::user_input(vec![
-            UserInput::Text {
-                text: "accept owned result".to_owned(),
-                text_elements: Vec::new(),
-            },
-        ]))
-        .await?;
     wait_for_turn_complete(&child).await;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnStarted(_))

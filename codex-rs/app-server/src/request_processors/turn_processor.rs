@@ -673,11 +673,10 @@ impl TurnRequestProcessor {
             TurnInputSubmission::Started { turn_id } => (turn_id, true),
             TurnInputSubmission::Steered { turn_id } => (turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
-                let error = if reason == NotSubmittedReason::ServerDraining {
-                    crate::error_code::server_draining_error()
-                } else {
-                    internal_error(format!("failed to submit turn input: {reason:?}"))
-                };
+                let error = crate::error_code::retryable_start_or_steer_error(&reason)
+                    .unwrap_or_else(|| {
+                        internal_error(format!("failed to submit turn input: {reason:?}"))
+                    });
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 return Err(error);
             }
@@ -1145,6 +1144,7 @@ impl TurnRequestProcessor {
                     ),
                     NotSubmittedReason::PendingTriggerTurn
                     | NotSubmittedReason::PlanMode
+                    | NotSubmittedReason::RootTurnCapacityReached
                     | NotSubmittedReason::Superseded => (
                         "no active turn to steer".to_string(),
                         None,
