@@ -1366,11 +1366,8 @@ async fn start_or_steer_whose_reservation_is_lost_before_its_task_starts_steers_
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
-/// A delegated followup creates a fresh child generation, loses its reservation to an interrupt
-/// before its task starts, and its retry fails before binding. No turn ran in that generation, so
-/// the parent must not be left waiting for a report from it.
-#[tokio::test(start_paused = true)]
-async fn child_generation_whose_start_is_lost_and_whose_retry_fails_does_not_hold_its_parent() {
+/// A V2 wake-mode child session at `/root/worker` and its parent's running assignment.
+async fn delegated_child_session() -> (Arc<Session>, crate::agent::control::AgentAssignmentId) {
     let parent_thread_id = codex_protocol::ThreadId::new();
     let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
@@ -1395,6 +1392,57 @@ async fn child_generation_whose_start_is_lost_and_whose_retry_fails_does_not_hol
         )
         .expect("parent assignment starts")
         .expect("wake mode binds the parent");
+    (session, parent)
+}
+
+fn delegated_followup() -> TurnInputRequest {
+    explicit_turn("followup").on_start(TurnStartOptions {
+        parent_turn_id: Some("parent-turn".to_string()),
+        ..Default::default()
+    })
+}
+
+/// Every report published to `parent`. A report a dropped claim gives back is claimable again,
+/// so all claims are held until every report is seen.
+fn published_reports(
+    session: &Session,
+    parent: &crate::agent::control::AgentAssignmentId,
+) -> Vec<InterAgentCommunication> {
+    let runtime = &session.services.local_agent_runtime;
+    let claims =
+        std::iter::from_fn(|| runtime.claim_next_report_for_delivery(parent)).collect::<Vec<_>>();
+    claims
+        .iter()
+        .map(|claim| {
+            assert_eq!(claim.sender_thread_id, session.thread_id);
+            claim.communication.clone()
+        })
+        .collect()
+}
+
+/// Waits for reports to `parent`, giving a turn that ended on its own time to publish.
+async fn wait_for_published_reports(
+    session: &Session,
+    parent: &crate::agent::control::AgentAssignmentId,
+) -> Vec<InterAgentCommunication> {
+    for _ in 0..100 {
+        let reports = published_reports(session, parent);
+        if !reports.is_empty() {
+            return reports;
+        }
+        tokio::task::yield_now().await;
+    }
+    Vec::new()
+}
+
+/// A delegated followup creates a fresh child generation and loses its reservation to an
+/// interrupt before its task starts. The retry keeps the first attempt's binding and then fails
+/// before binding anything, so its give-up releases the generation: no turn ever runs in it and
+/// the running parent must not be left waiting for a report from it.
+#[tokio::test(start_paused = true)]
+async fn child_generation_released_by_its_lost_start_does_not_hold_its_parent() {
+    let (session, parent) = delegated_child_session().await;
+    let runtime = &session.services.local_agent_runtime;
 
     let mut install_hold = crate::tasks::hold_next_turn_start(
         session.thread_id,
@@ -1403,10 +1451,7 @@ async fn child_generation_whose_start_is_lost_and_whose_retry_fails_does_not_hol
     let (submission, ()) = tokio::join!(
         handle(
             &session,
-            explicit_turn("followup").on_start(TurnStartOptions {
-                parent_turn_id: Some("parent-turn".to_string()),
-                ..Default::default()
-            }),
+            delegated_followup(),
             TurnInputMode::StartOrSteer,
             "followup".to_string(),
         ),
@@ -1444,4 +1489,131 @@ async fn child_generation_whose_start_is_lost_and_whose_retry_fails_does_not_hol
         Ok(crate::agent::control::AssignmentPhase::Completed),
         "the parent must not wait on a generation no turn ran"
     );
+}
+
+/// Loses a delegated followup's first start to an interrupt after it created a fresh child
+/// generation and its parent's turn ended waiting on that generation. With `fail_retry`, the
+/// retry's bind fails as well. Returns the submission and the generation the first attempt made.
+async fn lose_followup_start_under_waiting_parent(
+    session: &Arc<Session>,
+    parent: &crate::agent::control::AgentAssignmentId,
+    fail_retry: bool,
+) -> (
+    CodexResult<TurnInputSubmission>,
+    crate::agent::control::AgentAssignmentId,
+) {
+    let runtime = &session.services.local_agent_runtime;
+    let mut install_hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+    tokio::join!(
+        handle(
+            session,
+            delegated_followup(),
+            TurnInputMode::StartOrSteer,
+            "followup".to_string(),
+        ),
+        async {
+            install_hold.reached().await;
+            let generation = runtime
+                .current_wake_assignment(session.thread_id)
+                .expect("the first attempt creates a generation under the parent");
+            assert_eq!(
+                runtime
+                    .classify_wake_turn_end(
+                        parent,
+                        "parent-turn",
+                        crate::agent::control::TurnEndDisposition::Succeeded,
+                    )
+                    .await,
+                Ok(crate::agent::control::AssignmentPhase::Waiting),
+                "the parent's turn ends waiting on the followup's generation"
+            );
+            let bind_hold = fail_retry.then(|| {
+                crate::tasks::hold_next_turn_start(
+                    session.thread_id,
+                    crate::tasks::TurnStartHoldPoint::InputBeforeBind,
+                )
+            });
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+            install_hold.release();
+            if let Some(mut bind_hold) = bind_hold {
+                bind_hold.reached().await;
+                bind_hold.fail_and_wait().await;
+            }
+            generation
+        },
+    )
+}
+
+/// The first start of a delegated followup is lost to an interrupt and its retry starts. The
+/// retry runs in the generation the first attempt made, so the waiting parent hears nothing until
+/// that turn ends, and then only its report.
+#[tokio::test(start_paused = true)]
+async fn waiting_parent_hears_only_from_a_followup_whose_lost_start_is_retried() {
+    let (session, parent) = delegated_child_session().await;
+    let runtime = &session.services.local_agent_runtime;
+
+    let (submission, generation) =
+        lose_followup_start_under_waiting_parent(&session, &parent, /*fail_retry*/ false).await;
+    assert_eq!(
+        submission.expect("input should be valid"),
+        TurnInputSubmission::Started {
+            turn_id: "followup".to_string(),
+        }
+    );
+    assert_eq!(
+        runtime.current_wake_assignment(session.thread_id),
+        Some(generation),
+        "the retry starts in the first attempt's generation"
+    );
+    assert!(
+        runtime.is_current_waiting_assignment(&parent),
+        "nothing woke the parent"
+    );
+    assert_eq!(
+        published_reports(&session, &parent),
+        Vec::new(),
+        "the parent must not hear that a running followup did no work"
+    );
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    let reports = wait_for_published_reports(&session, &parent).await;
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        !reports[0]
+            .content
+            .contains(crate::session_prefix::UNSTARTED_CHILD_NOTE),
+        "the report is the turn's own: {reports:?}"
+    );
+}
+
+/// The first start of a delegated followup is lost to an interrupt and its retry fails too. Only
+/// the give-up reports, once, that the generation did no work, and that report wakes the parent.
+#[tokio::test(start_paused = true)]
+async fn waiting_parent_hears_once_from_a_followup_whose_retried_start_fails() {
+    let (session, parent) = delegated_child_session().await;
+    let runtime = &session.services.local_agent_runtime;
+
+    let (submission, generation) =
+        lose_followup_start_under_waiting_parent(&session, &parent, /*fail_retry*/ true).await;
+    assert!(
+        submission.is_err(),
+        "the retry's bind failed: {submission:?}"
+    );
+    assert_eq!(
+        runtime.current_wake_assignment(session.thread_id),
+        Some(generation),
+        "the interrupted generation stays for its report"
+    );
+    let reports = published_reports(&session, &parent);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        reports[0]
+            .content
+            .contains(crate::session_prefix::UNSTARTED_CHILD_NOTE),
+        "{reports:?}"
+    );
+    assert_eq!(runtime.claim_next_wake_assignment(), Some(parent));
 }

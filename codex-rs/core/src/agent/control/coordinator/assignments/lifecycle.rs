@@ -7,6 +7,7 @@ use super::super::Assignment;
 use super::super::AssignmentPhase;
 use super::super::AssignmentReloadAuthority;
 use super::super::CoordinatorState;
+use super::super::InterruptedChild;
 use super::super::MAX_OUTSTANDING_ASSIGNMENTS;
 use super::super::ReportDeliveryState;
 use super::super::TurnEndClassification;
@@ -111,27 +112,34 @@ impl AgentWakeCoordinator {
     /// Undoes the binding of a turn that held a running assignment but never started: the
     /// assignment returns to how the turn found it, so the next wake or input can take it. A turn
     /// that resumed a waiting assignment leaves it waiting again (and requests the wake its ready
-    /// work needs), one that took an unheld running assignment leaves it unheld, and one that
-    /// created the generation releases it, as a reservation that never commits is rolled back: no
-    /// turn ran in it, so it leaves its parent's children and no report is owed. Does nothing
-    /// unless `turn_id` still holds the thread's running assignment.
-    pub(crate) fn release_unstarted_turn(&self, thread_id: ThreadId, turn_id: &str) {
+    /// work or pending reports need), and one that took an unheld running assignment leaves it
+    /// unheld. One that created the generation releases it, as a reservation that never commits is
+    /// rolled back: no turn ran in it, so it leaves its parent's children and no report is owed.
+    /// If the parent is already waiting on it, though, only a report can end that wait, so the
+    /// generation is interrupted instead and returned for the caller to publish its report. Does
+    /// nothing unless `turn_id` still holds the thread's running assignment.
+    pub(crate) fn release_unstarted_turn(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+    ) -> Option<InterruptedChild> {
         let mut state = self.lock_state();
-        let Some(current) = state.current_by_thread.get(&thread_id).cloned() else {
-            return;
-        };
-        let Some(assignment) = state.assignments.get_mut(&current) else {
-            return;
-        };
+        let current = state.current_by_thread.get(&thread_id).cloned()?;
+        let assignment = state.assignments.get_mut(&current)?;
         if assignment.phase != AssignmentPhase::Running
             || assignment.active_turn_id.as_deref() != Some(turn_id)
         {
-            return;
+            return None;
         }
         match assignment.active_turn_origin {
             ActiveTurnOrigin::NewGeneration => {
-                Self::release_assignment(&mut state, &current);
+                let interrupted = Self::interrupt_for_waiting_parent(&mut state, &current);
+                if interrupted.is_none() {
+                    Self::release_assignment(&mut state, &current);
+                }
                 state.signal_wake_event();
+                drop(state);
+                return interrupted;
             }
             ActiveTurnOrigin::Unheld => {
                 assignment.active_turn_id = None;
@@ -144,24 +152,20 @@ impl AgentWakeCoordinator {
                     .owned_completions
                     .upgrade()
                     .is_some_and(|store| store.has_ready(thread_id, Some(&current)));
-                let has_recorded_reports =
-                    state
-                        .pending_by_parent
-                        .get(&current)
-                        .is_some_and(|report_ids| {
-                            report_ids.iter().any(|report_id| {
-                                state.reports.get(report_id).is_some_and(|report| {
-                                    report.delivery == ReportDeliveryState::Recorded
-                                })
-                            })
-                        });
+                // Any pending report needs the wake this turn would have been: one still in the
+                // mailbox (Enqueued) is as unrecorded as one never claimed.
+                let has_pending_reports = state
+                    .pending_by_parent
+                    .get(&current)
+                    .is_some_and(|report_ids| !report_ids.is_empty());
                 state.signal_wake_event();
                 drop(state);
-                if has_ready_completions || has_recorded_reports {
+                if has_ready_completions || has_pending_reports {
                     self.request_wake(current);
                 }
             }
         }
+        None
     }
 
     /// Captures the recorded parent and root for a current child assignment reload.
@@ -519,6 +523,39 @@ impl AgentWakeCoordinator {
         }
         state.current_by_thread.insert(thread_id, id.clone());
         Ok(id)
+    }
+
+    /// Marks `child` Interrupted under a fresh terminal turn id if its parent is the current,
+    /// waiting assignment, as `interrupt_idle_assignment` does, and returns it for its report to be
+    /// published. A waiting parent moves on only when a turn ends, and only a report can start
+    /// that turn, so releasing the child instead would leave the parent waiting forever. The
+    /// fresh id also keeps any later end of the child's own turn from reporting a second time.
+    pub(in crate::agent::control::coordinator) fn interrupt_for_waiting_parent(
+        state: &mut CoordinatorState,
+        child: &AgentAssignmentId,
+    ) -> Option<InterruptedChild> {
+        let parent = state.assignments.get(child)?.parent.clone()?;
+        let parent_is_waiting = state.current_by_thread.get(&parent.thread_id) == Some(&parent)
+            && state
+                .assignments
+                .get(&parent)
+                .is_some_and(|assignment| assignment.phase == AssignmentPhase::Waiting);
+        if !parent_is_waiting {
+            return None;
+        }
+        let terminal_turn_id = Uuid::now_v7().to_string();
+        let assignment = state.assignments.get_mut(child)?;
+        assignment.phase = AssignmentPhase::Interrupted;
+        assignment.active_turn_id = None;
+        assignment.terminal_turn_id = Some(terminal_turn_id.clone());
+        assignment.terminal_disposition = Some(TurnEndDisposition::Interrupted);
+        assignment.last_classified_phase = Some(AssignmentPhase::Interrupted);
+        state.wake_queue.remove_assignment(child);
+        Self::detach_direct_children(state, child);
+        Some(InterruptedChild {
+            assignment: child.clone(),
+            terminal_turn_id,
+        })
     }
 
     pub(super) fn detach_direct_children(state: &mut CoordinatorState, parent: &AgentAssignmentId) {

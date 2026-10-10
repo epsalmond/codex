@@ -422,3 +422,7 @@ fn validate_coordinator_reload_target(
 #[cfg(test)]
 #[path = "dispatcher_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "waiting_parent_report_tests.rs"]
+mod waiting_parent_report_tests;
