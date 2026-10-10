@@ -418,7 +418,11 @@ impl Session {
                 turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &reservation.turn_state)
             });
             if owns_reservation {
-                self.record_started_turn(&turn_context.sub_id).await;
+                self.record_started_turn(
+                    &turn_context.sub_id,
+                    (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
+                )
+                .await;
             }
             owns_reservation
         };
@@ -590,6 +594,7 @@ impl Session {
                 profile,
             });
         let event = EventMsg::TurnAborted(TurnAbortedEvent {
+            root_turn_id: Some(turn_context.root_turn_id()),
             turn_id: Some(turn_context.sub_id.clone()),
             reason: TurnAbortReason::Interrupted,
             error: None,
@@ -707,6 +712,9 @@ impl Session {
             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
         ) {
             // Queue-only mail wakes durable sleep without selecting a new task's settings.
+            if matches!(cause, PendingWorkCause::Mailbox) {
+                start_options = self.previous_turn_start_options().await;
+            }
             start_options.cyber_access_program = self
                 .reference_context_item()
                 .await
@@ -726,14 +734,18 @@ impl Session {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }
         if let Some(id) = start_options.parent_turn_id {
-            if let Some(initiating_agent_path) = input.iter().find_map(|item| {
-                let TurnInput::InterAgentCommunication(communication) = item else {
-                    return None;
-                };
-                communication
-                    .trigger_turn
-                    .then(|| communication.author.clone())
-            }) {
+            if let Some(initiating_agent_path) = input
+                .iter()
+                .find_map(|item| {
+                    let TurnInput::InterAgentCommunication(communication) = item else {
+                        return None;
+                    };
+                    communication
+                        .trigger_turn
+                        .then(|| communication.author.clone())
+                })
+                .or(start_options.initiating_agent_path)
+            {
                 turn_context
                     .turn_metadata_state
                     .set_initiating_agent_path(initiating_agent_path);
@@ -1216,6 +1228,7 @@ impl Session {
             self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
                 .await;
             EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: Some(turn_context.root_turn_id()),
                 turn_id: Some(turn_context.sub_id.clone()),
                 reason,
                 error: None,
@@ -1232,6 +1245,7 @@ impl Session {
             self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
                 .await;
             EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: Some(turn_context.root_turn_id()),
                 turn_id: turn_context.sub_id.clone(),
                 last_agent_message,
                 error,
@@ -1434,6 +1448,7 @@ impl Session {
         self.emit_turn_abort_lifecycle(reason.clone(), task.turn_context.extension_data.as_ref())
             .await;
         let event = EventMsg::TurnAborted(TurnAbortedEvent {
+            root_turn_id: Some(task.turn_context.root_turn_id()),
             turn_id: Some(task.turn_context.sub_id.clone()),
             reason,
             error,

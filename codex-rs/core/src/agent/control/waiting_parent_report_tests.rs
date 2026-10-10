@@ -131,6 +131,7 @@ impl Harness {
                     agent_role: None,
                 }),
                 /*history_mode*/ None,
+                /*dynamic_tools*/ Vec::new(),
                 Some(parent_thread_id),
                 /*forked_from_thread_id*/ None,
                 Some(ThreadSource::Subagent),

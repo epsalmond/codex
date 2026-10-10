@@ -23,6 +23,7 @@ fn turn(id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
         started_at: None,
         completed_at: None,
         duration_ms: None,
+        root_turn_id: None,
     }
 }
 

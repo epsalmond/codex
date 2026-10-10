@@ -159,6 +159,7 @@ async fn steering_does_not_wait_for_realtime_history() {
         assert_eq!(
             submission,
             TurnInputSubmission::Steered {
+                root_turn_id: turn_context.sub_id.clone(),
                 turn_id: turn_context.sub_id.clone()
             }
         );
@@ -178,7 +179,7 @@ async fn accepted_input_applies_thread_settings() {
             text_elements: Vec::new(),
         }])
         .with_thread_settings(ThreadSettingsOverrides {
-            environments: Some(local_selections(config.cwd.clone())),
+            environments: Some(local_selections(config.cwd.clone()).into_requests()),
             approval_policy: Some(config.permissions.approval_policy.value()),
             approvals_reviewer: Some(codex_config::types::ApprovalsReviewer::AutoReview),
             sandbox_policy: Some(config.legacy_sandbox_policy()),
@@ -416,10 +417,13 @@ async fn prepared_user_updates_merge_with_settings_at_turn_start() {
             },
         };
         session
-            .update_settings(thread_settings::prepare_update(ThreadSettingsOverrides {
-                collaboration_mode: Some(initial.clone()),
-                ..Default::default()
-            }))
+            .update_settings(thread_settings::prepare_update(
+                ThreadSettingsOverrides {
+                    collaboration_mode: Some(initial.clone()),
+                    ..Default::default()
+                },
+                &session.services.selected_capability_roots,
+            ))
             .await
             .expect("set initial model and effort");
         let prepared =
@@ -427,7 +431,10 @@ async fn prepared_user_updates_merge_with_settings_at_turn_start() {
                 .await
                 .expect("prepare partial protocol update");
         session
-            .update_settings(thread_settings::prepare_update(intervening))
+            .update_settings(thread_settings::prepare_update(
+                intervening,
+                &session.services.selected_capability_roots,
+            ))
             .await
             .expect("commit intervening settings");
 
@@ -465,10 +472,13 @@ async fn automatic_admission_uses_current_candidate_after_plan_preview() {
     let mut plan_mode = default_mode.clone();
     plan_mode.mode = ModeKind::Plan;
     session
-        .update_settings(thread_settings::prepare_update(ThreadSettingsOverrides {
-            collaboration_mode: Some(plan_mode),
-            ..Default::default()
-        }))
+        .update_settings(thread_settings::prepare_update(
+            ThreadSettingsOverrides {
+                collaboration_mode: Some(plan_mode),
+                ..Default::default()
+            },
+            &session.services.selected_capability_roots,
+        ))
         .await
         .expect("enter Plan after the initial admission check");
     let prepared = PreparedTurnInputSettings::prepare(
@@ -482,10 +492,13 @@ async fn automatic_admission_uses_current_candidate_after_plan_preview() {
     .await
     .expect("validate the patch while the preview is Plan");
     session
-        .update_settings(thread_settings::prepare_update(ThreadSettingsOverrides {
-            collaboration_mode: Some(default_mode.clone()),
-            ..Default::default()
-        }))
+        .update_settings(thread_settings::prepare_update(
+            ThreadSettingsOverrides {
+                collaboration_mode: Some(default_mode.clone()),
+                ..Default::default()
+            },
+            &session.services.selected_capability_roots,
+        ))
         .await
         .expect("leave Plan before atomic admission");
 
@@ -555,7 +568,7 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
     let overrides = ThreadSettingsOverrides {
         model: Some("automatic-model-must-not-be-applied".to_string()),
         service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
-        environments: Some(proposed_environments.clone()),
+        environments: Some(proposed_environments.clone().into_requests()),
         approval_policy: Some(AskForApproval::Never),
         approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
         ..Default::default()
@@ -641,7 +654,10 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
     // The rejected candidate is valid and would have real runtime effects if
     // accepted by an ordinary settings update.
     session
-        .update_settings(thread_settings::prepare_update(overrides))
+        .update_settings(thread_settings::prepare_update(
+            overrides,
+            &session.services.selected_capability_roots,
+        ))
         .await
         .expect("explicit settings update accepts the same patch");
     assert_eq!(
@@ -922,6 +938,7 @@ async fn steer_only_enforces_expected_turn_id() {
     assert_eq!(
         submission,
         TurnInputSubmission::Steered {
+            root_turn_id: turn_context.sub_id.clone(),
             turn_id: turn_context.sub_id.clone()
         }
     );
@@ -1128,6 +1145,7 @@ async fn explicit_input_steers_into_a_starting_turn_once_its_task_is_installed()
             .expect("input should be valid"),
         TurnInputSubmission::Steered {
             turn_id: turn_context.sub_id.clone(),
+            root_turn_id: turn_context.sub_id.clone(),
         }
     );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
@@ -1161,6 +1179,7 @@ async fn explicit_input_replaces_a_finishing_turn_without_waiting() {
         submission,
         TurnInputSubmission::Started {
             turn_id: "explicit".to_string(),
+            root_turn_id: "explicit".to_string(),
         }
     );
     assert!(
@@ -1196,6 +1215,7 @@ async fn explicit_input_replaces_a_starting_turn_that_never_installs_its_task() 
         submission,
         TurnInputSubmission::Started {
             turn_id: "explicit".to_string(),
+            root_turn_id: "explicit".to_string(),
         }
     );
     assert!(
@@ -1267,6 +1287,7 @@ async fn replace_reservation_before_install(
                         .expect("later input should be valid"),
                         TurnInputSubmission::Started {
                             turn_id: "later".to_string(),
+                            root_turn_id: "later".to_string(),
                         }
                     );
                     Some("later".to_string())
@@ -1324,13 +1345,20 @@ async fn start_or_steer_whose_reservation_is_lost_before_its_task_starts_steers_
     match replacing_turn_id {
         // Steers into the turn that took its slot.
         Some(turn_id) => {
-            assert_eq!(submission, TurnInputSubmission::Steered { turn_id });
+            assert_eq!(
+                submission,
+                TurnInputSubmission::Steered {
+                    root_turn_id: turn_id.clone(),
+                    turn_id,
+                }
+            );
         }
         // Starts in the slot the interrupt freed, under the id it was submitted with.
         None => assert_eq!(
             submission,
             TurnInputSubmission::Started {
                 turn_id: "replaced".to_string(),
+                root_turn_id: "replaced".to_string(),
             }
         ),
     }
@@ -1561,6 +1589,7 @@ async fn waiting_parent_hears_only_from_a_followup_whose_lost_start_is_retried()
         submission.expect("input should be valid"),
         TurnInputSubmission::Started {
             turn_id: "followup".to_string(),
+            root_turn_id: "followup".to_string(),
         }
     );
     assert_eq!(

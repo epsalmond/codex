@@ -1,7 +1,6 @@
 //! Guardian retains native encrypted parent replies across incremental reviews.
 
 use codex_core::config::Constrained;
-use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::PermissionProfile;
@@ -66,10 +65,11 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews() -> anyho
         .with_model("gpt-5.5")
         .with_config(|config| {
             super::configure_scenario_catalog(config);
+            // The fork enables MultiAgentV2 by default; this scenario is single-agent.
             config
                 .features
-                .enable(Feature::GuardianThreadContext)
-                .unwrap();
+                .disable(codex_features::Feature::MultiAgentV2)
+                .expect("keep the scenario single-agent");
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config

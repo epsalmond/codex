@@ -80,7 +80,10 @@ async fn failed_root_quiesces_descendants_and_allows_explicit_followup(
         .build_with_streaming_server(&server)
         .await?;
     let mut created = test.thread_manager.subscribe_thread_created();
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: ROOT_PROMPT.to_owned(),
@@ -260,7 +263,10 @@ async fn failed_root_waits_for_reserved_child_cleanup_after_rollback() -> Result
         })
         .build_with_streaming_server(&server)
         .await?;
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: ROOT_PROMPT.to_owned(),
@@ -383,7 +389,10 @@ async fn failed_root_waits_for_detached_child_finalization() -> Result<()> {
         .with_config(|config| configure_multi_agent(config, Some(AgentPolling::Disabled)))
         .build_with_streaming_server(&server)
         .await?;
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: ROOT_PROMPT.to_owned(),

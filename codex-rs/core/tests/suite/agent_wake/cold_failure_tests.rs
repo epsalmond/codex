@@ -138,7 +138,10 @@ async fn failed_root_waits_for_cold_wake_reload_cleanup() -> Result<()> {
         .build_with_streaming_server(&server)
         .await?;
     let mut created = test.thread_manager.subscribe_thread_created();
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: ROOT_PROMPT.to_owned(),

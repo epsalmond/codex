@@ -314,7 +314,7 @@ async fn assert_follow_up_sees_completion_once(
     server: &StreamingSseServer,
     prompt: &str,
 ) -> Result<Vec<EventMsg>> {
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started { turn_id, .. } = test
         .codex
         .start_or_steer_turn(user_turn("after the race"))
         .await?
@@ -372,7 +372,7 @@ async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_deliv
     // Let the explicit input reach the wait, well inside its bound, then let the wake run.
     tokio::time::sleep(Duration::from_millis(300)).await;
     hold.release();
-    let TurnInputSubmission::Steered { turn_id } = explicit.await?? else {
+    let TurnInputSubmission::Steered { turn_id, .. } = explicit.await?? else {
         panic!("explicit input inside a starting wake must steer into it");
     };
     let wake_turn_id = wait_for_event_match(&test.codex, |event| match event {
@@ -403,7 +403,7 @@ async fn explicit_root_turn_replaces_a_wake_held_past_the_wait_and_the_wake_abor
         park_idle_wake_with_ready_completion(TurnStartHoldPoint::WakeBeforeInstall).await?;
     // The wake stays parked past the wait bound, so the explicit turn takes the slot and the
     // wake's assignment, then starts on its own.
-    let TurnInputSubmission::Started { turn_id } = tokio::time::timeout(
+    let TurnInputSubmission::Started { turn_id, .. } = tokio::time::timeout(
         Duration::from_secs(10),
         test.codex
             .start_or_steer_turn(user_turn("explicit after the wait")),
@@ -477,7 +477,7 @@ async fn assert_wake_replaced_before_bind_ends_quietly(explicit_binds_first: boo
         input.release();
         explicit.await??
     };
-    let TurnInputSubmission::Started { turn_id } = submission else {
+    let TurnInputSubmission::Started { turn_id, .. } = submission else {
         panic!("explicit input must start once it replaced the wake");
     };
     let mut seen = Vec::new();
@@ -577,7 +577,7 @@ async fn explicit_turn_that_fails_after_taking_over_a_wake_gives_its_assignment_
     assert!(delivered[0].contains("terminal-tail"));
 
     // Later explicit input starts normally and sees the completion once, in history.
-    let TurnInputSubmission::Started { turn_id } = test
+    let TurnInputSubmission::Started { turn_id, .. } = test
         .codex
         .start_or_steer_turn(user_turn("after the race"))
         .await?
