@@ -1,7 +1,9 @@
 use super::*;
 use codex_core::TurnInputSubmission;
+use codex_core::test_support::WakeStartHold;
 use codex_core::test_support::hold_next_wake_start;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::TurnAbortReason;
 use core_test_support::test_codex::TestCodex;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
@@ -244,20 +246,23 @@ async fn idle_owner_receives_native_completion(v2: bool, case: IdleCase) -> Resu
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_delivers_once()
--> Result<()> {
-    skip_if_no_network!(Ok(()));
-    skip_if_wine_exec!(
-        Ok(()),
-        "basic PowerShell execution through Wine is unavailable"
-    );
+fn user_turn(text: &str) -> TurnInputRequest {
+    TurnInputRequest::user_input(vec![UserInput::Text {
+        text: text.to_owned(),
+        text_elements: Vec::new(),
+    }])
+}
+
+/// Leaves a V2 root idle with a ready completion whose wake is parked after it reserved the slot
+/// and bound its assignment, before it installs its task.
+async fn park_idle_wake_with_ready_completion()
+-> Result<(TestCodex, StreamingSseServer, WakeStartHold)> {
     let args = json!({ "cmd": gated_helper(), "yield_time_ms": 250 });
     let mut bodies = vec![
         tool_response("race-finite", &args),
         assistant_response("idle"),
     ];
-    // The wake turn may sample once or twice with the steered message; then one follow-up turn.
+    // One or two samples for the turn that takes the completion, then one follow-up turn.
     bodies.extend((0..4).map(|index| assistant_response(&format!("after-{index}"))));
     let (server, _) = start_streaming_sse_server(
         bodies
@@ -291,19 +296,68 @@ async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_deliv
     })
     .await;
     assert_eq!(test.codex.agent_status().await, AgentStatus::Waiting);
-    // Park the idle wake after it reserves the slot and binds the assignment, before it
-    // installs its task: the window in which explicit input used to be rejected.
     let mut hold = hold_next_wake_start(test.session_configured.thread_id);
     release_helper(&test).await?;
     tokio::time::timeout(Duration::from_secs(30), hold.reached())
         .await
         .expect("the completion should start an idle wake");
-    let user_turn = |text: &str| {
-        TurnInputRequest::user_input(vec![UserInput::Text {
-            text: text.to_owned(),
-            text_elements: Vec::new(),
-        }])
+    Ok((test, server, hold))
+}
+
+/// Runs a follow-up turn, then checks that its request carries each prompt once and the
+/// completion exactly once, and that no request ever carried the completion twice.
+async fn assert_follow_up_sees_completion_once(
+    test: &TestCodex,
+    server: &StreamingSseServer,
+    prompt: &str,
+) -> Result<()> {
+    let TurnInputSubmission::Started { turn_id } = test
+        .codex
+        .start_or_steer_turn(user_turn("after the race"))
+        .await?
+    else {
+        panic!("idle follow-up must start a turn");
     };
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
+    )
+    .await;
+    let requests = request_bodies(server).await;
+    let texts = |request: &Value| {
+        request["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["content"][0]["text"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let last = texts(requests.last().unwrap());
+    let delivered = completions(requests.last().unwrap());
+    assert_eq!(delivered.len(), 1);
+    assert!(delivered[0].contains("call=race-finite"));
+    assert!(delivered[0].contains("terminal-tail"));
+    for prompt in [prompt, "after the race"] {
+        assert_eq!(last.iter().filter(|text| *text == prompt).count(), 1);
+    }
+    assert!(
+        requests
+            .iter()
+            .all(|request| completions(request).len() <= 1)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_delivers_once()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    // The window in which explicit input used to be rejected.
+    let (test, server, hold) = park_idle_wake_with_ready_completion().await?;
     let codex = Arc::clone(&test.codex);
     let explicit = tokio::spawn(async move {
         codex
@@ -327,40 +381,61 @@ async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_deliv
         |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
     )
     .await;
-    let TurnInputSubmission::Started { turn_id } = test
-        .codex
-        .start_or_steer_turn(user_turn("after the race"))
-        .await?
-    else {
-        panic!("idle follow-up must start a turn");
-    };
-    wait_for_event(
-        &test.codex,
-        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
-    )
-    .await;
-    let requests = request_bodies(&server).await;
-    let texts = |request: &Value| {
-        request["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|item| item["content"][0]["text"].as_str().map(str::to_owned))
-            .collect::<Vec<_>>()
-    };
-    let last = texts(requests.last().unwrap());
-    let delivered = completions(requests.last().unwrap());
-    assert_eq!(delivered.len(), 1);
-    assert!(delivered[0].contains("call=race-finite"));
-    assert!(delivered[0].contains("terminal-tail"));
-    for prompt in ["explicit during wake", "after the race"] {
-        assert_eq!(last.iter().filter(|text| *text == prompt).count(), 1);
-    }
-    assert!(
-        requests
-            .iter()
-            .all(|request| completions(request).len() <= 1)
+    assert_follow_up_sees_completion_once(&test, &server, "explicit during wake").await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_root_turn_replaces_a_wake_held_past_the_wait_and_the_wake_aborts_cleanly()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
     );
+    let (test, server, hold) = park_idle_wake_with_ready_completion().await?;
+    // The wake stays parked past the wait bound, so the explicit turn takes the slot and the
+    // wake's assignment, then starts on its own.
+    let TurnInputSubmission::Started { turn_id } = tokio::time::timeout(
+        Duration::from_secs(10),
+        test.codex
+            .start_or_steer_turn(user_turn("explicit after the wait")),
+    )
+    .await??
+    else {
+        panic!("explicit input must start a turn once the wait times out");
+    };
+    hold.release();
+    // The parked wake finds the slot is no longer its reservation and ends without starting.
+    let mut explicit_completed = false;
+    let mut aborted_wake = None;
+    while !explicit_completed || aborted_wake.is_none() {
+        let event = wait_for_event_match(&test.codex, |event| {
+            matches!(
+                event,
+                EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+            )
+            .then(|| event.clone())
+        })
+        .await;
+        match event {
+            EventMsg::TurnStarted(started) => {
+                assert_eq!(started.turn_id, turn_id, "only the explicit turn may start");
+            }
+            EventMsg::TurnComplete(complete) => {
+                assert_eq!(complete.turn_id, turn_id);
+                explicit_completed = true;
+            }
+            EventMsg::TurnAborted(aborted) => {
+                assert_eq!(aborted.reason, TurnAbortReason::Interrupted);
+                assert_ne!(aborted.turn_id.as_ref(), Some(&turn_id));
+                assert_eq!(aborted_wake.replace(aborted.turn_id), None);
+            }
+            _ => unreachable!("the matcher selects only turn lifecycle events"),
+        }
+    }
+    assert_follow_up_sees_completion_once(&test, &server, "explicit after the wait").await?;
     server.shutdown().await;
     Ok(())
 }

@@ -1,6 +1,8 @@
 //! Starts a turn for reports that are already in history but missed the prior request snapshot.
 
 use super::RegularTask;
+use super::TaskStartOutcome;
+use super::TurnReservation;
 use crate::agent::control::AgentAssignmentId;
 use crate::session::session::Session;
 use crate::session::turn_context::NewTurnContextOptions;
@@ -42,12 +44,16 @@ impl Session {
             return RecordedReportWakeResult::Busy;
         }
 
+        let turn_id = uuid::Uuid::new_v4().to_string();
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return RecordedReportWakeResult::Busy;
             }
-            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            let active_turn = active_turn.insert(ActiveTurn {
+                wake_turn_id: Some(turn_id.clone()),
+                ..ActiveTurn::default()
+            });
             Arc::clone(&active_turn.turn_state)
         };
 
@@ -65,7 +71,6 @@ impl Session {
             return RecordedReportWakeResult::Busy;
         }
 
-        let turn_id = uuid::Uuid::new_v4().to_string();
         let mut turn_context = self
             .new_turn_with_default_settings(turn_id, NewTurnContextOptions::default())
             .await;
@@ -81,6 +86,7 @@ impl Session {
         }
 
         let (input, start_options) = self.input_queue.get_pending_input(&self.active_turn).await;
+        let mail_start_options = start_options.clone();
         #[expect(
             clippy::expect_used,
             reason = "the new turn context is not shared until start_task"
@@ -100,8 +106,19 @@ impl Session {
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
             .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
-            .await;
-        RecordedReportWakeResult::Started
+        let reservation = TurnReservation {
+            turn_state,
+            mail_start_options,
+        };
+        match self
+            .start_task(turn_context, Vec::new(), RegularTask::new(), reservation)
+            .await
+        {
+            TaskStartOutcome::Started => RecordedReportWakeResult::Started,
+            // The reports stay in history for whichever turn holds the slot next.
+            TaskStartOutcome::Rejected(_) | TaskStartOutcome::Aborted => {
+                RecordedReportWakeResult::NoLongerNeeded
+            }
+        }
     }
 }

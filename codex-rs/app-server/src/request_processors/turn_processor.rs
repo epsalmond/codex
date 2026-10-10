@@ -1145,6 +1145,7 @@ impl TurnRequestProcessor {
                     ),
                     NotSubmittedReason::PendingTriggerTurn
                     | NotSubmittedReason::PlanMode
+                    | NotSubmittedReason::RootTurnCapacityReached
                     | NotSubmittedReason::Superseded => (
                         "no active turn to steer".to_string(),
                         None,

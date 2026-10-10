@@ -51,7 +51,10 @@ impl Session {
             .root_turn_abandoned(turn_id);
     }
 
-    pub(crate) async fn admit_root_task_or_emit_error(&self, turn_context: &TurnContext) -> bool {
+    pub(crate) async fn admit_root_task_or_emit_error(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Result<(), WorkAdmissionError> {
         if let Err(error) = self.register_root_turn_lifecycle(turn_context) {
             tracing::warn!(%error, "root task admission rejected by lifecycle coordinator");
             self.send_event(
@@ -63,9 +66,9 @@ impl Session {
                 }),
             )
             .await;
-            return false;
+            return Err(error);
         }
-        true
+        Ok(())
     }
 
     pub(crate) async fn update_root_turn_lifecycle(

@@ -224,6 +224,9 @@ pub enum NotSubmittedReason {
     /// The host is draining and no longer permits new regular turns.
     ServerDraining,
 
+    /// The host's work coordinator is already tracking its maximum number of root turns.
+    RootTurnCapacityReached,
+
     /// `start_turn_if_idle` found an active turn.
     NotIdle,
 

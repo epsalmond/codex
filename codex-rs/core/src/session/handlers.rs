@@ -476,9 +476,10 @@ pub async fn run_user_shell_command(
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
-    if !sess
+    if sess
         .admit_root_task_or_emit_error(turn_context.as_ref())
         .await
+        .is_err()
     {
         return;
     }
@@ -772,9 +773,10 @@ pub async fn review(
     #[allow(deprecated)]
     match resolve_review_request(review_request, &turn_context.cwd) {
         Ok(resolved) => {
-            if !sess
+            if sess
                 .admit_root_task_or_emit_error(turn_context.as_ref())
                 .await
+                .is_err()
             {
                 return;
             }

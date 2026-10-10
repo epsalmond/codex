@@ -18,9 +18,12 @@ use super::session::SessionSettingsUpdate;
 use super::thread_settings;
 use super::turn_context::NewTurnContextOptions;
 use super::turn_context::TurnContext;
+use crate::agent::control::WorkAdmissionError;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
+use crate::tasks::TaskStartOutcome;
+use crate::tasks::TurnReservation;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_history::UserInputOrigin;
@@ -282,6 +285,13 @@ pub(super) async fn handle_recovery(
     .await
 }
 
+fn not_submitted_reason(error: &WorkAdmissionError) -> NotSubmittedReason {
+    match error {
+        WorkAdmissionError::Closed => NotSubmittedReason::ServerDraining,
+        WorkAdmissionError::CapacityReached => NotSubmittedReason::RootTurnCapacityReached,
+    }
+}
+
 async fn start_or_steer(
     session: &Arc<Session>,
     request: TurnInputRequest,
@@ -328,7 +338,7 @@ async fn start_or_steer(
     // outlives the wait, is replaced as before. A free slot is reserved before this turn binds
     // its assignment.
     let deadline = Instant::now() + STARTING_TURN_WAIT_TIMEOUT;
-    let (turn_state, _admission) = loop {
+    let (turn_state, _admission, replaced_wake_turn_id) = loop {
         match session
             .steer_input(
                 &mut input,
@@ -369,9 +379,18 @@ async fn start_or_steer(
                         };
                         Some(admission)
                     };
-                    // A replaced turn's own release later finds this reservation and keeps it.
+                    // A replaced turn's own release or start later finds this reservation and
+                    // leaves it alone. A wake still starting also hands over its assignment.
+                    let replaced_wake_turn_id = active_turn
+                        .take()
+                        .filter(|turn| !turn.finishing)
+                        .and_then(|turn| turn.wake_turn_id);
                     let reserved = active_turn.insert(ActiveTurn::default());
-                    break (Arc::clone(&reserved.turn_state), admission);
+                    break (
+                        Arc::clone(&reserved.turn_state),
+                        admission,
+                        replaced_wake_turn_id,
+                    );
                 }
             }
         };
@@ -389,6 +408,13 @@ async fn start_or_steer(
             return Err(error);
         }
     };
+    if let Some(wake_turn_id) = replaced_wake_turn_id {
+        session.services.local_agent_runtime.hand_off_wake_turn(
+            session.thread_id,
+            &wake_turn_id,
+            &turn_context.sub_id,
+        );
+    }
     if let Err(error) =
         session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)
     {
@@ -399,7 +425,7 @@ async fn start_or_steer(
         tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
         session.clear_reserved_idle_turn(&turn_state).await;
         return Ok(TurnInputSubmission::NotSubmitted {
-            reason: NotSubmittedReason::ServerDraining,
+            reason: not_submitted_reason(&error),
         });
     }
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
@@ -425,17 +451,22 @@ async fn start_or_steer(
         // The reservation above keeps held mail from starting a wake turn once the pause clears.
         session.resume_paused_wakeups().await;
     }
-    if !session
-        .start_task(turn_context, task_input, RegularTask::new())
+    let reservation = TurnReservation {
+        turn_state,
+        mail_start_options: TurnStartOptions::default(),
+    };
+    match session
+        .start_task(turn_context, task_input, RegularTask::new(), reservation)
         .await
     {
-        return Ok(TurnInputSubmission::NotSubmitted {
-            reason: NotSubmittedReason::ServerDraining,
-        });
+        // An aborted start already reported `TurnAborted` for this turn id.
+        TaskStartOutcome::Started | TaskStartOutcome::Aborted => Ok(TurnInputSubmission::Started {
+            turn_id: submission_id,
+        }),
+        TaskStartOutcome::Rejected(error) => Ok(TurnInputSubmission::NotSubmitted {
+            reason: not_submitted_reason(&error),
+        }),
     }
-    Ok(TurnInputSubmission::Started {
-        turn_id: submission_id,
-    })
 }
 
 #[expect(
@@ -557,7 +588,7 @@ async fn start_if_idle(
         tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
         session.clear_reserved_idle_turn(&turn_state).await;
         return Ok(TurnInputSubmission::NotSubmitted {
-            reason: NotSubmittedReason::ServerDraining,
+            reason: not_submitted_reason(&error),
         });
     }
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
@@ -594,17 +625,22 @@ async fn start_if_idle(
             }
         }
     }
-    if !session
-        .start_task(turn_context, task_input, RegularTask::new())
+    let reservation = TurnReservation {
+        turn_state,
+        mail_start_options: TurnStartOptions::default(),
+    };
+    match session
+        .start_task(turn_context, task_input, RegularTask::new(), reservation)
         .await
     {
-        return Ok(TurnInputSubmission::NotSubmitted {
-            reason: NotSubmittedReason::ServerDraining,
-        });
+        // An aborted start already reported `TurnAborted` for this turn id.
+        TaskStartOutcome::Started | TaskStartOutcome::Aborted => Ok(TurnInputSubmission::Started {
+            turn_id: submission_id,
+        }),
+        TaskStartOutcome::Rejected(error) => Ok(TurnInputSubmission::NotSubmitted {
+            reason: not_submitted_reason(&error),
+        }),
     }
-    Ok(TurnInputSubmission::Started {
-        turn_id: submission_id,
-    })
 }
 
 async fn steer(

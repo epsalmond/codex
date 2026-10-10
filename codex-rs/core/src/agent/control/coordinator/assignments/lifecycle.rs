@@ -81,6 +81,26 @@ impl AgentWakeCoordinator {
         Ok(assignment)
     }
 
+    /// Moves a running assignment from a wake turn that lost its reserved slot before its task
+    /// started to the turn that replaced it, so the wake's later abort cannot end the assignment.
+    pub(crate) fn hand_off_running_turn(
+        &self,
+        thread_id: ThreadId,
+        from_turn_id: &str,
+        to_turn_id: &str,
+    ) {
+        let mut state = self.lock_state();
+        let Some(current) = state.current_by_thread.get(&thread_id).cloned() else {
+            return;
+        };
+        if let Some(assignment) = state.assignments.get_mut(&current)
+            && assignment.phase == AssignmentPhase::Running
+            && assignment.active_turn_id.as_deref() == Some(from_turn_id)
+        {
+            assignment.active_turn_id = Some(to_turn_id.to_owned());
+        }
+    }
+
     /// Captures the recorded parent and root for a current child assignment reload.
     pub(crate) fn reload_authority(
         &self,

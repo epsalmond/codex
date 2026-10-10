@@ -1087,7 +1087,9 @@ const PROMPT_SUBMISSION: std::time::Duration = std::time::Duration::from_secs(2)
 async fn explicit_input_steers_into_a_starting_turn_once_its_task_is_installed() {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
     // A starting turn holds the slot before its task is installed, as an idle wake does.
-    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    let starting = ActiveTurn::default();
+    let starting_state = Arc::clone(&starting.turn_state);
+    *session.active_turn.lock().await = Some(starting);
 
     let (submission, started) = tokio::join!(
         tokio::time::timeout(
@@ -1109,12 +1111,16 @@ async fn explicit_input_steers_into_a_starting_turn_once_its_task_is_installed()
                         kind: TaskKind::Regular,
                         listen_to_cancellation_token: true,
                     },
+                    TurnReservation {
+                        turn_state: starting_state,
+                        mail_start_options: Default::default(),
+                    },
                 )
                 .await
         },
     );
 
-    assert!(started);
+    assert!(matches!(started, TaskStartOutcome::Started));
     assert_eq!(
         submission
             .expect("input must resume once the task is installed")
