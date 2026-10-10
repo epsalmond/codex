@@ -4,10 +4,13 @@
 //! Delivery remains best effort, with tracing recorded only after the parent accepts it.
 
 use super::LocalAgentControl;
+use super::LocalAgentRuntime;
 use super::coordinator::AgentAssignmentId;
+use super::coordinator::InterruptedChild;
 use super::coordinator::TerminalReportPublication;
 use crate::agent::api::AgentTurnOutcome;
 use crate::session_prefix::format_inter_agent_completion_message;
+use crate::session_prefix::format_inter_agent_interruption_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
@@ -23,15 +26,18 @@ use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
 use tracing::warn;
 
-impl LocalAgentControl {
-    pub(crate) fn publish_idle_interrupted_assignment(
+impl LocalAgentRuntime {
+    /// Publishes the report of a child generation interrupted by `interrupt_idle_assignment` or,
+    /// with a `note`, of one interrupted for its waiting parent. Returns false if the report could
+    /// not be published.
+    pub(crate) fn publish_interrupted_assignment(
         &self,
         assignment: &AgentAssignmentId,
         turn_id: &str,
         child_agent_path: AgentPath,
+        note: Option<&str>,
     ) -> bool {
-        let Some(_parent_assignment) = self.runtime.wake_coordinator.parent_assignment(assignment)
-        else {
+        let Some(_parent_assignment) = self.wake_coordinator.parent_assignment(assignment) else {
             return true;
         };
         let Some(parent_agent_path) = child_agent_path
@@ -41,15 +47,24 @@ impl LocalAgentControl {
         else {
             return false;
         };
-        let status = AgentStatus::Interrupted;
-        let Some(message) = format_inter_agent_completion_message(
-            parent_agent_path.clone(),
-            child_agent_path.clone(),
-            &status,
-        ) else {
-            return false;
+        let message = match note {
+            Some(note) => format_inter_agent_interruption_message(
+                parent_agent_path.clone(),
+                child_agent_path.clone(),
+                note,
+            ),
+            None => {
+                let Some(message) = format_inter_agent_completion_message(
+                    parent_agent_path.clone(),
+                    child_agent_path.clone(),
+                    &AgentStatus::Interrupted,
+                ) else {
+                    return false;
+                };
+                message
+            }
         };
-        let trigger_turn = !parent_agent_path.is_root() || !self.runtime.root_waits_for_children();
+        let trigger_turn = !parent_agent_path.is_root() || !self.root_waits_for_children();
         let communication = InterAgentCommunication::new(
             child_agent_path,
             parent_agent_path,
@@ -58,11 +73,8 @@ impl LocalAgentControl {
             trigger_turn,
         );
         matches!(
-            self.runtime.wake_coordinator.publish_terminal_report(
-                assignment,
-                turn_id,
-                communication
-            ),
+            self.wake_coordinator
+                .publish_terminal_report(assignment, turn_id, communication),
             Some(
                 TerminalReportPublication::Published(_)
                     | TerminalReportPublication::AlreadyPublished(_)
@@ -70,6 +82,40 @@ impl LocalAgentControl {
         )
     }
 
+    /// Publishes the report of a child generation interrupted for its waiting parent, so the
+    /// parent wakes through ordinary report delivery. The child's path comes from its turn
+    /// context when the caller has one, and from the registry otherwise. A report that cannot be
+    /// published releases the child, as before this report existed.
+    pub(crate) fn publish_waiting_parent_report(
+        &self,
+        child: InterruptedChild,
+        child_agent_path: Option<AgentPath>,
+        note: &str,
+    ) {
+        let child_agent_path = child_agent_path.or_else(|| {
+            self.registry
+                .agent_metadata_for_thread(child.assignment.thread_id)
+                .and_then(|metadata| metadata.agent_path)
+        });
+        let published = child_agent_path.is_some_and(|child_agent_path| {
+            self.publish_interrupted_assignment(
+                &child.assignment,
+                &child.terminal_turn_id,
+                child_agent_path,
+                Some(note),
+            )
+        });
+        if !published {
+            warn!(
+                "failed to report interrupted agent {} to its waiting parent",
+                child.assignment.thread_id
+            );
+            self.wake_coordinator.cancel_assignment(&child.assignment);
+        }
+    }
+}
+
+impl LocalAgentControl {
     /// Routes a captured terminal outcome without retaining the child's live turn context.
     pub(crate) async fn notify_parent_of_terminal_turn(
         &self,

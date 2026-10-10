@@ -22,6 +22,7 @@ use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
 use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
+use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -69,6 +70,14 @@ impl LocalAgentRuntime {
         parent: &AgentAssignmentId,
     ) -> Option<ClaimedTerminalReport> {
         self.wake_coordinator.claim_next_mailbox_report(parent)
+    }
+
+    /// Takes the oldest wake request off the queue, for tests that have no dispatcher.
+    #[cfg(test)]
+    pub(crate) fn claim_next_wake_assignment(&self) -> Option<AgentAssignmentId> {
+        self.wake_coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned())
     }
 
     pub(super) fn new(
@@ -441,9 +450,24 @@ impl LocalAgentRuntime {
             .hand_off_running_turn(thread_id, from_turn_id, to_turn_id);
     }
 
-    pub(crate) fn release_unstarted_wake_turn(&self, thread_id: ThreadId, turn_id: &str) {
-        self.wake_coordinator
-            .release_unstarted_turn(thread_id, turn_id);
+    /// Gives back the assignment a turn that never started holds. A child generation its waiting
+    /// parent is left waiting on reports its interruption to that parent instead.
+    pub(crate) fn release_unstarted_wake_turn(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+        agent_path: Option<AgentPath>,
+    ) {
+        if let Some(child) = self
+            .wake_coordinator
+            .release_unstarted_turn(thread_id, turn_id)
+        {
+            self.publish_waiting_parent_report(
+                child,
+                agent_path,
+                crate::session_prefix::UNSTARTED_CHILD_NOTE,
+            );
+        }
     }
 
     pub(crate) fn begin_wake_assignment_for_turn(

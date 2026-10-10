@@ -565,7 +565,7 @@ impl Session {
     /// Ends a turn whose reservation lost the slot before its task was installed: requeues its
     /// mail, releases its root-turn registration and reports `TurnAborted`, which also releases
     /// an assignment the turn still holds. A reservation that asked for its input back gets it
-    /// instead, and its caller's assignment guard releases the assignment.
+    /// instead, and its caller's assignment guard keeps the assignment for a retry or releases it.
     async fn abort_unstarted_task(
         &self,
         turn_context: &TurnContext,
@@ -678,7 +678,7 @@ impl Session {
             });
             Arc::clone(&active_turn.turn_state)
         };
-        let assignment_guard = self.guard_unstarted_turn_assignment(&sub_id);
+        let mut assignment_guard = self.guard_unstarted_turn_assignment(&sub_id);
 
         self.services
             .models_manager
@@ -720,6 +720,7 @@ impl Session {
                 },
             )
             .await;
+        assignment_guard.record_turn_context(&turn_context);
         if let Some(trigger) = start_options.turn_trigger {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }

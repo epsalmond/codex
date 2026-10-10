@@ -106,6 +106,15 @@ enum ActiveTurnOrigin {
     Unheld,
 }
 
+/// A child generation marked Interrupted, rather than released, because its parent was waiting
+/// on it when the child was given back unstarted or closed. Only its terminal report can end the
+/// parent's wait, so the caller publishes that report under `terminal_turn_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InterruptedChild {
+    pub(crate) assignment: AgentAssignmentId,
+    pub(crate) terminal_turn_id: String,
+}
+
 pub(crate) struct TurnEndClassification {
     pub(crate) phase: AssignmentPhase,
     pub(crate) newly_classified: bool,

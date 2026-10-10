@@ -5,6 +5,7 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::agent::control::AssignmentPhase;
 use crate::agent::control::TurnEndDisposition;
+use codex_protocol::AgentPath;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::EventMsg;
@@ -15,14 +16,22 @@ use tracing::warn;
 /// Held by a start from the moment it reserves the active-turn slot until its task is
 /// installed. Dropping it any other way gives back the assignment its turn id still holds, whether
 /// the start bound it or inherited it from a reservation it replaced, so no exit leaves an
-/// assignment running under a turn that never runs.
+/// assignment running under a turn that never runs. Explicit input whose reservation is lost
+/// carries it to its next attempt under the same turn id, which keeps the assignment.
 #[must_use]
 pub(crate) struct UnstartedTurnAssignment<'a> {
     session: &'a Session,
     turn_id: Option<String>,
+    agent_path: Option<AgentPath>,
 }
 
 impl UnstartedTurnAssignment<'_> {
+    /// Records the agent path the turn runs as, so a child generation it gives back while its
+    /// parent waits can report its interruption to that parent.
+    pub(crate) fn record_turn_context(&mut self, turn_context: &TurnContext) {
+        self.agent_path = turn_context.session_source.get_agent_path();
+    }
+
     /// The task is installed; its turn now ends the assignment through normal finalization.
     pub(crate) fn started(mut self) {
         self.turn_id = None;
@@ -30,12 +39,18 @@ impl UnstartedTurnAssignment<'_> {
 }
 
 impl Drop for UnstartedTurnAssignment<'_> {
+    /// Holds no lock: the release and any report it publishes take only the coordinator lock, so
+    /// this keeps the active_turn -> coordinator -> completions store order wherever it drops.
     fn drop(&mut self) {
         if let Some(turn_id) = self.turn_id.take() {
             self.session
                 .services
                 .local_agent_runtime
-                .release_unstarted_wake_turn(self.session.thread_id, &turn_id);
+                .release_unstarted_wake_turn(
+                    self.session.thread_id,
+                    &turn_id,
+                    self.agent_path.take(),
+                );
         }
     }
 }
@@ -48,6 +63,7 @@ impl Session {
         UnstartedTurnAssignment {
             session: self,
             turn_id: Some(turn_id.to_owned()),
+            agent_path: None,
         }
     }
 

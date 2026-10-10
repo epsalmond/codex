@@ -396,6 +396,13 @@ async fn start_or_steer(
     // assignment. One deadline covers every attempt, so retries cannot stretch how long this
     // input holds the submission loop.
     let deadline = Instant::now() + STARTING_TURN_WAIT_TIMEOUT;
+    // An attempt whose reservation is lost keeps the assignment it holds for the next attempt,
+    // which binds under the same submission id and so continues it rather than starting another
+    // generation. Only giving up releases it, by dropping this guard: when the retries run out,
+    // when input is not submitted, on an error, or when the input steers into a turn that took
+    // the slot. That turn already runs without this binding, so it could never end the
+    // assignment; a waiting parent instead learns the generation did no work.
+    let mut held_assignment: Option<UnstartedTurnAssignment<'_>> = None;
     loop {
         let (turn_state, assignment_guard, _admission) = loop {
             match session
@@ -440,8 +447,9 @@ async fn start_or_steer(
                         };
                         // From here until its task is installed, every exit gives back the
                         // assignment this turn holds, including one handed over below.
-                        let assignment_guard =
-                            session.guard_unstarted_turn_assignment(&submission_id);
+                        let assignment_guard = held_assignment.take().unwrap_or_else(|| {
+                            session.guard_unstarted_turn_assignment(&submission_id)
+                        });
                         // A replaced start's own bind, release or task start later finds this
                         // reservation and leaves it alone. It binds only while it holds the slot,
                         // under this lock, so handing its binding over here, under the same lock,
@@ -472,7 +480,7 @@ async fn start_or_steer(
             // The sender closes when the starting turn releases the slot.
             let _ = timeout_at(deadline, task_installed.changed()).await;
         };
-        if let Some(submission) = start_reserved(
+        match start_reserved(
             session,
             ReservedExplicitStart {
                 turn_state,
@@ -486,7 +494,8 @@ async fn start_or_steer(
         )
         .await?
         {
-            return Ok(submission);
+            ReservedStart::Submitted(submission) => return Ok(submission),
+            ReservedStart::Lost(assignment_guard) => held_assignment = Some(assignment_guard),
         }
         // Another turn took the slot, or an interrupt cleared it, before this turn's task was
         // installed. Nothing announced this turn, so look again for a turn to steer into or a
@@ -501,26 +510,32 @@ async fn start_or_steer(
 }
 
 /// What `start_reserved` needs besides the input it may hand back.
-struct ReservedExplicitStart<'a> {
+struct ReservedExplicitStart<'a, 's> {
     turn_state: Arc<tokio::sync::Mutex<TurnState>>,
-    assignment_guard: UnstartedTurnAssignment<'a>,
+    assignment_guard: UnstartedTurnAssignment<'s>,
     settings: PreparedTurnInputSettings,
     submission_id: &'a str,
     origin: UserInputOrigin,
     responsesapi_client_metadata: Option<&'a HashMap<String, String>>,
 }
 
-/// Starts explicit input in the slot `start_or_steer` reserved for it. Returns `None` if the
-/// reservation is replaced or released before the task is installed: no `TurnAborted` announces
-/// the turn, and `input` holds what is left to deliver.
-async fn start_reserved(
+enum ReservedStart<'s> {
+    Submitted(TurnInputSubmission),
+    /// The reservation was replaced or released before the task was installed. No `TurnAborted`
+    /// announces the turn, and the guard still holds any assignment the turn bound.
+    Lost(UnstartedTurnAssignment<'s>),
+}
+
+/// Starts explicit input in the slot `start_or_steer` reserved for it. If the reservation is lost
+/// before the task is installed, `input` holds what is left to deliver.
+async fn start_reserved<'s>(
     session: &Arc<Session>,
-    start: ReservedExplicitStart<'_>,
+    start: ReservedExplicitStart<'_, 's>,
     input: &mut ExplicitInput,
-) -> CodexResult<Option<TurnInputSubmission>> {
+) -> CodexResult<ReservedStart<'s>> {
     let ReservedExplicitStart {
         turn_state,
-        assignment_guard,
+        mut assignment_guard,
         settings,
         submission_id,
         origin,
@@ -537,6 +552,7 @@ async fn start_reserved(
             return Err(error);
         }
     };
+    assignment_guard.record_turn_context(&turn_context);
     let held =
         wait_if_turn_start_held(session.thread_id, TurnStartHoldPoint::InputBeforeBind).await;
     match session
@@ -555,15 +571,17 @@ async fn start_reserved(
             session.clear_reserved_idle_turn(&turn_state).await;
             return Err(error);
         }
-        // Replaced or interrupted before it bound anything.
-        None => return Ok(None),
+        // Replaced or interrupted before this attempt bound anything.
+        None => return Ok(ReservedStart::Lost(assignment_guard)),
     }
     if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
         tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
         session.clear_reserved_idle_turn(&turn_state).await;
-        return Ok(Some(TurnInputSubmission::NotSubmitted {
-            reason: not_submitted_reason(&error),
-        }));
+        return Ok(ReservedStart::Submitted(
+            TurnInputSubmission::NotSubmitted {
+                reason: not_submitted_reason(&error),
+            },
+        ));
     }
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
         turn_context
@@ -613,30 +631,29 @@ async fn start_reserved(
         mail_start_options: TurnStartOptions::default(),
         return_input_if_lost: true,
     };
-    Ok(
-        match session
-            .start_task(turn_context, task_input, RegularTask::new(), reservation)
-            .await
-        {
-            TaskStartOutcome::Started => {
-                assignment_guard.started();
-                Some(TurnInputSubmission::Started {
-                    turn_id: submission_id.to_string(),
-                })
+    let submission = match session
+        .start_task(turn_context, task_input, RegularTask::new(), reservation)
+        .await
+    {
+        TaskStartOutcome::Started => {
+            assignment_guard.started();
+            TurnInputSubmission::Started {
+                turn_id: submission_id.to_string(),
             }
-            TaskStartOutcome::Rejected(error) => Some(TurnInputSubmission::NotSubmitted {
-                reason: not_submitted_reason(&error),
-            }),
-            TaskStartOutcome::Lost(task_input) => {
-                *input = ExplicitInput::Prepared(task_input);
-                None
-            }
-            // A reservation that asks for its input back is never aborted this way.
-            TaskStartOutcome::Aborted => Some(TurnInputSubmission::NotSubmitted {
-                reason: NotSubmittedReason::NotIdle,
-            }),
+        }
+        TaskStartOutcome::Rejected(error) => TurnInputSubmission::NotSubmitted {
+            reason: not_submitted_reason(&error),
         },
-    )
+        TaskStartOutcome::Lost(task_input) => {
+            *input = ExplicitInput::Prepared(task_input);
+            return Ok(ReservedStart::Lost(assignment_guard));
+        }
+        // A reservation that asks for its input back is never aborted this way.
+        TaskStartOutcome::Aborted => TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        },
+    };
+    Ok(ReservedStart::Submitted(submission))
 }
 
 #[expect(
@@ -716,7 +733,7 @@ async fn start_if_idle(
         Arc::clone(&active_turn.turn_state)
     };
     // Every exit before the task is installed gives back the assignment this turn binds.
-    let assignment_guard = session.guard_unstarted_turn_assignment(&submission_id);
+    let mut assignment_guard = session.guard_unstarted_turn_assignment(&submission_id);
 
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         session.clear_reserved_idle_turn(&turn_state).await;
@@ -749,6 +766,7 @@ async fn start_if_idle(
             return Err(error);
         }
     };
+    assignment_guard.record_turn_context(&turn_context);
     let allow_new_generation = kind != TurnStartKind::Automatic
         || !matches!(
             &input,
