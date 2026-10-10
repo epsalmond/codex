@@ -421,7 +421,7 @@ async fn request_bodies(server: &StreamingSseServer) -> Vec<Value> {
 #[test_case::test_case(Outcome::Success; "created")]
 #[test_case::test_case(Outcome::CompletedOnly; "completed_only")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_native_completion_is_recovered_by_an_explicit_v2_root(
+async fn idle_native_completion_paused_by_an_idle_interrupt_is_recovered_by_an_explicit_v2_root(
     outcome: Outcome,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -478,7 +478,9 @@ async fn idle_native_completion_is_recovered_by_an_explicit_v2_root(
         _ => None,
     })
     .await;
-    // Pause automatic wakes so the explicit root turn, not an idle wake, recovers the result.
+    // Covers explicit-root recovery after an idle interrupt: in wake mode `Op::Interrupt` also
+    // ends the idle wake assignment (synthetic `TurnAborted`) and pauses automatic wakes, so the
+    // explicit root turn, not an idle wake, recovers the result.
     test.codex.submit(Op::Interrupt).await?;
     wait_for_event(
         &test.codex,

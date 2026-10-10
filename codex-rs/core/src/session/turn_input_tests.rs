@@ -1072,3 +1072,134 @@ async fn steer_preserves_request_origin(
     );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
+
+fn explicit_turn(text: &str) -> TurnInputRequest {
+    TurnInputRequest::user_input(vec![UserInput::Text {
+        text: text.to_string(),
+        text_elements: Vec::new(),
+    }])
+}
+
+// Shorter than `STARTING_TURN_WAIT_TIMEOUT`, so input that waited out the bound fails the check.
+const PROMPT_SUBMISSION: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[tokio::test]
+async fn explicit_input_steers_into_a_starting_turn_once_its_task_is_installed() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    // A starting turn holds the slot before its task is installed, as an idle wake does.
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+    let (submission, started) = tokio::join!(
+        tokio::time::timeout(
+            PROMPT_SUBMISSION,
+            handle(
+                &session,
+                explicit_turn("arrives while the turn starts"),
+                TurnInputMode::StartOrSteer,
+                "explicit".to_string(),
+            ),
+        ),
+        async {
+            sleep(std::time::Duration::from_millis(50)).await;
+            session
+                .start_task(
+                    Arc::clone(&turn_context),
+                    Vec::new(),
+                    NeverEndingTask {
+                        kind: TaskKind::Regular,
+                        listen_to_cancellation_token: true,
+                    },
+                )
+                .await
+        },
+    );
+
+    assert!(started);
+    assert_eq!(
+        submission
+            .expect("input must resume once the task is installed")
+            .expect("input should be valid"),
+        TurnInputSubmission::Steered {
+            turn_id: turn_context.sub_id.clone(),
+        }
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn explicit_input_replaces_a_finishing_turn_without_waiting() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    // The finished task's end-of-turn work (stop hooks, TurnComplete, flush) still holds the slot.
+    let finishing = ActiveTurn {
+        finishing: true,
+        ..Default::default()
+    };
+    let finishing_state = Arc::clone(&finishing.turn_state);
+    *session.active_turn.lock().await = Some(finishing);
+
+    let submission = tokio::time::timeout(
+        PROMPT_SUBMISSION,
+        handle(
+            &session,
+            explicit_turn("cuts in while the turn finishes"),
+            TurnInputMode::StartOrSteer,
+            "explicit".to_string(),
+        ),
+    )
+    .await
+    .expect("input must not wait for a finishing turn")
+    .expect("input should be valid");
+
+    assert_eq!(
+        submission,
+        TurnInputSubmission::Started {
+            turn_id: "explicit".to_string(),
+        }
+    );
+    assert!(
+        session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|turn| {
+                turn.task.is_some() && !Arc::ptr_eq(&turn.turn_state, &finishing_state)
+            })
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_input_replaces_a_starting_turn_that_never_installs_its_task() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    let stuck = ActiveTurn::default();
+    let stuck_state = Arc::clone(&stuck.turn_state);
+    *session.active_turn.lock().await = Some(stuck);
+
+    let submission = handle(
+        &session,
+        explicit_turn("must not wait forever"),
+        TurnInputMode::StartOrSteer,
+        "explicit".to_string(),
+    )
+    .await
+    .expect("input should be valid");
+
+    assert_eq!(
+        submission,
+        TurnInputSubmission::Started {
+            turn_id: "explicit".to_string(),
+        }
+    );
+    assert!(
+        session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|turn| {
+                turn.task.is_some() && !Arc::ptr_eq(&turn.turn_state, &stuck_state)
+            })
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}

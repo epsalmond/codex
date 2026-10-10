@@ -36,6 +36,9 @@ pub(crate) struct ActiveTurn {
     /// Signals once when `task` is installed. Dropping the turn closes it, so input that found
     /// this turn reserved but not yet running can wait for it to start or release the slot.
     pub(crate) task_installed: watch::Sender<()>,
+    /// Set once the task has finished and the turn holds the slot only for end-of-turn work
+    /// (stop hooks, `TurnComplete`, rollout flush). Input replaces such a turn instead of waiting.
+    pub(crate) finishing: bool,
 }
 
 /// Whether mailbox deliveries should still be folded into the current turn.
@@ -65,6 +68,7 @@ impl Default for ActiveTurn {
             task: None,
             turn_state: Arc::new(Mutex::new(TurnState::default())),
             task_installed: watch::Sender::new(()),
+            finishing: false,
         }
     }
 }

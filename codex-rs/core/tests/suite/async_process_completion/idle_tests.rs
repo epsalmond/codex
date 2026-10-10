@@ -1,8 +1,10 @@
 use super::*;
 use codex_core::TurnInputSubmission;
+use codex_core::test_support::hold_next_wake_start;
 use codex_protocol::protocol::AgentStatus;
 use core_test_support::test_codex::TestCodex;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 
 // The helper owns a bounded readiness loop; the model never reads or polls it.
 fn gated_helper() -> &'static str {
@@ -243,7 +245,7 @@ async fn idle_owner_receives_native_completion(v2: bool, case: IdleCase) -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_root_turn_racing_an_idle_wake_is_accepted_and_completion_is_delivered_once()
+async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_delivers_once()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(
@@ -255,8 +257,8 @@ async fn explicit_root_turn_racing_an_idle_wake_is_accepted_and_completion_is_de
         tool_response("race-finite", &args),
         assistant_response("idle"),
     ];
-    // The wake and the explicit turn may share one turn or run as two, in either order.
-    bodies.extend((0..5).map(|index| assistant_response(&format!("after-{index}"))));
+    // The wake turn may sample once or twice with the steered message; then one follow-up turn.
+    bodies.extend((0..4).map(|index| assistant_response(&format!("after-{index}"))));
     let (server, _) = start_streaming_sse_server(
         bodies
             .into_iter()
@@ -289,31 +291,37 @@ async fn explicit_root_turn_racing_an_idle_wake_is_accepted_and_completion_is_de
     })
     .await;
     assert_eq!(test.codex.agent_status().await, AgentStatus::Waiting);
+    // Park the idle wake after it reserves the slot and binds the assignment, before it
+    // installs its task: the window in which explicit input used to be rejected.
+    let mut hold = hold_next_wake_start(test.session_configured.thread_id);
     release_helper(&test).await?;
-    wait_for_event(
-        &test.codex,
-        |event| matches!(event, EventMsg::ExecCommandEnd(end) if end.call_id == "race-finite"),
-    )
-    .await;
-    // Publication has already requested the idle wake; the explicit turn arrives right away.
+    tokio::time::timeout(Duration::from_secs(30), hold.reached())
+        .await
+        .expect("the completion should start an idle wake");
     let user_turn = |text: &str| {
         TurnInputRequest::user_input(vec![UserInput::Text {
             text: text.to_owned(),
             text_elements: Vec::new(),
         }])
     };
-    let turn_id = match test
-        .codex
-        .start_or_steer_turn(user_turn("explicit during wake"))
-        .await?
-    {
-        TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
-            turn_id
-        }
-        TurnInputSubmission::NotSubmitted { reason } => {
-            panic!("explicit input was not submitted: {reason:?}")
-        }
+    let codex = Arc::clone(&test.codex);
+    let explicit = tokio::spawn(async move {
+        codex
+            .start_or_steer_turn(user_turn("explicit during wake"))
+            .await
+    });
+    // Let the explicit input reach the wait, well inside its bound, then let the wake run.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    hold.release();
+    let TurnInputSubmission::Steered { turn_id } = explicit.await?? else {
+        panic!("explicit input inside a starting wake must steer into it");
     };
+    let wake_turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(started) => Some(started.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(turn_id, wake_turn_id);
     wait_for_event(
         &test.codex,
         |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),

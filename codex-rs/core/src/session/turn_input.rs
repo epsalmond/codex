@@ -48,7 +48,16 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 use uuid::Uuid;
+
+/// Longest time explicit input waits for a starting turn (slot reserved, task not installed yet)
+/// before replacing it. A start normally takes milliseconds. Input runs on the submission loop,
+/// so the bound keeps a reservation that never installs its task from also blocking later ops
+/// such as `Interrupt` and `Shutdown`.
+const STARTING_TURN_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[cfg(test)]
 #[path = "turn_input_tests.rs"]
@@ -313,9 +322,12 @@ async fn start_or_steer(
                 .session_source,
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
         );
-    // Input never races a turn that holds the slot without a task yet, such as an automatic
-    // wake binding its assignment. It steers into that turn once it runs, or starts after the
-    // turn releases the slot. A free slot is reserved before this turn binds its assignment.
+    // Input never races a starting turn, one that reserved the slot without installing its task
+    // yet, such as an automatic wake binding its assignment. It steers into that turn once it
+    // runs, or starts after the turn releases the slot. A finishing turn, or a start that
+    // outlives the wait, is replaced as before. A free slot is reserved before this turn binds
+    // its assignment.
+    let deadline = Instant::now() + STARTING_TURN_WAIT_TIMEOUT;
     let (turn_state, _admission) = loop {
         match session
             .steer_input(
@@ -335,29 +347,36 @@ async fn start_or_steer(
             Err(NotSubmittedReason::NoActiveTurn) => {}
             Err(reason) => return Ok(TurnInputSubmission::NotSubmitted { reason }),
         }
-        let admission = if is_delegated_input {
-            None
-        } else {
-            let Some(admission) = session.services.extensions.admit_turn_start() else {
-                return Ok(TurnInputSubmission::NotSubmitted {
-                    reason: NotSubmittedReason::ServerDraining,
-                });
-            };
-            Some(admission)
-        };
         let mut task_installed = {
             let mut active_turn = session.active_turn.lock().await;
-            match active_turn.as_ref() {
+            let starting = match active_turn.as_ref() {
+                Some(turn) if turn.task.is_some() => continue,
+                Some(turn) if !turn.finishing && Instant::now() < deadline => {
+                    Some(turn.task_installed.subscribe())
+                }
+                None | Some(_) => None,
+            };
+            match starting {
+                Some(task_installed) => task_installed,
                 None => {
+                    let admission = if is_delegated_input {
+                        None
+                    } else {
+                        let Some(admission) = session.services.extensions.admit_turn_start() else {
+                            return Ok(TurnInputSubmission::NotSubmitted {
+                                reason: NotSubmittedReason::ServerDraining,
+                            });
+                        };
+                        Some(admission)
+                    };
+                    // A replaced turn's own release later finds this reservation and keeps it.
                     let reserved = active_turn.insert(ActiveTurn::default());
                     break (Arc::clone(&reserved.turn_state), admission);
                 }
-                Some(turn) if turn.task.is_some() => continue,
-                Some(turn) => turn.task_installed.subscribe(),
             }
         };
-        // Closed when the reserved turn releases the slot.
-        let _ = task_installed.changed().await;
+        // The sender closes when the starting turn releases the slot.
+        let _ = timeout_at(deadline, task_installed.changed()).await;
     };
     let turn_context = match settings
         .apply_started(session, submission_id.clone(), TurnStartKind::User)
@@ -406,9 +425,14 @@ async fn start_or_steer(
         // The reservation above keeps held mail from starting a wake turn once the pause clears.
         session.resume_paused_wakeups().await;
     }
-    session
+    if !session
         .start_task(turn_context, task_input, RegularTask::new())
-        .await;
+        .await
+    {
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining,
+        });
+    }
     Ok(TurnInputSubmission::Started {
         turn_id: submission_id,
     })
@@ -570,9 +594,14 @@ async fn start_if_idle(
             }
         }
     }
-    session
+    if !session
         .start_task(turn_context, task_input, RegularTask::new())
-        .await;
+        .await
+    {
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining,
+        });
+    }
     Ok(TurnInputSubmission::Started {
         turn_id: submission_id,
     })

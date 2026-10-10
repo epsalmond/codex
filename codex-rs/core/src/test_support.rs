@@ -114,6 +114,14 @@ pub fn set_deterministic_process_ids(enabled: bool) {
     unified_exec::set_deterministic_process_ids_for_tests(enabled);
 }
 
+pub use crate::tasks::WakeStartHold;
+
+/// Parks the next automatic wake on `thread_id` after it reserves the turn slot and before it
+/// installs its task, so a test can submit input inside that window.
+pub fn hold_next_wake_start(thread_id: ThreadId) -> WakeStartHold {
+    crate::tasks::hold_next_wake_start(thread_id)
+}
+
 pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing(auth)
 }

@@ -6,6 +6,7 @@ mod recorded_report_wake;
 mod regular;
 mod review;
 mod user_shell;
+mod wake_start_hold;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,6 +73,8 @@ pub(crate) use review::ReviewTask;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
+pub use wake_start_hold::WakeStartHold;
+pub(crate) use wake_start_hold::hold_next_wake_start;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingWorkStartResult {
@@ -315,6 +318,8 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
+    /// Installs `task` in the reserved active-turn slot, reserving it when free. Returns whether
+    /// the task was admitted; a rejected start releases the reservation it was handed.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "record the started turn atomically with its active reservation"
@@ -324,9 +329,31 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) {
+    ) -> bool {
         if !self.admit_root_task_or_emit_error(&turn_context).await {
-            return;
+            // Callers reserve the slot before handing it here. Leaving it taskless would make
+            // later input wait for a turn that never runs, so release it and requeue any mail
+            // the caller already moved into it.
+            let reserved = {
+                let mut active = self.active_turn.lock().await;
+                if active
+                    .as_ref()
+                    .is_some_and(|turn| turn.task.is_none() && !turn.finishing)
+                {
+                    active.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(reserved) = reserved {
+                let mut pending_input = self
+                    .input_queue
+                    .take_pending_input_for_turn_state(&reserved.turn_state)
+                    .await;
+                self.input_queue.return_to_mailbox(&mut pending_input).await;
+            }
+            self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+            return false;
         }
         self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
@@ -416,7 +443,7 @@ impl Session {
             if let Err(err) = self.flush_rollout().await {
                 warn!("failed to flush rollout after cancelling a capacity-waiting turn: {err}");
             }
-            return;
+            return true;
         };
         debug_assert!(turn.task.is_none());
         let done_clone = Arc::clone(&done);
@@ -500,6 +527,7 @@ impl Session {
         };
         turn.task = Some(running_task);
         turn.task_installed.send_replace(());
+        true
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -705,6 +733,7 @@ impl Session {
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
             .await;
+        wake_start_hold::wait_if_held(self.thread_id()).await;
         self.start_task(turn_context, Vec::new(), RegularTask::new())
             .await;
         PendingWorkStartResult::Started
@@ -888,6 +917,7 @@ impl Session {
                     })
                     .flatten();
                 let task = active_turn.task.take()?;
+                active_turn.finishing = true;
                 if failed {
                     if self.services.async_completions.has_owned_work() {
                         self.input_queue.pause_wakeups();
