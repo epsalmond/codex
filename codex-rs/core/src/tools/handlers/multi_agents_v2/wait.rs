@@ -95,7 +95,9 @@ impl Handler {
             .await;
 
         // With no queued mail and no running child, nothing can end the wait before the timeout.
+        // A remote message board can still deliver posts to this active turn.
         let outcome = if pending_activity.is_none()
+            && turn.config.multi_agent_v2.message_board_remote.is_none()
             && !session
                 .services
                 .local_agent_runtime

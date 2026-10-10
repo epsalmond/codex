@@ -260,6 +260,7 @@ pub trait TurnLifecycleContributor: Send + Sync {
     }
 
     /// Called before the host drops the completed turn runtime and turn store.
+    /// The callback completes before the host emits the turn-complete event.
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let _self = self;
@@ -268,6 +269,7 @@ pub trait TurnLifecycleContributor: Send + Sync {
     }
 
     /// Called after the host aborts a running turn.
+    /// The callback completes before the host emits the turn-aborted event, if any.
     fn on_turn_abort<'a>(&'a self, input: TurnAbortInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let _self = self;
