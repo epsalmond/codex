@@ -1,4 +1,5 @@
 use super::*;
+use codex_core::TurnInputSubmission;
 use codex_protocol::protocol::AgentStatus;
 use core_test_support::test_codex::TestCodex;
 use pretty_assertions::assert_eq;
@@ -237,6 +238,121 @@ async fn idle_owner_receives_native_completion(v2: bool, case: IdleCase) -> Resu
         .await;
         assert!(completions(request_bodies(&server).await.last().unwrap()).is_empty());
     }
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_root_turn_racing_an_idle_wake_is_accepted_and_completion_is_delivered_once()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    let args = json!({ "cmd": gated_helper(), "yield_time_ms": 250 });
+    let mut bodies = vec![
+        tool_response("race-finite", &args),
+        assistant_response("idle"),
+    ];
+    // The wake and the explicit turn may share one turn or run as two, in either order.
+    bodies.extend((0..5).map(|index| assistant_response(&format!("after-{index}"))));
+    let (server, _) = start_streaming_sse_server(
+        bodies
+            .into_iter()
+            .map(|body| vec![StreamingSseChunk { gate: None, body }])
+            .collect(),
+    )
+    .await;
+    let base_url = format!("{}/v1", server.uri());
+    let bootstrap = start_mock_server().await;
+    let test = test_codex()
+        .with_model("gpt-5.6-sol")
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::AsyncProcessCompletion)
+                .unwrap();
+            config.model_provider.base_url = Some(base_url);
+        })
+        .build_with_auto_env(&bootstrap)
+        .await?;
+    assert_eq!(
+        test.codex.multi_agent_version(),
+        Some(MultiAgentVersion::V2)
+    );
+    submit_unified_exec_turn(&test, "start finite work", PermissionProfile::Disabled).await?;
+    let initial = wait_for_raw_unified_exec_output(&test, "race-finite").await?;
+    assert!(initial.process_id.is_some());
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(test.codex.agent_status().await, AgentStatus::Waiting);
+    release_helper(&test).await?;
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::ExecCommandEnd(end) if end.call_id == "race-finite"),
+    )
+    .await;
+    // Publication has already requested the idle wake; the explicit turn arrives right away.
+    let user_turn = |text: &str| {
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: text.to_owned(),
+            text_elements: Vec::new(),
+        }])
+    };
+    let turn_id = match test
+        .codex
+        .start_or_steer_turn(user_turn("explicit during wake"))
+        .await?
+    {
+        TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
+            turn_id
+        }
+        TurnInputSubmission::NotSubmitted { reason } => {
+            panic!("explicit input was not submitted: {reason:?}")
+        }
+    };
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
+    )
+    .await;
+    let TurnInputSubmission::Started { turn_id } = test
+        .codex
+        .start_or_steer_turn(user_turn("after the race"))
+        .await?
+    else {
+        panic!("idle follow-up must start a turn");
+    };
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
+    )
+    .await;
+    let requests = request_bodies(&server).await;
+    let texts = |request: &Value| {
+        request["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["content"][0]["text"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let last = texts(requests.last().unwrap());
+    let delivered = completions(requests.last().unwrap());
+    assert_eq!(delivered.len(), 1);
+    assert!(delivered[0].contains("call=race-finite"));
+    assert!(delivered[0].contains("terminal-tail"));
+    for prompt in ["explicit during wake", "after the race"] {
+        assert_eq!(last.iter().filter(|text| *text == prompt).count(), 1);
+    }
+    assert!(
+        requests
+            .iter()
+            .all(|request| completions(request).len() <= 1)
+    );
     server.shutdown().await;
     Ok(())
 }

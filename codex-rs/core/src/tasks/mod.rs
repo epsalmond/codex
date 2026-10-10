@@ -499,6 +499,7 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        turn.task_installed.send_replace(());
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.

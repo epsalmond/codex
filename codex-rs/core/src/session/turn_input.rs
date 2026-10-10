@@ -37,7 +37,6 @@ use codex_protocol::protocol::NonSteerableTurnKind;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
-use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::turn_input::NotSubmittedReason;
 use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
 use codex_protocol::turn_input::TurnInputMode;
@@ -302,101 +301,117 @@ async fn start_or_steer(
         }
     };
     let settings = PreparedTurnInputSettings::prepare(session, thread_settings, start).await?;
-    match session
-        .steer_input(
-            &mut input,
-            additional_context.clone(),
-            /*expected_turn_id*/ None,
-            settings.required_active_final_output_json_schema(),
-            responsesapi_client_metadata.clone(),
-            origin,
-        )
-        .await
-    {
-        Ok(turn_id) => {
-            settings.apply_steered(session, submission_id).await?;
-            Ok(TurnInputSubmission::Steered { turn_id })
+    // MAv1 sends explicit input to spawned agents as part of an existing
+    // parent's work. Client RPCs are gated separately by the host.
+    let is_delegated_input = settings.start_options.parent_turn_id.is_some()
+        && matches!(
+            session
+                .state
+                .lock()
+                .await
+                .session_configuration
+                .session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        );
+    // Input never races a turn that holds the slot without a task yet, such as an automatic
+    // wake binding its assignment. It steers into that turn once it runs, or starts after the
+    // turn releases the slot. A free slot is reserved before this turn binds its assignment.
+    let (turn_state, _admission) = loop {
+        match session
+            .steer_input(
+                &mut input,
+                additional_context.clone(),
+                /*expected_turn_id*/ None,
+                settings.required_active_final_output_json_schema(),
+                responsesapi_client_metadata.clone(),
+                origin,
+            )
+            .await
+        {
+            Ok(turn_id) => {
+                settings.apply_steered(session, submission_id).await?;
+                return Ok(TurnInputSubmission::Steered { turn_id });
+            }
+            Err(NotSubmittedReason::NoActiveTurn) => {}
+            Err(reason) => return Ok(TurnInputSubmission::NotSubmitted { reason }),
         }
-        Err(NotSubmittedReason::NoActiveTurn) => {
-            // MAv1 sends explicit input to spawned agents as part of an existing
-            // parent's work. Client RPCs are gated separately by the host.
-            let is_delegated_input = settings.start_options.parent_turn_id.is_some()
-                && matches!(
-                    session
-                        .state
-                        .lock()
-                        .await
-                        .session_configuration
-                        .session_source,
-                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-                );
-            let _admission = if is_delegated_input {
-                None
-            } else {
-                let Some(admission) = session.services.extensions.admit_turn_start() else {
-                    return Ok(TurnInputSubmission::NotSubmitted {
-                        reason: NotSubmittedReason::ServerDraining,
-                    });
-                };
-                Some(admission)
-            };
-            let Some(turn_context) = settings
-                .apply_started(session, submission_id.clone(), TurnStartKind::User)
-                .await?
-            else {
-                unreachable!("explicit user input can enter Plan mode");
-            };
-            session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)?;
-            if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
-                tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
+        let admission = if is_delegated_input {
+            None
+        } else {
+            let Some(admission) = session.services.extensions.admit_turn_start() else {
                 return Ok(TurnInputSubmission::NotSubmitted {
                     reason: NotSubmittedReason::ServerDraining,
                 });
+            };
+            Some(admission)
+        };
+        let mut task_installed = {
+            let mut active_turn = session.active_turn.lock().await;
+            match active_turn.as_ref() {
+                None => {
+                    let reserved = active_turn.insert(ActiveTurn::default());
+                    break (Arc::clone(&reserved.turn_state), admission);
+                }
+                Some(turn) if turn.task.is_some() => continue,
+                Some(turn) => turn.task_installed.subscribe(),
             }
-            if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
-                turn_context
-                    .turn_metadata_state
-                    .set_responsesapi_client_metadata(responsesapi_client_metadata);
-            }
-            session
-                .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
-                .await;
-            if let SubmittedTurnInput::UserInput { content, .. } = &input {
-                turn_context.session_telemetry.user_prompt(content);
-            }
-            let resumes_wakeups = has_explicit_input
-                && matches!(&input, SubmittedTurnInput::UserInput { .. })
-                && session.input_queue.wakeups_paused();
-            let mut task_input = merge_additional_context_input(session, additional_context).await;
-            if has_explicit_input {
-                task_input
-                    .push(pending_turn_input(session, input, &turn_context.sub_id, origin).await);
-            }
-            if resumes_wakeups {
-                // Reserve the turn before clearing the pause, as `start_if_idle` does, so the
-                // previous turn's completion cannot start a wake turn on the held mail.
-                session.abort_all_tasks(TurnAbortReason::Replaced).await;
-                session.clear_connector_selection().await;
-                session
-                    .active_turn
-                    .lock()
-                    .await
-                    .get_or_insert_with(ActiveTurn::default);
-                session.resume_paused_wakeups().await;
-                session
-                    .start_task(turn_context, task_input, RegularTask::new())
-                    .await;
-            } else {
-                session
-                    .spawn_task(turn_context, task_input, RegularTask::new())
-                    .await;
-            }
-            Ok(TurnInputSubmission::Started {
-                turn_id: submission_id,
-            })
+        };
+        // Closed when the reserved turn releases the slot.
+        let _ = task_installed.changed().await;
+    };
+    let turn_context = match settings
+        .apply_started(session, submission_id.clone(), TurnStartKind::User)
+        .await
+    {
+        Ok(Some(turn_context)) => turn_context,
+        Ok(None) => unreachable!("explicit user input can enter Plan mode"),
+        Err(error) => {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            return Err(error);
         }
-        Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+    };
+    if let Err(error) =
+        session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)
+    {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Err(error);
     }
+    if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
+        tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining,
+        });
+    }
+    if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
+        turn_context
+            .turn_metadata_state
+            .set_responsesapi_client_metadata(responsesapi_client_metadata);
+    }
+    session
+        .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
+        .await;
+    if let SubmittedTurnInput::UserInput { content, .. } = &input {
+        turn_context.session_telemetry.user_prompt(content);
+    }
+    let resumes_wakeups = has_explicit_input
+        && matches!(&input, SubmittedTurnInput::UserInput { .. })
+        && session.input_queue.wakeups_paused();
+    let mut task_input = merge_additional_context_input(session, additional_context).await;
+    if has_explicit_input {
+        task_input.push(pending_turn_input(session, input, &turn_context.sub_id, origin).await);
+    }
+    session.clear_connector_selection().await;
+    if resumes_wakeups {
+        // The reservation above keeps held mail from starting a wake turn once the pause clears.
+        session.resume_paused_wakeups().await;
+    }
+    session
+        .start_task(turn_context, task_input, RegularTask::new())
+        .await;
+    Ok(TurnInputSubmission::Started {
+        turn_id: submission_id,
+    })
 }
 
 #[expect(

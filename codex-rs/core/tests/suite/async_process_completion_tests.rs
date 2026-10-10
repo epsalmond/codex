@@ -478,6 +478,13 @@ async fn idle_native_completion_is_recovered_by_an_explicit_v2_root(
         _ => None,
     })
     .await;
+    // Pause automatic wakes so the explicit root turn, not an idle wake, recovers the result.
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::AgentWakeupsUpdated(update) if update.paused),
+    )
+    .await;
     wait_for_event(
         &test.codex,
         |event| matches!(event, EventMsg::ExecCommandEnd(end) if end.call_id == "idle-finite"),
