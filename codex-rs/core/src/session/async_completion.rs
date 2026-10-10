@@ -1,7 +1,8 @@
-//! Bounded owner records. Publishing does not start a turn or grant tool authority.
+//! Bounded owner records, retained until ordinary model acceptance.
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::Weak;
 
 use crate::agent::control::AgentAssignmentId;
@@ -62,7 +63,10 @@ impl CompletionDrain {
 }
 
 #[derive(Default)]
-pub(crate) struct AsyncCompletions(Mutex<CompletionState>);
+pub(crate) struct AsyncCompletions {
+    state: Mutex<CompletionState>,
+    owner: OnceLock<Weak<Session>>,
+}
 
 #[derive(Default)]
 struct CompletionState {
@@ -112,9 +116,23 @@ pub(crate) struct CompletionClaim {
 
 impl AsyncCompletions {
     fn state(&self) -> std::sync::MutexGuard<'_, CompletionState> {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn attach_owner(&self, owner: &Arc<Session>) {
+        let _ = self.owner.set(Arc::downgrade(owner));
+    }
+
+    pub(crate) fn has_owned_work(&self) -> bool {
+        !self.state().records.is_empty()
+    }
+
+    pub(crate) fn owns_assignment(&self, assignment: &AgentAssignmentId) -> bool {
+        self.state().records.values().any(|record| {
+            record.owner == assignment.thread_id && record.assignment.as_ref() == Some(assignment)
+        })
     }
 
     pub(crate) fn reserve(
@@ -125,6 +143,18 @@ impl AsyncCompletions {
         process_id: i32,
         cell_id: Option<&str>,
     ) -> Result<CompletionReservation, &'static str> {
+        if self
+            .owner
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|session| session.thread_id() != owner)
+            || turn
+                .agent_assignment
+                .get()
+                .is_some_and(|assignment| assignment.thread_id != owner)
+        {
+            return Err("async completion owner does not match its assignment");
+        }
         // Preserve correlation exactly; do not silently truncate identifiers.
         if turn.sub_id.is_empty()
             || call_id.len() > 128
@@ -133,41 +163,55 @@ impl AsyncCompletions {
         {
             return Err("async completion identifiers exceed the bounded record limit");
         }
-        let mut state = self.state();
-        if state.closed {
-            return Err("async completion owner is closed");
-        }
-        let records = &mut state.records;
-        if records.len() >= MAX_RESERVATIONS {
-            return Err(
-                "async completion capacity exhausted; continue the owner turn before launching another command",
-            );
-        }
-        let id = ResponseItemId::new("msg");
-        let record = Record {
-            owner,
-            turn_id: turn.sub_id.clone(),
-            create_time: Session::response_item_create_time(),
-            call_id: call_id.to_owned(),
-            process_id,
-            cell_id: cell_id.map(str::to_owned),
-            assignment: turn.agent_assignment.get().cloned(),
-            yielded: false,
-            claimed: false,
-            terminal: None,
-            recorded: false,
+        let admit = || {
+            let mut state = self.state();
+            if state.closed {
+                return Err("async completion owner is closed");
+            }
+            let records = &mut state.records;
+            if records.len() >= MAX_RESERVATIONS {
+                return Err(
+                    "async completion capacity exhausted; continue the owner turn before launching another command",
+                );
+            }
+            let id = ResponseItemId::new("msg");
+            let record = Record {
+                owner,
+                turn_id: turn.sub_id.clone(),
+                create_time: Session::response_item_create_time(),
+                call_id: call_id.to_owned(),
+                process_id,
+                cell_id: cell_id.map(str::to_owned),
+                assignment: turn.agent_assignment.get().cloned(),
+                yielded: false,
+                claimed: false,
+                terminal: None,
+                recorded: false,
+            };
+            // Preserve every identifier; reject before launch if escaped metadata cannot fit.
+            let metadata = record.fragment(&id, "exited(-2147483648)", "", usize::MAX);
+            if record.encoded_size(&metadata, &id) > MAX_FRAGMENT_BYTES {
+                return Err("async completion metadata exceeds the encoded fragment limit");
+            }
+            records.insert(id.clone(), record);
+            drop(state);
+            Ok(CompletionReservation {
+                store: Arc::clone(self),
+                id,
+                registered: false,
+            })
         };
-        // Preserve every identifier; reject before launch if escaped metadata cannot fit.
-        let metadata = record.fragment(&id, "exited(-2147483648)", "", usize::MAX);
-        if record.encoded_size(&metadata, &id) > MAX_FRAGMENT_BYTES {
-            return Err("async completion metadata exceeds the encoded fragment limit");
-        }
-        records.insert(id.clone(), record);
-        Ok(CompletionReservation {
-            store: Arc::clone(self),
-            id,
-            registered: false,
-        })
+        let reservation = if let Some(assignment) = turn.agent_assignment.get()
+            && let Some(session) = self.owner.get().and_then(Weak::upgrade)
+        {
+            session
+                .services
+                .local_agent_runtime
+                .admit_owned_completion(assignment, &turn.sub_id, self, admit)?
+        } else {
+            admit()?
+        };
+        Ok(reservation)
     }
 
     fn claim(
@@ -225,6 +269,22 @@ impl AsyncCompletions {
         drain: CompletionDrain,
         input: &[ResponseItem],
     ) -> Vec<ResponseItemId> {
+        if drain == CompletionDrain::ExactAssignment
+            && self
+                .owner
+                .get()
+                .and_then(Weak::upgrade)
+                .is_some_and(|session| {
+                    session
+                        .services
+                        .local_agent_runtime
+                        .current_wake_assignment(owner)
+                        .as_ref()
+                        != turn.agent_assignment.get()
+                })
+        {
+            return Vec::new();
+        }
         let state = self.state();
         input
             .iter()
@@ -239,17 +299,19 @@ impl AsyncCompletions {
             .collect()
     }
 
-    pub(super) fn accept(&self, ids: &[ResponseItemId]) {
+    pub(super) fn accept(self: &Arc<Self>, ids: &[ResponseItemId]) {
         let mut state = self.state();
         for id in ids {
             state.records.remove(id);
         }
+        drop(state);
     }
 
-    pub(crate) fn retire(&self) {
+    pub(crate) fn retire(self: &Arc<Self>) {
         let mut state = self.state();
         state.closed = true;
         state.records.clear();
+        drop(state);
     }
 }
 
@@ -278,6 +340,7 @@ impl Drop for CompletionReservation {
         } else {
             records.remove(&self.id);
         }
+        drop(state);
     }
 }
 
@@ -317,6 +380,7 @@ impl CompletionPublisher {
                 trim += 1;
             }
         }
+        drop(state);
     }
 }
 
@@ -409,6 +473,16 @@ pub(super) async fn record_ready(
         .config
         .features
         .enabled(codex_features::Feature::AsyncProcessCompletion)
+    {
+        return false;
+    }
+    if drain == CompletionDrain::ExactAssignment
+        && sess
+            .services
+            .local_agent_runtime
+            .current_wake_assignment(sess.thread_id())
+            .as_ref()
+            != turn.agent_assignment.get()
     {
         return false;
     }

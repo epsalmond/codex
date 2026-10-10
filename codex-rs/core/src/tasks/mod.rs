@@ -854,6 +854,9 @@ impl Session {
                     .flatten();
                 let task = active_turn.task.take()?;
                 if failed {
+                    if self.services.async_completions.has_owned_work() {
+                        self.input_queue.pause_wakeups();
+                    }
                     // Fence work retained by yielded cells before terminating their runtime.
                     task.cancellation_token.cancel();
                 }
@@ -874,6 +877,9 @@ impl Session {
             .as_ref()
             .is_some_and(|(_, classification)| classification.newly_classified)
         {
+            self.emit_agent_wakeups_updated().await;
+        }
+        if failed && failure_work.is_none() && self.services.async_completions.has_owned_work() {
             self.emit_agent_wakeups_updated().await;
         }
         if let Some(cells) = failed_cells {

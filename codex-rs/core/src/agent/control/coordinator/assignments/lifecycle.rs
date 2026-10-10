@@ -193,6 +193,7 @@ impl AgentWakeCoordinator {
         state.assignments.insert(
             id.clone(),
             Assignment {
+                owned_completions: Default::default(),
                 parent: Some(parent.clone()),
                 phase: AssignmentPhase::Reserved,
                 direct_children: HashSet::new(),
@@ -286,7 +287,13 @@ impl AgentWakeCoordinator {
         assignment.terminal_disposition = Some(disposition);
         assignment.active_turn_id = None;
         assignment.phase = match disposition {
-            TurnEndDisposition::Succeeded if !assignment.direct_children.is_empty() => {
+            TurnEndDisposition::Succeeded
+                if !assignment.direct_children.is_empty()
+                    || assignment
+                        .owned_completions
+                        .upgrade()
+                        .is_some_and(|store| store.owns_assignment(id)) =>
+            {
                 AssignmentPhase::Waiting
             }
             TurnEndDisposition::Succeeded => AssignmentPhase::Completed,
@@ -407,6 +414,7 @@ impl AgentWakeCoordinator {
         state.assignments.insert(
             id.clone(),
             Assignment {
+                owned_completions: Default::default(),
                 parent: parent.clone(),
                 phase: AssignmentPhase::Running,
                 direct_children: HashSet::new(),

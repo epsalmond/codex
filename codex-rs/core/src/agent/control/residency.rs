@@ -307,6 +307,7 @@ async fn is_unloadable(thread: &CodexThread) -> bool {
             | AgentStatus::Errored(_)
             | AgentStatus::Interrupted
     ) && thread.session.active_turn.lock().await.is_none()
+        && !thread.session.services.async_completions.has_owned_work()
         && !thread.session.input_queue.has_pending_mailbox_items().await
 }
 

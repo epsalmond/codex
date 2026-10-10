@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 mod assignments;
+mod owned_work;
 pub(crate) use assignments::AssignmentReservation;
 mod reports;
 pub(crate) use reports::ClaimedTerminalReport;
@@ -116,6 +117,7 @@ enum ReportDeliveryState {
 }
 
 struct Assignment {
+    owned_completions: std::sync::Weak<crate::session::async_completion::AsyncCompletions>,
     parent: Option<AgentAssignmentId>,
     phase: AssignmentPhase,
     direct_children: HashSet<AgentAssignmentId>,
