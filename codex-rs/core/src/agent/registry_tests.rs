@@ -398,12 +398,14 @@ fn register_root_thread_indexes_root_path() {
     drop(reservation);
 }
 
-#[test]
-fn register_root_thread_again_preserves_retained_root_state() {
+#[tokio::test]
+async fn register_root_thread_again_preserves_retained_root_state() {
     let registry = AgentRegistry::default();
     let root_thread_id = ThreadId::new();
+    let config = crate::config::test_config().await;
     registry.register_root_thread(root_thread_id);
-    registry.save_evicted_environments(root_thread_id, Vec::new());
+    registry.save_evicted_settings(root_thread_id, Vec::new(), config.clone());
+    registry.close_completion_delivery(root_thread_id);
 
     registry.register_root_thread(root_thread_id);
 
@@ -411,6 +413,8 @@ fn register_root_thread_again_preserves_retained_root_state() {
         registry.evicted_environments(root_thread_id),
         Some(Vec::new())
     );
+    assert_eq!(registry.evicted_config(root_thread_id), Some(config));
+    assert!(registry.completion_delivery_closed(root_thread_id));
 }
 
 #[test]
