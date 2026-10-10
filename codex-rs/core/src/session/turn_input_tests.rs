@@ -1366,11 +1366,12 @@ async fn start_or_steer_whose_reservation_is_lost_before_its_task_starts_steers_
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
-/// A delegated followup creates a fresh child generation, loses its reservation to an interrupt
-/// before its task starts, and its retry fails before binding. No turn ran in that generation, so
-/// the parent must not be left waiting for a report from it.
+/// A delegated followup creates a fresh child generation and loses its reservation to an
+/// interrupt before its task starts. Its start returns `Lost`, so that attempt's assignment guard
+/// releases the generation as it drops; the retry then fails before binding anything, so no turn
+/// ever runs in the generation and the parent must not be left waiting for a report from it.
 #[tokio::test(start_paused = true)]
-async fn child_generation_whose_start_is_lost_and_whose_retry_fails_does_not_hold_its_parent() {
+async fn child_generation_released_by_its_lost_start_does_not_hold_its_parent() {
     let parent_thread_id = codex_protocol::ThreadId::new();
     let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,

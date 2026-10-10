@@ -520,7 +520,7 @@ async fn start_reserved(
 ) -> CodexResult<Option<TurnInputSubmission>> {
     let ReservedExplicitStart {
         turn_state,
-        assignment_guard,
+        mut assignment_guard,
         settings,
         submission_id,
         origin,
@@ -537,6 +537,7 @@ async fn start_reserved(
             return Err(error);
         }
     };
+    assignment_guard.record_turn_context(&turn_context);
     let held =
         wait_if_turn_start_held(session.thread_id, TurnStartHoldPoint::InputBeforeBind).await;
     match session
@@ -716,7 +717,7 @@ async fn start_if_idle(
         Arc::clone(&active_turn.turn_state)
     };
     // Every exit before the task is installed gives back the assignment this turn binds.
-    let assignment_guard = session.guard_unstarted_turn_assignment(&submission_id);
+    let mut assignment_guard = session.guard_unstarted_turn_assignment(&submission_id);
 
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         session.clear_reserved_idle_turn(&turn_state).await;
@@ -749,6 +750,7 @@ async fn start_if_idle(
             return Err(error);
         }
     };
+    assignment_guard.record_turn_context(&turn_context);
     let allow_new_generation = kind != TurnStartKind::Automatic
         || !matches!(
             &input,

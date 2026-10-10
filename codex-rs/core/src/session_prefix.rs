@@ -47,6 +47,20 @@ pub(crate) fn format_inter_agent_completion_message(
     }
 }
 
+/// Explains why a child that was interrupted for its waiting parent has no result.
+pub(crate) const UNSTARTED_CHILD_NOTE: &str = "Its turn did not start, so it did no work.";
+pub(crate) const CLOSED_CHILD_NOTE: &str = "It was closed before it reported a result.";
+
+/// Renders the report of a child interrupted for its waiting parent, with a note saying why.
+pub(crate) fn format_inter_agent_interruption_message(
+    task_name: AgentPath,
+    sender: AgentPath,
+    note: &str,
+) -> String {
+    InterAgentCompletionMessage::new(task_name, sender, format!("Agent was interrupted. {note}"))
+        .render()
+}
+
 #[cfg(test)]
 #[path = "session_prefix_tests.rs"]
 mod tests;

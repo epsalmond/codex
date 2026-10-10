@@ -678,7 +678,7 @@ impl Session {
             });
             Arc::clone(&active_turn.turn_state)
         };
-        let assignment_guard = self.guard_unstarted_turn_assignment(&sub_id);
+        let mut assignment_guard = self.guard_unstarted_turn_assignment(&sub_id);
 
         self.services
             .models_manager
@@ -720,6 +720,7 @@ impl Session {
                 },
             )
             .await;
+        assignment_guard.record_turn_context(&turn_context);
         if let Some(trigger) = start_options.turn_trigger {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }

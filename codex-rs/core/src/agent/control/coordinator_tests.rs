@@ -993,10 +993,14 @@ fn unstarted_turn_that_created_a_child_generation_releases_it_from_its_parent() 
     assert_eq!(outstanding(&coordinator), 1);
     let epoch = coordinator.wake_event_epoch();
 
-    // Its turn never runs, so the generation is released rather than left for a report that no
-    // turn will publish.
-    coordinator.release_unstarted_turn(child_thread_id, "followup-turn");
+    // Its turn never runs and its parent is still running, so the generation is released rather
+    // than left for a report that no turn will publish.
+    assert_eq!(
+        coordinator.release_unstarted_turn(child_thread_id, "followup-turn"),
+        None
+    );
     assert_eq!(coordinator.current_assignment(child_thread_id), None);
+    assert!(!coordinator.has_pending_reports(&root));
     assert_eq!(direct_children(&coordinator, &root), 0);
     assert_eq!(outstanding(&coordinator), 0);
     assert_ne!(coordinator.wake_event_epoch(), epoch);
@@ -1004,5 +1008,221 @@ fn unstarted_turn_that_created_a_child_generation_releases_it_from_its_parent() 
     assert_eq!(
         coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Completed)
+    );
+}
+
+fn pending_reports(coordinator: &AgentWakeCoordinator, parent: &AgentAssignmentId) -> usize {
+    coordinator
+        .state
+        .lock()
+        .expect("coordinator lock is healthy")
+        .pending_by_parent
+        .get(parent)
+        .map_or(0, std::collections::VecDeque::len)
+}
+
+fn interruption_report() -> InterAgentCommunication {
+    InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("valid child path"),
+        AgentPath::root(),
+        Vec::new(),
+        "Agent was interrupted.".to_string(),
+        /*trigger_turn*/ true,
+    )
+}
+
+#[test]
+fn unstarted_child_generation_of_a_waiting_parent_is_interrupted_for_its_report() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    // A followup to an idle child creates a fresh generation, and the parent's turn ends waiting
+    // on it while its start is still in flight.
+    let child_thread_id = ThreadId::new();
+    let child = coordinator
+        .begin_or_continue_assignment(
+            child_thread_id,
+            Some(root.clone()),
+            "followup-turn",
+            /*allow_new_generation*/ true,
+        )
+        .expect("followup creates a child generation");
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+
+    let interrupted = coordinator
+        .release_unstarted_turn(child_thread_id, "followup-turn")
+        .expect("a waiting parent's child is interrupted, not released");
+    assert_eq!(interrupted.assignment, child);
+    assert_ne!(interrupted.terminal_turn_id, "followup-turn");
+    assert_eq!(
+        coordinator.assignment_status(child_thread_id),
+        Some(AgentStatus::Interrupted)
+    );
+    assert_eq!(direct_children(&coordinator, &root), 1);
+    assert!(matches!(
+        coordinator.publish_terminal_report(
+            &child,
+            &interrupted.terminal_turn_id,
+            interruption_report(),
+        ),
+        Some(TerminalReportPublication::Published(_))
+    ));
+    assert_eq!(
+        coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned()),
+        Some(root)
+    );
+}
+
+#[test]
+fn closing_the_last_child_of_a_running_parent_publishes_nothing() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+
+    assert_eq!(coordinator.cancel_subtree(&[child.thread_id]), Vec::new());
+    assert_eq!(coordinator.current_assignment(child.thread_id), None);
+    assert_eq!(direct_children(&coordinator, &root), 0);
+    assert!(!coordinator.has_pending_reports(&root));
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Completed)
+    );
+}
+
+#[test]
+fn closing_the_last_child_of_a_waiting_parent_reports_its_interruption_once() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+
+    // Only the subtree's root reports; its parent is outside the closed subtree.
+    let interrupted = coordinator.cancel_subtree(&[child.thread_id, grandchild.thread_id]);
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(interrupted[0].assignment, child);
+    assert_eq!(coordinator.current_assignment(grandchild.thread_id), None);
+    assert_eq!(
+        coordinator.assignment_status(child.thread_id),
+        Some(AgentStatus::Interrupted)
+    );
+    let terminal_turn_id = &interrupted[0].terminal_turn_id;
+    assert!(matches!(
+        coordinator.publish_terminal_report(&child, terminal_turn_id, interruption_report()),
+        Some(TerminalReportPublication::Published(_))
+    ));
+
+    // The closed child's own turn may still end. Its turn id is not the terminal one, so its
+    // TurnAborted finds no assignment to report, and republishing finds the existing report.
+    assert_eq!(
+        coordinator.terminal_assignment_for_turn(child.thread_id, "child-turn"),
+        None
+    );
+    assert!(matches!(
+        coordinator.publish_terminal_report(&child, terminal_turn_id, interruption_report()),
+        Some(TerminalReportPublication::AlreadyPublished(_))
+    ));
+    assert_eq!(pending_reports(&coordinator, &root), 1);
+    assert_eq!(
+        coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned()),
+        Some(root)
+    );
+}
+
+#[test]
+fn closing_a_child_keeps_the_report_it_already_published_to_its_waiting_parent() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    coordinator
+        .classify_turn_end(&child, "child-turn", TurnEndDisposition::Succeeded)
+        .expect("child turn is classified");
+    let report_id =
+        match coordinator.publish_terminal_report(&child, "child-turn", interruption_report()) {
+            Some(TerminalReportPublication::Published(report_id)) => report_id,
+            _ => panic!("first publication is new"),
+        };
+    coordinator
+        .claim_next_wake_request()
+        .expect("the report wakes its running parent")
+        .complete();
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+
+    // The report is all the waiting parent has left to wake on, so closing its sender keeps it.
+    assert_eq!(coordinator.cancel_subtree(&[child.thread_id]), Vec::new());
+    assert_eq!(pending_reports(&coordinator, &root), 1);
+    let claim = coordinator
+        .claim_next_mailbox_report(&root)
+        .expect("the published report is still deliverable");
+    assert_eq!(claim.id, report_id);
+    assert!(claim.mark_enqueued());
+    assert!(coordinator.acknowledge_report_mailbox_delivery(&report_id, root.thread_id));
+    assert!(coordinator.mark_report_recorded(&report_id));
+    assert_eq!(coordinator.accept_reports(&root, &[report_id]), 1);
+    assert_eq!(direct_children(&coordinator, &root), 0);
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            root.thread_id,
+            None,
+            "root-wake-turn",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(root.clone())
+    );
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-wake-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Completed)
+    );
+}
+
+#[test]
+fn lost_wake_start_with_an_enqueued_report_wakes_its_parent_again() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    assert_eq!(
+        coordinator.classify_turn_end(&root, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+    // The child's report reaches the parent's mailbox, but no turn has recorded it yet.
+    terminal_report(&coordinator, &child, "child-turn");
+    coordinator
+        .claim_next_wake_request()
+        .expect("the report wakes its waiting parent")
+        .complete();
+
+    // The wake turn binds the parent, then loses its start before recording the report.
+    assert_eq!(
+        coordinator.begin_or_continue_assignment(
+            root.thread_id,
+            None,
+            "root-wake-turn",
+            /*allow_new_generation*/ false,
+        ),
+        Ok(root.clone())
+    );
+    assert_eq!(
+        coordinator.release_unstarted_turn(root.thread_id, "root-wake-turn"),
+        None
+    );
+    assert!(coordinator.is_current_waiting_assignment(&root));
+    assert_eq!(
+        coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned()),
+        Some(root),
+        "the enqueued report still needs a turn"
     );
 }
