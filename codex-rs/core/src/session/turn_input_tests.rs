@@ -1209,3 +1209,76 @@ async fn explicit_input_replaces_a_starting_turn_that_never_installs_its_task() 
     );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
+
+#[derive(Clone, Copy)]
+enum Replacer {
+    SpawnTask,
+    LaterInput,
+}
+
+#[test_case(TurnInputMode::StartIfIdle, Replacer::SpawnTask; "start_if_idle_replaced_by_spawn_task")]
+#[test_case(TurnInputMode::StartOrSteer, Replacer::LaterInput; "start_or_steer_replaced_by_later_input")]
+#[tokio::test(start_paused = true)]
+async fn input_whose_reservation_is_replaced_before_its_task_starts_is_not_submitted(
+    mode: TurnInputMode,
+    replacer: Replacer,
+) {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let mut hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+
+    let (submission, ()) = tokio::join!(
+        handle(
+            &session,
+            explicit_turn("must stay with its caller"),
+            mode,
+            "replaced".to_string(),
+        ),
+        async {
+            // The input has reserved the slot and bound its assignment, but not started.
+            hold.reached().await;
+            match replacer {
+                Replacer::SpawnTask => {
+                    session
+                        .spawn_task(
+                            Arc::clone(&turn_context),
+                            Vec::new(),
+                            NeverEndingTask {
+                                kind: TaskKind::Regular,
+                                listen_to_cancellation_token: true,
+                            },
+                        )
+                        .await;
+                }
+                Replacer::LaterInput => {
+                    // Waits out the starting-turn bound, then takes the slot.
+                    assert_eq!(
+                        handle(
+                            &session,
+                            explicit_turn("later input"),
+                            TurnInputMode::StartOrSteer,
+                            "later".to_string(),
+                        )
+                        .await
+                        .expect("later input should be valid"),
+                        TurnInputSubmission::Started {
+                            turn_id: "later".to_string(),
+                        }
+                    );
+                }
+            }
+            hold.release();
+        },
+    );
+
+    // Reporting `Started` would let the caller drop input that no turn received.
+    assert_eq!(
+        submission.expect("input should be valid"),
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        }
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}

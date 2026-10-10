@@ -39,9 +39,10 @@ pub(crate) struct ActiveTurn {
     /// Set once the task has finished and the turn holds the slot only for end-of-turn work
     /// (stop hooks, `TurnComplete`, rollout flush). Input replaces such a turn instead of waiting.
     pub(crate) finishing: bool,
-    /// Turn id of the automatic wake that reserved this slot. A wake binds its assignment before
-    /// it installs its task, so input that replaces the reservation takes that binding over.
-    pub(crate) wake_turn_id: Option<String>,
+    /// Turn id of the start that reserved this slot. A reserving start binds its assignment only
+    /// while it still holds the slot, under the active-turn lock, so input that replaces the
+    /// reservation under that lock takes over any binding the start already made.
+    pub(crate) reserved_turn_id: Option<String>,
 }
 
 /// Whether mailbox deliveries should still be folded into the current turn.
@@ -72,7 +73,7 @@ impl Default for ActiveTurn {
             turn_state: Arc::new(Mutex::new(TurnState::default())),
             task_installed: watch::Sender::new(()),
             finishing: false,
-            wake_turn_id: None,
+            reserved_turn_id: None,
         }
     }
 }

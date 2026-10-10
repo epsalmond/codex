@@ -51,7 +51,7 @@ impl Session {
                 return RecordedReportWakeResult::Busy;
             }
             let active_turn = active_turn.insert(ActiveTurn {
-                wake_turn_id: Some(turn_id.clone()),
+                reserved_turn_id: Some(turn_id.clone()),
                 ..ActiveTurn::default()
             });
             Arc::clone(&active_turn.turn_state)
@@ -77,12 +77,21 @@ impl Session {
         // Bind before draining input. A concurrent interruption or close can invalidate the
         // waiting assignment while turn context is being prepared; in that case its queued mail
         // must remain available for an explicit followup or shutdown recovery.
-        if let Err(error) =
-            self.bind_wake_assignment(&turn_context, /*allow_new_generation*/ false)
+        match self
+            .bind_in_reservation(&turn_state, || {
+                self.bind_wake_assignment(&turn_context, /*allow_new_generation*/ false)
+            })
+            .await
         {
-            self.clear_reserved_idle_turn(&turn_state).await;
-            warn!("failed to bind recorded-report wake turn: {error}");
-            return RecordedReportWakeResult::NoLongerNeeded;
+            Some(Ok(())) => {}
+            Some(Err(error)) => {
+                self.clear_reserved_idle_turn(&turn_state).await;
+                warn!("failed to bind recorded-report wake turn: {error}");
+                return RecordedReportWakeResult::NoLongerNeeded;
+            }
+            // Replaced or interrupted before it bound anything. The reports stay in history for
+            // whichever turn holds the slot now.
+            None => return RecordedReportWakeResult::Busy,
         }
 
         let (input, start_options) = self.input_queue.get_pending_input(&self.active_turn).await;

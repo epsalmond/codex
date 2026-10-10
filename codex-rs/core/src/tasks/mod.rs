@@ -5,8 +5,8 @@ mod owned_completion;
 mod recorded_report_wake;
 mod regular;
 mod review;
+mod turn_start_hold;
 mod user_shell;
-mod wake_start_hold;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,11 +72,13 @@ pub(crate) use compact::CompactTask;
 pub(crate) use recorded_report_wake::RecordedReportWakeResult;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
+pub use turn_start_hold::TurnStartHold;
+pub use turn_start_hold::TurnStartHoldPoint;
+pub(crate) use turn_start_hold::hold_next_turn_start;
+pub(crate) use turn_start_hold::wait_if_held as wait_if_turn_start_held;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
-pub use wake_start_hold::WakeStartHold;
-pub(crate) use wake_start_hold::hold_next_wake_start;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingWorkStartResult {
@@ -655,7 +657,7 @@ impl Session {
                 return PendingWorkStartResult::AlreadyActive;
             }
             let active_turn = active_turn.insert(ActiveTurn {
-                wake_turn_id: Some(sub_id.clone()),
+                reserved_turn_id: Some(sub_id.clone()),
                 ..ActiveTurn::default()
             });
             Arc::clone(&active_turn.turn_state)
@@ -722,29 +724,41 @@ impl Session {
         if let Some(id) = start_options.root_turn_id {
             turn_context.turn_metadata_state.set_root_turn_id(id);
         }
-        let binding = match &cause {
-            PendingWorkCause::Mailbox => self.bind_wake_assignment_for_input(&turn_context, &input),
-            PendingWorkCause::OwnedCompletion(assignment) => {
-                if self.input_queue.wakeups_paused()
-                    || !self
-                        .services
-                        .async_completions
-                        .has_ready(self.thread_id(), assignment.as_ref())
-                    || self
-                        .services
-                        .local_agent_runtime
-                        .current_wake_assignment(self.thread_id())
-                        != *assignment
-                {
-                    self.abandon_root_turn_lifecycle(&turn_context.sub_id);
-                    self.input_queue
-                        .return_to_mailbox_with_start_options(&mut input, retained_start_options)
-                        .await;
-                    self.clear_reserved_idle_turn(&turn_state).await;
-                    return PendingWorkStartResult::Stale;
+        let _held =
+            turn_start_hold::wait_if_held(self.thread_id(), TurnStartHoldPoint::WakeBeforeBind)
+                .await;
+        let binding = self
+            .bind_in_reservation(&turn_state, || match &cause {
+                PendingWorkCause::Mailbox => {
+                    Some(self.bind_wake_assignment_for_input(&turn_context, &input))
                 }
-                self.bind_owned_completion(&turn_context, assignment.as_ref())
-            }
+                PendingWorkCause::OwnedCompletion(assignment) => {
+                    let still_ready = !self.input_queue.wakeups_paused()
+                        && self
+                            .services
+                            .async_completions
+                            .has_ready(self.thread_id(), assignment.as_ref())
+                        && self
+                            .services
+                            .local_agent_runtime
+                            .current_wake_assignment(self.thread_id())
+                            == *assignment;
+                    still_ready
+                        .then(|| self.bind_owned_completion(&turn_context, assignment.as_ref()))
+                }
+            })
+            .await
+            .flatten();
+        // Input that replaced this reservation, an interrupt that cleared it, or a completion
+        // that went stale leaves this wake nothing to start. It bound nothing, so it ends quietly
+        // and the replacing turn, if any, takes the mail and the completion.
+        let Some(binding) = binding else {
+            self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+            self.input_queue
+                .return_to_mailbox_with_start_options(&mut input, retained_start_options)
+                .await;
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return PendingWorkStartResult::Stale;
         };
         if let Err(error) = binding {
             self.abandon_root_turn_lifecycle(&turn_context.sub_id);
@@ -792,7 +806,9 @@ impl Session {
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
             .await;
-        wake_start_hold::wait_if_held(self.thread_id()).await;
+        let _held =
+            turn_start_hold::wait_if_held(self.thread_id(), TurnStartHoldPoint::WakeBeforeInstall)
+                .await;
         let reservation = TurnReservation {
             turn_state,
             mail_start_options: retained_start_options,

@@ -24,6 +24,8 @@ use crate::state::TurnState;
 use crate::tasks::RegularTask;
 use crate::tasks::TaskStartOutcome;
 use crate::tasks::TurnReservation;
+use crate::tasks::TurnStartHoldPoint;
+use crate::tasks::wait_if_turn_start_held;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_history::UserInputOrigin;
@@ -285,6 +287,26 @@ pub(super) async fn handle_recovery(
     .await
 }
 
+/// Maps a reserved start's outcome to its submission. Only a turn whose task was installed is
+/// reported as started.
+fn started_submission(
+    outcome: TaskStartOutcome,
+    turn_id: String,
+) -> CodexResult<TurnInputSubmission> {
+    Ok(match outcome {
+        TaskStartOutcome::Started => TurnInputSubmission::Started { turn_id },
+        TaskStartOutcome::Rejected(error) => TurnInputSubmission::NotSubmitted {
+            reason: not_submitted_reason(&error),
+        },
+        // Another turn took the slot, or an interrupt cleared it, before the task was installed.
+        // The turn ended with `TurnAborted` and only reserved mail went back to the mailbox, so
+        // the caller keeps its own input instead of losing it with a turn that never ran.
+        TaskStartOutcome::Aborted => TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        },
+    })
+}
+
 fn not_submitted_reason(error: &WorkAdmissionError) -> NotSubmittedReason {
     match error {
         WorkAdmissionError::Closed => NotSubmittedReason::ServerDraining,
@@ -338,7 +360,7 @@ async fn start_or_steer(
     // outlives the wait, is replaced as before. A free slot is reserved before this turn binds
     // its assignment.
     let deadline = Instant::now() + STARTING_TURN_WAIT_TIMEOUT;
-    let (turn_state, _admission, replaced_wake_turn_id) = loop {
+    let (turn_state, _admission) = loop {
         match session
             .steer_input(
                 &mut input,
@@ -379,18 +401,26 @@ async fn start_or_steer(
                         };
                         Some(admission)
                     };
-                    // A replaced turn's own release or start later finds this reservation and
-                    // leaves it alone. A wake still starting also hands over its assignment.
-                    let replaced_wake_turn_id = active_turn
+                    // A replaced start's own bind, release or task start later finds this
+                    // reservation and leaves it alone. It binds only while it holds the slot,
+                    // under this lock, so handing its binding over here, under the same lock,
+                    // leaves no window in which either start can bind against the other.
+                    if let Some(replaced_turn_id) = active_turn
                         .take()
                         .filter(|turn| !turn.finishing)
-                        .and_then(|turn| turn.wake_turn_id);
-                    let reserved = active_turn.insert(ActiveTurn::default());
-                    break (
-                        Arc::clone(&reserved.turn_state),
-                        admission,
-                        replaced_wake_turn_id,
-                    );
+                        .and_then(|turn| turn.reserved_turn_id)
+                    {
+                        session.services.local_agent_runtime.hand_off_wake_turn(
+                            session.thread_id,
+                            &replaced_turn_id,
+                            &submission_id,
+                        );
+                    }
+                    let reserved = active_turn.insert(ActiveTurn {
+                        reserved_turn_id: Some(submission_id.clone()),
+                        ..ActiveTurn::default()
+                    });
+                    break (Arc::clone(&reserved.turn_state), admission);
                 }
             }
         };
@@ -408,18 +438,25 @@ async fn start_or_steer(
             return Err(error);
         }
     };
-    if let Some(wake_turn_id) = replaced_wake_turn_id {
-        session.services.local_agent_runtime.hand_off_wake_turn(
-            session.thread_id,
-            &wake_turn_id,
-            &turn_context.sub_id,
-        );
-    }
-    if let Err(error) =
-        session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)
+    let _held =
+        wait_if_turn_start_held(session.thread_id, TurnStartHoldPoint::InputBeforeBind).await;
+    match session
+        .bind_in_reservation(&turn_state, || {
+            session.bind_wake_assignment(&turn_context, /*allow_new_generation*/ true)
+        })
+        .await
     {
-        session.clear_reserved_idle_turn(&turn_state).await;
-        return Err(error);
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            return Err(error);
+        }
+        // Replaced or interrupted before it bound anything. The caller keeps its input.
+        None => {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::NotIdle,
+            });
+        }
     }
     if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
         tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
@@ -451,22 +488,18 @@ async fn start_or_steer(
         // The reservation above keeps held mail from starting a wake turn once the pause clears.
         session.resume_paused_wakeups().await;
     }
+    let _held =
+        wait_if_turn_start_held(session.thread_id, TurnStartHoldPoint::InputBeforeInstall).await;
     let reservation = TurnReservation {
         turn_state,
         mail_start_options: TurnStartOptions::default(),
     };
-    match session
-        .start_task(turn_context, task_input, RegularTask::new(), reservation)
-        .await
-    {
-        // An aborted start already reported `TurnAborted` for this turn id.
-        TaskStartOutcome::Started | TaskStartOutcome::Aborted => Ok(TurnInputSubmission::Started {
-            turn_id: submission_id,
-        }),
-        TaskStartOutcome::Rejected(error) => Ok(TurnInputSubmission::NotSubmitted {
-            reason: not_submitted_reason(&error),
-        }),
-    }
+    started_submission(
+        session
+            .start_task(turn_context, task_input, RegularTask::new(), reservation)
+            .await,
+        submission_id,
+    )
 }
 
 #[expect(
@@ -539,7 +572,10 @@ async fn start_if_idle(
                 reason: NotSubmittedReason::Superseded,
             });
         }
-        let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+        let active_turn = active_turn.insert(ActiveTurn {
+            reserved_turn_id: Some(submission_id.clone()),
+            ..ActiveTurn::default()
+        });
         Arc::clone(&active_turn.turn_state)
     };
 
@@ -580,9 +616,25 @@ async fn start_if_idle(
             SubmittedTurnInput::InterAgentCommunication(communication)
                 if communication.id.as_ref().is_some_and(|id| id.as_str().starts_with("amsg_"))
         );
-    if let Err(error) = session.bind_wake_assignment(&turn_context, allow_new_generation) {
-        session.clear_reserved_idle_turn(&turn_state).await;
-        return Err(error);
+    let _held =
+        wait_if_turn_start_held(session.thread_id, TurnStartHoldPoint::InputBeforeBind).await;
+    match session
+        .bind_in_reservation(&turn_state, || {
+            session.bind_wake_assignment(&turn_context, allow_new_generation)
+        })
+        .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            return Err(error);
+        }
+        // Replaced or interrupted before it bound anything. The caller keeps its input.
+        None => {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::NotIdle,
+            });
+        }
     }
     if let Err(error) = session.register_root_turn_lifecycle(turn_context.as_ref()) {
         tracing::warn!(%error, "root turn admission rejected by lifecycle coordinator");
@@ -625,22 +677,18 @@ async fn start_if_idle(
             }
         }
     }
+    let _held =
+        wait_if_turn_start_held(session.thread_id, TurnStartHoldPoint::InputBeforeInstall).await;
     let reservation = TurnReservation {
         turn_state,
         mail_start_options: TurnStartOptions::default(),
     };
-    match session
-        .start_task(turn_context, task_input, RegularTask::new(), reservation)
-        .await
-    {
-        // An aborted start already reported `TurnAborted` for this turn id.
-        TaskStartOutcome::Started | TaskStartOutcome::Aborted => Ok(TurnInputSubmission::Started {
-            turn_id: submission_id,
-        }),
-        TaskStartOutcome::Rejected(error) => Ok(TurnInputSubmission::NotSubmitted {
-            reason: not_submitted_reason(&error),
-        }),
-    }
+    started_submission(
+        session
+            .start_task(turn_context, task_input, RegularTask::new(), reservation)
+            .await,
+        submission_id,
+    )
 }
 
 async fn steer(
@@ -735,6 +783,27 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// Runs `bind` only while `turn_state` still holds the active-turn slot without a task, and
+    /// returns `None` when it no longer does.
+    ///
+    /// Binding is synchronous, so the ownership check and the bind happen under one hold of the
+    /// active-turn lock. Input that replaces a reservation hands that reservation's binding over
+    /// under the same lock, so a reserving start either binds before it is replaced, and the
+    /// replacing turn takes the binding over, or finds it was replaced and binds nothing.
+    pub(crate) async fn bind_in_reservation<T>(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+        bind: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let active_turn = self.active_turn.lock().await;
+        let owns_reservation = active_turn
+            .as_ref()
+            .is_some_and(|turn| turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, turn_state));
+        let bound = owns_reservation.then(bind);
+        drop(active_turn);
+        bound
     }
 
     pub(crate) async fn clear_reserved_idle_turn(

@@ -1,7 +1,8 @@
 use super::*;
 use codex_core::TurnInputSubmission;
-use codex_core::test_support::WakeStartHold;
-use codex_core::test_support::hold_next_wake_start;
+use codex_core::test_support::TurnStartHold;
+use codex_core::test_support::TurnStartHoldPoint;
+use codex_core::test_support::hold_next_turn_start;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::TurnAbortReason;
 use core_test_support::test_codex::TestCodex;
@@ -253,10 +254,11 @@ fn user_turn(text: &str) -> TurnInputRequest {
     }])
 }
 
-/// Leaves a V2 root idle with a ready completion whose wake is parked after it reserved the slot
-/// and bound its assignment, before it installs its task.
-async fn park_idle_wake_with_ready_completion()
--> Result<(TestCodex, StreamingSseServer, WakeStartHold)> {
+/// Leaves a V2 root idle with a ready completion whose wake is parked at `point`, after it
+/// reserved the slot and before it installs its task.
+async fn park_idle_wake_with_ready_completion(
+    point: TurnStartHoldPoint,
+) -> Result<(TestCodex, StreamingSseServer, TurnStartHold)> {
     let args = json!({ "cmd": gated_helper(), "yield_time_ms": 250 });
     let mut bodies = vec![
         tool_response("race-finite", &args),
@@ -296,7 +298,7 @@ async fn park_idle_wake_with_ready_completion()
     })
     .await;
     assert_eq!(test.codex.agent_status().await, AgentStatus::Waiting);
-    let mut hold = hold_next_wake_start(test.session_configured.thread_id);
+    let mut hold = hold_next_turn_start(test.session_configured.thread_id, point);
     release_helper(&test).await?;
     tokio::time::timeout(Duration::from_secs(30), hold.reached())
         .await
@@ -305,12 +307,13 @@ async fn park_idle_wake_with_ready_completion()
 }
 
 /// Runs a follow-up turn, then checks that its request carries each prompt once and the
-/// completion exactly once, and that no request ever carried the completion twice.
+/// completion exactly once, and that no request ever carried the completion twice. Returns the
+/// events seen until the follow-up completed.
 async fn assert_follow_up_sees_completion_once(
     test: &TestCodex,
     server: &StreamingSseServer,
     prompt: &str,
-) -> Result<()> {
+) -> Result<Vec<EventMsg>> {
     let TurnInputSubmission::Started { turn_id } = test
         .codex
         .start_or_steer_turn(user_turn("after the race"))
@@ -318,10 +321,11 @@ async fn assert_follow_up_sees_completion_once(
     else {
         panic!("idle follow-up must start a turn");
     };
-    wait_for_event(
-        &test.codex,
-        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
-    )
+    let mut seen = Vec::new();
+    wait_for_event(&test.codex, |event| {
+        seen.push(event.clone());
+        matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id)
+    })
     .await;
     let requests = request_bodies(server).await;
     let texts = |request: &Value| {
@@ -345,7 +349,7 @@ async fn assert_follow_up_sees_completion_once(
             .iter()
             .all(|request| completions(request).len() <= 1)
     );
-    Ok(())
+    Ok(seen)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -357,7 +361,8 @@ async fn explicit_root_turn_inside_a_starting_idle_wake_steers_into_it_and_deliv
         "basic PowerShell execution through Wine is unavailable"
     );
     // The window in which explicit input used to be rejected.
-    let (test, server, hold) = park_idle_wake_with_ready_completion().await?;
+    let (test, server, hold) =
+        park_idle_wake_with_ready_completion(TurnStartHoldPoint::WakeBeforeInstall).await?;
     let codex = Arc::clone(&test.codex);
     let explicit = tokio::spawn(async move {
         codex
@@ -394,7 +399,8 @@ async fn explicit_root_turn_replaces_a_wake_held_past_the_wait_and_the_wake_abor
         Ok(()),
         "basic PowerShell execution through Wine is unavailable"
     );
-    let (test, server, hold) = park_idle_wake_with_ready_completion().await?;
+    let (test, server, hold) =
+        park_idle_wake_with_ready_completion(TurnStartHoldPoint::WakeBeforeInstall).await?;
     // The wake stays parked past the wait bound, so the explicit turn takes the slot and the
     // wake's assignment, then starts on its own.
     let TurnInputSubmission::Started { turn_id } = tokio::time::timeout(
@@ -438,4 +444,93 @@ async fn explicit_root_turn_replaces_a_wake_held_past_the_wait_and_the_wake_abor
     assert_follow_up_sees_completion_once(&test, &server, "explicit after the wait").await?;
     server.shutdown().await;
     Ok(())
+}
+
+/// Holds the wake after it reserved the slot and before it binds its assignment, past the input
+/// wait bound, while explicit input takes the slot. The wake must then find it no longer owns the
+/// slot and end quietly: no TurnStarted or TurnAborted, no failed-start warning, and no pause of
+/// automatic wakeups. The explicit turn takes the completion.
+async fn assert_wake_replaced_before_bind_ends_quietly(explicit_binds_first: bool) -> Result<()> {
+    let (test, server, wake) =
+        park_idle_wake_with_ready_completion(TurnStartHoldPoint::WakeBeforeBind).await?;
+    let thread_id = test.session_configured.thread_id;
+    let mut input = hold_next_turn_start(thread_id, TurnStartHoldPoint::InputBeforeBind);
+    let codex = Arc::clone(&test.codex);
+    let explicit = tokio::spawn(async move {
+        codex
+            .start_or_steer_turn(user_turn("explicit replaces the wake"))
+            .await
+    });
+    // The explicit input waits out its bound, then replaces the reservation and hands over a
+    // binding the wake does not have yet.
+    tokio::time::timeout(Duration::from_secs(10), input.reached())
+        .await
+        .expect("explicit input should replace the parked wake");
+    let submission = if explicit_binds_first {
+        input.release();
+        let submission = explicit.await??;
+        wake.release_and_wait().await;
+        submission
+    } else {
+        // The wake tries to bind between the replacement and the explicit bind.
+        wake.release_and_wait().await;
+        input.release();
+        explicit.await??
+    };
+    let TurnInputSubmission::Started { turn_id } = submission else {
+        panic!("explicit input must start once it replaced the wake");
+    };
+    let mut seen = Vec::new();
+    wait_for_event(&test.codex, |event| {
+        seen.push(event.clone());
+        matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id)
+    })
+    .await;
+    seen.extend(
+        assert_follow_up_sees_completion_once(&test, &server, "explicit replaces the wake").await?,
+    );
+    let started = seen
+        .iter()
+        .filter(|event| matches!(event, EventMsg::TurnStarted(_)))
+        .count();
+    assert_eq!(
+        started, 2,
+        "only the explicit and follow-up turns may start"
+    );
+    for event in &seen {
+        match event {
+            EventMsg::TurnAborted(aborted) => panic!("no turn may abort: {aborted:?}"),
+            EventMsg::Warning(warning) => assert!(
+                !warning.message.contains("Automatic turn did not start"),
+                "the replaced wake must not report a failed start: {}",
+                warning.message
+            ),
+            EventMsg::AgentWakeupsUpdated(update) => {
+                assert!(!update.paused, "the replaced wake must not pause wakeups");
+            }
+            _ => {}
+        }
+    }
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_held_before_bind_yields_to_explicit_input_that_bound_first() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    assert_wake_replaced_before_bind_ends_quietly(/*explicit_binds_first*/ true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_held_before_bind_cannot_bind_after_explicit_input_replaced_it() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+    assert_wake_replaced_before_bind_ends_quietly(/*explicit_binds_first*/ false).await
 }

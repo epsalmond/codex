@@ -227,7 +227,8 @@ pub enum NotSubmittedReason {
     /// The host's work coordinator is already tracking its maximum number of root turns.
     RootTurnCapacityReached,
 
-    /// `start_turn_if_idle` found an active turn.
+    /// `start_turn_if_idle` found an active turn, or another turn or an interrupt took the
+    /// turn slot a start had reserved before its turn could run. The input was not consumed.
     NotIdle,
 
     /// `start_turn_if_idle` yielded to higher-priority trigger-turn mailbox input.
