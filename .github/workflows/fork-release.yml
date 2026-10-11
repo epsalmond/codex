@@ -209,20 +209,7 @@ jobs:
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
         run: |
           set -euo pipefail
-          [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          current=$(awk '
-            /^\[workspace\.package\]$/ { in_workspace = 1; next }
-            /^\[/ { in_workspace = 0 }
-            in_workspace && /^version = / { print; exit }
-          ' Cargo.toml | sed -n 's/^version = "\([^"]*\)".*/\1/p')
-          if [[ "$current" == 0.0.0 ]]; then
-            sed -i.bak "/^\[workspace\.package\]\$/,/^\[/ s/^version = \"0\.0\.0\"\$/version = \"$SOURCE_VERSION\"/" Cargo.toml
-            rm -f Cargo.toml.bak
-          elif [[ "$current" != "$SOURCE_VERSION" ]]; then
-            echo "Cargo.toml workspace version $current does not match $SOURCE_VERSION" >&2
-            exit 1
-          fi
-          grep -Fxq "version = \"$SOURCE_VERSION\"" Cargo.toml
+          bash "$GITHUB_WORKSPACE/.github/scripts/fork-release-build.sh" stamp-version "$SOURCE_VERSION"
 
       # bwrap (bundled in the Linux package) links libcap via pkg-config.
       - name: Install Linux bwrap build dependencies
@@ -254,20 +241,8 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
-          shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' tui/src/fork_update.rs)
-          test -n "$shake_version"
-          reported=$(target/release/codex --version)
-          expected=$(printf 'codex-cli %s\nShake feature version: %s\nRelease tag: %s' \
-            "$SOURCE_VERSION" "$shake_version" "$RELEASE_TAG")
-          [[ "$reported" == "$expected" ]] || {
-            echo "codex --version reported '$reported', expected source, Shake, and release versions" >&2
-            exit 1
-          }
-          short_reported=$(target/release/codex -V)
-          [[ "$short_reported" == "codex-cli $SOURCE_VERSION" ]] || {
-            echo "codex -V reported '$short_reported', expected codex-cli $SOURCE_VERSION" >&2
-            exit 1
-          }
+          bash "$GITHUB_WORKSPACE/.github/scripts/fork-release-build.sh" verify-version \
+            "$SOURCE_VERSION" "$RELEASE_TAG"
 
       # Archives the debug symbols as codex-symbols-<target>.tar.gz (attached
       # to the release) and strips the binaries in place, so the tarball, the
@@ -302,14 +277,9 @@ jobs:
           ldd --version | awk 'NR == 1 { print $NF }' > glibc-version.txt
           test -s glibc-version.txt
 
-      # Build the canonical Codex package layout (codex-package.json, bin/,
-      # codex-path/rg, codex-resources/) that the app-server daemon needs to
-      # seed its managed install, then add the Shake extras at the package
-      # root. Root-level codex and codex-code-mode-host symlinks keep older
-      # install.sh copies, the .deb builder, and the Homebrew formula
-      # working; codex canonicalizes to bin/codex so the layout is detected.
-      # The payload check makes an incomplete archive fail before it can be
-      # uploaded to the publish job.
+      # Build the canonical Codex package layout plus the Shake extras; see
+      # package-archive in fork-release-build.sh, which scripts/shake-local-install.sh
+      # shares so local builds install the same layout.
       - name: Package archive
         shell: bash
         env:
@@ -318,55 +288,17 @@ jobs:
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
-          archive="codex-$target.tar.gz"
-          stage="$RUNNER_TEMP/codex-package-$target"
           package_args=(
+            --repo-root "$GITHUB_WORKSPACE"
             --target "$target"
-            --variant codex
-            --package-version "$SOURCE_VERSION"
-            --cargo-profile release
-            --entrypoint-bin target/release/codex
-            --code-mode-host-bin target/release/codex-code-mode-host
-            --package-dir "$stage"
-            --force
+            --version "$SOURCE_VERSION"
+            --stage-dir "$RUNNER_TEMP/codex-package-$target"
+            --archive "codex-$target.tar.gz"
           )
           if [[ "$RUNNER_OS" == Linux ]]; then
             package_args+=(--bwrap-bin target/release/bwrap)
           fi
-          python3 "$GITHUB_WORKSPACE/scripts/build_codex_package.py" "${package_args[@]}"
-          install -m 755 docs/shake-bench/scripts/codex-shake-estimate \
-            docs/shake-bench/scripts/shake-savings-estimate.py "$stage/"
-          install -m 644 docs/shake-bench/scripts/pricing_lib.py \
-            docs/shake-bench/pricing.json "$stage/"
-          ln -s bin/codex "$stage/codex"
-          ln -s bin/codex-code-mode-host "$stage/codex-code-mode-host"
-          tar -C "$stage" -czf "$archive" \
-            codex-package.json bin codex-path codex-resources \
-            codex codex-code-mode-host codex-shake-estimate \
-            shake-savings-estimate.py pricing_lib.py pricing.json
-
-          required=(
-            codex-package.json
-            bin/codex
-            bin/codex-code-mode-host
-            codex-path/rg
-            codex
-            codex-code-mode-host
-            codex-shake-estimate
-            shake-savings-estimate.py
-            pricing_lib.py
-            pricing.json
-          )
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            required+=(codex-resources/bwrap)
-          fi
-          listing=$(tar -tzf "$archive")
-          for entry in "${required[@]}"; do
-            grep -Fx "$entry" <<<"$listing" >/dev/null || {
-              echo "$archive is missing $entry" >&2
-              exit 1
-            }
-          done
+          bash "$GITHUB_WORKSPACE/.github/scripts/fork-release-build.sh" package-archive "${package_args[@]}"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
