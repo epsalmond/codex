@@ -63,9 +63,9 @@ stable_lineage() {
     git -C "$repo_root" for-each-ref --merged "$sha" --format='%(refname)' refs/tags "$namespace" |
       while IFS= read -r ref; do
         case "$ref" in
-          "$namespace"/rust-v*) tag=${ref#"$namespace"/} ;;
-          refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
-          *) continue ;;
+          ("$namespace"/rust-v*) tag=${ref#"$namespace"/} ;;
+          (refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
+          (*) continue ;;
         esac
         if [[ "$tag" =~ ^rust-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
           printf '%s\t%s\t%s\t%s\n' \
