@@ -81,6 +81,8 @@ if [[ -z "$repo" ]]; then
 fi
 
 # ---- --host: run this script on another machine -----------------------------
+# Quoted values expand here on purpose and are re-quoted for the remote shell.
+# shellcheck disable=SC2029
 if [[ -n "$host" ]]; then
   if [[ -z "$remote_repo" ]]; then
     # Default to the main checkout's path relative to $HOME, not a worktree's.
@@ -107,13 +109,22 @@ if [[ -n "$host" ]]; then
   [[ -t 0 && -t 1 ]] && ssh_tty=(-t)
   rdir=$(ssh "$host" 'mktemp -d "${TMPDIR:-/tmp}/shake-local-install.XXXXXX"')
   [[ -n "$rdir" ]] || die "could not create a temporary directory on $host"
-  # Quoted values expand here on purpose and are re-quoted for the remote shell.
-  # shellcheck disable=SC2029
-  tar -C "$script_root" -cf - scripts/shake-local-install.sh .github/scripts/fork-release-build.sh |
-    ssh "$host" "tar -C $(quote "$rdir") -xf -"
+  if ! tar -C "$script_root" -cf - scripts/shake-local-install.sh .github/scripts/fork-release-build.sh |
+    ssh "$host" "tar -C $(quote "$rdir") -xf -"; then
+    ssh "$host" "rm -rf $(quote "$rdir")" 2>/dev/null || true
+    die "could not copy this script to $host:$rdir"
+  fi
   say "running on $host from $remote_repo"
-  exec ssh ${ssh_tty[@]+"${ssh_tty[@]}"} "$host" \
-    "bash $(quote "$rdir/scripts/shake-local-install.sh")$remote_args; rc=\$?; rm -rf $(quote "$rdir"); exit \$rc"
+  # The remote command removes $rdir itself; a dropped session (ssh exits
+  # 255) skips that, so retry the removal here before passing on the status.
+  rc=0
+  ssh ${ssh_tty[@]+"${ssh_tty[@]}"} "$host" \
+    "bash $(quote "$rdir/scripts/shake-local-install.sh")$remote_args; rc=\$?; rm -rf $(quote "$rdir"); exit \$rc" ||
+    rc=$?
+  if ((rc == 255)); then
+    ssh "$host" "rm -rf $(quote "$rdir")" 2>/dev/null || true
+  fi
+  exit "$rc"
 fi
 
 # Non-interactive ssh sessions often lack the toolchain directories.
@@ -146,11 +157,14 @@ else
   version_source="codex-rs/Cargo.toml"
   if [[ "$version" == 0.0.0 ]]; then
     # A checkout without the newest upstream tags would quietly resolve an
-    # older version. Fetch them as fork-release-metadata.sh does.
+    # older version. Fetch them as fork-release-metadata.sh does, but outside
+    # refs/tags so `git push --tags` from this checkout never sends them.
+    upstream_tags=refs/fork-release-upstream/tags
     git -C "$repo" fetch --no-tags --quiet https://github.com/openai/codex.git \
-      "+refs/tags/rust-v*:refs/tags/fork-release-upstream/rust-v*" ||
+      "+refs/tags/rust-v*:$upstream_tags/rust-v*" ||
       say "warning: could not fetch upstream rust-v* tags; using local tags"
-    lineage=$(bash "$own_helper" stable-lineage --repo-root "$repo" --sha "$sha")
+    lineage=$(bash "$own_helper" stable-lineage --repo-root "$repo" --sha "$sha" \
+      --upstream-tag-namespace "$upstream_tags")
     [[ "$lineage" != none ]] ||
       die "no rust-vX.Y.Z tag is merged into $sha12; fetch upstream tags or pass --version"
     version=${lineage#rust-v}
@@ -222,6 +236,12 @@ out="$work_dir/out"
 install_dir="$home_dir/$tag"
 bins=(--bin codex --bin codex-code-mode-host)
 [[ "$bwrap_mode" == build ]] && bins+=(--bin bwrap)
+install_note=""
+if [[ -x "$install_dir/codex" && -x "$install_dir/codex-code-mode-host" ]]; then
+  install_note=" (already present; reused)"
+elif [[ -e "$install_dir" ]]; then
+  install_note=" (incomplete; replaced)"
+fi
 
 cat <<EOF
 commit        $sha
@@ -234,7 +254,7 @@ worktree      $wt$($keep_worktree && printf ' (kept)' || printf ' (removed on su
 outputs       $out
 cargo         CODEX_FORK_RELEASE_TAG=$tag cargo build --release ${bins[*]}
 bwrap         ${bwrap_note:-not packaged on $target}
-install       $install_dir$([[ -e "$install_dir" ]] && printf ' (already present; reused)')
+install       $install_dir$install_note
 current       ${current_tag:-<none>}$($activate && printf ' -> %s' "$tag" || printf ' (unchanged; --no-activate)')
 EOF
 if $dry_run; then
@@ -248,7 +268,13 @@ if [[ -e "$wt" ]]; then
     die "$wt exists but is not a worktree at $sha12; remove it or pass --work-dir"
   say "resuming in existing worktree $wt"
 else
+  # A worktree deleted by hand is still registered until pruned.
+  git -C "$repo" worktree prune
   git -C "$repo" worktree add --detach "$wt" "$sha"
+  # A fresh worktree builds unstripped binaries, so outputs left by an
+  # earlier run of this commit must not make the steps below skip them.
+  rm -rf "$out/codex-symbols-$target.tar.gz" "$out/codex-$target.tar.gz" \
+    "$out/codex-package-$target" "$out/runner-tmp"
 fi
 on_exit() {
   local status=$?
@@ -328,7 +354,9 @@ if [[ -x "$install_dir/codex" && -x "$install_dir/codex-code-mode-host" ]]; then
   say "$tag already installed; leaving it as is"
 else
   mkdir -p "$home_dir"
-  rm -rf "$install_dir.partial"
+  # An incomplete $install_dir can only be an earlier try at this same tag;
+  # mv would nest the new copy inside it.
+  rm -rf "$install_dir" "$install_dir.partial"
   mkdir -p "$install_dir.partial"
   tar -xzf "$archive" -C "$install_dir.partial"
   chmod 755 "$install_dir.partial/codex" "$install_dir.partial/codex-code-mode-host"

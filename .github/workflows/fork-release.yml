@@ -151,6 +151,17 @@ jobs:
           ref: ${{ needs.prepare.outputs.release_sha }}
           persist-credentials: false
 
+      # The build steps below call fork-release-build.sh from this workflow's
+      # own commit, so a workflow_dispatch of a release_sha that predates the
+      # helper still builds.
+      - name: Check out release helper from the workflow commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: fork-release-tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -209,7 +220,7 @@ jobs:
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
         run: |
           set -euo pipefail
-          bash "$GITHUB_WORKSPACE/.github/scripts/fork-release-build.sh" stamp-version "$SOURCE_VERSION"
+          bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-build.sh" stamp-version "$SOURCE_VERSION"
 
       # bwrap (bundled in the Linux package) links libcap via pkg-config.
       - name: Install Linux bwrap build dependencies
@@ -241,7 +252,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
-          bash "$GITHUB_WORKSPACE/.github/scripts/fork-release-build.sh" verify-version \
+          bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-build.sh" verify-version \
             "$SOURCE_VERSION" "$RELEASE_TAG"
 
       # Archives the debug symbols as codex-symbols-<target>.tar.gz (attached
@@ -298,7 +309,7 @@ jobs:
           if [[ "$RUNNER_OS" == Linux ]]; then
             package_args+=(--bwrap-bin target/release/bwrap)
           fi
-          bash "$GITHUB_WORKSPACE/.github/scripts/fork-release-build.sh" package-archive "${package_args[@]}"
+          bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-build.sh" package-archive "${package_args[@]}"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:

@@ -5,7 +5,8 @@
 # published release.
 #
 #   fork-release-build.sh workspace-version --repo-root DIR --sha SHA
-#   fork-release-build.sh stable-lineage --repo-root DIR --sha SHA
+#   fork-release-build.sh stable-lineage --repo-root DIR --sha SHA \
+#     [--upstream-tag-namespace REFPREFIX]
 #   fork-release-build.sh stamp-version VERSION       (run in codex-rs/)
 #   fork-release-build.sh verify-version VERSION TAG  (run in codex-rs/)
 #   fork-release-build.sh package-archive --repo-root DIR --target TRIPLE \
@@ -39,23 +40,30 @@ workspace_version() {
 }
 
 # Print the newest exact stable rust-vX.Y.Z tag merged into SHA, or "none".
-# Tags fetched by fork-release-metadata.sh under refs/tags/fork-release-upstream/
-# count the same as plain local tags.
+# Upstream tags fetched under the namespace (default
+# refs/tags/fork-release-upstream, where fork-release-metadata.sh puts them)
+# count the same as plain local tags. scripts/shake-local-install.sh passes a
+# namespace outside refs/tags so `git push --tags` never sends them.
 stable_lineage() {
-  local repo_root="" sha="" lineage
+  local repo_root="" sha="" namespace=refs/tags/fork-release-upstream lineage
   while (($# > 0)); do
     case "$1" in
       --repo-root) repo_root=${2:?--repo-root requires a value}; shift 2 ;;
       --sha) sha=${2:?--sha requires a value}; shift 2 ;;
+      --upstream-tag-namespace)
+        namespace=${2:?--upstream-tag-namespace requires a value}
+        namespace=${namespace%/}
+        shift 2
+        ;;
       *) die "stable-lineage: unknown argument: $1" ;;
     esac
   done
   [[ -n "$repo_root" && -n "$sha" ]] || die "stable-lineage needs --repo-root and --sha"
   lineage=$(
-    git -C "$repo_root" for-each-ref --merged "$sha" --format='%(refname)' refs/tags |
+    git -C "$repo_root" for-each-ref --merged "$sha" --format='%(refname)' refs/tags "$namespace" |
       while IFS= read -r ref; do
         case "$ref" in
-          refs/tags/fork-release-upstream/rust-v*) tag=${ref#refs/tags/fork-release-upstream/} ;;
+          "$namespace"/rust-v*) tag=${ref#"$namespace"/} ;;
           refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
           *) continue ;;
         esac
