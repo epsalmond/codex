@@ -5,7 +5,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
-use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed_with_tokens;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -49,8 +48,11 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
                 ev_completed_with_tokens("pause-response", /*total_tokens*/ 40_000),
             ]),
             sse(vec![
-                ev_assistant_message("compact-summary", "Saved context summary"),
-                ev_completed("compact-summary"),
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {"type": "compaction", "encrypted_content": "Saved context summary"}
+                }),
+                ev_completed_with_tokens("compact-summary", /*total_tokens*/ 1_000),
             ]),
             sse_completed("done-response"),
         ],
