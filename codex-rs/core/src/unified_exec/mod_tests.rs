@@ -401,6 +401,82 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_session_ids_resolve_in_the_current_agent_only() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (owner, owner_turn) = test_session_and_turn().await;
+    let (other, other_turn) = test_session_and_turn().await;
+    let command = "read -r value; printf 'received:%s\\n' \"$value\"";
+    let owner_output = exec_command(
+        &owner,
+        &owner_turn,
+        command,
+        /*yield_time_ms*/ 100,
+        /*workdir*/ None,
+    )
+    .await?;
+    let owner_id = owner_output.process_id.expect("owner process is running");
+
+    let error = write_stdin(
+        &other,
+        &other_turn,
+        owner_id,
+        "foreign\n",
+        /*yield_time_ms*/ 100,
+    )
+    .await
+    .expect_err("other agent must not access the owner's process");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Session ID {owner_id} is unavailable in this agent. Use a session_id returned by this agent's exec_command; IDs from other agents cannot be used here. If another agent launched the command, ask that agent to interact with it. A previously returned session may have completed or been removed."
+        )
+    );
+
+    // Numeric IDs are local to each manager. A collision names the current
+    // agent's process; it does not grant access to the original owner's process.
+    let other_output = exec_command(
+        &other,
+        &other_turn,
+        command,
+        /*yield_time_ms*/ 100,
+        /*workdir*/ None,
+    )
+    .await?;
+    let other_id = other_output.process_id.expect("other process is running");
+    assert_eq!((owner_id, other_id), (1000, 1000));
+
+    let other_result = write_stdin(
+        &other,
+        &other_turn,
+        owner_id,
+        "other-value\n",
+        /*yield_time_ms*/ 2_500,
+    )
+    .await?;
+    let owner_result = write_stdin(
+        &owner,
+        &owner_turn,
+        owner_id,
+        "owner-value\n",
+        /*yield_time_ms*/ 2_500,
+    )
+    .await?;
+    assert_eq!(
+        (other_result.exit_code, owner_result.exit_code),
+        (Some(0), Some(0))
+    );
+    let other_text = other_result.truncated_output(DEFAULT_MAX_OUTPUT_TOKENS);
+    let owner_text = owner_result.truncated_output(DEFAULT_MAX_OUTPUT_TOKENS);
+    assert!(other_text.contains("received:other-value"), "{other_text}");
+    assert!(owner_text.contains("received:owner-value"), "{owner_text}");
+    assert!(!owner_text.contains("foreign"), "{owner_text}");
+    assert!(!owner_text.contains("other-value"), "{owner_text}");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
 
@@ -949,20 +1025,6 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         entry.cwd = cwd.clone();
         Arc::clone(&entry.process)
     };
-    // A queued write must acquire the terminal lock before reading active strict
-    // mode: code-mode calls can enable it while another interaction is draining.
-    {
-        let interaction = original.interaction_lock().lock_owned().await;
-        let _active_turn = session.active_turn.lock().await;
-        let mut queued = Box::pin(write_stdin(
-            &session, &turn, process_id, "queued\n", /*yield_time_ms*/ 250,
-        ));
-        let mut task_context = std::task::Context::from_waker(futures::task::noop_waker_ref());
-        assert!(queued.as_mut().poll(&mut task_context).is_pending());
-        drop(interaction);
-        assert!(queued.as_mut().poll(&mut task_context).is_pending());
-        assert!(original.interaction_lock().try_lock_owned().is_err());
-    }
     // Empty polling must complete without an approval response.
     // The test deadline must allow the minimum empty-poll wait.
     tokio::time::timeout(
@@ -1057,6 +1119,76 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         assert!(original.interaction_lock().try_lock_owned().is_ok());
     }
     original.terminate();
+    assert!(session.terminate_background_terminal(process_id).await);
+    Ok(())
+}
+
+/// A queued write observes strict review enabled on its captured step while waiting
+/// for another terminal interaction to finish.
+#[tokio::test]
+async fn stdin_approval_observes_strict_review_enabled_while_queued() -> anyhow::Result<()> {
+    use crate::session::step_context::StepContext;
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+    use crate::tools::sandboxing::ToolError;
+    use codex_features::Feature;
+
+    skip_if_sandbox!(Ok(()));
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        codex_login::CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.features.enable(Feature::WriteStdinApproval).unwrap();
+        },
+    )
+    .await;
+    let manager = &session.services.unified_exec_manager;
+    let opened = exec_command(
+        &session, &turn, "cat", /*yield_time_ms*/ 250, /*workdir*/ None,
+    )
+    .await?;
+    let process_id = opened.process_id.expect("running terminal");
+    let process = Arc::clone(
+        &manager
+            .process_store
+            .lock()
+            .await
+            .processes
+            .get(&process_id)
+            .unwrap()
+            .process,
+    );
+    let context = UnifiedExecContext::new(
+        Arc::clone(&session),
+        StepContext::for_test(turn),
+        tokio_util::sync::CancellationToken::new(),
+        "write".to_string(),
+    );
+    let interaction = process.interaction_lock().lock_owned().await;
+    let mut queued = Box::pin(manager.write_stdin(
+        &context,
+        WriteStdinRequest {
+            process_id,
+            // NUL input must be rejected when strict review becomes required.
+            input: "\0",
+            yield_time_ms: 250,
+            max_output_tokens: None,
+            truncation_policy: TruncationPolicy::Tokens(10_000),
+            interaction_event: None,
+        },
+    ));
+    let mut task_context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+    assert!(queued.as_mut().poll(&mut task_context).is_pending());
+    context.step_context.turn.record_granted_permissions(
+        codex_exec_server::LOCAL_ENVIRONMENT_ID,
+        Default::default(),
+        /*strict_auto_review*/ true,
+    );
+    drop(interaction);
+    assert!(matches!(
+        queued.await,
+        Err(UnifiedExecError::StdinApproval(ToolError::Rejected(reason)))
+            if reason.contains("NUL byte")
+    ));
     assert!(session.terminate_background_terminal(process_id).await);
     Ok(())
 }

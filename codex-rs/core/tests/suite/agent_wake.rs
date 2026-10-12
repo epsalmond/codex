@@ -70,6 +70,9 @@ const SPAWN_CALL_ID: &str = "spawn-call-1";
 const ROOT_PROMPT: &str = "delegate the worker task";
 const FINAL_ANSWER: &str = "Message Type: FINAL_ANSWER";
 const CHILD_DELAY: Duration = Duration::from_secs(1);
+
+#[path = "agent_wake/owned_completion_tests.rs"]
+mod owned_completion_tests;
 /// Long enough for a spurious wake turn to have issued its request.
 const SETTLE: Duration = Duration::from_millis(750);
 

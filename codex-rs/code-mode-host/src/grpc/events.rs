@@ -14,7 +14,7 @@ use tonic::Status;
 
 use crate::MAX_ACTIVE_CELLS;
 
-const MAX_BUFFERED_CONTROL_EVENTS: usize = MAX_PENDING_DELEGATE_CALLS * 2 + MAX_ACTIVE_CELLS;
+const MAX_BUFFERED_CONTROL_EVENTS: usize = MAX_PENDING_DELEGATE_CALLS * 2 + MAX_ACTIVE_CELLS * 2;
 
 #[derive(Clone)]
 pub(super) struct EventSender {

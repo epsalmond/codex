@@ -1,6 +1,8 @@
 //! Starts a turn for reports that are already in history but missed the prior request snapshot.
 
 use super::RegularTask;
+use super::TaskStartOutcome;
+use super::TurnReservation;
 use crate::agent::control::AgentAssignmentId;
 use crate::session::session::Session;
 use crate::session::turn_context::NewTurnContextOptions;
@@ -42,14 +44,19 @@ impl Session {
             return RecordedReportWakeResult::Busy;
         }
 
+        let turn_id = uuid::Uuid::new_v4().to_string();
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return RecordedReportWakeResult::Busy;
             }
-            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            let active_turn = active_turn.insert(ActiveTurn {
+                reserved_turn_id: Some(turn_id.clone()),
+                ..ActiveTurn::default()
+            });
             Arc::clone(&active_turn.turn_state)
         };
+        let assignment_guard = self.guard_unstarted_turn_assignment(&turn_id);
 
         self.services
             .models_manager
@@ -65,22 +72,31 @@ impl Session {
             return RecordedReportWakeResult::Busy;
         }
 
-        let turn_id = uuid::Uuid::new_v4().to_string();
         let mut turn_context = self
             .new_turn_with_default_settings(turn_id, NewTurnContextOptions::default())
             .await;
         // Bind before draining input. A concurrent interruption or close can invalidate the
         // waiting assignment while turn context is being prepared; in that case its queued mail
         // must remain available for an explicit followup or shutdown recovery.
-        if let Err(error) =
-            self.bind_wake_assignment(&turn_context, /*allow_new_generation*/ false)
+        match self
+            .bind_in_reservation(&turn_state, || {
+                self.bind_wake_assignment(&turn_context, /*allow_new_generation*/ false)
+            })
+            .await
         {
-            self.clear_reserved_idle_turn(&turn_state).await;
-            warn!("failed to bind recorded-report wake turn: {error}");
-            return RecordedReportWakeResult::NoLongerNeeded;
+            Some(Ok(())) => {}
+            Some(Err(error)) => {
+                self.clear_reserved_idle_turn(&turn_state).await;
+                warn!("failed to bind recorded-report wake turn: {error}");
+                return RecordedReportWakeResult::NoLongerNeeded;
+            }
+            // Replaced or interrupted before it bound anything. The reports stay in history for
+            // whichever turn holds the slot now.
+            None => return RecordedReportWakeResult::Busy,
         }
 
         let (input, start_options) = self.input_queue.get_pending_input(&self.active_turn).await;
+        let mail_start_options = start_options.clone();
         #[expect(
             clippy::expect_used,
             reason = "the new turn context is not shared until start_task"
@@ -100,8 +116,23 @@ impl Session {
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
             .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
-            .await;
-        RecordedReportWakeResult::Started
+        let reservation = TurnReservation {
+            turn_state,
+            mail_start_options,
+            return_input_if_lost: false,
+        };
+        match self
+            .start_task(turn_context, Vec::new(), RegularTask::new(), reservation)
+            .await
+        {
+            TaskStartOutcome::Started => {
+                assignment_guard.started();
+                RecordedReportWakeResult::Started
+            }
+            // The reports stay in history for whichever turn holds the slot next.
+            TaskStartOutcome::Rejected(_)
+            | TaskStartOutcome::Aborted
+            | TaskStartOutcome::Lost(_) => RecordedReportWakeResult::NoLongerNeeded,
+        }
     }
 }

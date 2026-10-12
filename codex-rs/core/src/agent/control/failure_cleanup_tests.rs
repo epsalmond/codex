@@ -244,7 +244,7 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
     let root = harness
         .manager
         .start_thread(StartThreadOptions {
-            environments: Some(vec![TurnEnvironmentSelection {
+            environments: Some(vec![codex_protocol::protocol::TurnEnvironmentRequest {
                 environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_owned(),
                 cwd: cwd.clone(),
                 workspace_roots: vec![cwd],
@@ -289,7 +289,11 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
     let operation = runtime
         .retain_assignment_finalization(&child_assignment)
         .expect("child operation");
-    let mut guard = PendingSpawn::new(runtime.upgrade().unwrap(), child.session.thread_id);
+    let mut guard = PendingSpawn::new(
+        runtime.upgrade().unwrap(),
+        child.session.thread_id,
+        runtime.admit_start().expect("admit pending spawn"),
+    );
     guard.operation = Some(operation);
     *held.pending.lock().await = Some(guard);
     *held.child.lock().await = Some(Arc::clone(&child));

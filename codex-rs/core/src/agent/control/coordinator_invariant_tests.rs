@@ -190,7 +190,11 @@ fn subtree_close_cancels_grandchildren_after_parent_interruption_detaches_them()
 
     coordinator.cancel_subtree(&[child.thread_id, grandchild.thread_id]);
 
-    assert!(coordinator.current_assignment(child.thread_id).is_none());
+    // The child's turn ended before the close, so it stays for the report that turn publishes.
+    assert_eq!(
+        coordinator.terminal_assignment_for_turn(child.thread_id, "child-turn"),
+        Some(child)
+    );
     assert!(
         coordinator
             .current_assignment(grandchild.thread_id)

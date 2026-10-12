@@ -94,8 +94,11 @@ impl Handler {
             )
             .await;
 
+        let wait_started = Instant::now();
         // With no queued mail and no running child, nothing can end the wait before the timeout.
+        // A remote message board can still deliver posts to this active turn.
         let outcome = if pending_activity.is_none()
+            && turn.config.multi_agent_v2.message_board_remote.is_none()
             && !session
                 .services
                 .local_agent_runtime
@@ -104,9 +107,24 @@ impl Handler {
         {
             WaitOutcome::NoRunningAgents
         } else {
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+            let deadline = wait_started + Duration::from_millis(timeout_ms as u64);
             wait_for_activity(&mut activity_rx, pending_activity, deadline).await
         };
+        // A completed wait may wake for a message, user input, or its timeout.
+        // Dropped waits do not have an observed outcome and are not included.
+        turn.session_telemetry.record_duration(
+            "codex.multi_agent.wait.duration_ms",
+            wait_started.elapsed(),
+            &[(
+                "outcome",
+                match outcome {
+                    WaitOutcome::MailboxActivity => "mailbox",
+                    WaitOutcome::Steered => "steered",
+                    WaitOutcome::TimedOut => "timed_out",
+                    WaitOutcome::NoRunningAgents => "no_running_agents",
+                },
+            )],
+        );
         let result = WaitAgentResult::from_outcome(outcome, requested_timeout_ms, timeout_ms);
 
         session

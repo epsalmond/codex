@@ -105,7 +105,17 @@ jobs:
             --jq ".[] | select(.payload.schema_version == 2 and .payload.recovery_kind == \"merge_conflict\" and .payload.upstream_sha == \"$UPSTREAM_SHA\" and .payload.fork_sha == \"$FORK_SHA\") | .id" \
             > "$deployments"
           if [[ -s "$deployments" ]]; then
-            echo "conflict handoff already exists for $UPSTREAM_TAG at $FORK_SHA: $(sed -n '1p' "$deployments")"
+            deployment_id=$(sort -n "$deployments" | tail -n 1)
+            echo "conflict handoff already exists for $UPSTREAM_TAG at $FORK_SHA: $deployment_id"
+            # Red when the local processor reported failure or never finished,
+            # so a stuck sync surfaces as failed scheduled runs.
+            gh api "repos/${GITHUB_REPOSITORY}/deployments/$deployment_id" \
+              > "$RUNNER_TEMP/handoff-deployment.json"
+            gh api "repos/${GITHUB_REPOSITORY}/deployments/$deployment_id/statuses?per_page=100" \
+              > "$RUNNER_TEMP/handoff-statuses.json"
+            bash .github/scripts/fork-recovery-handoff-status.sh \
+              --deployment "$RUNNER_TEMP/handoff-deployment.json" \
+              --statuses "$RUNNER_TEMP/handoff-statuses.json"
             exit 0
           fi
 

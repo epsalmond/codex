@@ -238,7 +238,7 @@ impl AgentNavigationState {
         self.parent_owned_threads.insert(thread_id);
     }
 
-    /// Returns whether the picker cache currently knows about any threads.
+    /// Returns whether the picker currently has any visible threads.
     ///
     /// This is the cheapest way for `App` to decide whether opening the picker should show "No
     /// agents available yet." rather than constructing picker rows from an empty state.
@@ -716,6 +716,15 @@ mod tests {
         assert_eq!(
             state.adjacent_thread_id(Some(main_thread_id), AgentNavigationDirection::Previous),
             Some(second_agent_id)
+        );
+
+        let mut state = state;
+        state.set_agent_path(first_agent_id, Some("/root/first".to_string()));
+        state.set_picker_thread_visibility(first_agent_id, AgentPickerThreadVisibility::Hidden);
+        assert!(
+            state
+                .ordered_path_backed_subagent_threads(Some(main_thread_id))
+                .is_empty()
         );
     }
 
