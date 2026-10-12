@@ -127,7 +127,7 @@ async fn resumed_child_keeps_saved_compaction_limit() -> Result<()> {
         vec![
             (MODEL_A.to_string(), 0),
             (MODEL_B.to_string(), 0),
-            (MODEL_B.to_string(), 1),
+            (MODEL_A.to_string(), 1),
             (MODEL_B.to_string(), 0),
         ]
     );
