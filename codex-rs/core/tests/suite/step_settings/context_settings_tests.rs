@@ -56,7 +56,12 @@ async fn resumed_child_keeps_saved_compaction_limit() -> Result<()> {
             sse(vec![
                 ev_response_created("pause-response"),
                 ev_function_call("pause-call", "pause_context_test", "{}"),
-                ev_completed_with_tokens("pause-response", /*total_tokens*/ 40_000),
+                ev_completed_with_tokens("pause-response", /*total_tokens*/ 1_000),
+            ]),
+            sse(vec![
+                ev_response_created("switched-response"),
+                ev_function_call("switched-call", "pause_context_test", "{}"),
+                ev_completed_with_tokens("switched-response", /*total_tokens*/ 40_000),
             ]),
             sse(vec![
                 serde_json::json!({
@@ -76,32 +81,36 @@ async fn resumed_child_keeps_saved_compaction_limit() -> Result<()> {
             text_elements: Vec::new(),
         }]))
         .await?;
-    let paused = wait_for_event_match(&resumed.codex, |event| match event {
-        EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
-        _ => None,
-    })
-    .await;
-    apply_turn_settings(
-            &resumed.codex,
-            &paused.turn_id,
-            TurnSettingsUpdate {
-                model: Some(MODEL_B.to_string()),
-                ..Default::default()
-            },
-        )
-        .await?;
-    resumed
-        .codex
-        .submit(Op::DynamicToolResponse {
-            id: paused.call_id,
-            response: DynamicToolResponse {
-                content_items: vec![DynamicToolCallOutputContentItem::InputText {
-                    text: "continue".into(),
-                }],
-                success: true,
-            },
+    for step in 0..2 {
+        let paused = wait_for_event_match(&resumed.codex, |event| match event {
+            EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
+            _ => None,
         })
-        .await?;
+        .await;
+        if step == 0 {
+            apply_turn_settings(
+                &resumed.codex,
+                &paused.turn_id,
+                TurnSettingsUpdate {
+                    model: Some(MODEL_B.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        resumed
+            .codex
+            .submit(Op::DynamicToolResponse {
+                id: paused.call_id,
+                response: DynamicToolResponse {
+                    content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                        text: "continue".into(),
+                    }],
+                    success: true,
+                },
+            })
+            .await?;
+    }
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -117,7 +126,8 @@ async fn resumed_child_keeps_saved_compaction_limit() -> Result<()> {
             .collect::<Vec<_>>(),
         vec![
             (MODEL_A.to_string(), 0),
-            (MODEL_A.to_string(), 1),
+            (MODEL_B.to_string(), 0),
+            (MODEL_B.to_string(), 1),
             (MODEL_B.to_string(), 0),
         ]
     );
