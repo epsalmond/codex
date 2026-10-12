@@ -4,6 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalStatus;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -61,6 +63,8 @@ pub(crate) trait CellHost: Send + Sync + 'static {
     ) -> impl Future<Output = CompletionCommit> + Send;
 
     fn closed(&self) -> impl Future<Output = ()> + Send;
+
+    fn terminal_ready(&self, _status: CellTerminalStatus, _output_kind: CellOutputKind) {}
 }
 
 #[derive(Clone)]
@@ -382,6 +386,45 @@ impl CellState {
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+
+    pub(crate) fn terminal_ready_metadata(&self) -> Option<(CellTerminalStatus, CellOutputKind)> {
+        let phase = self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.cancellation_token.is_cancelled() {
+            return None;
+        }
+        match &*phase {
+            CellPhase::Completed {
+                pending_initial_yield_items: None,
+                event:
+                    CellEvent::Completed {
+                        content_items,
+                        error_text,
+                    },
+            } => Some((
+                if error_text.is_some() {
+                    CellTerminalStatus::Error
+                } else {
+                    CellTerminalStatus::Completed
+                },
+                if content_items
+                    .iter()
+                    .any(|item| matches!(item, OutputItem::Image { .. } | OutputItem::Audio { .. }))
+                {
+                    CellOutputKind::Media
+                } else {
+                    CellOutputKind::Text
+                },
+            )),
+            CellPhase::Running
+            | CellPhase::Terminating { .. }
+            | CellPhase::Completed { .. }
+            | CellPhase::CompletionClaimed(_)
+            | CellPhase::Tombstone => None,
+        }
     }
 }
 

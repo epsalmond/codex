@@ -80,6 +80,7 @@ impl Session {
         self.emit_turn_stop_lifecycle(context.extension_data.as_ref())
             .await;
         let event = EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: Some(context.root_turn_id()),
             turn_id: context.sub_id.clone(),
             last_agent_message: None,
             error: Some(error),

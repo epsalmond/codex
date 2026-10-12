@@ -5,6 +5,7 @@
 # can be checked against the public openai/codex main line.
 set -euo pipefail
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 fork_branch="eric/local-features"
 repo_root=""
 event_name=""
@@ -96,13 +97,7 @@ release_sha=$("${git_cmd[@]}" rev-parse --verify "$event_sha^{commit}") || die "
 [[ "$release_sha" == "$event_sha" ]] || die "event SHA does not resolve exactly"
 
 read_source_version() {
-  "${git_cmd[@]}" show "$release_sha:codex-rs/Cargo.toml" |
-    awk '
-      /^\[workspace\.package\]$/ { in_workspace = 1; next }
-      /^\[/ { in_workspace = 0 }
-      in_workspace && /^version = / { print; exit }
-    ' |
-    sed -n 's/^version = "\([^"]*\)".*/\1/p'
+  bash "$script_dir/fork-release-build.sh" workspace-version --repo-root "$repo_root" --sha "$release_sha"
 }
 
 source_version=$(read_source_version)
@@ -183,24 +178,7 @@ if [[ "$event_name" == workflow_dispatch ]]; then
     die "workflow dispatch commit is not on the landed $fork_branch branch"
 fi
 
-stable_lineage=$(
-  "${git_cmd[@]}" for-each-ref --merged "$release_sha" --format='%(refname)' refs/tags |
-    while IFS= read -r ref; do
-      case "$ref" in
-        refs/tags/fork-release-upstream/rust-v*) tag=${ref#refs/tags/fork-release-upstream/} ;;
-        refs/tags/rust-v*) tag=${ref#refs/tags/} ;;
-        *) continue ;;
-      esac
-      if [[ "$tag" =~ ^rust-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-        printf '%s\t%s\t%s\t%s\n' \
-          "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "$tag"
-      fi
-    done |
-  LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3n -k4,4 |
-    tail -n 1 |
-    cut -f4-
-)
-stable_lineage=${stable_lineage:-none}
+stable_lineage=$(bash "$script_dir/fork-release-build.sh" stable-lineage --repo-root "$repo_root" --sha "$release_sha")
 
 # Like upstream main, eric/local-features keeps the workspace at 0.0.0; the
 # release version comes from the newest exact stable tag it has merged and is

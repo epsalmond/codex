@@ -197,10 +197,9 @@ async fn inline_compaction_forwards_trigger_and_reason(remote: bool, trigger: Co
     };
     super::super::turn::run_inline_compact(
         &session,
+        Arc::clone(&step),
         step,
-        /*fallback_step_context*/ None,
         &mut session.services.model_client.new_session(),
-        InitialContextInjection::DoNotInject,
         CompactionInvocation {
             trigger,
             reason,
@@ -277,10 +276,9 @@ async fn inline_token_budget_compaction_forwards_hook_trigger(trigger: Compactio
         .unwrap();
     super::super::turn::run_inline_compact(
         &session,
+        Arc::clone(&step),
         step,
-        /*fallback_step_context*/ None,
         &mut session.services.model_client.new_session(),
-        InitialContextInjection::DoNotInject,
         CompactionInvocation {
             trigger,
             reason: match trigger {

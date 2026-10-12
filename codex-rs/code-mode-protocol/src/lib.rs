@@ -8,8 +8,10 @@ mod session;
 
 pub use description::CODE_MODE_PRAGMA_PREFIX;
 pub use description::CodeModeToolKind;
+pub use description::DeferredToolDiscovery;
 pub use description::EnabledToolMetadata;
 pub use description::ImageDetailVisibility;
+pub use description::TOOL_SEARCH_GUIDANCE;
 pub use description::ToolDefinition;
 pub use description::ToolNamespaceDescription;
 pub use description::augment_tool_definition;
@@ -38,6 +40,9 @@ pub use runtime::WaitRequest;
 pub use runtime::WaitToPendingOutcome;
 pub use runtime::WaitToPendingRequest;
 pub use session::CellId;
+pub use session::CellOutputKind;
+pub use session::CellTerminalReady;
+pub use session::CellTerminalStatus;
 pub use session::CodeModeSession;
 pub use session::CodeModeSessionCellExecutionLimits;
 pub use session::CodeModeSessionDelegate;
@@ -47,6 +52,7 @@ pub use session::CodeModeSessionResultFuture;
 pub use session::NoopCodeModeSessionDelegate;
 pub use session::NotificationFuture;
 pub use session::StartedCell;
+pub use session::TerminalReadySupport;
 pub use session::ToolInvocationFuture;
 
 pub const PUBLIC_TOOL_NAME: &str = "exec";

@@ -184,6 +184,7 @@ async fn cold_resume_reports_interrupted_without_starting_queued_child(
                     model_provider: initial.config.model_provider_id.clone(),
                     memory_mode: codex_protocol::protocol::ThreadMemoryMode::Enabled,
                 },
+                history_revision: None,
             })
             .await?;
         initial

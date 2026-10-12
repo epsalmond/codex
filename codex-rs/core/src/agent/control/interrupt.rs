@@ -55,10 +55,11 @@ impl LocalAgentControl {
                         .runtime
                         .interrupt_idle_wake_assignment(target, &turn_id)
                     {
-                        self.publish_idle_interrupted_assignment(
+                        self.runtime.publish_interrupted_assignment(
                             &assignment,
                             &turn_id,
                             child_agent_path,
+                            /*note*/ None,
                         );
                     }
                 }

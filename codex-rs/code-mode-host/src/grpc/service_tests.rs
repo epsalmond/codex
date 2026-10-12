@@ -14,6 +14,7 @@ pub(super) async fn open_session(
     let mut stream = host
         .open_session(Request::new(proto::OpenSessionRequest {
             cell_execution_limits: None,
+            terminal_ready_requested: false,
         }))
         .await
         .expect("open code-mode session")
@@ -26,6 +27,7 @@ pub(super) async fn open_session(
     let Some(proto::session_event::Event::Opened(opened)) = event.event else {
         panic!("expected the first session event to open its lease");
     };
+    assert!(!opened.terminal_ready_supported);
     (opened.session_id, stream)
 }
 

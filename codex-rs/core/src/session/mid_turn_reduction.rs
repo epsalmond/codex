@@ -22,9 +22,7 @@ use super::turn_context::TurnContext;
 use crate::agent::types::ContextReductionOutcome;
 use crate::agent::types::ContextReductionRecord;
 use crate::client::ModelClientSession;
-use crate::compact::InitialContextInjection;
 use crate::compact_invocation::CompactionInvocation;
-use crate::context::world_state::WorldState;
 
 /// Why the sampling loop is rolling over to a reduced context.
 pub(super) enum RollOverTrigger {
@@ -67,7 +65,6 @@ pub(super) async fn reduce_mid_turn(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     step_context: &Arc<StepContext>,
-    world_state: &Arc<WorldState>,
     client_session: &mut ModelClientSession,
     trigger: RollOverTrigger,
     tokens_before: i64,
@@ -97,12 +94,8 @@ pub(super) async fn reduce_mid_turn(
     let compact = run_inline_compact(
         sess,
         Arc::clone(step_context),
-        /*fallback_step_context*/ None,
+        Arc::clone(step_context),
         client_session,
-        InitialContextInjection::BeforeLastUserMessage {
-            world_state: Arc::clone(world_state),
-            step_context: Arc::clone(step_context),
-        },
         CompactionInvocation::automatic(CompactionReason::ContextLimit, CompactionPhase::MidTurn),
     )
     .await;

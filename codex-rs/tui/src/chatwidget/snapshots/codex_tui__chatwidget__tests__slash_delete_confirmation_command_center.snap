@@ -1,13 +1,15 @@
 ---
 source: tui/src/chatwidget/tests/slash_commands.rs
+assertion_line: 3029
 expression: popup
 ---
-  Delete this session?
-  Cannot be undone. Subagent threads will also be deleted.
+      Delete this session?
+› As  Cannot be undone. Subagent threads will also be deleted.
 
+  so
+    › 1. No, keep this session                     Return to the current
+                                                   session
+      2. Yes, delete and return to command center  Permanently delete this
+                                                   session now
 
-› 1. No, keep this session                     Return to the current session
-  2. Yes, delete and return to command center  Permanently delete this session
-                                               now
-
-  enter select · esc back
+      enter select · esc back

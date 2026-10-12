@@ -114,6 +114,7 @@ pub(crate) struct UnifiedExecProcess {
     output_task: Option<JoinHandle<()>>,
     sandbox_type: Option<SandboxType>,
     timed_out: AtomicBool,
+    termination_requested: AtomicBool,
     _spawn_lifecycle: Option<SpawnLifecycleHandle>,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
@@ -157,6 +158,7 @@ impl UnifiedExecProcess {
             output_task: None,
             sandbox_type,
             timed_out: AtomicBool::new(false),
+            termination_requested: AtomicBool::new(false),
             _spawn_lifecycle: spawn_lifecycle,
             _shell_snapshot: None,
         }
@@ -243,7 +245,14 @@ impl UnifiedExecProcess {
         }
     }
 
+    pub(super) fn termination_requested(&self) -> bool {
+        self.termination_requested.load(Ordering::Acquire)
+    }
+
     pub(super) fn terminate(&self) {
+        if !self.has_exited() {
+            self.termination_requested.store(true, Ordering::Release);
+        }
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => process_handle.terminate(),
             ProcessHandle::ExecServer(process_handle) => {
@@ -257,6 +266,9 @@ impl UnifiedExecProcess {
     }
 
     pub(super) async fn terminate_confirmed(&self) -> Result<(), UnifiedExecError> {
+        if !self.has_exited() {
+            self.termination_requested.store(true, Ordering::Release);
+        }
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => process_handle.terminate(),
             ProcessHandle::ExecServer(process_handle) => {

@@ -179,7 +179,7 @@ impl SessionInner {
         };
         let (response_tx, response_rx) = oneshot::channel();
         let mut claim = ownership;
-        let started = StartedCell::from_future(cell_id.clone(), async move {
+        let mut started = StartedCell::from_future(cell_id.clone(), async move {
             let closure = claim
                 .session
                 .state
@@ -200,6 +200,11 @@ impl SessionInner {
             drop(claim);
             Ok(response)
         });
+        started.terminal_ready_support = if self.terminal_ready_supported {
+            codex_code_mode_protocol::TerminalReadySupport::Supported
+        } else {
+            codex_code_mode_protocol::TerminalReadySupport::Unsupported
+        };
         if started_tx.send(Ok(started)).is_err() {
             return;
         }

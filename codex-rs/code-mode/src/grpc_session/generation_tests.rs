@@ -5,6 +5,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::CellTerminalStatus;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::CodeModeToolKind;
@@ -31,6 +34,7 @@ struct RecordingDelegate {
     calls: Mutex<Vec<CodeModeNestedToolCall>>,
     notifications: Mutex<Vec<(String, CellId, String)>>,
     closed: Mutex<Vec<CellId>>,
+    terminal_ready: Mutex<Vec<CellTerminalReady>>,
 }
 
 impl CodeModeSessionDelegate for RecordingDelegate {
@@ -63,6 +67,32 @@ impl CodeModeSessionDelegate for RecordingDelegate {
             .expect("closed cells lock")
             .push(cell_id.clone());
     }
+
+    fn cell_terminal_ready(&self, ready: CellTerminalReady) {
+        self.terminal_ready.lock().expect("ready lock").push(ready);
+    }
+}
+
+#[test]
+fn terminal_readiness_preserves_generation_in_public_identity() {
+    let delegate = Arc::new(RecordingDelegate::default());
+    let forwarding = GenerationDelegate {
+        delegate: delegate.clone(),
+        generation: 2,
+    };
+    forwarding.cell_terminal_ready(CellTerminalReady {
+        cell_id: CellId::new("42".into()),
+        status: CellTerminalStatus::Completed,
+        output_kind: CellOutputKind::Text,
+    });
+    assert_eq!(
+        *delegate.terminal_ready.lock().unwrap(),
+        vec![CellTerminalReady {
+            cell_id: CellId::new("g2:42".into()),
+            status: CellTerminalStatus::Completed,
+            output_kind: CellOutputKind::Text
+        }]
+    );
 }
 
 #[test]

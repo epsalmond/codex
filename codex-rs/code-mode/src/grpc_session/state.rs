@@ -6,6 +6,7 @@ use std::sync::Arc;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellTerminalReady;
 use codex_code_mode_protocol::grpc;
 use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_protocol::ToolName;
@@ -37,6 +38,8 @@ struct ExecutionRecord {
     ready: bool,
     closed: bool,
     notifications: usize,
+    terminal_ready: Option<CellTerminalReady>,
+    terminal_ready_reported: bool,
     cancellation: CancellationToken,
 }
 
@@ -142,6 +145,8 @@ impl SessionState {
                 ready: false,
                 closed: false,
                 notifications: 0,
+                terminal_ready: None,
+                terminal_ready_reported: false,
                 cancellation: CancellationToken::new(),
             },
         );
@@ -183,6 +188,47 @@ impl SessionState {
         }
         execution.ready = true;
         Ok(self.close_execution_if_ready(execution_id))
+    }
+
+    pub(super) fn admit_terminal_ready(
+        &mut self,
+        execution_id: &str,
+        ready: CellTerminalReady,
+    ) -> Result<(), String> {
+        self.require_open()?;
+        super::validate_identifier(execution_id, "execution ID")?;
+        super::validate_identifier(ready.cell_id.as_str(), "cell ID")?;
+        self.check_cell_ownership(execution_id, ready.cell_id.as_str())?;
+        // Abandonment removes local ownership before its asynchronous Terminate
+        // reaches the host. An already queued ready event must not fail the lease.
+        let Some(execution) = self.executions.get_mut(execution_id) else {
+            return Ok(());
+        };
+        execution.accept_cell(ready.cell_id.as_str())?;
+        if execution.terminal_ready.is_none() && !execution.closed {
+            execution.terminal_ready = Some(ready);
+        }
+        Ok(())
+    }
+
+    pub(super) fn take_terminal_ready(
+        &mut self,
+        execution_id: &str,
+    ) -> Option<(CellTerminalReady, Arc<dyn CodeModeSessionDelegate>)> {
+        let execution = self.executions.get_mut(execution_id)?;
+        if execution.closed
+            || execution.terminal_ready_reported
+            || execution.notifications != 0
+            || self
+                .invocations
+                .values()
+                .any(|callback| callback.execution_id == execution_id)
+        {
+            return None;
+        }
+        let ready = execution.terminal_ready.clone()?;
+        execution.terminal_ready_reported = true;
+        Some((ready, Arc::clone(&execution.delegate)))
     }
 
     pub(super) fn admit_invocation(
@@ -308,8 +354,10 @@ impl SessionState {
         Ok(())
     }
 
-    pub(super) fn finish_invocation(&mut self, invocation_id: &str) {
-        self.invocations.remove(invocation_id);
+    pub(super) fn finish_invocation(&mut self, invocation_id: &str) -> Option<String> {
+        self.invocations
+            .remove(invocation_id)
+            .map(|callback| callback.execution_id)
     }
 
     pub(super) fn close_cell(
