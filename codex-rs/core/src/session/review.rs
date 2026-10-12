@@ -21,10 +21,13 @@ pub(super) async fn spawn_review_thread(
             config.http_client_factory(),
         )
         .await;
+    let mut model_config = config.to_models_manager_config();
+    model_config.model_auto_compact_token_limit =
+        parent_turn_context.config.model_auto_compact_token_limit;
     let review_model_info = sess
         .services
         .models_manager
-        .get_model_info(&model, &config.to_models_manager_config())
+        .get_model_info(&model, &model_config)
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
@@ -96,11 +99,13 @@ pub(super) async fn spawn_review_thread(
     selected.collaboration_mode.settings.model = model.clone();
     selected.collaboration_mode.settings.reasoning_effort = reasoning_effort.clone();
     selected.service_tier = service_tier;
-    let step_settings = Arc::new(ResolvedStepSettings::new(
+    let mut step_settings = ResolvedStepSettings::new(
         Arc::new(selected),
         Arc::new(model_info.clone()),
         &review_features,
-    ));
+    );
+    step_settings.context_selection = parent_turn_context.initial_settings.context_selection.clone();
+    let step_settings = Arc::new(step_settings);
     per_turn_config.model = Some(model);
     per_turn_config.model_reasoning_effort = reasoning_effort;
     per_turn_config.service_tier = step_settings.service_tier.clone();
