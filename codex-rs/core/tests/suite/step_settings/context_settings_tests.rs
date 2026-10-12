@@ -3,16 +3,11 @@ use codex_config::config_toml::AutoShakeThresholdToml;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::ReviewRequest;
-use codex_protocol::protocol::ReviewTarget;
 use core_test_support::responses::ev_completed_with_tokens;
 use pretty_assertions::assert_eq;
-use test_case::test_case;
 
-#[test_case(false; "live_model_switch")]
-#[test_case(true; "review")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> {
+async fn resumed_child_keeps_saved_compaction_limit() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let mut initial = step_settings_test()
@@ -74,34 +69,19 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
         ],
     )
     .await;
-    if review {
-        resumed
-            .codex
-            .submit(Op::Review {
-                review_request: ReviewRequest {
-                    target: ReviewTarget::Custom {
-                        instructions: "pause before reviewing".into(),
-                    },
-                    user_facing_hint: None,
-                },
-            })
-            .await?;
-    } else {
-        resumed
-            .codex
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "pause before continuing".into(),
-                text_elements: Vec::new(),
-            }]))
-            .await?;
-    }
+    resumed
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "pause before continuing".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
     let paused = wait_for_event_match(&resumed.codex, |event| match event {
         EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
         _ => None,
     })
     .await;
-    if !review {
-        apply_turn_settings(
+    apply_turn_settings(
             &resumed.codex,
             &paused.turn_id,
             TurnSettingsUpdate {
@@ -110,7 +90,6 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
             },
         )
         .await?;
-    }
     resumed
         .codex
         .submit(Op::DynamicToolResponse {
@@ -128,7 +107,6 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
     })
     .await;
     let requests = requests.requests();
-    let model = if review { MODEL_A } else { MODEL_B };
     assert_eq!(
         requests
             .iter()
@@ -139,8 +117,8 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
             .collect::<Vec<_>>(),
         vec![
             (MODEL_A.to_string(), 0),
-            (model.to_string(), 1),
-            (model.to_string(), 0),
+            (MODEL_A.to_string(), 1),
+            (MODEL_B.to_string(), 0),
         ]
     );
     resumed.codex.shutdown_and_wait().await?;

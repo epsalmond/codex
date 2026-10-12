@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::tests::make_session_and_context;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn retained_child_inputs_survive_nested_projection_and_changed_reload_config() {
@@ -68,4 +69,51 @@ async fn retained_child_inputs_survive_nested_projection_and_changed_reload_conf
         project(&mut reload, &saved, ContextSettingsTarget::Root);
         assert_eq!(reload.model_auto_compact_token_limit, Some(9000));
     }
+}
+
+#[tokio::test]
+async fn review_retains_captured_context_selection_and_model_limit() {
+    let (session, mut parent) = make_session_and_context().await;
+    let mut reload_config = (*parent.config).clone();
+    reload_config.model_auto_compact_token_limit = Some(80_000);
+    let mut captured_config = reload_config.clone();
+    captured_config.model_auto_compact_token_limit = Some(30_000);
+    captured_config.model_auto_compact_token_limit_scope =
+        codex_protocol::config_types::AutoCompactTokenLimitScope::Total;
+    let selection = ContextSettingsState {
+        inherited: Some(configured_baseline(&captured_config)),
+    };
+    Arc::make_mut(&mut parent.initial_settings).context_selection = selection.clone();
+    parent.config = Arc::new(captured_config);
+    let session = Arc::new(session);
+    crate::session::review::spawn_review_thread(
+        Arc::clone(&session),
+        Arc::new(reload_config),
+        Arc::new(parent),
+        "saved-context-review".into(),
+        crate::review_prompts::ResolvedReviewRequest {
+            target: codex_protocol::protocol::ReviewTarget::Custom {
+                instructions: "Inspect saved context.".into(),
+            },
+            prompt: "Inspect saved context.".into(),
+            user_facing_hint: "Inspect saved context.".into(),
+        },
+    )
+    .await;
+    let captured = {
+        let active = session.active_turn.lock().await;
+        let task = active.as_ref().unwrap().task.as_ref().unwrap();
+        Arc::clone(&task.turn_context)
+    };
+    assert_eq!(
+        (
+            captured.initial_settings.context_selection.clone(),
+            captured.config.model_auto_compact_token_limit,
+            captured.model_info().auto_compact_token_limit,
+        ),
+        (selection, Some(30_000), Some(30_000))
+    );
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+        .await;
 }
