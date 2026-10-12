@@ -34,7 +34,6 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::codex_apps_mcp_server_config;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -7243,7 +7242,6 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             if reviewer_compaction {
                 config.model_auto_compact_token_limit = Some(100_000);
-                config.model_auto_compact_token_limit_scope = AutoCompactTokenLimitScope::Total;
             }
             if reviewer_constraint.is_some_and(|value| value != "large_prompt") || check_detail {
                 let reviewer = config
