@@ -242,6 +242,8 @@ async fn child_turn_start_preserves_root_attribution() -> Result<()> {
             };
             config.features.enable(Feature::Collab).unwrap();
             config.features.enable(Feature::MultiAgentV2).unwrap();
+            // Keep attribution checks independent of automatic completion wake turns.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
         })
         .build_with_auto_env(&server)
         .await?;
