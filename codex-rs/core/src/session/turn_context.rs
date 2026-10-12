@@ -823,11 +823,8 @@ impl TurnContext {
             Some(reasoning_effort),
             /*developer_instructions*/ None,
         );
-        let mut step_settings = ResolvedStepSettings::new(
-            Arc::new(selected),
-            model_info,
-            &config.features,
-        );
+        let mut step_settings =
+            ResolvedStepSettings::new(Arc::new(selected), model_info, &config.features);
         step_settings.context_selection = self.initial_settings.context_selection.clone();
         let step_settings = Arc::new(step_settings);
         config.service_tier = step_settings.service_tier.clone();

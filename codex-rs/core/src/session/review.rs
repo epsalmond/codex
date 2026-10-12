@@ -104,7 +104,10 @@ pub(super) async fn spawn_review_thread(
         Arc::new(model_info.clone()),
         &review_features,
     );
-    step_settings.context_selection = parent_turn_context.initial_settings.context_selection.clone();
+    step_settings.context_selection = parent_turn_context
+        .initial_settings
+        .context_selection
+        .clone();
     let step_settings = Arc::new(step_settings);
     per_turn_config.model = Some(model);
     per_turn_config.model_reasoning_effort = reasoning_effort;
