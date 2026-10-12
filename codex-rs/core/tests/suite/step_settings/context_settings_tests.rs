@@ -15,7 +15,7 @@ use test_case::test_case;
 async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let initial = step_settings_test()
+    let mut initial = step_settings_test()
         .with_session_source(SessionSource::SubAgent(SubAgentSource::Other(
             "context-settings-worker".into(),
         )))
@@ -28,6 +28,22 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
         })
         .build_with_auto_env(&server)
         .await?;
+    let started = initial
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(ThreadHistoryMode::Legacy),
+            dynamic_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                name: "pause_context_test".into(),
+                description: "Wait for a context settings update.".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+            })],
+            ..StartThreadOptions::new(initial.config.clone())
+        })
+        .await?;
+    initial.codex.shutdown_and_wait().await?;
+    initial.codex = started.thread;
+    initial.session_configured = started.session_configured;
     initial.codex.checkpoint_thread_settings().await?;
     let resumed = step_settings_test()
         .with_config(|config| {
@@ -44,7 +60,7 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
         vec![
             sse(vec![
                 ev_response_created("pause-response"),
-                pause_call("pause-call"),
+                ev_function_call("pause-call", "pause_context_test", "{}"),
                 ev_completed_with_tokens("pause-response", /*total_tokens*/ 40_000),
             ]),
             sse(vec![
@@ -58,7 +74,7 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
         ],
     )
     .await;
-    let paused = if review {
+    if review {
         resumed
             .codex
             .submit(Op::Review {
@@ -70,13 +86,21 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
                 },
             })
             .await?;
-        wait_for_event_match(&resumed.codex, |event| match event {
-            EventMsg::RequestUserInput(request) => Some(request.clone()),
-            _ => None,
-        })
-        .await
     } else {
-        let paused = start_paused_turn(&resumed.codex).await?;
+        resumed
+            .codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "pause before continuing".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+    }
+    let paused = wait_for_event_match(&resumed.codex, |event| match event {
+        EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+    if !review {
         apply_turn_settings(
             &resumed.codex,
             &paused.turn_id,
@@ -86,9 +110,19 @@ async fn resumed_child_keeps_saved_compaction_limit(review: bool) -> Result<()> 
             },
         )
         .await?;
-        paused
-    };
-    answer_paused_turn(&resumed.codex, &paused.turn_id).await?;
+    }
+    resumed
+        .codex
+        .submit(Op::DynamicToolResponse {
+            id: paused.call_id,
+            response: DynamicToolResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "continue".into(),
+                }],
+                success: true,
+            },
+        })
+        .await?;
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
