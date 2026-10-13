@@ -42,6 +42,15 @@ pub(crate) async fn context_window_token_status_for_model(
     model_info: &ModelInfo,
 ) -> ContextWindowTokenStatus {
     let mut config = config.clone();
+    if let Some(selection) = &config.context_settings {
+        let (_, view) = super::context_settings::resolve(
+            &config,
+            selection,
+            model_info,
+            super::context_settings::ContextSettingsTarget::from(&turn_context.session_source),
+        );
+        super::context_settings::project_compaction(&mut config, &view);
+    }
     config.token_budget = super::token_budget::resolve_token_budget(
         turn_context.configured_token_budget.as_ref(),
         turn_context.use_model_token_budget_defaults,

@@ -400,8 +400,8 @@ impl Session {
                 configuration.trusted_guardian_reviewer,
             )
         };
-        // Model changes retain the context inputs captured when this turn began.
-        overrides.auto_compact_token_limit = turn_context.config.model_auto_compact_token_limit;
+        // Resolve the captured context selection against destination catalog metadata.
+        overrides.auto_compact_token_limit = None;
         let constraints = StepSettingsConstraints {
             requirements: &requirements,
             guardian_approval_enabled: self.features.enabled(Feature::GuardianApproval),
@@ -411,7 +411,7 @@ impl Session {
                 environments,
             ),
         };
-        current
+        let mut next = current
             .apply_update(
                 update,
                 &constraints,
@@ -420,7 +420,23 @@ impl Session {
                 &self.features,
             )
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if next.selected_collaboration_mode().model()
+            != current.selected_collaboration_mode().model()
+        {
+            let (model, view) = super::context_settings::resolve(
+                current
+                    .context_baseline
+                    .as_deref()
+                    .unwrap_or(&turn_context.config),
+                &current.context_selection,
+                &next.model_info,
+                super::context_settings::ContextSettingsTarget::from(&turn_context.session_source),
+            );
+            next.model_info = Arc::new(model);
+            next.context_settings = Some(Arc::new(view));
+        }
+        Ok(next)
     }
 
     /// Rechecks ordinary managed authorization after asynchronous resolution.

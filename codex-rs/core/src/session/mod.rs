@@ -3994,6 +3994,8 @@ impl Session {
                     Arc::clone(&settings.model_info),
                     &self.features,
                 );
+                inherited_settings.context_settings = settings.context_settings.clone();
+                inherited_settings.context_baseline = settings.context_baseline.clone();
                 inherited_settings.context_selection = settings.context_selection.clone();
                 inherited_settings.mcp_approvals_reviewer_override =
                     settings.mcp_approvals_reviewer_override;

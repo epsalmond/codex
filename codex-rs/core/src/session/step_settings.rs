@@ -1,5 +1,6 @@
 //! Configured inputs retained independently of future thread settings.
 
+use crate::config::Config;
 use crate::config::Constrained;
 use crate::config::ConstraintError;
 use crate::config::ConstraintResult;
@@ -40,6 +41,9 @@ pub(crate) struct StepSettings {
 /// snapshot does not change steps or actions that have already captured it.
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedStepSettings {
+    /// Original inputs for destination-model resolution, before per-turn projection.
+    pub(crate) context_baseline: Option<Arc<Config>>,
+    pub(crate) context_settings: Option<Arc<codex_protocol::context_settings::ContextSettingsView>>,
     pub(crate) context_selection: codex_protocol::context_settings::ContextSettingsState,
     /// Inputs for later sparse patches. Unset defaults and unsupported requested
     /// tiers must not be reconstructed from the effective values below.
@@ -67,6 +71,8 @@ impl ResolvedStepSettings {
         let service_tier =
             super::get_service_tier(selected.service_tier.clone(), features, &model_info);
         Self {
+            context_baseline: None,
+            context_settings: None,
             context_selection: Default::default(),
             selected,
             model_info,
@@ -139,6 +145,12 @@ impl ResolvedStepSettings {
                 Arc::new(selected.resolve_model_info(models_manager, overrides).await)
             };
         let mut next = Self::new(Arc::new(selected), model_info, features);
+        next.context_settings = self
+            .context_settings
+            .as_ref()
+            .filter(|view| view.model == next.model_info.slug)
+            .cloned();
+        next.context_baseline = self.context_baseline.clone();
         next.context_selection = self.context_selection.clone();
         next.mcp_approvals_reviewer_override = update
             .approvals_reviewer

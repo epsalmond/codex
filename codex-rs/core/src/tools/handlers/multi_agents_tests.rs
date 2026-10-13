@@ -4859,6 +4859,7 @@ async fn build_agent_spawn_config_inherits_auto_shake() {
     let (_session, mut turn) = make_session_and_context().await;
     let parent = Arc::make_mut(&mut turn.config);
     parent.auto_shake = crate::config::AutoShakeConfig {
+        thread_overrides: Default::default(),
         threshold: Some(codex_config::config_toml::AutoShakeThresholdToml::Percent(
             42,
         )),
