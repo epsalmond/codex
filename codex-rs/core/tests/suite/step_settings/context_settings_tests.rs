@@ -32,7 +32,12 @@ async fn resumed_child_keeps_saved_compaction_limit(
                 },
                 ..Default::default()
             });
-            for model in &mut config.model_catalog.as_mut().unwrap().models {
+            for model in &mut config
+                .model_catalog
+                .as_mut()
+                .expect("step_settings_test configures a model catalog")
+                .models
+            {
                 model.auto_compact_token_limit = Some(if model.slug == MODEL_B {
                     30_000
                 } else {
@@ -69,7 +74,12 @@ async fn resumed_child_keeps_saved_compaction_limit(
         .with_config(move |config| {
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(80_000);
-            for model in &mut config.model_catalog.as_mut().unwrap().models {
+            for model in &mut config
+                .model_catalog
+                .as_mut()
+                .expect("step_settings_test configures a model catalog")
+                .models
+            {
                 model.auto_compact_token_limit = Some(if model.slug == MODEL_B {
                     30_000
                 } else {
@@ -152,7 +162,10 @@ async fn resumed_child_keeps_saved_compaction_limit(
         requests
             .iter()
             .map(|request| (
-                request.body_json()["model"].as_str().unwrap().to_string(),
+                request.body_json()["model"]
+                    .as_str()
+                    .expect("each responses request identifies its model with a string")
+                    .to_string(),
                 request.inputs_of_type("compaction_trigger").len(),
             ))
             .collect::<Vec<_>>(),
