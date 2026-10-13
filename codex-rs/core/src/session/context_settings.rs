@@ -25,7 +25,10 @@ pub(crate) enum ContextSettingsTarget {
 
 impl From<&SessionSource> for ContextSettingsTarget {
     fn from(source: &SessionSource) -> Self {
-        if matches!(source, SessionSource::SubAgent(_)) {
+        // Built-in reviewers use their own model limits, without worker reduction caps.
+        if matches!(source, SessionSource::SubAgent(_))
+            && !crate::guardian::is_basic_session_source(source)
+        {
             Self::Child
         } else {
             Self::Root

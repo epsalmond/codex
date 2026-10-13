@@ -23,11 +23,140 @@ use codex_rollout::read_session_meta_line;
 use core_test_support::load_default_config_for_test;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use serde_json::json;
+use std::collections::HashMap;
 use tempfile::TempDir;
 
 enum SourceState {
     Loaded,
     Unloaded,
+}
+
+#[test_case::test_case(true, false, None, "multi_agent_v1"; "legacy")]
+#[test_case::test_case(true, true, None, "collaboration"; "v2_feature")]
+#[test_case::test_case(false, false, Some(MultiAgentVersion::V2), "collaboration"; "v2_catalog")]
+#[tokio::test]
+async fn side_fork_disables_inherited_and_model_selected_multi_agent_tools(
+    legacy_enabled: bool,
+    v2_enabled: bool,
+    model_version: Option<MultiAgentVersion>,
+    parent_namespace: &str,
+) -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    let features = [
+        (Feature::Collab, legacy_enabled),
+        (Feature::MultiAgentV2, v2_enabled),
+    ]
+    .into_iter()
+    .collect();
+    MockResponsesConfig::new(&server.uri())
+        .with_features(&features)
+        .write(codex_home.path())?;
+    let config = load_default_config_for_test(&codex_home).await;
+    let mut model = codex_core::test_support::construct_model_info_offline("mock-model", &config);
+    model.multi_agent_version = model_version;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            history_mode: Some(ThreadHistoryMode::Legacy),
+            ..Default::default()
+        })
+        .await?
+        .thread;
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: parent.id.clone(),
+        input: vec![UserInput::Text {
+            text: "Parent before fork".to_string(),
+            text_elements: Vec::new(),
+        }],
+        ..Default::default()
+    })
+    .await?;
+    let overrides = HashMap::from([
+        ("features.multi_agent".to_string(), json!(false)),
+        ("features.multi_agent_v2".to_string(), json!(false)),
+        ("agents.enabled".to_string(), json!(false)),
+    ]);
+    let side: ThreadForkResponse = mcp
+        .request(|request_id| ClientRequest::ThreadFork {
+            request_id,
+            params: ThreadForkParams {
+                thread_id: parent.id.clone(),
+                ephemeral: true,
+                config: Some(overrides),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let regular: ThreadForkResponse = mcp
+        .request(|request_id| ClientRequest::ThreadFork {
+            request_id,
+            params: ThreadForkParams {
+                thread_id: parent.id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    for thread_id in [side.thread.id, parent.id, regular.thread.id] {
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id,
+            input: vec![UserInput::Text {
+                text: "Tools after fork".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    }
+    let requests = server.received_requests().await.expect("response requests");
+    let mut multi_agent_tools = Vec::new();
+    for request in requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+    {
+        let body = request.body_json::<Value>()?;
+        multi_agent_tools.push(
+            body["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .filter(|name| {
+                    matches!(
+                        *name,
+                        "collaboration"
+                            | "multi_agent_v1"
+                            | "spawn_agent"
+                            | "send_input"
+                            | "send_message"
+                            | "followup_task"
+                            | "interrupt_agent"
+                            | "list_agents"
+                            | "wait_agent"
+                            | "close_agent"
+                            | "resume_agent"
+                    )
+                })
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(
+        multi_agent_tools,
+        vec![
+            vec![parent_namespace],
+            Vec::<&str>::new(),
+            vec![parent_namespace],
+            vec![parent_namespace]
+        ]
+    );
+    mcp.shutdown_gracefully().await?;
+    Ok(())
 }
 
 #[test_case::test_case(ThreadHistoryMode::Legacy, SourceState::Loaded; "legacy_loaded")]

@@ -285,4 +285,27 @@ grep -Fxq "stable_lineage=rust-v2.0.0" "$unstamped_output"
 unstamped_tag=$(sed -n 's/^release_tag=//p' "$unstamped_output")
 [[ "$unstamped_tag" =~ ^local-features-v2\.0\.0-main-r[0-9]{14}\.[0-9a-f]{28}$ ]]
 
+# shake-local-install.sh fetches upstream tags outside refs/tags and names
+# that namespace; the default still reads refs/tags/fork-release-upstream.
+build_script="$script_dir/fork-release-build.sh"
+git -C "$fixture" update-ref -d refs/tags/fork-release-upstream/rust-v2.0.0
+[[ "$(bash "$build_script" stable-lineage --repo-root "$fixture" --sha "$unstamped_sha")" == rust-v1.2.3 ]]
+git -C "$fixture" fetch --no-tags --quiet "$upstream_remote" \
+  "+refs/tags/rust-v*:refs/fork-release-upstream/tags/rust-v*"
+[[ "$(bash "$build_script" stable-lineage --repo-root "$fixture" --sha "$unstamped_sha")" == rust-v1.2.3 ]]
+[[ "$(bash "$build_script" stable-lineage --repo-root "$fixture" --sha "$unstamped_sha" \
+  --upstream-tag-namespace refs/fork-release-upstream/tags/)" == rust-v2.0.0 ]]
+[[ "$(bash "$build_script" stable-lineage --repo-root "$fixture" --sha "$fork_tip" \
+  --upstream-tag-namespace refs/fork-release-upstream/tags)" == rust-v1.2.3 ]]
+
+# The build job runs fork-release-build.sh from the workflow's own commit, so
+# re-running a release_sha that predates the helper still works.
+build_job=$(sed -n '/^  build:$/,/^  publish:$/p' "$workflow_file")
+grep -Fq 'ref: ${{ github.sha }}' <<< "$build_job"
+grep -Fq 'path: fork-release-tools' <<< "$build_job"
+if grep -F 'fork-release-build.sh"' <<< "$build_job" | grep -Fvq '$GITHUB_WORKSPACE/fork-release-tools/'; then
+  echo "build job must call fork-release-build.sh from the workflow-commit checkout" >&2
+  exit 1
+fi
+
 echo "fork-release metadata tests passed"

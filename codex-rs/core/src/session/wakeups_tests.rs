@@ -61,6 +61,7 @@ async fn child_report_wake_follows_root_version_and_mode() {
         let state = session.state.get_mut();
         let mut config = (*state.session_configuration.original_config_do_not_use).clone();
         config.multi_agent_v2.agent_polling = agent_polling;
+        config.multi_agent_v2.exec_root_wakes_on_report = false;
         state.session_configuration.original_config_do_not_use = Arc::new(config);
         if version == Some(MultiAgentVersion::V2) && agent_polling == AgentPolling::Disabled {
             session.services.local_agent_runtime.enable_wake_mode();
@@ -160,6 +161,7 @@ async fn stale_failure_finalizer_does_not_pause_newer_generation() {
         completed_at: None,
         duration_ms: None,
         time_to_first_token_ms: None,
+        root_turn_id: None,
     });
     session.classify_wake_turn_end(&context, &event).await;
     assert!(session.input_queue.wakeups_paused());

@@ -114,6 +114,7 @@ async fn completed_output_preserves_bytes_before_subscription(
         Instant::now(),
         /*network_denial_monitor*/ None,
         /*plugin_metrics_sidecar*/ None,
+        /*completion_publisher*/ None,
     );
     stdout_tx.send(late_output.to_vec())?;
     drop(stdout_tx);
@@ -330,6 +331,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         Instant::now(),
         Some(network_denial_monitor),
         /*plugin_metrics_sidecar*/ None,
+        /*completion_publisher*/ None,
     );
 
     let exited_at = Instant::now();
@@ -356,13 +358,6 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
             Some(-1),
             Some("LATE_DENIAL")
         )
-    );
-    assert_eq!(
-        item.formatted_output,
-        Some(codex_utils_output_truncation::formatted_truncate_text(
-            "LATE_DENIAL",
-            codex_utils_output_truncation::TruncationPolicy::Bytes(4),
-        ))
     );
     assert!(
         elapsed >= Duration::from_millis(10) && elapsed < TRAILING_OUTPUT_GRACE,

@@ -1,14 +1,13 @@
 ---
 source: core/tests/suite/skills_extension.rs
-assertion_line: 3190
-expression: "context_snapshot::format_request_history_snapshot(\"Cloud skills rebalance once to retain every executor skill. Post-turn compaction and resume restore the same cloud allocation before the executor reconnects; both catalogs are fully reinjected once into the new history.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+assertion_line: 3346
+expression: "context_snapshot::format_request_history_snapshot(\"Cloud skills rebalance once to retain every executor skill. Post-turn compaction installs both catalogs and their allocation before resume; the saved catalogs remain visible while the executor reconnects.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
-Scenario: Cloud skills rebalance once to retain every executor skill. Post-turn compaction and resume restore the same cloud allocation before the executor reconnects; both catalogs are fully reinjected once into the new history.
+Scenario: Cloud skills rebalance once to retain every executor skill. Post-turn compaction installs both catalogs and their allocation before resume; the saved catalogs remain visible while the executor reconnects.
 
 ## Window 1
 Settings:
   include: ["reasoning.encrypted_content"]
-  instructions: <MODEL_INSTRUCTIONS>
   model: "gpt-5.5"
   parallel_tool_calls: true
   prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
@@ -17,16 +16,27 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (5; hash=fb9143ee40054f2b):
+  tools (9; hash=557d524ea05aac93):
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs ar...; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=3f96d419838f2035
+    - function/write_stdin: Writes characters to an existing unified exec session owned by this agent and returns recent outp...; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=080354ff371c8f38
     - function/wait_for_environment: Wait for the selected environment.; args=[environment_id]; hash=aac8552da86b3b20
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+    - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+    - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+      - function/followup_task
+      - function/interrupt_agent
+      - function/list_agents
+      - function/send_message
+      - function/spawn_agent
     - namespace/skills: Tools in the skills namespace.; hash=998a720eb0f017bc
       - function/list
       - function/read
-    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
     - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
-00:message/developer[3]:
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/developer[3]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -37,47 +47,44 @@ Settings:
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
     [03] <SKILLS_INSTRUCTIONS>
-01:message/user:
+02:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+03:message/developer:
+    <MULTI_AGENT_MODE>
+04:message/user:
     <ENVIRONMENT_CONTEXT>
-02:message/user:
-    Inspect the available skills.
-
-## Window 2 (after request 1)
-Settings: relative to window 1
-  tools (9; hash=1df9146cc32e8188):
-    + function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
-    + function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
-    + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
-    + function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
--- request 2 (turn) --
-00:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <environments_instructions>
-        ## Execution environments
-        Execution environments are separate machines or workspaces with their own files, shell, and installed ca...text>` lists the environments selected for this task. [hash=bc910d398b9b4d83]
-
-        An environment marked `starting` is not yet usable. Its files, commands, AGENTS.md instructions, skills,...CP tools may become available when startup completes. [hash=42a360e5075e8edb]
-
-        Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
-        </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
-01:message/user:
-    <ENVIRONMENT_CONTEXT>
-02:message/user:
-    Inspect the available skills.
-03:function_call/wait_for_environment:{"environment_id":"skills-executor"}
-04:function_call_output:{"environment_id":"skills-executor","status":"ready"}
 05:message/user:
+    Inspect the available skills.
+-- request 2 (turn) --
+06:function_call/wait_for_environment:{"environment_id":"skills-executor"}
+07:function_call_output:{"environment_id":"skills-executor","status":"ready"}
+08:message/user:
     <ENVIRONMENT_CONTEXT>
-06:message/developer[2]:
+09:message/developer[2]:
     [01] <SKILLS_INSTRUCTIONS>
     [02] <SKILLS_INSTRUCTIONS>
 -- request 3 (turn) --
-07:message/user:
+10:message/user:
     Inspect the available skills again.
 
-## Window 3 (after request 3)
-Settings: relative to window 2
+## Window 2 (after request 3)
+Settings: relative to window 1
   parallel_tool_calls: false
   tools (0; hash=09612b07b5ecb5a5):
     - removed function/exec_command
@@ -86,11 +93,13 @@ Settings: relative to window 2
     - removed function/request_user_input
     - removed custom/apply_patch
     - removed function/view_image
+    - removed namespace/collaboration
     - removed namespace/skills
-    - removed tool_search
     - removed web_search
 -- request 4 (compaction) --
-00:message/developer[3]:
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/developer[3]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <environments_instructions>
         ## Execution environments
@@ -101,76 +110,98 @@ Settings: relative to window 2
         Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
         </environments_instructions>
     [03] <SKILLS_INSTRUCTIONS>
-01:message/user:
-    <ENVIRONMENT_CONTEXT>
-02:message/user:
-    Inspect the available skills.
-03:function_call/wait_for_environment:{"environment_id":"skills-executor"}
-04:function_call_output:{"environment_id":"skills-executor","status":"ready"}
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
-06:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <SKILLS_INSTRUCTIONS>
-07:message/user:
-    Inspect the available skills again.
-08:message/user:
-    <SUMMARIZATION_PROMPT>
+02:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
-## Window 4 (after request 4: input diverged at item 00)
-Settings: same as window 1
--- request 5 (turn) --
-00:message/user:
-    Inspect the available skills.
-01:message/user:
-    Inspect the available skills again.
-02:message/user:
-    <COMPACTION_SUMMARY>
-    The available skills were inspected.
-03:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <environments_instructions>
-        ## Execution environments
-        Execution environments are separate machines or workspaces with their own files, shell, and installed ca...text>` lists the environments selected for this task. [hash=bc910d398b9b4d83]
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
 
-        An environment marked `starting` is not yet usable. Its files, commands, AGENTS.md instructions, skills,...CP tools may become available when startup completes. [hash=42a360e5075e8edb]
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
 
-        Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
-        </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+03:message/developer:
+    <MULTI_AGENT_MODE>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
-    Inspect the skills after resuming.
-
-## Window 5 (after request 5)
-Settings: same as window 2
--- request 6 (turn) --
-00:message/user:
     Inspect the available skills.
-01:message/user:
-    Inspect the available skills again.
-02:message/user:
-    <COMPACTION_SUMMARY>
-    The available skills were inspected.
-03:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <environments_instructions>
-        ## Execution environments
-        Execution environments are separate machines or workspaces with their own files, shell, and installed ca...text>` lists the environments selected for this task. [hash=bc910d398b9b4d83]
-
-        An environment marked `starting` is not yet usable. Its files, commands, AGENTS.md instructions, skills,...CP tools may become available when startup completes. [hash=42a360e5075e8edb]
-
-        Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
-        </environments_instructions>
-    [03] <SKILLS_INSTRUCTIONS>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
-05:message/user:
-    Inspect the skills after resuming.
 06:function_call/wait_for_environment:{"environment_id":"skills-executor"}
 07:function_call_output:{"environment_id":"skills-executor","status":"ready"}
 08:message/user:
     <ENVIRONMENT_CONTEXT>
+09:message/developer[2]:
+    [01] <SKILLS_INSTRUCTIONS>
+    [02] <SKILLS_INSTRUCTIONS>
+10:message/user:
+    Inspect the available skills again.
+11:message/user:
+    <SUMMARIZATION_PROMPT>
+
+## Window 3 (after request 4: input diverged at item 01)
+Settings: same as window 1
+-- request 5 (turn) --
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/user:
+    Inspect the available skills.
+02:message/developer[4]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <environments_instructions>
+        ## Execution environments
+        Execution environments are separate machines or workspaces with their own files, shell, and installed ca...text>` lists the environments selected for this task. [hash=bc910d398b9b4d83]
+
+        An environment marked `starting` is not yet usable. Its files, commands, AGENTS.md instructions, skills,...CP tools may become available when startup completes. [hash=42a360e5075e8edb]
+
+        Wait only when the current task needs that environment. Continue using tools that are already available for unrelated work.
+        </environments_instructions>
+    [03] <SKILLS_INSTRUCTIONS>
+    [04] <SKILLS_INSTRUCTIONS>
+03:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+04:message/developer:
+    <MULTI_AGENT_MODE>
+05:message/user:
+    <ENVIRONMENT_CONTEXT>
+06:message/user:
+    Inspect the available skills again.
+07:message/user:
+    <COMPACTION_SUMMARY>
+    The available skills were inspected.
+08:message/user:
+    <ENVIRONMENT_CONTEXT>
 09:message/developer:
+    <SKILLS_INSTRUCTIONS>
+10:message/user:
+    Inspect the skills after resuming.
+-- request 6 (turn) --
+11:function_call/wait_for_environment:{"environment_id":"skills-executor"}
+12:function_call_output:{"environment_id":"skills-executor","status":"ready"}
+13:message/user:
+    <ENVIRONMENT_CONTEXT>
+14:message/developer:
     <SKILLS_INSTRUCTIONS>

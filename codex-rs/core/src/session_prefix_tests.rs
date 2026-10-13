@@ -4,6 +4,8 @@ use codex_utils_output_truncation::approx_token_count;
 
 use super::COMPLETION_MESSAGE_MAX_TOKENS;
 use super::ERROR_NEXT_ACTION;
+use super::GUARDIAN_NEXT_ACTION;
+use super::format_guardian_interruption_message;
 use super::format_inter_agent_completion_message;
 
 #[test]
@@ -35,4 +37,16 @@ fn completed_message_bounds_long_unicode_payload_with_its_envelope() {
     assert!(message.contains("worker result marker"));
     assert!(message.contains("final result marker"));
     assert!(message.contains("tokens truncated"));
+}
+
+#[test]
+fn guardian_interruption_message_stays_below_manual_review_threshold() {
+    let message = format_guardian_interruption_message(
+        AgentPath::root(),
+        AgentPath::try_from("/root/worker").expect("valid agent path"),
+        &"Action is not authorized. ".repeat(1_000),
+    );
+
+    assert!(approx_token_count(&message) < COMPLETION_MESSAGE_MAX_TOKENS);
+    assert!(message.contains(GUARDIAN_NEXT_ACTION));
 }

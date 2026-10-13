@@ -24,6 +24,8 @@ mod codex_error_info;
 pub mod config_types;
 pub mod context_settings;
 pub mod context_usage;
+mod guardian_transcript;
+pub use guardian_transcript::TranscriptFormat;
 pub mod dynamic_tools;
 mod environment;
 pub mod error;

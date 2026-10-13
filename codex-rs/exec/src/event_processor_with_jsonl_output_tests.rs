@@ -38,6 +38,7 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Failed,
@@ -206,6 +207,7 @@ fn root_turn_completed(
             started_at: None,
             completed_at: Some(0),
             duration_ms: None,
+            root_turn_id: None,
         },
     })
 }

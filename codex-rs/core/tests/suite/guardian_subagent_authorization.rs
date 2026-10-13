@@ -371,6 +371,8 @@ async fn code_mode_messaging_fixture(
             ] {
                 config.features.enable(feature).expect("enable feature");
             }
+            // The fork wakes roots on child reports by default; this fixture covers polling.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config
@@ -734,6 +736,9 @@ async fn run_guardian_subagent_review(
                 .expect("write messaging rewrite hook");
         })
         .with_config(move |config| {
+            // This fixture injects saved evidence between explicit user turns. Child reports
+            // must not start another turn while that history is being assembled.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             if block_post_hook {
                 config.model_provider.name = "Local compaction test provider".to_owned();
                 config
@@ -1215,6 +1220,8 @@ async fn run_guardian_subagent_review(
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    ThreadIdle::wait(&test.codex).await;
+    ThreadIdle::wait(worker_thread.as_ref()).await;
     let answer_message = match root_answer {
         RootAnswer::Complete => Some(GuardianRootMessage::UserInput(format!(
             "assistant: {ROOT_QUESTION}\nuser: {ROOT_ANSWER}\n"
@@ -1686,6 +1693,7 @@ async fn run_guardian_subagent_review(
                 .resume_thread_with_history(
                     test.config.clone(),
                     InitialHistory::Resumed(ResumedHistory {
+                        history_revision: None,
                         conversation_id: root_thread_id,
                         history: Arc::new(saved.items),
                         rollout_path: None,
