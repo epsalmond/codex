@@ -21,6 +21,7 @@ use crate::tools::context::AbortedToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolCallState;
 use crate::tools::context::ToolPayload;
+use crate::tools::lifecycle::extension_tool_call_source;
 use crate::tools::lifecycle::notify_tool_aborted;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
@@ -146,7 +147,7 @@ impl ToolCallRuntime {
         let lock = Arc::clone(&self.parallel_execution);
         let invocation_cancellation_token = cancellation_token.clone();
         let started = Instant::now();
-        let mut tool_call_timing_guard = ToolCallTimingGuard::capture(
+        let tool_call_timing_guard = ToolCallTimingGuard::capture(
             started,
             &session.thread_id,
             &turn.sub_id,
@@ -154,13 +155,20 @@ impl ToolCallRuntime {
             &source,
             Arc::clone(&session.services.extensions),
         );
-        if let Some(guard) = tool_call_timing_guard.as_mut() {
+        // Nested intent is observed before payload parsing in submit_nested_tool.
+        if matches!(
+            source,
+            ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage
+        ) {
+            let thread_id = session.thread_id.to_string();
             for observer in session.services.extensions.tool_lifecycle_contributors() {
                 observer.on_tool_dispatch(codex_extension_api::ToolDispatchInput {
-                    thread_id: &guard.conversation_id,
-                    turn_id: &guard.turn_id,
-                    call_id: &guard.call_id,
-                    tool_name: &guard.tool_name,
+                    turn_store: turn.extension_data.as_ref(),
+                    thread_id: &thread_id,
+                    turn_id: &turn.sub_id,
+                    call_id: &call.call_id,
+                    tool_name: &call.tool_name,
+                    source: extension_tool_call_source(source.clone()),
                 });
             }
         }
