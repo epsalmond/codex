@@ -4816,6 +4816,7 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_reasoning_effort = Some(ReasoningEffort::High);
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     expected.context_settings = Some(codex_protocol::context_settings::ContextSettingsState {
+        overrides: Default::default(),
         inherited: Some(codex_protocol::context_settings::InheritedContextBaseline {
             compaction_token_limit: expected.model_auto_compact_token_limit,
             shake_threshold: None,
@@ -4830,6 +4831,7 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
                 expected.subagent_context_reduction.threshold_tokens,
             )
             .unwrap(),
+            overrides: Default::default(),
         }),
     });
     expected.context_settings_from_spawn = true;
@@ -4936,6 +4938,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_reasoning_effort = turn.reasoning_effort().cloned();
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
     expected.context_settings = Some(codex_protocol::context_settings::ContextSettingsState {
+        overrides: Default::default(),
         inherited: Some(codex_protocol::context_settings::InheritedContextBaseline {
             compaction_token_limit: expected.model_auto_compact_token_limit,
             shake_threshold: None,
@@ -4950,6 +4953,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
                 expected.subagent_context_reduction.threshold_tokens,
             )
             .unwrap(),
+            overrides: Default::default(),
         }),
     });
     expected.context_settings_from_spawn = true;
