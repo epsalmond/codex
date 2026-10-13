@@ -903,6 +903,7 @@ impl Session {
                                     .clone()
                                     .unwrap_or_else(|| {
                                         codex_protocol::context_settings::ContextSettingsState {
+                                            overrides: Default::default(),
                                             inherited: config
                                                 .context_settings
                                                 .as_ref()

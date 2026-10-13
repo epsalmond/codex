@@ -3,6 +3,30 @@ use crate::session::tests::make_session_and_context;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
+#[test]
+fn sparse_numeric_validation_rejects_out_of_range_fields() {
+    let patches: [fn(&mut ContextSettingsOverrides); 7] = [
+        |value| value.shake_threshold = Some(ShakeThreshold::Percent { percent: 101 }),
+        |value| value.shake_threshold = Some(ShakeThreshold::Tokens { tokens: 0 }),
+        |value| value.shake_min_elidable_percent = Some(-1),
+        |value| value.shake_min_savings_tokens = Some(-1),
+        |value| value.compaction_threshold = Some(CompactionThreshold::Tokens { tokens: 0 }),
+        |value| value.child_reduction_threshold_tokens = Some(0),
+        |value| value.post_turn_compaction_percent = Some(101),
+    ];
+    for patch in patches {
+        let mut overrides = ContextSettingsOverrides::default();
+        patch(&mut overrides);
+        assert!(
+            validate_state(&ContextSettingsState {
+                overrides,
+                ..Default::default()
+            })
+            .is_err()
+        );
+    }
+}
+
 #[tokio::test]
 async fn retained_child_inputs_survive_nested_projection_and_changed_reload_config() {
     let (_, turn) = make_session_and_context().await;
@@ -81,6 +105,7 @@ async fn review_retains_captured_context_selection_and_model_limit() {
     captured_config.model_auto_compact_token_limit_scope =
         codex_protocol::config_types::AutoCompactTokenLimitScope::Total;
     let selection = ContextSettingsState {
+        overrides: Default::default(),
         inherited: Some(configured_baseline(&captured_config)),
     };
     Arc::make_mut(&mut parent.initial_settings).context_selection = selection.clone();

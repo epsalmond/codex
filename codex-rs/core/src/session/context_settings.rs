@@ -1,7 +1,12 @@
 //! Retained pre-clamp context inputs for child startup and reload.
 
 use crate::config::Config;
+use crate::config::ConstraintError;
+use crate::config::ConstraintResult;
+use codex_config::RequirementSource;
 use codex_config::config_toml::AutoShakeThresholdToml;
+use codex_protocol::context_settings::CompactionThreshold;
+use codex_protocol::context_settings::ContextSettingsOverrides;
 use codex_protocol::context_settings::ContextSettingsState;
 use codex_protocol::context_settings::InheritedContextBaseline;
 use codex_protocol::context_settings::ShakeThreshold;
@@ -24,6 +29,73 @@ impl From<&SessionSource> for ContextSettingsTarget {
             Self::Root
         }
     }
+}
+
+pub(super) fn validate_state(state: &ContextSettingsState) -> ConstraintResult<()> {
+    validate(&state.overrides)?;
+    if let Some(basis) = &state.inherited {
+        validate(&basis.overrides)?;
+        validate(&ContextSettingsOverrides {
+            child_reduction_threshold_tokens: Some(basis.child_reduction_threshold_tokens),
+            post_turn_compaction_percent: Some(basis.post_turn_compaction_percent),
+            ..Default::default()
+        })?;
+    }
+    Ok(())
+}
+
+fn validate(value: &ContextSettingsOverrides) -> ConstraintResult<()> {
+    let mut checks = vec![
+        (
+            "shake_min_elidable_percent",
+            value.shake_min_elidable_percent,
+            0,
+            100,
+        ),
+        (
+            "shake_min_savings_tokens",
+            value.shake_min_savings_tokens,
+            0,
+            i64::MAX,
+        ),
+        (
+            "post_turn_compaction_percent",
+            value.post_turn_compaction_percent.map(i64::from),
+            0,
+            100,
+        ),
+        (
+            "child_reduction_threshold_tokens",
+            value.child_reduction_threshold_tokens,
+            1,
+            i64::MAX,
+        ),
+    ];
+    match value.shake_threshold {
+        Some(ShakeThreshold::Percent { percent }) => {
+            checks.push(("shake_threshold.percent", Some(percent), 1, 100))
+        }
+        Some(ShakeThreshold::Tokens { tokens }) => {
+            checks.push(("shake_threshold.tokens", Some(tokens), 1, i64::MAX))
+        }
+        Some(ShakeThreshold::Off) | None => {}
+    }
+    if let Some(CompactionThreshold::Tokens { tokens }) = value.compaction_threshold {
+        checks.push(("compaction_threshold.tokens", Some(tokens), 1, i64::MAX));
+    }
+    for (field_name, candidate, minimum, maximum) in checks {
+        if let Some(candidate) = candidate
+            && !(minimum..=maximum).contains(&candidate)
+        {
+            return Err(ConstraintError::InvalidValue {
+                field_name,
+                candidate: candidate.to_string(),
+                allowed: format!("{minimum}..={maximum}"),
+                requirement_source: RequirementSource::Unknown,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Project choices onto the existing config consumers, before resolving model metadata.
@@ -92,6 +164,7 @@ pub(super) fn configured_baseline(config: &Config) -> InheritedContextBaseline {
             config.subagent_context_reduction.threshold_tokens,
         )
         .unwrap_or(i64::MAX),
+        overrides: Default::default(),
     }
 }
 
@@ -102,6 +175,7 @@ pub(crate) fn inherit(config: &mut Config, state: &ContextSettingsState) {
         .clone()
         .unwrap_or_else(|| configured_baseline(config));
     let child = ContextSettingsState {
+        overrides: ContextSettingsOverrides::default(),
         inherited: Some(basis),
     };
     project(config, &child, ContextSettingsTarget::Child);
