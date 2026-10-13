@@ -13,5 +13,8 @@ hide_agent_reasoning = false
 chatgpt_base_url = "https://chatgpt.com/backend-api/"
 project_root_markers = [".git"]
 
+[features]
+async_process_completion = true
+
 [history]
 persistence = "save-all"
