@@ -65,6 +65,11 @@ pub(crate) fn thread_extensions(
         turn_start_admission,
     } = dependencies;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
+    crate::polling_guard::install(
+        &mut builder,
+        Arc::clone(&event_sink),
+        thread_manager.clone(),
+    );
     if let Some(admission) = turn_start_admission {
         builder.turn_start_admission(admission);
     }

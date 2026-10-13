@@ -101,6 +101,8 @@ mod plugin_reconcile;
 mod plugin_search;
 mod plugin_share;
 mod plugin_uninstall;
+#[path = "polling_guard_tests.rs"]
+mod polling_guard;
 mod process_exec;
 mod projects;
 mod rate_limit_reset_credits;
