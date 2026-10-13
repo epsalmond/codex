@@ -264,33 +264,20 @@ pub(crate) fn inherit(config: &mut Config, state: &ContextSettingsState) {
 }
 
 fn overlay_values(values: &mut ContextSettingsValues, overrides: &ContextSettingsOverrides) {
-    if let Some(value) = overrides.shake_threshold {
-        values.shake_threshold = value;
+    macro_rules! fields {
+        ($($field:ident),*) => { $(if let Some(value) = overrides.$field { values.$field = value; })* };
     }
-    if let Some(value) = overrides.shake_cold_resume {
-        values.shake_cold_resume = value;
-    }
-    if let Some(value) = overrides.shake_min_elidable_percent {
-        values.shake_min_elidable_percent = value;
-    }
-    if let Some(value) = overrides.shake_min_savings_tokens {
-        values.shake_min_savings_tokens = value;
-    }
-    if let Some(value) = overrides.compaction_threshold {
-        values.compaction_threshold = value;
-    }
-    if let Some(value) = overrides.compaction_scope {
-        values.compaction_scope = value;
-    }
-    if let Some(value) = overrides.post_turn_compaction_percent {
-        values.post_turn_compaction_percent = value;
-    }
-    if let Some(value) = overrides.child_reduction_enabled {
-        values.child_reduction_enabled = value;
-    }
-    if let Some(value) = overrides.child_reduction_threshold_tokens {
-        values.child_reduction_threshold_tokens = value;
-    }
+    fields!(
+        shake_threshold,
+        shake_cold_resume,
+        shake_min_elidable_percent,
+        shake_min_savings_tokens,
+        compaction_threshold,
+        compaction_scope,
+        post_turn_compaction_percent,
+        child_reduction_enabled,
+        child_reduction_threshold_tokens
+    );
 }
 
 pub(crate) fn resolve(
@@ -425,6 +412,13 @@ pub(crate) fn resolve(
         }),
     };
     (model, view)
+}
+
+pub(super) fn project_compaction(config: &mut Config, view: &ContextSettingsView) {
+    config.model_auto_compact_token_limit = match view.effective.compaction_threshold {
+        CompactionThreshold::ModelDefault => None,
+        CompactionThreshold::Tokens { tokens } => Some(tokens),
+    };
 }
 
 impl super::session::Session {

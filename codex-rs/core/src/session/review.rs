@@ -22,13 +22,18 @@ pub(super) async fn spawn_review_thread(
         )
         .await;
     let mut model_config = config.to_models_manager_config();
-    model_config.model_auto_compact_token_limit =
-        parent_turn_context.config.model_auto_compact_token_limit;
-    let review_model_info = sess
+    model_config.model_auto_compact_token_limit = None;
+    let catalog_model = sess
         .services
         .models_manager
         .get_model_info(&model, &model_config)
         .await;
+    let (review_model_info, context_view) = super::context_settings::resolve(
+        parent_turn_context.initial_settings.context_baseline.as_deref().unwrap_or(&parent_turn_context.config),
+        &parent_turn_context.initial_settings.context_selection,
+        &catalog_model,
+        super::context_settings::ContextSettingsTarget::from(&parent_turn_context.session_source),
+    );
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
     let _ = review_features.disable(Feature::WebSearchRequest);
@@ -104,6 +109,9 @@ pub(super) async fn spawn_review_thread(
         Arc::new(model_info.clone()),
         &review_features,
     );
+    super::context_settings::project_compaction(&mut per_turn_config, &context_view);
+    step_settings.context_settings = Some(Arc::new(context_view));
+    step_settings.context_baseline = parent_turn_context.initial_settings.context_baseline.clone();
     step_settings.context_selection = parent_turn_context
         .initial_settings
         .context_selection

@@ -785,9 +785,16 @@ impl TurnContext {
     ) -> Self {
         let mut config = (*self.config).clone();
         config.model = Some(model.clone());
-        let model_info = models_manager
-            .get_model_info(model.as_str(), &config.to_models_manager_config())
-            .await;
+        let mut model_config = config.to_models_manager_config();
+        model_config.model_auto_compact_token_limit = None;
+        let catalog_model = models_manager.get_model_info(&model, &model_config).await;
+        let (model_info, context_view) = super::context_settings::resolve(
+            self.initial_settings.context_baseline.as_deref().unwrap_or(&config),
+            &self.initial_settings.context_selection,
+            &catalog_model,
+            super::context_settings::ContextSettingsTarget::from(&self.session_source),
+        );
+        super::context_settings::project_compaction(&mut config, &context_view);
         let supported_reasoning_levels = model_info
             .supported_reasoning_levels
             .iter()
@@ -825,6 +832,8 @@ impl TurnContext {
         );
         let mut step_settings =
             ResolvedStepSettings::new(Arc::new(selected), model_info, &config.features);
+        step_settings.context_settings = Some(Arc::new(context_view));
+        step_settings.context_baseline = self.initial_settings.context_baseline.clone();
         step_settings.context_selection = self.initial_settings.context_selection.clone();
         let step_settings = Arc::new(step_settings);
         config.service_tier = step_settings.service_tier.clone();
@@ -1321,11 +1330,7 @@ impl Session {
                 &session_configuration.session_source,
             ),
         );
-        if let codex_protocol::context_settings::CompactionThreshold::Tokens { tokens } =
-            context_view.effective.compaction_threshold
-        {
-            per_turn_config.model_auto_compact_token_limit = Some(tokens);
-        }
+        super::context_settings::project_compaction(&mut per_turn_config, &context_view);
         let multi_agent_version = match build_mode {
             TurnContextBuildMode::Full => {
                 // Only execution and initial context creation publish model metadata.
@@ -1383,6 +1388,7 @@ impl Session {
             &self.features,
         );
         step_settings.context_settings = Some(Arc::new(context_view));
+        step_settings.context_baseline = Some(Arc::clone(&session_configuration.original_config_do_not_use));
         step_settings.context_selection = session_configuration.context_settings.clone();
         let step_settings = Arc::new(step_settings);
         let mut turn_context: TurnContext = Self::make_turn_context(

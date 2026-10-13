@@ -9,11 +9,14 @@ use codex_protocol::protocol::SubAgentSource;
 use core_test_support::responses::ev_completed_with_tokens;
 use pretty_assertions::assert_eq;
 
-#[test_case(None; "saved_tokens")]
-#[test_case(Some(CompactionThreshold::ModelDefault); "destination_model_default")]
+#[test_case::test_case(None, AutoCompactTokenLimitScope::Total; "saved_tokens_total")]
+#[test_case::test_case(None, AutoCompactTokenLimitScope::BodyAfterPrefix; "saved_tokens_body")]
+#[test_case::test_case(Some(CompactionThreshold::ModelDefault), AutoCompactTokenLimitScope::Total; "destination_model_default_total")]
+#[test_case::test_case(Some(CompactionThreshold::ModelDefault), AutoCompactTokenLimitScope::BodyAfterPrefix; "destination_model_default_body")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resumed_child_keeps_saved_compaction_limit(
     threshold: Option<CompactionThreshold>,
+    scope: AutoCompactTokenLimitScope,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
@@ -34,8 +37,9 @@ async fn resumed_child_keeps_saved_compaction_limit(
             }
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(30_000);
-            config.model_auto_compact_token_limit_scope = AutoCompactTokenLimitScope::Total;
-            config.subagent_context_reduction.enabled = false;
+            config.model_auto_compact_token_limit_scope = scope;
+            config.subagent_context_reduction.enabled = threshold.is_some();
+            config.subagent_context_reduction.threshold_tokens = 60_000;
             config.auto_shake.threshold = Some(AutoShakeThresholdToml::Off);
         })
         .build_with_auto_env(&server)
@@ -58,10 +62,13 @@ async fn resumed_child_keeps_saved_compaction_limit(
     initial.session_configured = started.session_configured;
     initial.codex.checkpoint_thread_settings().await?;
     let resumed = step_settings_test()
-        .with_config(|config| {
+        .with_config(move |config| {
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(80_000);
-            config.model_auto_compact_token_limit_scope = AutoCompactTokenLimitScope::Total;
+            for model in &mut config.model_catalog.as_mut().unwrap().models {
+                model.auto_compact_token_limit = Some(if model.slug == MODEL_B { 30_000 } else { 80_000 });
+            }
+            config.model_auto_compact_token_limit_scope = scope;
             config.subagent_context_reduction.enabled = false;
             config.auto_shake.threshold = Some(AutoShakeThresholdToml::Off);
         })
