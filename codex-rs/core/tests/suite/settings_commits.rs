@@ -553,7 +553,8 @@ async fn context_patch_and_reset_preserve_automatic_continuation_identity(
         let TurnInputSubmission::Started {
             turn_id: next,
             root_turn_id: _,
-        } = submission else {
+        } = submission
+        else {
             panic!("continuation was superseded: {submission:?}")
         };
         turn_id = next;
