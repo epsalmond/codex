@@ -11,7 +11,6 @@ use codex_core::config::Constrained;
 use codex_core::context::ContextualUserFragment;
 use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
-use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartAdmission;
@@ -74,7 +73,10 @@ async fn inject_if_running_returns_items_before_task_registration() -> anyhow::R
 
     // The default lifecycle phase holds the reservation before task registration.
     impl TurnLifecycleContributor for TurnRegistrationGate {
-        fn on_turn_start<'a>(&'a self, _input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
+        fn on_turn_start<'a>(
+            &'a self,
+            _input: TurnStartInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
             Box::pin(async move {
                 let _ = self.entered.send(()).await;
                 let _ = (&mut *self.release.lock().await).await;
