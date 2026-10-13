@@ -1,5 +1,9 @@
 use super::*;
 use crate::ConfigRequirementsToml;
+use codex_features::Feature;
+use codex_features::FeatureConfigSource;
+use codex_features::FeatureOverrides;
+use codex_features::Features;
 use codex_file_system::CopyOptions;
 use codex_file_system::CreateDirectoryOptions;
 use codex_file_system::ExecutorFileSystemFuture;
@@ -427,6 +431,136 @@ impl ExecutorFileSystem for TestFileSystem {
         _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async move { unimplemented!("test filesystem only supports reads") })
+    }
+}
+
+#[tokio::test]
+async fn packaged_async_process_completion_default_respects_config_precedence() {
+    for (case, user_config, profile_config, runtime_override, expected_enabled) in [
+        ("missing user config", None, None, None, true),
+        (
+            "unset in existing features table",
+            Some("[features]\nshell_snapshot = true\n"),
+            None,
+            None,
+            true,
+        ),
+        (
+            "user disables completion",
+            Some("[features]\nasync_process_completion = false\n"),
+            None,
+            None,
+            false,
+        ),
+        (
+            "user enables completion",
+            Some("[features]\nasync_process_completion = true\n"),
+            None,
+            None,
+            true,
+        ),
+        (
+            "profile disables completion",
+            Some("[features]\nasync_process_completion = true\n"),
+            Some("[features]\nasync_process_completion = false\n"),
+            None,
+            false,
+        ),
+        (
+            "profile enables completion",
+            Some("[features]\nasync_process_completion = false\n"),
+            Some("[features]\nasync_process_completion = true\n"),
+            None,
+            true,
+        ),
+        (
+            "profile inherits user opt out",
+            Some("[features]\nasync_process_completion = false\n"),
+            Some("[features]\nshell_snapshot = true\n"),
+            None,
+            false,
+        ),
+        (
+            "profile inherits packaged default",
+            None,
+            Some("[features]\nshell_snapshot = true\n"),
+            None,
+            true,
+        ),
+        (
+            "runtime disables completion over profile",
+            None,
+            Some("[features]\nasync_process_completion = true\n"),
+            Some(false),
+            false,
+        ),
+        (
+            "runtime enables completion over profile",
+            None,
+            Some("[features]\nasync_process_completion = false\n"),
+            Some(true),
+            true,
+        ),
+    ] {
+        let codex_home = tempdir().expect("temporary Codex home");
+        let user_path = codex_home.path().join(CONFIG_TOML_FILE);
+        let profile_path = codex_home.path().join("work.config.toml");
+        if let Some(contents) = user_config {
+            std::fs::write(&user_path, contents).expect("write user config");
+        }
+        let mut overrides = LoaderOverrides::without_managed_config_for_tests();
+        if let Some(contents) = profile_config {
+            std::fs::write(&profile_path, contents).expect("write profile config");
+            overrides.user_config_path = Some(
+                AbsolutePathBuf::from_absolute_path(&profile_path).expect("absolute profile path"),
+            );
+            overrides.user_config_profile = Some("work".parse().expect("profile name"));
+        }
+
+        let cli_overrides = runtime_override
+            .map(|enabled| {
+                vec![(
+                    "features.async_process_completion".to_string(),
+                    TomlValue::Boolean(enabled),
+                )]
+            })
+            .unwrap_or_default();
+        let stack = load_config_layers_state(
+            &TestFileSystem,
+            codex_home.path(),
+            /*cwd*/ None,
+            &cli_overrides,
+            overrides,
+            &crate::NoopThreadConfigLoader,
+        )
+        .await
+        .expect("load config layers");
+        let config: ConfigToml = stack.effective_config().try_into().expect("typed config");
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: config.features.as_ref(),
+                ..Default::default()
+            },
+            FeatureConfigSource::default(),
+            FeatureOverrides::default(),
+        );
+
+        assert_eq!(
+            features.enabled(Feature::AsyncProcessCompletion),
+            expected_enabled,
+            "{case}"
+        );
+        assert_eq!(
+            (
+                std::fs::read_to_string(&user_path).ok(),
+                std::fs::read_to_string(&profile_path).ok(),
+            ),
+            (
+                user_config.map(str::to_owned),
+                profile_config.map(str::to_owned),
+            ),
+            "config files must be preserved: {case}"
+        );
     }
 }
 
