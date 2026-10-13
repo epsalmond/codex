@@ -47,6 +47,7 @@ pub(super) struct GrpcSession {
     pub(super) id: Uuid,
     pub(super) runtime: Arc<InProcessCodeModeSession>,
     pub(super) closed: CancellationToken,
+    pub(super) terminal_ready_supported: bool,
     pub(super) state: Mutex<SessionState>,
     events: EventSender,
     cells_changed: Notify,
@@ -108,6 +109,7 @@ impl GrpcHostState {
     pub(super) fn open_session(
         self: &Arc<Self>,
         limits: CodeModeSessionCellExecutionLimits,
+        terminal_ready_requested: bool,
     ) -> Result<GrpcStream<proto::SessionEvent>, Status> {
         let id = Uuid::new_v4();
         let (events, receiver) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
@@ -119,11 +121,13 @@ impl GrpcHostState {
             closed,
             Arc::clone(&self.delegate_permits),
             limits,
+            terminal_ready_requested,
         );
         events
             .try_send(Ok(proto::SessionEvent {
                 event: Some(proto::session_event::Event::Opened(proto::SessionOpened {
                     session_id: id.to_string(),
+                    terminal_ready_supported: terminal_ready_requested,
                 })),
             }))
             .map_err(|_| Status::internal("failed to publish the opened code-mode session"))?;
@@ -213,6 +217,7 @@ impl GrpcSession {
         closed: CancellationToken,
         delegate_permits: Arc<Semaphore>,
         limits: CodeModeSessionCellExecutionLimits,
+        terminal_ready_supported: bool,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let failure_session = weak.clone();
@@ -224,6 +229,7 @@ impl GrpcSession {
             });
             Self {
                 id,
+                terminal_ready_supported,
                 runtime: Arc::new(InProcessCodeModeSession::with_task_failure_handler(
                     failure_handler,
                     limits,

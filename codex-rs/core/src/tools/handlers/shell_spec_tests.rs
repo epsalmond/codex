@@ -6,27 +6,20 @@ fn windows_shell_guidance_description() -> String {
     format!("\n\n{}", windows_shell_guidance())
 }
 
-fn has_parameter(tool: &ToolSpec, parameter_name: &str) -> bool {
-    serde_json::to_value(tool)
-        .expect("tool spec should serialize")
-        .pointer(&format!("/parameters/properties/{parameter_name}"))
-        .is_some()
-}
-
 #[test]
 fn exec_command_tool_matches_expected_spec() {
     let tool = create_exec_command_tool(CommandToolOptions {
-        allow_login_shell: true,
+        include_login_parameter: true,
         exec_permission_approvals_enabled: false,
     });
 
     let description = if cfg!(windows) {
         format!(
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions.{}",
             windows_shell_guidance_description()
         )
     } else {
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions."
             .to_string()
     };
     let yield_time_ms_description = if cfg!(windows) {
@@ -99,22 +92,6 @@ fn exec_command_tool_matches_expected_spec() {
 }
 
 #[test]
-fn exec_command_tool_can_hide_shell_parameter() {
-    let tool = create_exec_command_tool_with_environment_id(
-        CommandToolOptions {
-            allow_login_shell: true,
-            exec_permission_approvals_enabled: false,
-        },
-        /*include_environment_id*/ false,
-        /*include_shell_parameter*/ false,
-        /*include_windows_shell_guidance*/ cfg!(windows),
-    );
-
-    assert!(!has_parameter(&tool, "shell"));
-    assert!(has_parameter(&tool, "cmd"));
-}
-
-#[test]
 fn write_stdin_tool_matches_expected_spec() {
     let tool = create_write_stdin_tool();
 
@@ -122,7 +99,7 @@ fn write_stdin_tool_matches_expected_spec() {
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
-                "Identifier of the running unified exec session.".to_string(),
+                "Session ID returned by this agent's exec_command. IDs are local to each agent; use only this agent's IDs.".to_string(),
             )),
         ),
         (
@@ -150,7 +127,7 @@ fn write_stdin_tool_matches_expected_spec() {
         ToolSpec::Function(ResponsesApiTool {
             name: "write_stdin".to_string(),
             description:
-                "Writes characters to an existing unified exec session and returns recent output."
+                "Writes characters to an existing unified exec session owned by this agent and returns recent output. Ask the launching agent to interact with its sessions."
                     .to_string(),
             strict: false,
             defer_loading: None,

@@ -68,6 +68,7 @@ async fn interrupted_wake_attempt_reports_to_its_parent_once() {
         started_at: None,
         completed_at: None,
         duration_ms: None,
+        root_turn_id: None,
     });
     session
         .maybe_notify_parent_of_terminal_turn(&turn_context, &interrupted)

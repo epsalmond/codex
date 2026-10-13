@@ -63,7 +63,10 @@ impl GrpcCodeModeHost {
     ) -> Result<Response<GrpcStream<proto::SessionEvent>>, Status> {
         let _permit = self.state.request_permit()?;
         let limits = conversions::session_limits(request.cell_execution_limits)?;
-        Ok(Response::new(self.state.open_session(limits)?))
+        Ok(Response::new(
+            self.state
+                .open_session(limits, request.terminal_ready_requested)?,
+        ))
     }
 
     #[tracing::instrument(
@@ -148,7 +151,7 @@ impl GrpcCodeModeHost {
             _ = session.closed.cancelled() => {
                 return Err(Status::cancelled("code-mode session is closed"));
             }
-            result = session.runtime.execute(request, Arc::new(delegate::GrpcDelegate::new(Arc::downgrade(&session))), Some(yield_signal)) => {
+            result = session.runtime.execute(request, Arc::new(delegate::GrpcDelegate::new(Arc::downgrade(&session), execution_id.clone())), Some(yield_signal)) => {
                 result.map_err(Status::failed_precondition)?
             }
         };

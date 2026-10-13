@@ -314,6 +314,7 @@ fn run_shake_artifact_durability() -> Pin<Box<dyn Future<Output = Result<()>> + 
             history: Arc::new(stored_history.items),
             rollout_path: Some(source_rollout.clone()),
             last_activity_at: None,
+            history_revision: None,
         });
         let ephemeral_fork = Box::pin(rolled_back.thread_manager.fork_thread_from_history(
             ForkSnapshot::Interrupted,
@@ -492,10 +493,14 @@ async fn shake_save_failure_preserves_the_unprocessed_suffix_for_retry() -> Resu
         expected_fingerprint: Some(preview.fingerprint.clone()),
     }))
     .await?;
-    Box::pin(wait_for_event(&fixture.codex, |event| {
+    let warning = Box::pin(wait_for_event(&fixture.codex, |event| {
         matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
     }))
     .await;
+    let EventMsg::Warning(warning) = warning else {
+        unreachable!();
+    };
+    insta::assert_snapshot!(warning.message, @"⛭ shake: Artifact recovery could not be saved; no content was reduced. Retry after fixing artifact storage.");
     let after_failure = fixture
         .codex
         .load_history(/*include_archived*/ false)

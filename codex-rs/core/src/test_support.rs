@@ -114,6 +114,15 @@ pub fn set_deterministic_process_ids(enabled: bool) {
     unified_exec::set_deterministic_process_ids_for_tests(enabled);
 }
 
+pub use crate::tasks::TurnStartHold;
+pub use crate::tasks::TurnStartHoldPoint;
+
+/// Parks the next turn start on `thread_id` that reaches `point`, between reserving the turn slot
+/// and installing its task, so a test can order other input inside that window.
+pub fn hold_next_turn_start(thread_id: ThreadId, point: TurnStartHoldPoint) -> TurnStartHold {
+    crate::tasks::hold_next_turn_start(thread_id, point)
+}
+
 pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing(auth)
 }

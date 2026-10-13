@@ -17,13 +17,12 @@ use super::context_window::context_window_token_status;
 use super::session::Session;
 use super::step_context::StepContext;
 use super::turn::maybe_run_auto_shake;
-use super::turn::run_auto_compact;
+use super::turn::run_inline_compact;
 use super::turn_context::TurnContext;
 use crate::agent::types::ContextReductionOutcome;
 use crate::agent::types::ContextReductionRecord;
 use crate::client::ModelClientSession;
-use crate::compact::InitialContextInjection;
-use crate::context::world_state::WorldState;
+use crate::compact_invocation::CompactionInvocation;
 
 /// Why the sampling loop is rolling over to a reduced context.
 pub(super) enum RollOverTrigger {
@@ -66,7 +65,6 @@ pub(super) async fn reduce_mid_turn(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     step_context: &Arc<StepContext>,
-    world_state: &Arc<WorldState>,
     client_session: &mut ModelClientSession,
     trigger: RollOverTrigger,
     tokens_before: i64,
@@ -93,17 +91,12 @@ pub(super) async fn reduce_mid_turn(
 
     // The request's step context holds settings, tools, and MCP bindings but no history
     // snapshot, so it remains valid for compaction after a shake rewrote history.
-    let compact = run_auto_compact(
+    let compact = run_inline_compact(
         sess,
         Arc::clone(step_context),
-        /*fallback_step_context*/ None,
+        Arc::clone(step_context),
         client_session,
-        InitialContextInjection::BeforeLastUserMessage {
-            world_state: Arc::clone(world_state),
-            step_context: Arc::clone(step_context),
-        },
-        CompactionReason::ContextLimit,
-        CompactionPhase::MidTurn,
+        CompactionInvocation::automatic(CompactionReason::ContextLimit, CompactionPhase::MidTurn),
     )
     .await;
     if let Err(err) = compact {

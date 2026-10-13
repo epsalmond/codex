@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 mod assignments;
+mod owned_work;
 pub(crate) use assignments::AssignmentReservation;
 mod reports;
 pub(crate) use reports::ClaimedTerminalReport;
@@ -93,6 +94,27 @@ struct SpawnCleanup {
     completion: tokio::sync::watch::Receiver<()>,
 }
 
+/// How a running assignment's active turn came to hold it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveTurnOrigin {
+    /// The turn created this generation.
+    NewGeneration,
+    /// The turn resumed the assignment from `Waiting`.
+    Waiting,
+    /// The turn took over a running assignment no turn held, such as a committed child's first
+    /// turn.
+    Unheld,
+}
+
+/// A child generation marked Interrupted, rather than released, because its parent was waiting
+/// on it when the child was given back unstarted or closed. Only its terminal report can end the
+/// parent's wait, so the caller publishes that report under `terminal_turn_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InterruptedChild {
+    pub(crate) assignment: AgentAssignmentId,
+    pub(crate) terminal_turn_id: String,
+}
+
 pub(crate) struct TurnEndClassification {
     pub(crate) phase: AssignmentPhase,
     pub(crate) newly_classified: bool,
@@ -116,10 +138,14 @@ enum ReportDeliveryState {
 }
 
 struct Assignment {
+    owned_completions: std::sync::Weak<crate::session::async_completion::AsyncCompletions>,
     parent: Option<AgentAssignmentId>,
     phase: AssignmentPhase,
     direct_children: HashSet<AgentAssignmentId>,
     active_turn_id: Option<String>,
+    /// What `active_turn_id` found when it took the assignment, so a turn that never starts can
+    /// leave the assignment as it found it.
+    active_turn_origin: ActiveTurnOrigin,
     terminal_turn_id: Option<String>,
     terminal_disposition: Option<TurnEndDisposition>,
     last_classified_phase: Option<AssignmentPhase>,

@@ -15,6 +15,9 @@ pub(crate) fn build_reviewer_config(parent_config: &Config) -> anyhow::Result<Co
     config.model_provider.stream_max_retries = Some(1);
     // Approvals wait for TurnComplete; post-turn compaction must not delay it.
     config.model_post_turn_compact_threshold_percent = 0;
+    // Reviewer history forks retain their derived config, not the parent's child baseline.
+    config.context_settings = None;
+    config.context_settings_from_spawn = true;
     config.include_skill_instructions = false;
     config.memories.use_memories = false;
     config.memories.dedicated_tools = false;

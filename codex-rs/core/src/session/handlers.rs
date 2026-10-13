@@ -1,4 +1,5 @@
 use super::Submission;
+use crate::WithTurnExtensionData;
 use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
 use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
 use crate::realtime_conversation::handle_speech as handle_realtime_conversation_speech;
@@ -20,10 +21,15 @@ use crate::context::ContextualUserFragment;
 use crate::context::GuardianApprovedAction;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
+use crate::shake::ShakeFailure;
+use crate::shake::ShakeOutcome;
+use crate::shake::ShakeSkipReason;
 use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use crate::thread_manager::AgentTreeShutdownFailure;
+use crate::thread_manager::thread_store_error_kind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -166,7 +172,7 @@ pub(crate) async fn apply_shake(
     mode: codex_protocol::protocol::ShakeMode,
     expected_fingerprint: Option<String>,
     trigger: ShakeTrigger,
-) -> crate::shake::ShakeResult {
+) -> ShakeOutcome {
     let ephemeral_elide =
         mode == codex_protocol::protocol::ShakeMode::Elide && turn_context.config.ephemeral;
 
@@ -181,9 +187,10 @@ pub(crate) async fn apply_shake(
             }),
         )
         .await;
-        return crate::shake::ShakeResult::default();
+        return ShakeOutcome::Failed(ShakeFailure::InvalidSeal);
     }
     let prior_shake_state = history.shake_history_state().clone();
+    let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
     let mut envelopes = history.into_annotated_items();
     let start = usize::try_from(prior_shake_state.watermark)
         .unwrap_or(usize::MAX)
@@ -203,8 +210,9 @@ pub(crate) async fn apply_shake(
             }),
         )
         .await;
-        return crate::shake::ShakeResult::default();
+        return ShakeOutcome::Stale;
     }
+    let mut artifact_save_failed = false;
     let (result, new_watermark) = match mode {
         codex_protocol::protocol::ShakeMode::Images => {
             let end = crate::shake::watermark::close_over_tool_calls(&envelopes, envelopes.len())
@@ -238,6 +246,7 @@ pub(crate) async fn apply_shake(
                         .map(|id| store.destination_path(id, label).display().to_string())
                 }
                 Err(err) => {
+                    artifact_save_failed = true;
                     warn!(%err, "failed to save shake artifact; preserving original region");
                     None
                 }
@@ -272,18 +281,24 @@ pub(crate) async fn apply_shake(
     // with the well-known marker so the TUI can identify the completion notice
     // and release its input gate; the message stays human-readable for other
     // clients.
+    let reduction_summary = if artifact_save_failed && result.is_noop() {
+        "Artifact recovery could not be saved; no content was reduced. Retry after fixing artifact storage."
+            .to_string()
+    } else {
+        result.summary_line(mode)
+    };
     let summary = if ephemeral_elide {
         "⛭ shake: Elide skipped for ephemeral thread; persistent threads are required for artifact recovery."
             .to_string()
     } else if trigger == ShakeTrigger::AutomaticEscalated {
-        format!("⛭ shake (auto, escalated): {}", result.summary_line(mode))
+        format!("⛭ shake (auto, escalated): {reduction_summary}")
     } else if trigger == ShakeTrigger::AutomaticColdResume {
-        format!("⛭ shake (auto, cold resume): {}", result.summary_line(mode))
+        format!("⛭ shake (auto, cold resume): {reduction_summary}")
     } else if trigger == ShakeTrigger::Automatic {
         // Distinguishable in the transcript as well as in the rollout record.
-        format!("⛭ shake (auto): {}", result.summary_line(mode))
+        format!("⛭ shake (auto): {reduction_summary}")
     } else {
-        format!("⛭ shake: {}", result.summary_line(mode))
+        format!("⛭ shake: {reduction_summary}")
     };
     let history_changed = !result.is_noop();
     let watermark_changed = u64::try_from(new_watermark)
@@ -297,6 +312,7 @@ pub(crate) async fn apply_shake(
                 std::mem::take(&mut envelopes),
                 trigger.compacted_item_message(),
                 new_watermark,
+                input_goal_ids,
             )
             .await
         {
@@ -314,7 +330,7 @@ pub(crate) async fn apply_shake(
                 }),
             )
             .await;
-            return crate::shake::ShakeResult::default();
+            return ShakeOutcome::Failed(ShakeFailure::ReplacementRefused);
         }
         if history_changed {
             sess.recompute_token_usage(turn_context).await;
@@ -353,7 +369,15 @@ pub(crate) async fn apply_shake(
     if let Err(err) = sess.flush_rollout().await {
         warn!("failed to flush thread persistence after shake: {err}");
     }
-    result
+    if history_changed {
+        ShakeOutcome::Applied(result)
+    } else if ephemeral_elide {
+        ShakeOutcome::Skipped(ShakeSkipReason::EphemeralThread)
+    } else if artifact_save_failed {
+        ShakeOutcome::Failed(ShakeFailure::ArtifactRecovery)
+    } else {
+        ShakeOutcome::Noop
+    }
 }
 
 pub async fn clean_background_terminals(sess: &Arc<Session>) {
@@ -476,9 +500,10 @@ pub async fn run_user_shell_command(
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
-    if !sess
+    if sess
         .admit_root_task_or_emit_error(turn_context.as_ref())
         .await
+        .is_err()
     {
         return;
     }
@@ -600,7 +625,7 @@ pub fn refresh_mcp_servers(sess: &Session) {
 }
 
 pub async fn reload_user_config(sess: &Arc<Session>) {
-    sess.reload_user_config_layer().await;
+    Box::pin(sess.reload_user_config_layer()).await;
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
@@ -662,6 +687,7 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+    sess.services.async_completions.retire();
     let startup_prewarm = {
         let mut state = sess.state.lock().await;
         // Stop admission and take the current warmup together so resume cannot replace it.
@@ -686,6 +712,14 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         .terminate_all_processes()
         .await;
     if let Err(err) = sess.services.code_mode_service.shutdown().await {
+        sess.services.local_agent_runtime.record_shutdown_failure(
+            AgentTreeShutdownFailure::operation_failed(
+                "session_shutdown",
+                "code_mode",
+                Some(sess.thread_id),
+                "code_mode_error",
+            ),
+        );
         warn!("failed to shutdown code mode session: {err}");
     }
     sess.stop_mcp_prewarm_worker().await;
@@ -731,6 +765,14 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     if let Some(live_thread) = sess.live_thread()
         && let Err(e) = live_thread.shutdown().await
     {
+        sess.services.local_agent_runtime.record_shutdown_failure(
+            AgentTreeShutdownFailure::operation_failed(
+                "session_shutdown",
+                "close_persistence",
+                Some(sess.thread_id),
+                thread_store_error_kind(&e),
+            ),
+        );
         warn!("failed to shutdown thread persistence: {e}");
         let event = Event {
             id: sub_id.clone(),
@@ -771,9 +813,10 @@ pub async fn review(
     #[allow(deprecated)]
     match resolve_review_request(review_request, &turn_context.cwd) {
         Ok(resolved) => {
-            if !sess
+            if sess
                 .admit_root_task_or_emit_error(turn_context.as_ref())
                 .await
+                .is_err()
             {
                 return;
             }
@@ -805,14 +848,51 @@ pub(super) async fn submission_loop(
     config: Arc<Config>,
     rx_sub: Receiver<Submission>,
 ) {
-    // To break out of this loop, send Op::Shutdown.
+    // Session shutdown and tree shutdown both use the existing teardown handler.
     let mut shutdown_received = false;
-    while let Ok(sub) = rx_sub.recv().await {
-        if matches!(sub.op, Op::ResolveElicitation { .. }) {
-            debug!(submission_id = %sub.id, operation = sub.op.kind(), "Submission");
-        } else {
-            debug!(?sub, "Submission");
-        }
+    let mut mailbox = sess.input_queue.mailbox_updates();
+    if let Some(updates) = &mut mailbox {
+        updates.mark_changed();
+    }
+    loop {
+        let sub = tokio::select! {
+            biased;
+            _ = sess.services.local_agent_runtime.shutdown.cancelled() => {
+                shutdown_received = shutdown(&sess, super::new_submission_id()).await;
+                break;
+            }
+            sub = rx_sub.recv() => match sub {
+                Ok(sub) => sub,
+                Err(_) => break,
+            },
+            update = async {
+                match &mut mailbox {
+                    Some(updates) => updates.changed().await.map(|()| *updates.borrow_and_update()),
+                    None => std::future::pending().await,
+                }
+            } => {
+                match update {
+                    Ok(true) => {
+                        sess.input_queue.notify_mailbox();
+                        if sess.has_outstanding_durable_sleep() {
+                            sess.maybe_start_turn_for_pending_work().await;
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(_) => mailbox = None,
+                }
+                continue;
+            }
+        };
+        debug!(
+            thread_id = %sess.thread_id(),
+            submission_id = %sub.id,
+            operation = sub.op.kind(),
+            parent_turn_id = ?sub.parent_turn_id,
+            root_turn_id = ?sub.root_turn_id,
+            op = ?sub.op,
+            "Submission"
+        );
         let dispatch_span = submission_dispatch_span(&sub);
         let should_exit = async {
             match sub.op {
@@ -874,7 +954,11 @@ pub(super) async fn submission_loop(
                     mode,
                     reply,
                 } => {
-                    let result = turn_input::handle(&sess, *request, mode, sub.id.clone()).await;
+                    let request = WithTurnExtensionData {
+                        request: *request,
+                        turn_extension_init: sub.turn_extension_init,
+                    };
+                    let result = turn_input::handle(&sess, request, mode, sub.id.clone()).await;
                     let _ = reply.send(result);
                     false
                 }
@@ -885,7 +969,10 @@ pub(super) async fn submission_loop(
                 } => {
                     let result = turn_input::handle_recovery(
                         &sess,
-                        thread_settings,
+                        WithTurnExtensionData {
+                            request: thread_settings,
+                            turn_extension_init: sub.turn_extension_init,
+                        },
                         start_options,
                         sub.id.clone(),
                     )
@@ -911,6 +998,10 @@ pub(super) async fn submission_loop(
                     reply,
                 } => {
                     let _settings_guard = thread_settings::acquire_persistence_lock(&sess).await;
+                    let thread_settings = WithTurnExtensionData {
+                        request: thread_settings,
+                        turn_extension_init: sub.turn_extension_init,
+                    };
                     match thread_settings::update(&sess, thread_settings).await {
                         Ok(snapshot) => {
                             // Reply first: the caller may hold a lock its event consumer needs.
@@ -1047,6 +1138,14 @@ pub(super) async fn submission_loop(
         if let Some(live_thread) = sess.live_thread()
             && let Err(err) = live_thread.shutdown().await
         {
+            sess.services.local_agent_runtime.record_shutdown_failure(
+                AgentTreeShutdownFailure::operation_failed(
+                    "session_shutdown",
+                    "close_persistence_after_channel_closed",
+                    Some(sess.thread_id),
+                    thread_store_error_kind(&err),
+                ),
+            );
             warn!("failed to shutdown thread persistence after submission channel closed: {err}");
         }
     }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::tests::make_session_and_context;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn sparse_overlay_model_default_and_reset_resolve_against_catalog() {
@@ -109,6 +110,11 @@ async fn compaction_scope_keeps_body_limit_distinct_from_full_admission() {
 #[tokio::test]
 async fn future_turn_projects_context_choices_while_captured_turn_stays_immutable() {
     let (session, _) = make_session_and_context().await;
+    {
+        let mut state = session.state.lock().await;
+        let config = Arc::make_mut(&mut state.session_configuration.original_config_do_not_use);
+        config.model_auto_compact_token_limit = Some(777);
+    }
     let initial = session.new_default_turn().await;
     let before = initial.initial_settings.context_settings.clone();
     session
@@ -134,14 +140,20 @@ async fn future_turn_projects_context_choices_while_captured_turn_stays_immutabl
         false
     );
     assert_eq!(next.model_info().auto_compact_token_limit(), Some(1111));
+    let destination = next
+        .with_model("gpt-6-astra".into(), &session.services.models_manager)
+        .await;
+    let view = destination
+        .initial_settings
+        .context_settings
+        .as_ref()
+        .unwrap();
     assert_eq!(
-        next.initial_settings
-            .context_settings
-            .as_ref()
-            .unwrap()
-            .model,
-        next.model_info().slug
+        view.baseline.compaction_threshold,
+        CompactionThreshold::Tokens { tokens: 777 }
     );
+    let next_view = next.initial_settings.context_settings.as_ref().unwrap();
+    assert_eq!(next_view.model, next.model_info().slug);
     session
         .update_settings(super::super::session::SessionSettingsUpdate {
             context_settings: Some(ContextSettingsUpdate::Reset),
@@ -168,36 +180,18 @@ async fn future_turn_projects_context_choices_while_captured_turn_stays_immutabl
 
 #[test]
 fn sparse_numeric_validation_rejects_out_of_range_fields() {
-    for overrides in [
-        ContextSettingsOverrides {
-            shake_threshold: Some(ShakeThreshold::Percent { percent: 101 }),
-            ..Default::default()
-        },
-        ContextSettingsOverrides {
-            shake_threshold: Some(ShakeThreshold::Tokens { tokens: 0 }),
-            ..Default::default()
-        },
-        ContextSettingsOverrides {
-            shake_min_elidable_percent: Some(-1),
-            ..Default::default()
-        },
-        ContextSettingsOverrides {
-            shake_min_savings_tokens: Some(-1),
-            ..Default::default()
-        },
-        ContextSettingsOverrides {
-            compaction_threshold: Some(CompactionThreshold::Tokens { tokens: 0 }),
-            ..Default::default()
-        },
-        ContextSettingsOverrides {
-            child_reduction_threshold_tokens: Some(0),
-            ..Default::default()
-        },
-        ContextSettingsOverrides {
-            post_turn_compaction_percent: Some(101),
-            ..Default::default()
-        },
-    ] {
+    let patches: [fn(&mut ContextSettingsOverrides); 7] = [
+        |value| value.shake_threshold = Some(ShakeThreshold::Percent { percent: 101 }),
+        |value| value.shake_threshold = Some(ShakeThreshold::Tokens { tokens: 0 }),
+        |value| value.shake_min_elidable_percent = Some(-1),
+        |value| value.shake_min_savings_tokens = Some(-1),
+        |value| value.compaction_threshold = Some(CompactionThreshold::Tokens { tokens: 0 }),
+        |value| value.child_reduction_threshold_tokens = Some(0),
+        |value| value.post_turn_compaction_percent = Some(101),
+    ];
+    for patch in patches {
+        let mut overrides = ContextSettingsOverrides::default();
+        patch(&mut overrides);
         assert!(
             apply(
                 &ContextSettingsState::default(),
@@ -274,4 +268,98 @@ async fn retained_child_inputs_survive_nested_projection_and_changed_reload_conf
         project(&mut reload, &saved, ContextSettingsTarget::Root);
         assert_eq!(reload.model_auto_compact_token_limit, Some(9000));
     }
+}
+
+#[test_case::test_case(None; "saved_tokens")]
+#[test_case::test_case(Some(CompactionThreshold::ModelDefault); "destination_model_default")]
+#[tokio::test]
+async fn review_retains_captured_context_selection_and_model_limit(
+    threshold: Option<CompactionThreshold>,
+) {
+    let (session, mut parent) = make_session_and_context().await;
+    let mut reload_config = (*parent.config).clone();
+    reload_config.model_auto_compact_token_limit = Some(80_000);
+    reload_config.review_model = Some("gpt-6-astra".into());
+    let mut model_config = reload_config.to_models_manager_config();
+    model_config.model_auto_compact_token_limit = None;
+    let catalog_model = session
+        .services
+        .models_manager
+        .get_model_info("gpt-6-astra", &model_config)
+        .await;
+    let expected_limit = if threshold.is_some() {
+        catalog_model.auto_compact_token_limit
+    } else {
+        Some(30_000)
+    };
+    let mut captured_config = reload_config.clone();
+    captured_config.model_auto_compact_token_limit = Some(30_000);
+    captured_config.model_auto_compact_token_limit_scope =
+        codex_protocol::config_types::AutoCompactTokenLimitScope::Total;
+    let selection = ContextSettingsState {
+        inherited: Some(configured_baseline(&captured_config)),
+        overrides: ContextSettingsOverrides {
+            compaction_threshold: threshold,
+            ..Default::default()
+        },
+    };
+    let expected_view = resolve(
+        &captured_config,
+        &selection,
+        &catalog_model,
+        ContextSettingsTarget::Root,
+    )
+    .1;
+    Arc::make_mut(&mut parent.initial_settings).context_selection = selection.clone();
+    parent.config = Arc::new(captured_config);
+    let switched = parent
+        .with_model("gpt-6-astra".into(), &session.services.models_manager)
+        .await;
+    assert_eq!(
+        switched.model_info().auto_compact_token_limit,
+        expected_limit
+    );
+    assert_eq!(
+        switched.initial_settings.context_settings,
+        Some(Arc::new(expected_view.clone()))
+    );
+    let session = Arc::new(session);
+    crate::session::review::spawn_review_thread(
+        Arc::clone(&session),
+        Arc::new(reload_config),
+        Arc::new(parent),
+        "saved-context-review".into(),
+        crate::review_prompts::ResolvedReviewRequest {
+            target: codex_protocol::protocol::ReviewTarget::Custom {
+                instructions: "Inspect saved context.".into(),
+            },
+            prompt: "Inspect saved context.".into(),
+            user_facing_hint: "Inspect saved context.".into(),
+        },
+    )
+    .await;
+    let captured = {
+        let active = session.active_turn.lock().await;
+        let task = active.as_ref().unwrap().task.as_ref().unwrap();
+        Arc::clone(&task.turn_context)
+    };
+    assert_eq!(
+        (
+            captured.initial_settings.context_selection.clone(),
+            captured.config.model_auto_compact_token_limit,
+            captured.model_info().auto_compact_token_limit,
+        ),
+        (
+            selection,
+            threshold.is_none().then_some(30_000),
+            expected_limit
+        )
+    );
+    assert_eq!(
+        captured.initial_settings.context_settings,
+        Some(Arc::new(expected_view))
+    );
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+        .await;
 }

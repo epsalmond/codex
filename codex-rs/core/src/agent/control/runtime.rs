@@ -18,21 +18,183 @@ use crate::agent::api::AgentControl;
 use crate::agent::registry::AgentRegistry;
 use crate::config::RolloutBudgetConfig;
 use crate::rollout_budget::RolloutBudget;
+use crate::thread_manager::AgentTreeShutdownFailure;
+use crate::thread_manager::AgentTreeShutdownFailureReason;
+use crate::thread_manager::AgentTreeShutdownReport;
 use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
 use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
+use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::error::AgentErrorContext;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SessionSource;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+use tokio_util::task::task_tracker::TaskTrackerToken;
+use uuid::Uuid;
+
+// Avoid retaining an unbounded number of failures during a long-lived tree's lifetime.
+const MAX_RETAINED_SHUTDOWN_FAILURES: usize = 64;
+
+#[derive(Debug)]
+pub(crate) struct AgentTreeShutdownState {
+    members: TaskTracker,
+    report: Mutex<AgentTreeShutdownReport>,
+}
+
+impl Default for AgentTreeShutdownState {
+    fn default() -> Self {
+        Self {
+            members: TaskTracker::new(),
+            report: Mutex::new(AgentTreeShutdownReport {
+                tree_id: Uuid::now_v7(),
+                failures: Vec::new(),
+                omitted_failures: 0,
+            }),
+        }
+    }
+}
+
+impl AgentTreeShutdownState {
+    pub(crate) async fn wait(&self) -> CodexResult<()> {
+        self.wait_detailed()
+            .await
+            .map_err(|_| CodexErr::Fatal("agent tree shutdown did not complete cleanly".to_owned()))
+    }
+
+    pub(crate) async fn wait_detailed(&self) -> Result<(), AgentTreeShutdownReport> {
+        self.members.wait().await;
+        // Reporters hold a membership until after recording failures. Once the tracker drains,
+        // no admitted operation can add a failure after the snapshot.
+        let report = self
+            .report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if report.failures.is_empty() && report.omitted_failures == 0 {
+            Ok(())
+        } else {
+            Err(report)
+        }
+    }
+
+    fn record_failure(&self, failure: AgentTreeShutdownFailure) {
+        let tree_id = {
+            let mut report = self.report.lock().unwrap_or_else(PoisonError::into_inner);
+            if report.failures.len() < MAX_RETAINED_SHUTDOWN_FAILURES {
+                report.failures.push(failure.clone());
+            } else {
+                report.omitted_failures = report.omitted_failures.saturating_add(/*rhs*/ 1);
+            }
+            report.tree_id
+        };
+        let (reason, phase, error_kind) = match &failure.reason {
+            AgentTreeShutdownFailureReason::OperationFailed { phase, error_kind } => {
+                ("operation_failed", Some(*phase), Some(*error_kind))
+            }
+            AgentTreeShutdownFailureReason::GuardAbandoned => ("guard_abandoned", None, None),
+        };
+        let thread_id = failure.thread_id.map(tracing::field::display);
+        tracing::warn!(
+            %tree_id,
+            operation = failure.operation,
+            phase,
+            thread_id,
+            reason,
+            error_kind,
+            "agent tree shutdown failure recorded"
+        );
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentTreeMembership {
+    state: Arc<AgentTreeShutdownState>,
+    _member: TaskTrackerToken,
+}
+
+impl AgentTreeMembership {
+    pub(crate) fn into_teardown_guard(
+        self,
+        operation: &'static str,
+        thread_id: Option<ThreadId>,
+    ) -> AgentTreeTeardownGuard {
+        AgentTreeTeardownGuard {
+            membership: self,
+            operation,
+            thread_id,
+            completed: false,
+        }
+    }
+}
+
+/// Marks tree shutdown as failed if teardown work exits without completing.
+pub(crate) struct AgentTreeTeardownGuard {
+    membership: AgentTreeMembership,
+    operation: &'static str,
+    thread_id: Option<ThreadId>,
+    completed: bool,
+}
+
+impl AgentTreeTeardownGuard {
+    pub(crate) fn clone_for_teardown(
+        &self,
+        operation: &'static str,
+        thread_id: Option<ThreadId>,
+    ) -> Self {
+        self.membership
+            .clone()
+            .into_teardown_guard(operation, thread_id)
+    }
+
+    pub(crate) fn set_thread_id(&mut self, thread_id: ThreadId) {
+        self.thread_id = Some(thread_id);
+    }
+
+    pub(crate) fn record_shutdown_failure(&self, phase: &'static str, error_kind: &'static str) {
+        self.membership
+            .state
+            .record_failure(AgentTreeShutdownFailure::operation_failed(
+                self.operation,
+                phase,
+                self.thread_id,
+                error_kind,
+            ));
+    }
+
+    pub(crate) fn complete(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for AgentTreeTeardownGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            // Record before membership is dropped, so a waiter cannot snapshot first.
+            self.membership
+                .state
+                .record_failure(AgentTreeShutdownFailure {
+                    operation: self.operation,
+                    thread_id: self.thread_id,
+                    reason: AgentTreeShutdownFailureReason::GuardAbandoned,
+                });
+        }
+    }
+}
 
 /// Local tree state, kept separate from the shared agent operation interface.
 #[derive(Clone)]
@@ -61,6 +223,10 @@ pub(crate) struct LocalAgentRuntime {
     work_observation_enabled: Arc<AtomicBool>,
     /// Bounded work state shared by the root and its owned child tree.
     pub(super) work_lifecycle: Arc<WorkCoordinator>,
+    pub(super) mailboxes: Arc<super::mailbox::Mailboxes>,
+    /// Shared by every session in this tree, including private delegates.
+    pub(crate) shutdown: CancellationToken,
+    shutdown_state: Arc<AgentTreeShutdownState>,
 }
 
 impl LocalAgentRuntime {
@@ -69,6 +235,14 @@ impl LocalAgentRuntime {
         parent: &AgentAssignmentId,
     ) -> Option<ClaimedTerminalReport> {
         self.wake_coordinator.claim_next_mailbox_report(parent)
+    }
+
+    /// Takes the oldest wake request off the queue, for tests that have no dispatcher.
+    #[cfg(test)]
+    pub(crate) fn claim_next_wake_assignment(&self) -> Option<AgentAssignmentId> {
+        self.wake_coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned())
     }
 
     pub(super) fn new(
@@ -89,6 +263,9 @@ impl LocalAgentRuntime {
             root_waits_for_children: Arc::new(AtomicBool::new(false)),
             work_observation_enabled: Arc::new(AtomicBool::new(false)),
             work_lifecycle,
+            mailboxes: Arc::default(),
+            shutdown: CancellationToken::new(),
+            shutdown_state: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
@@ -174,6 +351,41 @@ impl AgentControlInit {
 }
 
 impl LocalAgentRuntime {
+    pub(crate) fn admit_start(&self) -> CodexResult<AgentTreeMembership> {
+        if self.shutdown_state.members.is_closed() {
+            return Err(
+                CodexErr::InvalidRequest("agent runtime is shutting down".to_owned())
+                    .with_agent_context(AgentErrorContext::RuntimeShutdown),
+            );
+        }
+        let membership = AgentTreeMembership {
+            state: Arc::clone(&self.shutdown_state),
+            _member: self.shutdown_state.members.token(),
+        };
+        // Closing a TaskTracker does not reject new tokens. Recheck so a start racing with
+        // shutdown is either admitted before the fence or rejected after it.
+        if self.shutdown_state.members.is_closed() {
+            return Err(
+                CodexErr::InvalidRequest("agent runtime is shutting down".to_owned())
+                    .with_agent_context(AgentErrorContext::RuntimeShutdown),
+            );
+        }
+        Ok(membership)
+    }
+
+    pub(crate) fn request_shutdown(&self) -> Arc<AgentTreeShutdownState> {
+        self.shutdown_state.members.close();
+        self.shutdown.cancel();
+        self.mailboxes.close();
+        Arc::clone(&self.shutdown_state)
+    }
+
+    /// The caller must hold tree membership until this record has been written. This keeps
+    /// the completed shutdown report stable for every waiter.
+    pub(crate) fn record_shutdown_failure(&self, failure: AgentTreeShutdownFailure) {
+        self.shutdown_state.record_failure(failure);
+    }
+
     pub(crate) fn generate_thread_id(&self) -> ThreadId {
         (self.thread_id_generator)()
     }
@@ -365,6 +577,38 @@ impl LocalAgentRuntime {
             .is_current_waiting_assignment(assignment)
     }
 
+    pub(crate) fn current_wake_assignment(&self, thread_id: ThreadId) -> Option<AgentAssignmentId> {
+        self.wake_coordinator.current_assignment(thread_id)
+    }
+
+    pub(crate) fn continue_owned_completion(
+        &self,
+        id: &AgentAssignmentId,
+        turn_id: &str,
+    ) -> Result<(), &'static str> {
+        self.wake_coordinator.continue_owned_completion(id, turn_id)
+    }
+
+    pub(crate) fn observe_owned_completions(
+        &self,
+        assignment: &AgentAssignmentId,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+    ) {
+        self.wake_coordinator
+            .observe_owned_completions(assignment, store);
+    }
+
+    pub(crate) fn admit_owned_completion<T>(
+        &self,
+        assignment: &AgentAssignmentId,
+        turn_id: &str,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+        admit: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        self.wake_coordinator
+            .admit_owned_completion(assignment, turn_id, store, admit)
+    }
+
     pub(crate) fn accept_wake_reports(
         &self,
         assignment: &AgentAssignmentId,
@@ -399,6 +643,36 @@ impl LocalAgentRuntime {
             .map(|_| assignment)
     }
 
+    pub(crate) fn hand_off_wake_turn(
+        &self,
+        thread_id: ThreadId,
+        from_turn_id: &str,
+        to_turn_id: &str,
+    ) {
+        self.wake_coordinator
+            .hand_off_running_turn(thread_id, from_turn_id, to_turn_id);
+    }
+
+    /// Gives back the assignment a turn that never started holds. A child generation its waiting
+    /// parent is left waiting on reports its interruption to that parent instead.
+    pub(crate) fn release_unstarted_wake_turn(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+        agent_path: Option<AgentPath>,
+    ) {
+        if let Some(child) = self
+            .wake_coordinator
+            .release_unstarted_turn(thread_id, turn_id)
+        {
+            self.publish_waiting_parent_report(
+                child,
+                agent_path,
+                crate::session_prefix::UNSTARTED_CHILD_NOTE,
+            );
+        }
+    }
+
     pub(crate) fn begin_wake_assignment_for_turn(
         &self,
         thread_id: ThreadId,
@@ -408,6 +682,10 @@ impl LocalAgentRuntime {
     ) -> Result<Option<AgentAssignmentId>, &'static str> {
         if !self.wake_mode_enabled() {
             return Ok(None);
+        }
+
+        if !source.is_non_root_agent() {
+            self.register_session_root(thread_id, /*current_parent_thread_id*/ None);
         }
 
         let current = self.wake_coordinator.current_assignment(thread_id);
@@ -484,3 +762,6 @@ async fn stop_cancelled_descendant(manager: &ThreadManagerState, thread_id: Thre
         thread.wait_until_terminated().await;
     }
 }
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

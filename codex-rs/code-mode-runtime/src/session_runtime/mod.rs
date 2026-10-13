@@ -307,6 +307,15 @@ impl<D: SessionRuntimeDelegate> CellHost for RuntimeCellHost<D> {
         self.inner.cells.lock().await.remove(&self.cell_id);
         self.delegate.cell_closed(&self.cell_id);
     }
+
+    fn terminal_ready(
+        &self,
+        status: codex_code_mode_protocol::CellTerminalStatus,
+        output_kind: codex_code_mode_protocol::CellOutputKind,
+    ) {
+        self.delegate
+            .cell_terminal_ready(&self.cell_id, status, output_kind);
+    }
 }
 
 fn map_actor_event(cell_id: CellId, event: CellEventFuture) -> RuntimeEventFuture {

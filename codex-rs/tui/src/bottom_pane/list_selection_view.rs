@@ -1,6 +1,7 @@
 //! Render selectable lists with shared picker controls and full-width focus rows.
 //! Selection and scrolling use filtered row indices; actions map back to source items.
 //! Controls and overflow indicators keep their own rows outside the result viewport.
+//! Letter-labeled children are indented and do not consume numeric shortcuts.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -170,6 +171,8 @@ pub(crate) struct SelectionItem {
     /// Stable identity for rows that are refreshed while a picker remains open.
     pub selection_key: Option<String>,
     pub name: String,
+    /// Indent beneath the preceding parent, using this letter instead of a numeric shortcut.
+    pub child_label: Option<char>,
     pub name_prefix_spans: Vec<Span<'static>>,
     pub toggle: Option<SelectionToggle>,
     pub toggle_placeholder: Option<&'static str>,
@@ -180,7 +183,6 @@ pub(crate) struct SelectionItem {
     /// Wrapped content below the list for the highlighted row.
     pub details: Option<Box<dyn Renderable>>,
     pub is_current: bool,
-    pub is_default: bool,
     pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
     pub secondary_action: Option<SelectionSecondaryAction>,
@@ -206,6 +208,7 @@ pub(crate) struct SelectionItem {
 /// `row_display` controls whether rows can wrap or stay single-line with ellipsis truncation
 /// `description_layout` optionally hides descriptions when their column would become too narrow.
 pub(crate) struct SelectionViewParams {
+    pub presentation: super::ViewPresentation,
     pub picker_surface: PickerSurface,
     /// Upper row budget; compact completion menus retain the default of eight.
     pub max_visible_rows: usize,
@@ -271,6 +274,7 @@ impl Default for SelectionViewParams {
             picker_surface: PickerSurface::default(),
             max_visible_rows: MAX_POPUP_ROWS,
             reserve_result_rows: false,
+            presentation: super::ViewPresentation::Inline,
             view_id: None,
             title: None,
             subtitle: None,
@@ -309,6 +313,7 @@ impl Default for SelectionViewParams {
 /// visible rows and source items and for preserving selection while filters
 /// change.
 pub(crate) struct ListSelectionView {
+    presentation: super::ViewPresentation,
     picker_surface: PickerSurface,
     max_visible_rows: usize,
     reserve_result_rows: bool,
@@ -455,6 +460,7 @@ impl ListSelectionView {
             picker_surface: params.picker_surface,
             max_visible_rows: params.max_visible_rows.max(/*other*/ 1),
             reserve_result_rows: params.reserve_result_rows,
+            presentation: params.presentation,
             view_id: params.view_id,
             footer_note: params.footer_note,
             footer_hint: params.footer_hint,
@@ -684,7 +690,7 @@ impl ListSelectionView {
             .filter(|actual_idx| {
                 self.active_items()
                     .get(**actual_idx)
-                    .is_some_and(Self::item_is_enabled)
+                    .is_some_and(|item| Self::item_is_enabled(item) && item.child_label.is_none())
             })
             .count()
             .max(1)
@@ -700,13 +706,7 @@ impl ListSelectionView {
                     let is_selected = self.state.selected_idx == Some(visible_idx);
                     let prefix = if is_selected { '›' } else { ' ' };
                     let name = item.name.as_str();
-                    let marker = if item.is_current {
-                        " (current)"
-                    } else if item.is_default {
-                        " (default)"
-                    } else {
-                        ""
-                    };
+                    let marker = if item.is_current { " (current)" } else { "" };
                     let name_with_marker = format!("{name}{marker}");
                     let is_disabled = item.is_disabled || item.disabled_reason.is_some();
                     let wrap_prefix = if self.search_active {
@@ -722,6 +722,8 @@ impl ListSelectionView {
                         } else {
                             format!("{prefix} {}", " ".repeat(enabled_row_number_width + 2))
                         }
+                    } else if let Some(label) = item.child_label {
+                        format!("{prefix}    {label}. ")
                     } else {
                         enabled_row_number += 1;
                         let n = enabled_row_number;
@@ -817,7 +819,7 @@ impl ListSelectionView {
         self.active_items()
             .iter()
             .enumerate()
-            .filter(|(_, item)| Self::item_is_enabled(item))
+            .filter(|(_, item)| Self::item_is_enabled(item) && item.child_label.is_none())
             .nth(number - 1)
             .map(|(idx, _)| idx)
     }
@@ -1136,6 +1138,10 @@ impl BottomPaneView for ListSelectionView {
         self.replace_items_preserving_state(items)
     }
 
+    fn presentation(&self) -> super::ViewPresentation {
+        self.presentation
+    }
+
     fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
         crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::List)
     }
@@ -1283,8 +1289,10 @@ impl BottomPaneView for ListSelectionView {
                 && !modifiers.contains(KeyModifiers::ALT) =>
             {
                 if let Some(idx) = self.items.iter().position(|item| {
-                    item.display_shortcut
+                    (item
+                        .display_shortcut
                         .is_some_and(|shortcut| shortcut.is_press(key_event))
+                        || item.child_label == Some(c))
                         && Self::item_is_enabled(item)
                 }) {
                     self.select_shortcut(idx);

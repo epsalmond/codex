@@ -21,7 +21,7 @@ use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::TestCodex;
-use core_test_support::test_codex::local_selections;
+use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -86,7 +86,7 @@ async fn initial_plugin_ids_use_turn_context_without_extra_settings_checkpoints(
         .codex
         .start_turn_if_idle(TurnInputRequest::user_input(Vec::new()))
         .await?;
-    let StartIfIdleSubmission::Started { turn_id } = submission else {
+    let StartIfIdleSubmission::Started { turn_id, .. } = submission else {
         panic!("expected an accepted first turn, got {submission:?}");
     };
     wait_for_event(
@@ -228,7 +228,7 @@ async fn settings_notifications_keep_their_commit_across_postcommit_work(
                             .with_thread_settings(thread_settings),
                         )
                         .await?;
-                    let TurnInputSubmission::Started { turn_id } = result else {
+                    let TurnInputSubmission::Started { turn_id, .. } = result else {
                         panic!("expected a new turn, got {result:?}");
                     };
                     Ok(turn_id)
@@ -342,7 +342,7 @@ async fn compaction_checkpoints_settings_changed_during_its_model_request() -> R
     submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {
-            environments: Some(local_selections(updated_cwd_path.clone())),
+            environments: Some(local_requests(updated_cwd_path.clone())),
             model: Some(COMMITTED_MODEL.to_string()),
             disabled_plugin_ids: Some(vec!["slack@openai".to_string()]),
             context_settings: Some(
@@ -411,7 +411,10 @@ async fn context_settings_commit_reset_validation_and_restore_are_atomic() -> Re
     let initial = test.codex.thread_settings_snapshot().await;
     let initial_view = test.codex.context_settings().await;
     let mut legacy = serde_json::to_value(&initial)?;
-    legacy.as_object_mut().unwrap().remove("context_settings");
+    legacy
+        .as_object_mut()
+        .expect("thread settings serialize as an object")
+        .remove("context_settings");
     let mut legacy_expected = initial.clone();
     legacy_expected.context_settings = None;
     assert_eq!(
@@ -438,7 +441,11 @@ async fn context_settings_commit_reset_validation_and_restore_are_atomic() -> Re
         })
         .await?;
     let mut expected = initial.clone();
-    expected.context_settings.as_mut().unwrap().overrides = selection.clone();
+    expected
+        .context_settings
+        .as_mut()
+        .expect("thread settings retain context selection")
+        .overrides = selection.clone();
     assert_eq!(test.codex.thread_settings_snapshot().await, expected);
     let view = test.codex.context_settings().await;
     assert_eq!(view.requested, selection);
@@ -488,8 +495,12 @@ async fn context_settings_commit_reset_validation_and_restore_are_atomic() -> Re
     Ok(())
 }
 
+#[test_case(false; "combined model reset supersedes continuation")]
+#[test_case(true; "combined host data reset supersedes continuation")]
 #[tokio::test]
-async fn context_patch_and_reset_preserve_automatic_continuation_identity() -> Result<()> {
+async fn context_patch_and_reset_preserve_automatic_continuation_identity(
+    replace_host_data: bool,
+) -> Result<()> {
     use codex_protocol::context_settings::ContextSettingsOverrides;
     use codex_protocol::context_settings::ContextSettingsUpdate;
     use codex_protocol::context_settings::ShakeThreshold;
@@ -545,13 +556,23 @@ async fn context_patch_and_reset_preserve_automatic_continuation_identity() -> R
         })
         .await;
     }
-    test.codex
-        .update_thread_settings(ThreadSettingsOverrides {
+    let combined_reset = if replace_host_data {
+        codex_core::WithTurnExtensionData::new(
+            ThreadSettingsOverrides {
+                context_settings: Some(ContextSettingsUpdate::Reset),
+                ..Default::default()
+            },
+            codex_extension_api::ExtensionDataInit::default(),
+        )
+    } else {
+        ThreadSettingsOverrides {
             model: Some(INITIAL_MODEL.into()),
             context_settings: Some(ContextSettingsUpdate::Reset),
             ..Default::default()
-        })
-        .await?;
+        }
+        .into()
+    };
+    test.codex.update_thread_settings(combined_reset).await?;
     assert!(matches!(
         test.codex
             .continue_turn_if_idle(

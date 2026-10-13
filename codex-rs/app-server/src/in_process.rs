@@ -1078,6 +1078,7 @@ mod tests {
                     started_at: Some(0),
                     completed_at: None,
                     duration_ms: None,
+                    root_turn_id: None,
                 },
             })
         ));
@@ -1087,6 +1088,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    root_turn_id: None,
                     items: Vec::new(),
                     items_view: TurnItemsView::NotLoaded,
                     status: TurnStatus::Completed,

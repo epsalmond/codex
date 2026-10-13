@@ -40,6 +40,8 @@ service CodeModeHost {
 
 message OpenSessionRequest {
   optional SessionCellExecutionLimits cell_execution_limits = 1;
+  // Opt-in only. Older hosts omit support and retain compatibility retrieval.
+  bool terminal_ready_requested = 2;
 }
 
 message SessionCellExecutionLimits {
@@ -54,11 +56,37 @@ message SessionEvent {
     Notification notification = 3;
     NotificationCancelled notification_cancelled = 4;
     CellClosed cell_closed = 5;
+    CellTerminalReady cell_terminal_ready = 6;
   }
 }
 
 message SessionOpened {
   string session_id = 1;
+  bool terminal_ready_supported = 2;
+}
+
+// Emitted once after completion/callback settlement only if output is buffered.
+// May arrive before the Execute outcome. Does not acknowledge or consume output;
+// clients latch it until initial disposition and elect an observer before Wait.
+// Explicit termination/shutdown and competing observers can retire the output.
+message CellTerminalReady {
+  string session_id = 1;
+  string execution_id = 2;
+  string cell_id = 3;
+  CellTerminalStatus status = 4;
+  CellOutputKind output_kind = 5;
+}
+
+enum CellTerminalStatus {
+  CELL_TERMINAL_STATUS_UNSPECIFIED = 0;
+  CELL_TERMINAL_STATUS_COMPLETED = 1;
+  CELL_TERMINAL_STATUS_ERROR = 2;
+}
+
+enum CellOutputKind {
+  CELL_OUTPUT_KIND_UNSPECIFIED = 0;
+  CELL_OUTPUT_KIND_TEXT = 1;
+  CELL_OUTPUT_KIND_MEDIA = 2;
 }
 
 message CloseSessionRequest {

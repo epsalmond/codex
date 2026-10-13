@@ -266,12 +266,20 @@ impl Session {
         };
         let TurnSettingsUpdate {
             approvals_reviewer,
-            environments,
+            environments: environment_requests,
             model,
             effort,
             summary,
             service_tier,
         } = update;
+        let environments = environment_requests.map(|requests| {
+            requests
+                .into_iter()
+                .map(|request| {
+                    TurnEnvironmentSelection::new(request, &self.services.selected_capability_roots)
+                })
+                .collect::<Vec<_>>()
+        });
         let updates_step_settings = updates_model_settings || approvals_reviewer.is_some();
         let update = StepSettingsUpdate {
             approvals_reviewer,
@@ -331,7 +339,9 @@ impl Session {
             if let Some(configs) = environment_config_validation {
                 validate_environment_ids_and_cwds(
                     &self.services.turn_environments.environment_manager(),
-                    proposed,
+                    proposed
+                        .iter()
+                        .map(|selection| (selection.environment_id.as_str(), &selection.cwd)),
                 )
                 .map_err(|error| error.to_string())?;
                 ensure_configs_stay_owner_provided(&current_environments, proposed)
@@ -380,7 +390,7 @@ impl Session {
         update: &StepSettingsUpdate,
         environments: &[TurnEnvironmentSelection],
     ) -> Result<ResolvedStepSettings, String> {
-        let (requirements, overrides, trusted_guardian_reviewer) = {
+        let (requirements, mut overrides, trusted_guardian_reviewer) = {
             let state = self.state.lock().await;
             let configuration = &state.session_configuration;
             let stack = &configuration.original_config_do_not_use.config_layer_stack;
@@ -390,6 +400,8 @@ impl Session {
                 configuration.trusted_guardian_reviewer,
             )
         };
+        // Resolve the captured context selection against destination catalog metadata.
+        overrides.auto_compact_token_limit = None;
         let constraints = StepSettingsConstraints {
             requirements: &requirements,
             guardian_approval_enabled: self.features.enabled(Feature::GuardianApproval),
@@ -399,16 +411,32 @@ impl Session {
                 environments,
             ),
         };
-        current
+        let mut next = current
             .apply_update(
                 update,
                 &constraints,
                 self.services.models_manager.as_ref(),
                 &overrides,
-                self.features.enabled(Feature::FastMode),
+                &self.features,
             )
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if next.selected_collaboration_mode().model()
+            != current.selected_collaboration_mode().model()
+        {
+            let (model, view) = super::context_settings::resolve(
+                current
+                    .context_baseline
+                    .as_deref()
+                    .unwrap_or(&turn_context.config),
+                &current.context_selection,
+                &next.model_info,
+                super::context_settings::ContextSettingsTarget::from(&turn_context.session_source),
+            );
+            next.model_info = Arc::new(model);
+            next.context_settings = Some(Arc::new(view));
+        }
+        Ok(next)
     }
 
     /// Rechecks ordinary managed authorization after asynchronous resolution.
