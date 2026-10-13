@@ -9,7 +9,8 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 
 impl Session {
-    /// Returns the input if there is no active turn to inject into.
+    /// Returns the unchanged input unless the active turn has a registered task.
+    /// A turn reservation alone cannot accept injected input.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
@@ -21,6 +22,9 @@ impl Session {
         let mut active = self.active_turn.lock().await;
         match active.as_mut() {
             Some(active_turn) => {
+                if active_turn.task.is_none() {
+                    return Err(input);
+                }
                 self.input_queue
                     .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                         active_turn.turn_state.as_ref(),
