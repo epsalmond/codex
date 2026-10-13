@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/polling_warning_tests.rs
+expression: "super::helpers::render_bottom_popup(&chat, 80)"
+---
+  Warnings · 1 of 1 · Warning
+
+  Repeated status checks returned no new information. Requesting a pause; use
+  a completion notification or one bounded wait helper before continuing.
+
+
+
+
+
+
+
+  k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll

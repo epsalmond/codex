@@ -244,6 +244,14 @@ impl App {
             .await
         {
             Ok(thread) => {
+                if matches!(
+                    thread.source,
+                    codex_app_server_protocol::SessionSource::SubAgent(
+                        codex_protocol::protocol::SubAgentSource::ThreadSpawn { .. }
+                    )
+                ) {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 let is_parent_owned = thread_blocks_direct_input(&thread);
                 let agent_path = source_agent_path(&thread.source);
                 let is_running = matches!(
@@ -1170,6 +1178,7 @@ impl App {
 
         let mut refreshed_thread_ids = HashSet::new();
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
+            self.agent_navigation.mark_subagent(thread.thread_id);
             let agent_path = thread.agent_path;
             let has_live_channel = self
                 .thread_event_channels

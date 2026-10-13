@@ -25,12 +25,13 @@ use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
-use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
+
+mod session_subagents;
 
 /// Small state container for multi-agent picker ordering and labeling.
 ///
@@ -54,6 +55,10 @@ pub(crate) struct AgentNavigationState {
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
     picker_excluded_threads: HashSet<ThreadId>,
+    /// Local dismissal never changes backend liveness or saved history.
+    dismissed_threads: HashSet<ThreadId>,
+    /// Confirmed spawned descendants, including legacy children without agent paths.
+    subagent_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<AgentPickerRefreshState>,
 }
@@ -243,9 +248,9 @@ impl AgentNavigationState {
     /// This is the cheapest way for `App` to decide whether opening the picker should show "No
     /// agents available yet." rather than constructing picker rows from an empty state.
     pub(crate) fn is_empty(&self) -> bool {
-        self.threads
-            .keys()
-            .all(|id| self.picker_excluded_threads.contains(id))
+        self.threads.keys().all(|id| {
+            self.picker_excluded_threads.contains(id) || self.dismissed_threads.contains(id)
+        })
     }
 
     /// Inserts or updates a picker entry while preserving first-seen traversal order.
@@ -308,6 +313,9 @@ impl AgentNavigationState {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
         }
+        if entry.is_running {
+            self.dismissed_threads.remove(&activity.thread_id);
+        }
     }
 
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
@@ -333,6 +341,9 @@ impl AgentNavigationState {
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
+            if is_running {
+                self.dismissed_threads.remove(&thread_id);
+            }
             self.picker_state.bump_status_revision(thread_id);
         }
     }
@@ -340,6 +351,9 @@ impl AgentNavigationState {
     pub(crate) fn set_running_from_discovery(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
+            if is_running {
+                self.dismissed_threads.remove(&thread_id);
+            }
         }
     }
 
@@ -381,6 +395,8 @@ impl AgentNavigationState {
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
         self.picker_excluded_threads.clear();
+        self.dismissed_threads.clear();
+        self.subagent_threads.clear();
         self.picker_refresh = None;
     }
 
@@ -396,6 +412,8 @@ impl AgentNavigationState {
         self.stopped_threads.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
         self.picker_excluded_threads.remove(&thread_id);
+        self.dismissed_threads.remove(&thread_id);
+        self.subagent_threads.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -407,6 +425,7 @@ impl AgentNavigationState {
         self.threads.keys().any(|thread_id| {
             Some(*thread_id) != primary_thread_id
                 && !self.picker_excluded_threads.contains(thread_id)
+                && !self.dismissed_threads.contains(thread_id)
         })
     }
 
@@ -425,7 +444,10 @@ impl AgentNavigationState {
     pub(crate) fn visible_threads(&self) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
         self.ordered_threads()
             .into_iter()
-            .filter(|(thread_id, _)| !self.picker_excluded_threads.contains(thread_id))
+            .filter(|(thread_id, _)| {
+                !self.picker_excluded_threads.contains(thread_id)
+                    && !self.dismissed_threads.contains(thread_id)
+            })
             .collect()
     }
 
@@ -467,40 +489,6 @@ impl AgentNavigationState {
             .collect()
     }
 
-    /// Returns running descendants of the displayed thread in the current session cache.
-    pub(crate) fn running_subagents(
-        &self,
-        displayed_thread_id: Option<ThreadId>,
-        primary_thread_id: Option<ThreadId>,
-    ) -> HashSet<ThreadId> {
-        let Some(displayed_thread_id) = displayed_thread_id else {
-            return HashSet::new();
-        };
-        let agent_path = self
-            .get(&displayed_thread_id)
-            .and_then(|entry| entry.agent_path.as_deref())
-            .or_else(|| {
-                (Some(displayed_thread_id) == primary_thread_id).then_some(AgentPath::ROOT)
-            });
-        let Some(agent_path) = agent_path else {
-            return HashSet::new();
-        };
-        let descendant_prefix = format!("{agent_path}/");
-        self.threads
-            .iter()
-            .filter_map(|(thread_id, entry)| {
-                (*thread_id != displayed_thread_id
-                    && entry.is_running
-                    && !entry.is_closed
-                    && entry
-                        .agent_path
-                        .as_deref()
-                        .is_some_and(|path| path.starts_with(&descendant_prefix)))
-                .then_some(*thread_id)
-            })
-            .collect()
-    }
-
     /// Returns tracked thread ids in the same stable order used by the picker.
     pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
         self.visible_threads()
@@ -534,7 +522,8 @@ impl AgentNavigationState {
             };
             let thread_id = self.order[idx];
             (self.threads.contains_key(&thread_id)
-                && !self.picker_excluded_threads.contains(&thread_id))
+                && !self.picker_excluded_threads.contains(&thread_id)
+                && !self.dismissed_threads.contains(&thread_id))
             .then_some(thread_id)
         })
     }

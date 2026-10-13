@@ -6,6 +6,13 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::*;
 
 impl App {
+    pub(super) fn dismiss_inactive_subagents(&mut self) {
+        if let Some(root) = self.primary_thread_id {
+            self.agent_navigation.dismiss_inactive_subagents(root);
+            self.update_agent_picker_rows_if_present();
+        }
+    }
+
     pub(super) async fn close_agent_picker_thread(
         &mut self,
         tui: &mut tui::Tui,

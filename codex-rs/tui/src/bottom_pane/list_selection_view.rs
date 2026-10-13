@@ -139,6 +139,12 @@ pub(crate) struct SelectionSecondaryAction {
     pub footer_hint: Line<'static>,
 }
 
+/// Shortcut that acts on the whole view without accepting the selected row.
+pub(crate) struct SelectionViewAction {
+    pub keys: Vec<KeyBinding>,
+    pub action: SelectionAction,
+}
+
 enum SelectionActionKind {
     Primary,
     Secondary,
@@ -220,6 +226,8 @@ pub(crate) struct SelectionViewParams {
     pub footer_note: Option<Line<'static>>,
     pub footer_hint: Option<Line<'static>>,
     pub tab_footer_hints: Vec<(String, Line<'static>)>,
+    /// View shortcuts are inactive while editing a search query.
+    pub key_actions: Vec<SelectionViewAction>,
     pub items: Vec<SelectionItem>,
     pub tabs: Vec<SelectionTab>,
     pub initial_tab_id: Option<String>,
@@ -281,6 +289,7 @@ impl Default for SelectionViewParams {
             footer_note: None,
             footer_hint: None,
             tab_footer_hints: Vec::new(),
+            key_actions: Vec::new(),
             items: Vec::new(),
             tabs: Vec::new(),
             initial_tab_id: None,
@@ -321,6 +330,7 @@ pub(crate) struct ListSelectionView {
     footer_note: Option<Line<'static>>,
     footer_hint: Option<Line<'static>>,
     tab_footer_hints: Vec<(String, Line<'static>)>,
+    key_actions: Vec<SelectionViewAction>,
     items: Vec<SelectionItem>,
     tabs: Vec<SelectionTab>,
     active_tab_idx: Option<usize>,
@@ -464,6 +474,7 @@ impl ListSelectionView {
             view_id: params.view_id,
             footer_note: params.footer_note,
             footer_hint: params.footer_hint,
+            key_actions: params.key_actions,
             tab_footer_hints: params.tab_footer_hints,
             items: params.items,
             tabs: params.tabs,
@@ -1152,6 +1163,16 @@ impl BottomPaneView for ListSelectionView {
         // making those letters impossible to type into a filter.
         let allow_plain_char_navigation =
             !self.search_active || !is_plain_text_key_event(key_event);
+
+        if !self.search_active
+            && let Some(action) = self
+                .key_actions
+                .iter()
+                .find(|action| action.keys.is_pressed(key_event))
+        {
+            (action.action)(&self.app_event_tx);
+            return;
+        }
 
         match key_event {
             KeyEvent {

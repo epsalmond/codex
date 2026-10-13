@@ -29,6 +29,13 @@ const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 
+/// Session-wide counts of open descendants, independent of picker dismissal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SubagentCounts {
+    pub(crate) running: usize,
+    pub(crate) total: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.

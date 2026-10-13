@@ -235,9 +235,9 @@ impl App {
     }
 
     pub(super) fn sync_active_subagents(&mut self) {
-        self.chat_widget.set_active_subagents(
+        self.chat_widget.set_subagent_counts(
             self.agent_navigation
-                .running_subagents(self.current_displayed_thread_id(), self.primary_thread_id),
+                .subagent_counts(self.primary_thread_id),
         );
     }
 
@@ -1471,6 +1471,18 @@ impl App {
             return;
         };
 
+        let item = match notification {
+            ServerNotification::ItemStarted(notification) => &notification.item,
+            ServerNotification::ItemCompleted(notification) => &notification.item,
+            _ => return,
+        };
+        let is_spawn = matches!(
+            item,
+            ThreadItem::CollabAgentToolCall {
+                tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+                ..
+            }
+        );
         for receiver_thread_id in receiver_thread_ids {
             if collab_receiver_is_not_found(notification, receiver_thread_id) {
                 continue;
@@ -1484,6 +1496,9 @@ impl App {
                 continue;
             };
 
+            if is_spawn {
+                self.agent_navigation.mark_subagent(thread_id);
+            }
             if self.agent_navigation.get(&thread_id).is_some() {
                 continue;
             }

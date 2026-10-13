@@ -89,7 +89,10 @@ async fn custom_model_display_name_in_status_line_and_fallback() {
     ]);
     chat.token_info = Some(make_token_info(143_000, 823_000));
     chat.thread_name = Some("my-session".to_string());
-    chat.active_subagents.insert(ThreadId::new());
+    chat.subagent_counts = crate::multi_agents::SubagentCounts {
+        running: 1,
+        total: 2,
+    };
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
     chat.refresh_status_line();
     assert_eq!(chat.model_display_name(), "GPT-5.6 Luna");

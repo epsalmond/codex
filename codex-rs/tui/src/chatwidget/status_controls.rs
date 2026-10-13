@@ -100,9 +100,9 @@ impl ChatWidget {
     }
 
     /// Mirrors live navigation state independently of deferred transcript activity.
-    pub(crate) fn set_active_subagents(&mut self, active_subagents: HashSet<ThreadId>) {
-        if self.active_subagents != active_subagents {
-            self.active_subagents = active_subagents;
+    pub(crate) fn set_subagent_counts(&mut self, counts: crate::multi_agents::SubagentCounts) {
+        if self.subagent_counts != counts {
+            self.subagent_counts = counts;
             self.refresh_status_line();
         }
     }
