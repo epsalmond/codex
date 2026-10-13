@@ -40,7 +40,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
 {
     struct TurnRegistrationGate {
         entered: mpsc::Sender<()>,
-        release: Mutex<oneshot::Receiver<()>>,
+        release: Mutex<Option<oneshot::Receiver<()>>>,
     }
 
     impl TurnLifecycleContributor for TurnRegistrationGate {
@@ -49,8 +49,11 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
             _input: TurnStartInput<'a>,
         ) -> codex_extension_api::ExtensionFuture<'a, ()> {
             Box::pin(async move {
-                let _ = self.entered.send(()).await;
-                let _ = (&mut *self.release.lock().await).await;
+                let release = self.release.lock().await.take();
+                if let Some(release) = release {
+                    let _ = self.entered.send(()).await;
+                    let _ = release.await;
+                }
             })
         }
     }
@@ -65,7 +68,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
     let (release, gate_release) = oneshot::channel();
     let gate = Arc::new(TurnRegistrationGate {
         entered,
-        release: Mutex::new(gate_release),
+        release: Mutex::new(Some(gate_release)),
     });
     let manager = Arc::new_cyclic(|manager| {
         let mut extensions = ExtensionRegistryBuilder::new();
@@ -78,7 +81,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
             Arc::clone(&goal_service),
             |_| GoalExtensionConfig {
                 enabled: true,
-                max_goal_token_budget: None,
+                ..Default::default()
             },
         );
         extensions.turn_lifecycle_contributor(gate.clone());
@@ -110,12 +113,13 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
     let thread = manager
         .start_thread(StartThreadOptions {
-            environments: Some(vec![test.executor_environment().selection().clone()]),
+            environments: Some(vec![test.executor_environment().request()]),
             ..StartThreadOptions::new(config)
         })
         .await?
         .thread;
     let thread_id = thread.startup_metadata().thread_id;
+    // Only runtime steering should add goal context; keep instruction recording inert.
     goal_service
         .set_thread_goal(
             &state_db,
@@ -126,6 +130,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
             },
+            std::future::ready(Ok(())),
         )
         .await?;
 
@@ -160,6 +165,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     let effects = tokio::spawn({
@@ -203,6 +209,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     paused.apply_runtime_effects(&goal_service).await;

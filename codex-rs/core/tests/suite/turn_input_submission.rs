@@ -223,7 +223,7 @@ impl TurnStartAdmission for TestAdmission {
 async fn inject_if_running_returns_items_before_task_registration() -> anyhow::Result<()> {
     struct TurnRegistrationGate {
         entered: mpsc::Sender<()>,
-        release: Mutex<oneshot::Receiver<()>>,
+        release: Mutex<Option<oneshot::Receiver<()>>>,
     }
 
     // The default lifecycle phase holds the reservation before task registration.
@@ -233,8 +233,11 @@ async fn inject_if_running_returns_items_before_task_registration() -> anyhow::R
             _input: TurnStartInput<'a>,
         ) -> codex_extension_api::ExtensionFuture<'a, ()> {
             Box::pin(async move {
-                let _ = self.entered.send(()).await;
-                let _ = (&mut *self.release.lock().await).await;
+                let release = self.release.lock().await.take();
+                if let Some(release) = release {
+                    let _ = self.entered.send(()).await;
+                    let _ = release.await;
+                }
             })
         }
     }
@@ -246,7 +249,7 @@ async fn inject_if_running_returns_items_before_task_registration() -> anyhow::R
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.turn_lifecycle_contributor(Arc::new(TurnRegistrationGate {
         entered,
-        release: Mutex::new(gate_release),
+        release: Mutex::new(Some(gate_release)),
     }));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
