@@ -47,7 +47,7 @@ use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
-use crate::steering::budget_limit_steering_item;
+use crate::steering::budget_limit_steering_fragment;
 use crate::tool::GoalToolExecutor;
 
 #[derive(Clone, Debug)]
@@ -565,8 +565,8 @@ where
             {
                 return;
             }
-            let item = budget_limit_steering_item(&goal);
-            runtime.inject_active_turn_steering(item).await;
+            let fragment = budget_limit_steering_fragment(&goal);
+            runtime.inject_active_turn_steering(fragment).await;
         })
     }
 }

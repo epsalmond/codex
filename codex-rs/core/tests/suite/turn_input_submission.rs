@@ -14,7 +14,9 @@ use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartAdmission;
+use codex_extension_api::TurnStartInput;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::CollaborationMode;
@@ -50,6 +52,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::Barrier;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
@@ -213,6 +217,67 @@ impl TurnStartAdmission for TestAdmission {
             Some(Box::new(()))
         }
     }
+}
+
+#[tokio::test]
+async fn inject_if_running_returns_items_before_task_registration() -> anyhow::Result<()> {
+    struct TurnRegistrationGate {
+        entered: mpsc::Sender<()>,
+        release: Mutex<oneshot::Receiver<()>>,
+    }
+
+    // The default lifecycle phase holds the reservation before task registration.
+    impl TurnLifecycleContributor for TurnRegistrationGate {
+        fn on_turn_start<'a>(
+            &'a self,
+            _input: TurnStartInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                let _ = self.entered.send(()).await;
+                let _ = (&mut *self.release.lock().await).await;
+            })
+        }
+    }
+
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("registered")).await;
+    let (entered, mut gate_entered) = mpsc::channel(/*buffer*/ 1);
+    let (release, gate_release) = oneshot::channel();
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_lifecycle_contributor(Arc::new(TurnRegistrationGate {
+        entered,
+        release: Mutex::new(gate_release),
+    }));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    let codex = Arc::clone(&test.codex);
+    let submission = tokio::spawn(async move {
+        codex
+            .start_turn_if_idle(user_message_request("submitted prompt"))
+            .await
+    });
+    timeout(Duration::from_secs(/*secs*/ 30), gate_entered.recv())
+        .await?
+        .expect("turn-start contributor should enter before task registration");
+
+    let original_items = vec![responses::user_message_item("rejected injected input")];
+    let injection = test.codex.inject_if_running(original_items.clone()).await;
+    // Always release task registration before assertions can panic.
+    let _ = release.send(());
+    let submission = submission.await??;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(injection, Err(original_items));
+    assert!(matches!(submission, StartIfIdleSubmission::Started { .. }));
+    let request = response.single_request();
+    assert!(request.body_contains_text("submitted prompt"));
+    assert!(!request.body_contains_text("rejected injected input"));
+    Ok(())
 }
 
 #[tokio::test]

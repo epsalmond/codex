@@ -635,11 +635,12 @@ impl CodexThread {
         self.session.set_thread_memory_mode(mode).await
     }
 
-    /// Injects model-visible items into the currently active turn.
+    /// Injects model-visible items into a turn with a registered task.
     ///
     /// This is the thread-level bridge to `Session::inject_if_running` for
     /// callers that only hold a `CodexThread`.
-    /// It returns the unchanged items when this thread has no active turn.
+    /// It returns the unchanged items when this thread has no registered task,
+    /// including while a turn is only reserved.
     pub async fn inject_if_running(
         &self,
         items: Vec<ResponseItem>,
@@ -852,7 +853,10 @@ impl CodexThread {
     }
 
     /// Records a context fragment without creating a new user turn boundary.
-    pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
+    ///
+    /// Queues it into a registered task, or records it in history without starting a turn.
+    /// Producers must bound the fragment's payload.
+    pub async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
         let item = ContextualUserFragment::into(fragment);
         self.session
             .inject_no_new_turn(vec![item], /*current_turn_context*/ None)

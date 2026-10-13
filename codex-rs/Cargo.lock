@@ -3547,6 +3547,7 @@ dependencies = [
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-template",
+ "core_test_support",
  "pretty_assertions",
  "serde",
  "serde_json",

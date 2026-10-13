@@ -1,13 +1,46 @@
 use crate::session::tests::make_session_and_context_with_rx;
+use crate::session::tests::raw_history_items;
+use crate::state::ActiveTurn;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RolloutItem;
 use codex_protocol::models::ConfigurationReasoning;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TurnAbortReason;
+use core_test_support::responses::strip_metadata_from_items;
+use core_test_support::responses::strip_response_item_ids;
 use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn inject_no_new_turn_preserves_history_when_a_reserved_turn_is_aborted() {
+    let (session, turn_context, _rx_event) = make_session_and_context_with_rx().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    let item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "context injected during turn reservation".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    session
+        .inject_no_new_turn(vec![item.clone()], Some(&turn_context))
+        .await;
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+
+    assert!(session.active_turn.lock().await.is_none());
+    let history = session.clone_history().await;
+    assert_eq!(
+        strip_response_item_ids(&strip_metadata_from_items(&raw_history_items(&history))),
+        strip_response_item_ids(&strip_metadata_from_items(&[item])),
+    );
+}
 
 #[tokio::test]
 async fn harness_authored_configuration_updates_preserve_metadata_and_resume() {
