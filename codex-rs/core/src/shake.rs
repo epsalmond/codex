@@ -35,12 +35,16 @@ use codex_utils_output_truncation::approx_tokens_from_byte_count;
 
 pub(crate) mod auto;
 mod elide;
+mod outcome;
 pub(crate) mod preview;
 pub(crate) mod protection;
 mod recovery;
 pub(crate) mod request;
 pub(crate) mod watermark;
 pub(crate) use self::elide::shake_elide_watermarked;
+pub(crate) use self::outcome::ShakeFailure;
+pub(crate) use self::outcome::ShakeOutcome;
+pub(crate) use self::outcome::ShakeSkipReason;
 use self::recovery::is_artifact_recovery_output;
 use self::recovery::recovery_placeholder;
 
@@ -414,8 +418,8 @@ fn push_block_regions(
     }
 }
 
-/// Outcome of a shake run.
-#[derive(Debug, Default)]
+/// Reduction counts from the pure Shake transform.
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ShakeResult {
     /// Whole tool-call outputs elided.
     pub tool_outputs_elided: usize,

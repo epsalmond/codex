@@ -18,9 +18,10 @@ use super::mid_turn_reduction::record_reduction;
 use super::session::Session;
 use super::step_context::StepContext;
 use super::turn::maybe_run_auto_shake;
-use super::turn::run_auto_compact;
+use super::turn::run_inline_compact;
 use crate::agent::types::ContextReductionOutcome;
 use crate::client::ModelClientSession;
+use crate::compact_invocation::CompactionInvocation;
 
 /// A bounded marker based on post-reduction content, rather than turn IDs or generations.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -215,13 +216,15 @@ impl ChildRequestAdmission {
                 outcome: ContextReductionOutcome::Shaken,
             })
             .before_tokens;
-        if let Err(err) = run_auto_compact(
+        if let Err(err) = run_inline_compact(
             sess,
             Arc::clone(step),
             Arc::clone(step),
             client,
-            CompactionReason::ContextLimit,
-            CompactionPhase::MidTurn,
+            CompactionInvocation::automatic(
+                CompactionReason::ContextLimit,
+                CompactionPhase::MidTurn,
+            ),
         )
         .or_cancel(cancellation)
         .await

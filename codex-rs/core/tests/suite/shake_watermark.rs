@@ -208,6 +208,24 @@ async fn resume_rejects_an_edited_sealed_media_checkpoint() -> Result<()> {
             .contains("Stored Shake history seal is invalid")
     );
 
+    Box::pin(resumed.codex.submit(Op::Shake {
+        mode: ShakeMode::Images,
+        expected_fingerprint: None,
+    }))
+    .await?;
+    let warning = Box::pin(wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::Warning(warning) if warning.message.starts_with("⛭ shake:"))
+    }))
+    .await;
+    let EventMsg::Warning(warning) = warning else {
+        unreachable!();
+    };
+    assert!(warning.message.contains("Stored history seal is invalid"));
+    assert_eq!(
+        latest_shake_state(&rollout_path(&resumed.codex)?)?,
+        sealed_state
+    );
+
     resumed.codex.shutdown_and_wait().await?;
     Ok(())
 }
