@@ -508,7 +508,10 @@ async fn context_patch_and_reset_preserve_automatic_continuation_identity(
     let server = responses::start_mock_server().await;
     let test = test_codex().build_with_auto_env(&server).await?;
     responses::mount_sse_once(&server, responses::sse_completed("initial")).await;
-    let TurnInputSubmission::Started { mut turn_id } = test
+    let TurnInputSubmission::Started {
+        mut turn_id,
+        root_turn_id: _,
+    } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Work".into(),
@@ -547,7 +550,10 @@ async fn context_patch_and_reset_preserve_automatic_continuation_identity(
                 turn_id.clone(),
             )
             .await?;
-        let TurnInputSubmission::Started { turn_id: next } = submission else {
+        let TurnInputSubmission::Started {
+            turn_id: next,
+            root_turn_id: _,
+        } = submission else {
             panic!("continuation was superseded: {submission:?}")
         };
         turn_id = next;
