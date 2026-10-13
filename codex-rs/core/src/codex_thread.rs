@@ -682,8 +682,10 @@ impl CodexThread {
         self.session.token_usage_info().await
     }
 
-    /// Records a context fragment without creating a new user turn boundary.
-    pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
+    /// Queues a context fragment into a registered task, or records it in history.
+    ///
+    /// This does not start a turn. Producers must bound the fragment's payload.
+    pub async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
         let item = ContextualUserFragment::into(fragment);
         self.session
             .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
