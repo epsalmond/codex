@@ -132,7 +132,10 @@ pub(crate) fn build_agent_spawn_config(
     base_instructions: &BaseInstructions,
     step_context: &StepContext,
 ) -> Result<Config, String> {
-    let mut config = build_agent_shared_config(step_context.turn.as_ref())?;
+    let mut config = build_agent_shared_config(
+        step_context.turn.as_ref(),
+        &step_context.settings.context_selection,
+    )?;
     let settings = &step_context.settings;
     config.model = Some(settings.model_info.slug.clone());
     config.model_reasoning_effort = settings.effective_reasoning_effort();
@@ -143,14 +146,17 @@ pub(crate) fn build_agent_spawn_config(
 }
 
 pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, String> {
-    let mut config = build_agent_shared_config(turn)?;
+    let mut config = build_agent_shared_config(turn, &turn.initial_settings.context_selection)?;
     // For resume, keep base instructions sourced from rollout/session metadata.
     config.base_instructions = None;
     config.base_instructions_provenance = None;
     Ok(config)
 }
 
-fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
+fn build_agent_shared_config(
+    turn: &TurnContext,
+    state: &codex_protocol::context_settings::ContextSettingsState,
+) -> Result<Config, String> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
     // Preserve activation for history forks without freezing the parent's model-owned prompts.
@@ -173,23 +179,7 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     {
         config.developer_instructions = Some(developer_instructions);
     }
-    // Subagents reuse the root's shake-then-compact path at a lower limit. Taking the
-    // min keeps nested children idempotent and never raises a user-configured limit.
-    if config.subagent_context_reduction.enabled {
-        let threshold_tokens =
-            i64::try_from(config.subagent_context_reduction.threshold_tokens).unwrap_or(i64::MAX);
-        config.model_auto_compact_token_limit = Some(
-            config
-                .model_auto_compact_token_limit
-                .map_or(threshold_tokens, |limit| limit.min(threshold_tokens)),
-        );
-        config.auto_shake.max_threshold_tokens = Some(
-            config
-                .auto_shake
-                .max_threshold_tokens
-                .map_or(threshold_tokens, |cap| cap.min(threshold_tokens)),
-        );
-    }
+    super::super::session::context_settings::inherit(&mut config, state);
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)

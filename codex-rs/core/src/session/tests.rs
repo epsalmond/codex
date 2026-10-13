@@ -4475,6 +4475,7 @@ async fn set_rate_limits_retains_previous_credits() {
         },
     };
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
         environments: Vec::new(),
@@ -4598,6 +4599,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         },
     };
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
         environments: Vec::new(),
@@ -5222,6 +5224,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
     };
 
     SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
         environments: Vec::new(),
@@ -6696,6 +6699,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         },
     };
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(
             config.model_provider.clone(),
@@ -6930,6 +6934,7 @@ pub(crate) async fn make_session_and_context_with_session_source(
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -7258,6 +7263,7 @@ async fn make_session_with_config_and_rx(
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -7391,6 +7397,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -9228,6 +9235,7 @@ where
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(

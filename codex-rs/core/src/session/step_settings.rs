@@ -40,6 +40,7 @@ pub(crate) struct StepSettings {
 /// snapshot does not change steps or actions that have already captured it.
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedStepSettings {
+    pub(crate) context_selection: codex_protocol::context_settings::ContextSettingsState,
     /// Inputs for later sparse patches. Unset defaults and unsupported requested
     /// tiers must not be reconstructed from the effective values below.
     selected: Arc<StepSettings>,
@@ -66,6 +67,7 @@ impl ResolvedStepSettings {
         let service_tier =
             super::get_service_tier(selected.service_tier.clone(), features, &model_info);
         Self {
+            context_selection: Default::default(),
             selected,
             model_info,
             reasoning_summary,
@@ -137,6 +139,7 @@ impl ResolvedStepSettings {
                 Arc::new(selected.resolve_model_info(models_manager, overrides).await)
             };
         let mut next = Self::new(Arc::new(selected), model_info, features);
+        next.context_selection = self.context_selection.clone();
         next.mcp_approvals_reviewer_override = update
             .approvals_reviewer
             .or(self.mcp_approvals_reviewer_override);

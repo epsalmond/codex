@@ -390,7 +390,7 @@ impl Session {
         update: &StepSettingsUpdate,
         environments: &[TurnEnvironmentSelection],
     ) -> Result<ResolvedStepSettings, String> {
-        let (requirements, overrides, trusted_guardian_reviewer) = {
+        let (requirements, mut overrides, trusted_guardian_reviewer) = {
             let state = self.state.lock().await;
             let configuration = &state.session_configuration;
             let stack = &configuration.original_config_do_not_use.config_layer_stack;
@@ -400,6 +400,8 @@ impl Session {
                 configuration.trusted_guardian_reviewer,
             )
         };
+        // Model changes retain the context inputs captured when this turn began.
+        overrides.auto_compact_token_limit = turn_context.config.model_auto_compact_token_limit;
         let constraints = StepSettingsConstraints {
             requirements: &requirements,
             guardian_approval_enabled: self.features.enabled(Feature::GuardianApproval),

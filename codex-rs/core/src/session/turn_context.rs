@@ -823,11 +823,10 @@ impl TurnContext {
             Some(reasoning_effort),
             /*developer_instructions*/ None,
         );
-        let step_settings = Arc::new(ResolvedStepSettings::new(
-            Arc::new(selected),
-            model_info,
-            &config.features,
-        ));
+        let mut step_settings =
+            ResolvedStepSettings::new(Arc::new(selected), model_info, &config.features);
+        step_settings.context_selection = self.initial_settings.context_selection.clone();
+        let step_settings = Arc::new(step_settings);
         config.service_tier = step_settings.service_tier.clone();
         let session_telemetry = step_settings.telemetry(&self.session_telemetry);
         let agent_assignment = std::sync::OnceLock::new();
@@ -1005,6 +1004,13 @@ impl Session {
             );
         }
         per_turn_config.features = config.features.clone();
+        super::context_settings::project(
+            &mut per_turn_config,
+            &session_configuration.context_settings,
+            super::context_settings::ContextSettingsTarget::from(
+                &session_configuration.session_source,
+            ),
+        );
         per_turn_config
     }
 
@@ -1300,12 +1306,11 @@ impl Session {
             .map(TurnEnvironment::permission_profile)
             .cloned()
             .unwrap_or_else(|| session_configuration.permission_profile());
+        let mut model_overrides = session_configuration.model_info_overrides.clone();
+        model_overrides.auto_compact_token_limit = per_turn_config.model_auto_compact_token_limit;
         let model_info = session_configuration
             .step_settings
-            .resolve_model_info(
-                self.services.models_manager.as_ref(),
-                &session_configuration.model_info_overrides,
-            )
+            .resolve_model_info(self.services.models_manager.as_ref(), &model_overrides)
             .await;
         let multi_agent_version = match build_mode {
             TurnContextBuildMode::Full => {
@@ -1358,11 +1363,13 @@ impl Session {
                 .snapshot_for_config(&skills_input, fs)
                 .await
         };
-        let step_settings = Arc::new(ResolvedStepSettings::new(
+        let mut step_settings = ResolvedStepSettings::new(
             Arc::clone(&session_configuration.step_settings),
             Arc::new(model_info),
             &self.features,
-        ));
+        );
+        step_settings.context_selection = session_configuration.context_settings.clone();
+        let step_settings = Arc::new(step_settings);
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
             self.session_id(),
