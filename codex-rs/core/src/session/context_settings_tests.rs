@@ -20,15 +20,17 @@ async fn sparse_overlay_model_default_and_reset_resolve_against_catalog() {
         ShakeThreshold::Percent { percent: 61 },
         ShakeThreshold::Tokens { tokens: 2300 },
     ] {
-        let mut next = state.clone();
-        merge(
-            &mut next.overrides,
-            &ContextSettingsOverrides {
-                shake_threshold: Some(threshold),
-                compaction_threshold: Some(CompactionThreshold::ModelDefault),
-                ..Default::default()
+        let next = apply(
+            &state,
+            &ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    shake_threshold: Some(threshold),
+                    compaction_threshold: Some(CompactionThreshold::ModelDefault),
+                    ..Default::default()
+                },
             },
-        );
+        )
+        .unwrap();
         let (resolved_model, view) = resolve(&config, &next, &model, ContextSettingsTarget::Root);
         let mut expected = baseline.clone();
         expected.requested = next.overrides.clone();
@@ -42,8 +44,7 @@ async fn sparse_overlay_model_default_and_reset_resolve_against_catalog() {
         };
         assert_eq!(view, expected);
         assert_eq!(resolved_model.auto_compact_token_limit, Some(8000));
-        let mut reset = next.clone();
-        reset.overrides = ContextSettingsOverrides::default();
+        let reset = apply(&next, &ContextSettingsUpdate::Reset).unwrap();
         assert_eq!(
             resolve(&config, &reset, &model, ContextSettingsTarget::Root).1,
             baseline
@@ -51,14 +52,16 @@ async fn sparse_overlay_model_default_and_reset_resolve_against_catalog() {
     }
     model.context_window = None;
     model.max_context_window = None;
-    let mut percent_state = state;
-    merge(
-        &mut percent_state.overrides,
-        &ContextSettingsOverrides {
-            shake_threshold: Some(ShakeThreshold::Percent { percent: 61 }),
-            ..Default::default()
+    let percent_state = apply(
+        &state,
+        &ContextSettingsUpdate::Patch {
+            overrides: ContextSettingsOverrides {
+                shake_threshold: Some(ShakeThreshold::Percent { percent: 61 }),
+                ..Default::default()
+            },
         },
-    );
+    )
+    .unwrap();
     assert_eq!(
         resolve(&config, &percent_state, &model, ContextSettingsTarget::Root)
             .1
@@ -81,14 +84,17 @@ async fn compaction_scope_keeps_body_limit_distinct_from_full_admission() {
         (AutoCompactTokenLimitScope::Total, 9000),
         (AutoCompactTokenLimitScope::BodyAfterPrefix, 12000),
     ] {
-        merge(
-            &mut state.overrides,
-            &ContextSettingsOverrides {
-                compaction_threshold: Some(CompactionThreshold::Tokens { tokens: 12000 }),
-                compaction_scope: Some(scope),
-                ..Default::default()
+        state = apply(
+            &state,
+            &ContextSettingsUpdate::Patch {
+                overrides: ContextSettingsOverrides {
+                    compaction_threshold: Some(CompactionThreshold::Tokens { tokens: 12000 }),
+                    compaction_scope: Some(scope),
+                    ..Default::default()
+                },
             },
-        );
+        )
+        .unwrap();
         let (resolved, view) = resolve(config, &state, &model, ContextSettingsTarget::Root);
         assert_eq!(
             (
@@ -113,13 +119,12 @@ async fn future_turn_projects_context_choices_while_captured_turn_stays_immutabl
     let before = initial.initial_settings.context_settings.clone();
     session
         .update_settings(super::super::session::SessionSettingsUpdate {
-            restored_context_settings: Some(ContextSettingsState {
+            context_settings: Some(ContextSettingsUpdate::Patch {
                 overrides: ContextSettingsOverrides {
                     shake_threshold: Some(ShakeThreshold::Off),
                     compaction_threshold: Some(CompactionThreshold::Tokens { tokens: 1111 }),
                     ..Default::default()
                 },
-                ..Default::default()
             }),
             ..Default::default()
         })
@@ -151,7 +156,7 @@ async fn future_turn_projects_context_choices_while_captured_turn_stays_immutabl
     assert_eq!(next_view.model, next.model_info().slug);
     session
         .update_settings(super::super::session::SessionSettingsUpdate {
-            restored_context_settings: Some(ContextSettingsState::default()),
+            context_settings: Some(ContextSettingsUpdate::Reset),
             step_settings: crate::session::step_settings::StepSettingsUpdate {
                 model: Some("gpt-6-astra".into()),
                 ..Default::default()
@@ -188,10 +193,10 @@ fn sparse_numeric_validation_rejects_out_of_range_fields() {
         let mut overrides = ContextSettingsOverrides::default();
         patch(&mut overrides);
         assert!(
-            validate_state(&ContextSettingsState {
-                overrides,
-                ..Default::default()
-            })
+            apply(
+                &ContextSettingsState::default(),
+                &ContextSettingsUpdate::Patch { overrides }
+            )
             .is_err()
         );
     }

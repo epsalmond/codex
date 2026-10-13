@@ -494,6 +494,7 @@ pub enum TurnSettingsUpdateOutcome {
     }),
 )]
 pub struct ThreadSettingsOverrides {
+    pub context_settings: Option<crate::context_settings::ContextSettingsUpdate>,
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
     pub environments: Option<TurnEnvironmentRequests>,
 

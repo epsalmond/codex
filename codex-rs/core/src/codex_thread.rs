@@ -149,6 +149,7 @@ impl ThreadConfigSnapshot {
 /// Thread settings overrides that app-server validates before starting a turn.
 #[derive(Clone, Default)]
 pub struct CodexThreadSettingsOverrides {
+    pub context_settings: Option<codex_protocol::context_settings::ContextSettingsUpdate>,
     /// Exact retained state for runtime replacement, including an empty selection.
     #[doc(hidden)]
     pub restored_context_settings: Option<codex_protocol::context_settings::ContextSettingsState>,
@@ -761,6 +762,7 @@ impl CodexThread {
         overrides: CodexThreadSettingsOverrides,
     ) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
+            context_settings,
             restored_context_settings,
             turn_extension_init,
             environments: environment_requests,
@@ -781,6 +783,7 @@ impl CodexThread {
             disabled_plugin_ids,
         } = overrides;
         SessionSettingsUpdate {
+            context_settings,
             restored_context_settings,
             turn_extension_init,
             step_settings: StepSettingsUpdate {

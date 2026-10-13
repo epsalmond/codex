@@ -35,10 +35,20 @@ pub(super) async fn update(
     session: &Session,
     overrides: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
 ) -> ConstraintResult<ThreadSettingsSnapshot> {
+    let overrides = overrides.into();
+    let context_only = overrides.turn_extension_init.is_none()
+        && overrides.request.context_settings.is_some()
+        && {
+            let mut other = overrides.request.clone();
+            other.context_settings = None;
+            other == ThreadSettingsOverrides::default()
+        };
     let updates = prepare_update(overrides, &session.services.selected_capability_roots);
     let commit = session.update_settings(updates).await?;
     // Standalone settings changes supersede a pending automatic continuation.
-    session.state.lock().await.last_started_turn_id = None;
+    if !context_only {
+        session.state.lock().await.last_started_turn_id = None;
+    }
     Ok(commit.snapshot)
 }
 
@@ -52,6 +62,7 @@ pub(super) fn prepare_update(
         turn_extension_init,
     } = overrides.into();
     let ThreadSettingsOverrides {
+        context_settings,
         environments: environment_requests,
         runtime_workspace_roots,
         profile_workspace_roots,
@@ -70,6 +81,7 @@ pub(super) fn prepare_update(
         disabled_plugin_ids,
     } = overrides;
     SessionSettingsUpdate {
+        context_settings,
         turn_extension_init,
         step_settings: StepSettingsUpdate {
             model,
