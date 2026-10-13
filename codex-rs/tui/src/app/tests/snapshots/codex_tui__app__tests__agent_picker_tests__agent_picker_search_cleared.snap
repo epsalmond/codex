@@ -1,6 +1,5 @@
 ---
 source: tui/src/app/tests/agent_picker_tests.rs
-assertion_line: 361
 expression: "render_bottom_popup(&app.chat_widget, 96)"
 ---
   Subagents
@@ -15,4 +14,4 @@ expression: "render_bottom_popup(&app.chat_widget, 96)"
   • Error [worker]                          error context ?
   • Agent 00000006                          idle context ?
 
-  enter select · esc exit search · ctrl+c close
+  enter select · esc exit search · ⌃c close

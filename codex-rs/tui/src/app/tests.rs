@@ -12,6 +12,8 @@ mod security_setup_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/agent_picker_dismissal_tests.rs"]
+mod agent_picker_dismissal_tests;
 #[path = "tests/agent_picker_tests.rs"]
 mod agent_picker_tests;
 #[path = "tests/agents_navigation_tests.rs"]

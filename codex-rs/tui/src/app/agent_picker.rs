@@ -259,6 +259,7 @@ impl App {
             if thread.can_accept_direct_input == Some(false) {
                 self.agent_navigation.mark_parent_owned(thread_id);
             }
+            self.agent_navigation.mark_subagent(thread_id);
             self.upsert_agent_picker_thread(thread_id, agent_nickname, agent_role, is_closed);
             self.agent_navigation.set_agent_path(thread_id, agent_path);
             if status_unchanged {
@@ -348,6 +349,10 @@ impl App {
             title: Some("Subagents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
             footer_hint: Some(agent_picker_hint(AgentPickerHint::Select)),
+            key_actions: vec![crate::bottom_pane::SelectionViewAction {
+                keys: vec![crate::key_hint::plain(KeyCode::Char('q'))],
+                action: Box::new(|tx| tx.send(AppEvent::DismissInactiveSubagents)),
+            }],
             items,
             initial_selected_idx,
             is_searchable: true,
@@ -575,6 +580,11 @@ fn agent_picker_hint(hint: AgentPickerHint) -> ratatui::text::Line<'static> {
             " close agent · ".into(),
         ]);
     }
-    spans.extend([crate::key_hint::plain(KeyCode::Esc).into(), " back".into()]);
+    spans.extend([
+        crate::key_hint::plain(KeyCode::Char('q')).into(),
+        " hide inactive locally · ".into(),
+        crate::key_hint::plain(KeyCode::Esc).into(),
+        " back".into(),
+    ]);
     spans.into()
 }

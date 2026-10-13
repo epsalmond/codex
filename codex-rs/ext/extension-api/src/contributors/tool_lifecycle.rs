@@ -265,9 +265,12 @@ pub struct ToolTimingInput<'a> {
     pub duration: std::time::Duration,
 }
 
-/// A direct call entering dispatch, before readiness, hooks, or policy checks.
+/// A direct or nested call entering dispatch, before payload validation or execution gates.
+/// A rejected call need not produce matching start, finish, or timing callbacks.
 /// Observers must return promptly and cannot affect tool execution.
 pub struct ToolDispatchInput<'a> {
+    /// Store scoped to the dispatching turn, including calls rejected before start.
+    pub turn_store: &'a ExtensionData,
     /// Thread that owns the tool call.
     pub thread_id: &'a str,
     /// Current turn submission id.
@@ -276,4 +279,6 @@ pub struct ToolDispatchInput<'a> {
     pub call_id: &'a str,
     /// Tool name supplied to dispatch, before pre-tool hooks run.
     pub tool_name: &'a ToolName,
+    /// Exact source of this dispatch intent; this does not imply handler execution.
+    pub source: ToolCallSource,
 }

@@ -380,8 +380,9 @@ pub trait ToolContributor: Send + Sync {
 /// rewriting the invocation. Use `ToolContributor` for owning a tool implementation
 /// and hooks for policy that changes tool payloads.
 pub trait ToolLifecycleContributor: Send + Sync {
-    /// Observe direct calls before readiness, dispatch waiting, and hooks, including blocked calls.
-    /// Excludes nested code-mode calls. Observers must return promptly.
+    /// Observe direct and nested intent before validation, readiness, gates, and hooks.
+    /// Rejected calls need not produce matching start, finish, or timing callbacks.
+    /// Observers must return promptly.
     fn on_tool_dispatch(&self, _input: ToolDispatchInput<'_>) {}
 
     /// Called after pre-tool hooks finalize an invocation and before execution.

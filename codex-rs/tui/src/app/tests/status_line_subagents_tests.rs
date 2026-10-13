@@ -29,7 +29,7 @@ fn activity_notification(
 fn rendered_count(app: &App) -> String {
     render_bottom_popup(&app.chat_widget, /*width*/ 80)
         .lines()
-        .find(|line| line.contains("working"))
+        .find(|line| line.contains("SubAgents:"))
         .expect("active subagent status line")
         .split(" · ")
         .next()
@@ -61,19 +61,19 @@ async fn status_line_subagents_updates_during_parent_streaming() -> Result<()> {
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
     )));
     let started = rendered_count(&app);
-    assert_eq!(started, "1 agent working");
+    assert_eq!(started, "SubAgents: 1/1");
     assert!(app.chat_widget.has_active_agent_stream());
 
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Completed),
     )));
     let completed = rendered_count(&app);
-    assert_eq!(completed, "0 agents working");
+    assert_eq!(completed, "SubAgents: 0/1");
     assert!(app.chat_widget.has_active_agent_stream());
 
     insta::assert_snapshot!(format!("{started}\n{completed}"), @"
-    1 agent working
-    0 agents working
+    SubAgents: 1/1
+    SubAgents: 0/1
     ");
     Ok(())
 }
@@ -99,7 +99,7 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
         turn_completed_notification(child, "turn-1", TurnStatus::Completed),
     )
     .await?;
-    assert_eq!(rendered_count(&app), "0 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 0/1");
 
     // The same Interacted item accompanies trigger-turn followups and messages to idle agents.
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
@@ -110,10 +110,10 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
             SubAgentActivityKind::Interacted,
         ),
     )));
-    assert_eq!(rendered_count(&app), "0 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 0/1");
     app.enqueue_thread_notification(child, turn_started_notification(child, "turn-2"))
         .await?;
-    assert_eq!(rendered_count(&app), "1 agent working");
+    assert_eq!(rendered_count(&app), "SubAgents: 1/1");
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         activity_notification(
             root,
@@ -122,7 +122,7 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
             SubAgentActivityKind::Interacted,
         ),
     )));
-    assert_eq!(rendered_count(&app), "1 agent working");
+    assert_eq!(rendered_count(&app), "SubAgents: 1/1");
 
     // Failed child turns need not publish a Completed activity item to the parent.
     app.enqueue_thread_notification(
@@ -130,18 +130,18 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
         turn_completed_notification(child, "turn-2", TurnStatus::Failed),
     )
     .await?;
-    assert_eq!(rendered_count(&app), "0 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 0/1");
     app.enqueue_thread_notification(child, turn_started_notification(child, "turn-3"))
         .await?;
-    assert_eq!(rendered_count(&app), "1 agent working");
+    assert_eq!(rendered_count(&app), "SubAgents: 1/1");
     app.enqueue_thread_notification(child, thread_closed_notification(child))
         .await?;
-    assert_eq!(rendered_count(&app), "0 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 0/0");
     Ok(())
 }
 
 #[tokio::test]
-async fn status_line_subagents_scopes_count_to_displayed_descendants() -> Result<()> {
+async fn status_line_subagents_keeps_root_counts_when_viewing_child() -> Result<()> {
     let mut app = make_test_app().await;
     let root = ThreadId::new();
     let child = ThreadId::new();
@@ -162,10 +162,10 @@ async fn status_line_subagents_scopes_count_to_displayed_descendants() -> Result
             activity_notification(root, thread_id, path, SubAgentActivityKind::Started),
         )));
     }
-    assert_eq!(rendered_count(&app), "3 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 3/3");
     app.active_thread_id = Some(child);
     app.sync_active_agent_label();
-    assert_eq!(rendered_count(&app), "1 agent working");
+    assert_eq!(rendered_count(&app), "SubAgents: 3/3");
     app.enqueue_thread_notification(
         grandchild,
         ServerNotification::ThreadStatusChanged(
@@ -176,12 +176,12 @@ async fn status_line_subagents_scopes_count_to_displayed_descendants() -> Result
         ),
     )
     .await?;
-    assert_eq!(rendered_count(&app), "0 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 2/3");
 
     app.agent_navigation.clear();
     app.primary_thread_id = Some(ThreadId::new());
     app.active_thread_id = app.primary_thread_id;
     app.sync_active_agent_label();
-    assert_eq!(rendered_count(&app), "0 agents working");
+    assert_eq!(rendered_count(&app), "SubAgents: 0/0");
     Ok(())
 }

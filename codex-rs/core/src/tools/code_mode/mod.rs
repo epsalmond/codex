@@ -358,6 +358,21 @@ fn submit_nested_tool(
     let thread_id = session.thread_id;
     let turn_id = step_context.turn.sub_id.clone();
     let tool_name = tool_name.with_default_namespace();
+    let source = ToolCallSource::CodeMode {
+        cell_id: cell_id.to_string(),
+        runtime_tool_call_id: runtime_tool_call_id.clone(),
+    };
+    let thread_id_text = thread_id.to_string();
+    for observer in session.services.extensions.tool_lifecycle_contributors() {
+        observer.on_tool_dispatch(codex_extension_api::ToolDispatchInput {
+            turn_store: step_context.turn.extension_data.as_ref(),
+            thread_id: &thread_id_text,
+            turn_id: &turn_id,
+            call_id: &call_id,
+            tool_name: &tool_name,
+            source: super::lifecycle::extension_tool_call_source(source.clone()),
+        });
+    }
     // A cell can outlive a turn; the broker records arrival before a dispatching turn is known.
     tracing::event!(
         name: "codex.code_mode.nested_tool_dispatched",
@@ -407,10 +422,7 @@ fn submit_nested_tool(
     let result = tool_runtime.handle_tool_call_with_source(
         step_context,
         call,
-        ToolCallSource::CodeMode {
-            cell_id: cell_id.to_string(),
-            runtime_tool_call_id,
-        },
+        source,
         cancellation_token,
         Arc::default(),
     );

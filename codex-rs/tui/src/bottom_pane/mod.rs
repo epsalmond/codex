@@ -271,6 +271,7 @@ pub(crate) use list_selection_view::SELECTION_TOGGLE_UNAVAILABLE_PREFIX;
 pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
 pub(crate) use list_selection_view::SelectionSecondaryAction;
+pub(crate) use list_selection_view::SelectionViewAction;
 
 struct DelayedApprovalRequest {
     request: ApprovalRequest,

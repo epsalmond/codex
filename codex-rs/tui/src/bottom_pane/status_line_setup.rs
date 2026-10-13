@@ -162,7 +162,7 @@ pub(crate) enum StatusLineItem {
     /// Current thread title, falling back to its identifier when unnamed.
     ThreadTitle,
 
-    /// Number of subagents currently working.
+    /// Running subagents / all open descendants in the root session.
     ActiveSubagents,
 
     /// Current workspace notification headline.
@@ -234,7 +234,7 @@ impl StatusLineItem {
             StatusLineItem::ThreadTitle => {
                 "Current thread title, or thread identifier when unnamed"
             }
-            StatusLineItem::ActiveSubagents => "Number of subagents currently working",
+            StatusLineItem::ActiveSubagents => "Running / total open subagents in the root session",
             StatusLineItem::WorkspaceHeadline => {
                 "Workspace notification headline (Enterprise workspaces only; omitted when unavailable)"
             }
