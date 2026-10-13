@@ -98,6 +98,21 @@ async fn ordinary_settings_updates_keep_the_running_turn_snapshot() -> Result<()
     .await;
 
     let mut expected = test.codex.thread_settings_snapshot().await;
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides {
+            context_settings: Some(
+                codex_protocol::context_settings::ContextSettingsUpdate::Patch {
+                    overrides: codex_protocol::context_settings::ContextSettingsOverrides {
+                        shake_threshold: Some(
+                            codex_protocol::context_settings::ShakeThreshold::Off,
+                        ),
+                        ..Default::default()
+                    },
+                },
+            ),
+            ..Default::default()
+        })
+        .await?;
     submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {
@@ -109,6 +124,12 @@ async fn ordinary_settings_updates_keep_the_running_turn_snapshot() -> Result<()
         },
     )
     .await?;
+    expected
+        .context_settings
+        .as_mut()
+        .unwrap()
+        .overrides
+        .shake_threshold = Some(codex_protocol::context_settings::ShakeThreshold::Off);
     expected.model = "snapshot-model-b".to_string();
     expected.reasoning_effort = Some(ReasoningEffort::High);
     expected.reasoning_summary = Some(ReasoningSummary::Detailed);
