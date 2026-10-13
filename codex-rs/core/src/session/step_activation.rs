@@ -421,9 +421,14 @@ impl Session {
             )
             .await
             .map_err(|error| error.to_string())?;
-        if next.selected_collaboration_mode().model() != current.selected_collaboration_mode().model() {
+        if next.selected_collaboration_mode().model()
+            != current.selected_collaboration_mode().model()
+        {
             let (model, view) = super::context_settings::resolve(
-                current.context_baseline.as_deref().unwrap_or(&turn_context.config),
+                current
+                    .context_baseline
+                    .as_deref()
+                    .unwrap_or(&turn_context.config),
                 &current.context_selection,
                 &next.model_info,
                 super::context_settings::ContextSettingsTarget::from(&turn_context.session_source),

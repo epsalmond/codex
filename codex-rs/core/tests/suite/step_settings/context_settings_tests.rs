@@ -33,7 +33,11 @@ async fn resumed_child_keeps_saved_compaction_limit(
                 ..Default::default()
             });
             for model in &mut config.model_catalog.as_mut().unwrap().models {
-                model.auto_compact_token_limit = Some(if model.slug == MODEL_B { 30_000 } else { 80_000 });
+                model.auto_compact_token_limit = Some(if model.slug == MODEL_B {
+                    30_000
+                } else {
+                    80_000
+                });
             }
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(30_000);
@@ -66,7 +70,11 @@ async fn resumed_child_keeps_saved_compaction_limit(
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(80_000);
             for model in &mut config.model_catalog.as_mut().unwrap().models {
-                model.auto_compact_token_limit = Some(if model.slug == MODEL_B { 30_000 } else { 80_000 });
+                model.auto_compact_token_limit = Some(if model.slug == MODEL_B {
+                    30_000
+                } else {
+                    80_000
+                });
             }
             config.model_auto_compact_token_limit_scope = scope;
             config.subagent_context_reduction.enabled = false;
