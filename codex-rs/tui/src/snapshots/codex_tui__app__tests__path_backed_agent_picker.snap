@@ -1,6 +1,5 @@
 ---
 source: tui/src/app/tests.rs
-assertion_line: 2393
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Subagents
@@ -9,4 +8,4 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
 
 › 1. • /root/worker  mid-turn context ?
 
-  enter select · / search · x close agent · esc back
+  enter select · / search · x close agent · q hide inactive locally · esc back

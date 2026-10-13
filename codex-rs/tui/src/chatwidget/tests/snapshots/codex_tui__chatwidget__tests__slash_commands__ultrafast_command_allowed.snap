@@ -1,9 +1,10 @@
 ---
 source: tui/src/chatwidget/tests/slash_commands.rs
-expression: "render_bottom_popup(&chat, 80)"
+assertion_line: 152
+expression: "normalize_snapshot_paths(render_bottom_popup(&chat, 80))"
 ---
 › /ultrafast  ultrafast processing
 
 › /ultra
 
-  GPT-5.5 default · /tmp/project
+  GPT-5.5 · /tmp/project

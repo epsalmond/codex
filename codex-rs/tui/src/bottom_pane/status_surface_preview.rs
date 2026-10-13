@@ -58,7 +58,7 @@ impl StatusSurfacePreviewItem {
             StatusSurfacePreviewItem::Status => "Working",
             StatusSurfacePreviewItem::ThreadName => "thread name",
             StatusSurfacePreviewItem::ThreadTitle => "thread title",
-            StatusSurfacePreviewItem::ActiveSubagents => "2 agents working",
+            StatusSurfacePreviewItem::ActiveSubagents => "SubAgents: 2/4",
             StatusSurfacePreviewItem::GitBranch => "feat/awesome-feature",
             StatusSurfacePreviewItem::PullRequestNumber => "PR #123",
             StatusSurfacePreviewItem::BranchChanges => "+12 -3",

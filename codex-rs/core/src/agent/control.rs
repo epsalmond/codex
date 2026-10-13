@@ -78,6 +78,7 @@ mod inspection;
 mod interrupt;
 mod legacy;
 mod mailbox;
+mod polling_completion;
 mod residency;
 mod resume;
 mod root_handoff;

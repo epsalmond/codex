@@ -117,6 +117,7 @@ impl GrpcCodeModeSessionProvider {
             loop {
                 let mut request = tonic::Request::new(grpc::OpenSessionRequest {
                     cell_execution_limits,
+                    terminal_ready_requested: true,
                 });
                 inject_span_traceparent(&mut request, &open_session_span);
                 let result = async {
@@ -152,6 +153,7 @@ impl GrpcCodeModeSessionProvider {
 
         let inner = Arc::new(SessionInner {
             id: opened.session_id,
+            terminal_ready_supported: opened.terminal_ready_supported,
             client,
             runtime: tokio::runtime::Handle::current(),
             state: Mutex::new(SessionState::default()),
@@ -268,6 +270,7 @@ impl Drop for GrpcCodeModeSession {
 
 pub(super) struct SessionInner {
     pub(super) id: String,
+    terminal_ready_supported: bool,
     pub(super) client: GrpcClient,
     runtime: tokio::runtime::Handle,
     state: Mutex<SessionState>,

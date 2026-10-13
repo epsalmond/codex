@@ -1,10 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/model_display_name_tests.rs
-assertion_line: 106
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  luna · 143K/823K · my-session · 1 agent working · GPT-5.6 Luna high           "
+"  luna · 143K/823K · my-session · SubAgents: 1/2 · GPT-5.6 Luna high            "

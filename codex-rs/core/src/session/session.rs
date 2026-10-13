@@ -105,6 +105,7 @@ pub(crate) struct Session {
 
 #[derive(Clone)]
 pub(crate) struct SessionConfiguration {
+    pub(super) context_settings: codex_protocol::context_settings::ContextSettingsState,
     /// Runtime provider and its provider-specific execution policy.
     pub(super) provider: SharedModelProvider,
 
@@ -322,6 +323,7 @@ impl SessionConfiguration {
         environment_selections: &[TurnEnvironmentSelection],
     ) -> ThreadSettingsSnapshot {
         ThreadSettingsSnapshot {
+            context_settings: Some(self.context_settings.clone()),
             model: self.step_settings.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
             service_tier: self.step_settings.service_tier.clone(),
@@ -345,6 +347,8 @@ impl SessionConfiguration {
         environment_selections: Vec<TurnEnvironmentSelection>,
     ) -> CodexThreadSettingsOverrides {
         CodexThreadSettingsOverrides {
+            context_settings: Some(codex_protocol::context_settings::ContextSettingsUpdate::Reset),
+            restored_context_settings: Some(self.context_settings.clone()),
             environments: Some(TurnEnvironmentRequests::new(
                 self.legacy_fallback_cwd.clone(),
                 environment_selections
@@ -377,6 +381,7 @@ impl SessionConfiguration {
         &self,
         environments: &[TurnEnvironmentSelection],
     ) -> ConstraintResult<()> {
+        super::context_settings::validate_state(&self.context_settings)?;
         self.step_settings
             .validate(&self.step_settings_constraints(environments))?;
         super::environment::validate_environment_configs(environments)
@@ -409,6 +414,13 @@ impl SessionConfiguration {
         current_environments: &[TurnEnvironmentSelection],
     ) -> ConstraintResult<Self> {
         let mut next_configuration = self.clone();
+        if let Some(state) = &updates.restored_context_settings {
+            super::context_settings::validate_state(state)?;
+            next_configuration.context_settings = state.clone();
+        } else if let Some(update) = &updates.context_settings {
+            next_configuration.context_settings =
+                super::context_settings::apply(&self.context_settings, update)?;
+        }
         if let Some(turn_extension_init) = &updates.turn_extension_init {
             next_configuration.turn_extension_init = turn_extension_init.clone();
         }
@@ -608,6 +620,9 @@ pub(crate) struct SessionSettingsCommit {
 
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
+    pub(crate) context_settings: Option<codex_protocol::context_settings::ContextSettingsUpdate>,
+    pub(crate) restored_context_settings:
+        Option<codex_protocol::context_settings::ContextSettingsState>,
     pub(crate) step_settings: StepSettingsUpdate,
     /// Omission preserves the current data; an empty initializer clears it.
     pub(crate) turn_extension_init: Option<ExtensionDataInit>,
@@ -1745,6 +1760,7 @@ impl Session {
                 unified_exec_manager: UnifiedExecProcessManager::new(
                     config.background_terminal_max_timeout,
                 ),
+                async_completions: Arc::default(),
                 elicitations: crate::elicitation::ElicitationService::new(),
                 shell_zsh_path: config.zsh_path.clone(),
                 main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
@@ -1840,6 +1856,7 @@ impl Session {
                 turn_environments: Arc::clone(&turn_environments),
             };
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
+            let completion_source = state.session_configuration.session_source.clone();
             let sess = Arc::new(Session {
                 thread_id,
                 installation_id,
@@ -1875,6 +1892,7 @@ impl Session {
                 next_internal_sub_id: AtomicU64::new(0),
                 prompt_cache_clock: Default::default(),
             });
+            sess.services.async_completions.attach_owner(&sess, &completion_source);
             if sess.services.local_agent_runtime.wake_mode_enabled()
                 && let Some(status) = sess
                     .services

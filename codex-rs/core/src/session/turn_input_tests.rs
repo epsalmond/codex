@@ -1089,3 +1089,560 @@ async fn steer_preserves_request_origin(
     );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
+
+fn explicit_turn(text: &str) -> TurnInputRequest {
+    TurnInputRequest::user_input(vec![UserInput::Text {
+        text: text.to_string(),
+        text_elements: Vec::new(),
+    }])
+}
+
+// Shorter than `STARTING_TURN_WAIT_TIMEOUT`, so input that waited out the bound fails the check.
+const PROMPT_SUBMISSION: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[tokio::test]
+async fn explicit_input_steers_into_a_starting_turn_once_its_task_is_installed() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    // A starting turn holds the slot before its task is installed, as an idle wake does.
+    let starting = ActiveTurn::default();
+    let starting_state = Arc::clone(&starting.turn_state);
+    *session.active_turn.lock().await = Some(starting);
+
+    let (submission, started) = tokio::join!(
+        tokio::time::timeout(
+            PROMPT_SUBMISSION,
+            handle(
+                &session,
+                explicit_turn("arrives while the turn starts"),
+                TurnInputMode::StartOrSteer,
+                "explicit".to_string(),
+            ),
+        ),
+        async {
+            sleep(std::time::Duration::from_millis(50)).await;
+            session
+                .start_task(
+                    Arc::clone(&turn_context),
+                    Vec::new(),
+                    NeverEndingTask {
+                        kind: TaskKind::Regular,
+                        listen_to_cancellation_token: true,
+                    },
+                    TurnReservation {
+                        turn_state: starting_state,
+                        mail_start_options: Default::default(),
+                        return_input_if_lost: false,
+                    },
+                )
+                .await
+        },
+    );
+
+    assert!(matches!(started, TaskStartOutcome::Started));
+    assert_eq!(
+        submission
+            .expect("input must resume once the task is installed")
+            .expect("input should be valid"),
+        TurnInputSubmission::Steered {
+            turn_id: turn_context.sub_id.clone(),
+            root_turn_id: turn_context.sub_id.clone(),
+        }
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn explicit_input_replaces_a_finishing_turn_without_waiting() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    // The finished task's end-of-turn work (stop hooks, TurnComplete, flush) still holds the slot.
+    let finishing = ActiveTurn {
+        finishing: true,
+        ..Default::default()
+    };
+    let finishing_state = Arc::clone(&finishing.turn_state);
+    *session.active_turn.lock().await = Some(finishing);
+
+    let submission = tokio::time::timeout(
+        PROMPT_SUBMISSION,
+        handle(
+            &session,
+            explicit_turn("cuts in while the turn finishes"),
+            TurnInputMode::StartOrSteer,
+            "explicit".to_string(),
+        ),
+    )
+    .await
+    .expect("input must not wait for a finishing turn")
+    .expect("input should be valid");
+
+    assert_eq!(
+        submission,
+        TurnInputSubmission::Started {
+            turn_id: "explicit".to_string(),
+            root_turn_id: "explicit".to_string(),
+        }
+    );
+    assert!(
+        session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|turn| {
+                turn.task.is_some() && !Arc::ptr_eq(&turn.turn_state, &finishing_state)
+            })
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_input_replaces_a_starting_turn_that_never_installs_its_task() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    let stuck = ActiveTurn::default();
+    let stuck_state = Arc::clone(&stuck.turn_state);
+    *session.active_turn.lock().await = Some(stuck);
+
+    let submission = handle(
+        &session,
+        explicit_turn("must not wait forever"),
+        TurnInputMode::StartOrSteer,
+        "explicit".to_string(),
+    )
+    .await
+    .expect("input should be valid");
+
+    assert_eq!(
+        submission,
+        TurnInputSubmission::Started {
+            turn_id: "explicit".to_string(),
+            root_turn_id: "explicit".to_string(),
+        }
+    );
+    assert!(
+        session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|turn| {
+                turn.task.is_some() && !Arc::ptr_eq(&turn.turn_state, &stuck_state)
+            })
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[derive(Clone, Copy)]
+enum Replacer {
+    SpawnTask,
+    LaterInput,
+    Interrupt,
+}
+
+/// Parks `mode` input after it reserved the slot and bound its assignment, lets `replacer` take
+/// or clear the slot, then lets the input try to install its task. Returns the input's
+/// submission and the replacing turn's id, if any.
+async fn replace_reservation_before_install(
+    session: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    mode: TurnInputMode,
+    replacer: Replacer,
+) -> (TurnInputSubmission, Option<String>) {
+    let mut hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+    let (submission, replacing_turn_id) = tokio::join!(
+        handle(
+            session,
+            explicit_turn("must stay with its caller"),
+            mode,
+            "replaced".to_string(),
+        ),
+        async {
+            hold.reached().await;
+            let replacing_turn_id = match replacer {
+                Replacer::SpawnTask => {
+                    session
+                        .spawn_task(
+                            Arc::clone(turn_context),
+                            Vec::new(),
+                            NeverEndingTask {
+                                kind: TaskKind::Regular,
+                                listen_to_cancellation_token: true,
+                            },
+                        )
+                        .await;
+                    Some(turn_context.sub_id.clone())
+                }
+                Replacer::LaterInput => {
+                    // Waits out the starting-turn bound, then takes the slot.
+                    assert_eq!(
+                        handle(
+                            session,
+                            explicit_turn("later input"),
+                            TurnInputMode::StartOrSteer,
+                            "later".to_string(),
+                        )
+                        .await
+                        .expect("later input should be valid"),
+                        TurnInputSubmission::Started {
+                            turn_id: "later".to_string(),
+                            root_turn_id: "later".to_string(),
+                        }
+                    );
+                    Some("later".to_string())
+                }
+                Replacer::Interrupt => {
+                    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+                    None
+                }
+            };
+            hold.release();
+            replacing_turn_id
+        },
+    );
+    (
+        submission.expect("input should be valid"),
+        replacing_turn_id,
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn start_if_idle_whose_reservation_is_replaced_before_its_task_starts_is_not_submitted() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let (submission, _) = replace_reservation_before_install(
+        &session,
+        &turn_context,
+        TurnInputMode::StartIfIdle,
+        Replacer::SpawnTask,
+    )
+    .await;
+    // Reporting `Started` would let the caller drop input that no turn received.
+    assert_eq!(
+        submission,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        }
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[test_case(Replacer::LaterInput; "replaced_by_later_input")]
+#[test_case(Replacer::SpawnTask; "replaced_by_spawn_task")]
+#[test_case(Replacer::Interrupt; "slot_cleared_by_interrupt")]
+#[tokio::test(start_paused = true)]
+async fn start_or_steer_whose_reservation_is_lost_before_its_task_starts_steers_or_starts_again(
+    replacer: Replacer,
+) {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let (submission, replacing_turn_id) = replace_reservation_before_install(
+        &session,
+        &turn_context,
+        TurnInputMode::StartOrSteer,
+        replacer,
+    )
+    .await;
+    match replacing_turn_id {
+        // Steers into the turn that took its slot.
+        Some(turn_id) => {
+            assert_eq!(
+                submission,
+                TurnInputSubmission::Steered {
+                    root_turn_id: turn_id.clone(),
+                    turn_id,
+                }
+            );
+        }
+        // Starts in the slot the interrupt freed, under the id it was submitted with.
+        None => assert_eq!(
+            submission,
+            TurnInputSubmission::Started {
+                turn_id: "replaced".to_string(),
+                root_turn_id: "replaced".to_string(),
+            }
+        ),
+    }
+    if matches!(replacer, Replacer::SpawnTask) {
+        // The never-ending task leaves steered input queued for it.
+        let pending = session
+            .input_queue
+            .get_pending_input(&session.active_turn)
+            .await
+            .0;
+        assert!(
+            pending.iter().any(|item| matches!(
+                item,
+                TurnInput::UserInput { content, .. }
+                    if content == &vec![UserInput::Text {
+                        text: "must stay with its caller".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+            )),
+            "steered input must reach the replacing turn: {pending:?}"
+        );
+    }
+    // The first attempt's turn was never reported, so nothing may abort it.
+    while let Ok(event) = rx.try_recv() {
+        if let EventMsg::TurnAborted(aborted) = &event.msg {
+            assert_ne!(
+                aborted.turn_id.as_deref(),
+                Some("replaced"),
+                "no TurnAborted for a turn the client never saw"
+            );
+        }
+    }
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+/// A V2 wake-mode child session at `/root/worker` and its parent's running assignment.
+async fn delegated_child_session() -> (Arc<Session>, crate::agent::control::AgentAssignmentId) {
+    let parent_thread_id = codex_protocol::ThreadId::new();
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let (mut session, _) =
+        crate::session::tests::make_session_and_context_with_session_source(source).await;
+    session.multi_agent_version =
+        std::sync::OnceLock::from(codex_protocol::protocol::MultiAgentVersion::V2);
+    let session = Arc::new(session);
+    let runtime = &session.services.local_agent_runtime;
+    runtime.enable_wake_mode();
+    let parent = runtime
+        .begin_wake_assignment_for_turn(
+            parent_thread_id,
+            &SessionSource::Cli,
+            "parent-turn",
+            /*allow_new_generation*/ true,
+        )
+        .expect("parent assignment starts")
+        .expect("wake mode binds the parent");
+    (session, parent)
+}
+
+fn delegated_followup() -> TurnInputRequest {
+    explicit_turn("followup").on_start(TurnStartOptions {
+        parent_turn_id: Some("parent-turn".to_string()),
+        ..Default::default()
+    })
+}
+
+/// Every report published to `parent`. A report a dropped claim gives back is claimable again,
+/// so all claims are held until every report is seen.
+fn published_reports(
+    session: &Session,
+    parent: &crate::agent::control::AgentAssignmentId,
+) -> Vec<InterAgentCommunication> {
+    let runtime = &session.services.local_agent_runtime;
+    let claims =
+        std::iter::from_fn(|| runtime.claim_next_report_for_delivery(parent)).collect::<Vec<_>>();
+    claims
+        .iter()
+        .map(|claim| {
+            assert_eq!(claim.sender_thread_id, session.thread_id);
+            claim.communication.clone()
+        })
+        .collect()
+}
+
+/// Waits for reports to `parent`, giving a turn that ended on its own time to publish.
+async fn wait_for_published_reports(
+    session: &Session,
+    parent: &crate::agent::control::AgentAssignmentId,
+) -> Vec<InterAgentCommunication> {
+    for _ in 0..100 {
+        let reports = published_reports(session, parent);
+        if !reports.is_empty() {
+            return reports;
+        }
+        tokio::task::yield_now().await;
+    }
+    Vec::new()
+}
+
+/// A delegated followup creates a fresh child generation and loses its reservation to an
+/// interrupt before its task starts. The retry keeps the first attempt's binding and then fails
+/// before binding anything, so its give-up releases the generation: no turn ever runs in it and
+/// the running parent must not be left waiting for a report from it.
+#[tokio::test(start_paused = true)]
+async fn child_generation_released_by_its_lost_start_does_not_hold_its_parent() {
+    let (session, parent) = delegated_child_session().await;
+    let runtime = &session.services.local_agent_runtime;
+
+    let mut install_hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+    let (submission, ()) = tokio::join!(
+        handle(
+            &session,
+            delegated_followup(),
+            TurnInputMode::StartOrSteer,
+            "followup".to_string(),
+        ),
+        async {
+            install_hold.reached().await;
+            assert!(
+                runtime.current_wake_assignment(session.thread_id).is_some(),
+                "the first attempt creates a generation under the parent"
+            );
+            // The retry fails before it binds.
+            let mut bind_hold = crate::tasks::hold_next_turn_start(
+                session.thread_id,
+                crate::tasks::TurnStartHoldPoint::InputBeforeBind,
+            );
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+            install_hold.release();
+            bind_hold.reached().await;
+            bind_hold.fail_and_wait().await;
+        },
+    );
+    assert!(
+        submission.is_err(),
+        "the retry's bind failed: {submission:?}"
+    );
+
+    assert_eq!(runtime.current_wake_assignment(session.thread_id), None);
+    assert_eq!(
+        runtime
+            .classify_wake_turn_end(
+                &parent,
+                "parent-turn",
+                crate::agent::control::TurnEndDisposition::Succeeded,
+            )
+            .await,
+        Ok(crate::agent::control::AssignmentPhase::Completed),
+        "the parent must not wait on a generation no turn ran"
+    );
+}
+
+/// Loses a delegated followup's first start to an interrupt after it created a fresh child
+/// generation and its parent's turn ended waiting on that generation. With `fail_retry`, the
+/// retry's bind fails as well. Returns the submission and the generation the first attempt made.
+async fn lose_followup_start_under_waiting_parent(
+    session: &Arc<Session>,
+    parent: &crate::agent::control::AgentAssignmentId,
+    fail_retry: bool,
+) -> (
+    CodexResult<TurnInputSubmission>,
+    crate::agent::control::AgentAssignmentId,
+) {
+    let runtime = &session.services.local_agent_runtime;
+    let mut install_hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+    tokio::join!(
+        handle(
+            session,
+            delegated_followup(),
+            TurnInputMode::StartOrSteer,
+            "followup".to_string(),
+        ),
+        async {
+            install_hold.reached().await;
+            let generation = runtime
+                .current_wake_assignment(session.thread_id)
+                .expect("the first attempt creates a generation under the parent");
+            assert_eq!(
+                runtime
+                    .classify_wake_turn_end(
+                        parent,
+                        "parent-turn",
+                        crate::agent::control::TurnEndDisposition::Succeeded,
+                    )
+                    .await,
+                Ok(crate::agent::control::AssignmentPhase::Waiting),
+                "the parent's turn ends waiting on the followup's generation"
+            );
+            let bind_hold = fail_retry.then(|| {
+                crate::tasks::hold_next_turn_start(
+                    session.thread_id,
+                    crate::tasks::TurnStartHoldPoint::InputBeforeBind,
+                )
+            });
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+            install_hold.release();
+            if let Some(mut bind_hold) = bind_hold {
+                bind_hold.reached().await;
+                bind_hold.fail_and_wait().await;
+            }
+            generation
+        },
+    )
+}
+
+/// The first start of a delegated followup is lost to an interrupt and its retry starts. The
+/// retry runs in the generation the first attempt made, so the waiting parent hears nothing until
+/// that turn ends, and then only its report.
+#[tokio::test(start_paused = true)]
+async fn waiting_parent_hears_only_from_a_followup_whose_lost_start_is_retried() {
+    let (session, parent) = delegated_child_session().await;
+    let runtime = &session.services.local_agent_runtime;
+
+    let (submission, generation) =
+        lose_followup_start_under_waiting_parent(&session, &parent, /*fail_retry*/ false).await;
+    assert_eq!(
+        submission.expect("input should be valid"),
+        TurnInputSubmission::Started {
+            turn_id: "followup".to_string(),
+            root_turn_id: "followup".to_string(),
+        }
+    );
+    assert_eq!(
+        runtime.current_wake_assignment(session.thread_id),
+        Some(generation),
+        "the retry starts in the first attempt's generation"
+    );
+    assert!(
+        runtime.is_current_waiting_assignment(&parent),
+        "nothing woke the parent"
+    );
+    assert_eq!(
+        published_reports(&session, &parent),
+        Vec::new(),
+        "the parent must not hear that a running followup did no work"
+    );
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    let reports = wait_for_published_reports(&session, &parent).await;
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        !reports[0]
+            .content
+            .contains(crate::session_prefix::UNSTARTED_CHILD_NOTE),
+        "the report is the turn's own: {reports:?}"
+    );
+}
+
+/// The first start of a delegated followup is lost to an interrupt and its retry fails too. Only
+/// the give-up reports, once, that the generation did no work, and that report wakes the parent.
+#[tokio::test(start_paused = true)]
+async fn waiting_parent_hears_once_from_a_followup_whose_retried_start_fails() {
+    let (session, parent) = delegated_child_session().await;
+    let runtime = &session.services.local_agent_runtime;
+
+    let (submission, generation) =
+        lose_followup_start_under_waiting_parent(&session, &parent, /*fail_retry*/ true).await;
+    assert!(
+        submission.is_err(),
+        "the retry's bind failed: {submission:?}"
+    );
+    assert_eq!(
+        runtime.current_wake_assignment(session.thread_id),
+        Some(generation),
+        "the interrupted generation stays for its report"
+    );
+    let reports = published_reports(&session, &parent);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        reports[0]
+            .content
+            .contains(crate::session_prefix::UNSTARTED_CHILD_NOTE),
+        "{reports:?}"
+    );
+    assert_eq!(runtime.claim_next_wake_assignment(), Some(parent));
+}

@@ -494,6 +494,7 @@ pub enum TurnSettingsUpdateOutcome {
     }),
 )]
 pub struct ThreadSettingsOverrides {
+    pub context_settings: Option<crate::context_settings::ContextSettingsUpdate>,
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
     pub environments: Option<TurnEnvironmentRequests>,
 
@@ -2290,6 +2291,9 @@ pub struct ThreadSettingsAppliedEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct ThreadSettingsSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_settings: Option<crate::context_settings::ContextSettingsState>,
     pub model: String,
     pub model_provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]

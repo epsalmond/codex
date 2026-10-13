@@ -25,6 +25,7 @@ use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
 use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
+use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -234,6 +235,14 @@ impl LocalAgentRuntime {
         parent: &AgentAssignmentId,
     ) -> Option<ClaimedTerminalReport> {
         self.wake_coordinator.claim_next_mailbox_report(parent)
+    }
+
+    /// Takes the oldest wake request off the queue, for tests that have no dispatcher.
+    #[cfg(test)]
+    pub(crate) fn claim_next_wake_assignment(&self) -> Option<AgentAssignmentId> {
+        self.wake_coordinator
+            .claim_next_wake_request()
+            .and_then(|request| request.assignment().cloned())
     }
 
     pub(super) fn new(
@@ -568,6 +577,38 @@ impl LocalAgentRuntime {
             .is_current_waiting_assignment(assignment)
     }
 
+    pub(crate) fn current_wake_assignment(&self, thread_id: ThreadId) -> Option<AgentAssignmentId> {
+        self.wake_coordinator.current_assignment(thread_id)
+    }
+
+    pub(crate) fn continue_owned_completion(
+        &self,
+        id: &AgentAssignmentId,
+        turn_id: &str,
+    ) -> Result<(), &'static str> {
+        self.wake_coordinator.continue_owned_completion(id, turn_id)
+    }
+
+    pub(crate) fn observe_owned_completions(
+        &self,
+        assignment: &AgentAssignmentId,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+    ) {
+        self.wake_coordinator
+            .observe_owned_completions(assignment, store);
+    }
+
+    pub(crate) fn admit_owned_completion<T>(
+        &self,
+        assignment: &AgentAssignmentId,
+        turn_id: &str,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+        admit: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        self.wake_coordinator
+            .admit_owned_completion(assignment, turn_id, store, admit)
+    }
+
     pub(crate) fn accept_wake_reports(
         &self,
         assignment: &AgentAssignmentId,
@@ -602,6 +643,36 @@ impl LocalAgentRuntime {
             .map(|_| assignment)
     }
 
+    pub(crate) fn hand_off_wake_turn(
+        &self,
+        thread_id: ThreadId,
+        from_turn_id: &str,
+        to_turn_id: &str,
+    ) {
+        self.wake_coordinator
+            .hand_off_running_turn(thread_id, from_turn_id, to_turn_id);
+    }
+
+    /// Gives back the assignment a turn that never started holds. A child generation its waiting
+    /// parent is left waiting on reports its interruption to that parent instead.
+    pub(crate) fn release_unstarted_wake_turn(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+        agent_path: Option<AgentPath>,
+    ) {
+        if let Some(child) = self
+            .wake_coordinator
+            .release_unstarted_turn(thread_id, turn_id)
+        {
+            self.publish_waiting_parent_report(
+                child,
+                agent_path,
+                crate::session_prefix::UNSTARTED_CHILD_NOTE,
+            );
+        }
+    }
+
     pub(crate) fn begin_wake_assignment_for_turn(
         &self,
         thread_id: ThreadId,
@@ -611,6 +682,10 @@ impl LocalAgentRuntime {
     ) -> Result<Option<AgentAssignmentId>, &'static str> {
         if !self.wake_mode_enabled() {
             return Ok(None);
+        }
+
+        if !source.is_non_root_agent() {
+            self.register_session_root(thread_id, /*current_parent_thread_id*/ None);
         }
 
         let current = self.wake_coordinator.current_assignment(thread_id);

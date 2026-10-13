@@ -170,6 +170,111 @@ async fn closed_root_rejects_regular_turn_before_task_spawn() {
 }
 
 #[tokio::test]
+async fn root_turn_capacity_is_reported_as_capacity_not_draining() {
+    let (session, turn_context, _events) = make_session_and_context_with_rx().await;
+    observe_root(&session);
+    // Fill the coordinator's root-turn table, as turns still awaiting output forwarding do.
+    let mut index = 0;
+    while session
+        .register_root_turn_lifecycle_id(&format!("held-{index}"), &turn_context.session_source)
+        .is_ok()
+    {
+        index += 1;
+    }
+
+    let submission = crate::session::turn_input::handle(
+        &session,
+        codex_protocol::turn_input::TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "no room for another root turn".to_string(),
+            text_elements: Vec::new(),
+        }]),
+        TurnInputMode::StartOrSteer,
+        "over-capacity".to_string(),
+    )
+    .await
+    .expect("capacity should be rejected as a typed admission result");
+    assert_eq!(
+        submission,
+        TurnInputSubmission::NotSubmitted {
+            reason: codex_protocol::turn_input::NotSubmittedReason::RootTurnCapacityReached,
+        }
+    );
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn rejected_task_start_releases_its_reservation_and_requeues_its_mail() {
+    let (session, turn_context, _events) = make_session_and_context_with_rx().await;
+    let observation = observe_root(&session);
+    let (snapshot, _updates) = observation.subscribe();
+    // A caller reserved the slot and handed it mail, then the root closed before the task
+    // was installed.
+    let reserved = crate::state::ActiveTurn::default();
+    let reservation = crate::tasks::TurnReservation {
+        turn_state: Arc::clone(&reserved.turn_state),
+        mail_start_options: Default::default(),
+        return_input_if_lost: false,
+    };
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(
+            reserved.turn_state.as_ref(),
+            vec![crate::session::TurnInput::InterAgentCommunication(
+                InterAgentCommunication::new(
+                    AgentPath::root(),
+                    AgentPath::root(),
+                    Vec::new(),
+                    "held for the reserved turn".to_string(),
+                    /*trigger_turn*/ true,
+                ),
+            )],
+        )
+        .await;
+    *session.active_turn.lock().await = Some(reserved);
+    assert!(matches!(
+        observation.shutdown_if_quiescent(&snapshot.revision),
+        crate::GuardedShutdownOutcome::Closed(_)
+    ));
+
+    assert!(matches!(
+        session
+            .start_task(
+                turn_context,
+                Vec::new(),
+                crate::tasks::RegularTask::new(),
+                reservation,
+            )
+            .await,
+        crate::tasks::TaskStartOutcome::Rejected(crate::agent::control::WorkAdmissionError::Closed)
+    ));
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 1);
+
+    // Later input is answered at once instead of waiting on the abandoned reservation.
+    let submission = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::session::turn_input::handle(
+            &session,
+            codex_protocol::turn_input::TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "next input".to_string(),
+                text_elements: Vec::new(),
+            }]),
+            TurnInputMode::StartOrSteer,
+            "next-turn".to_string(),
+        ),
+    )
+    .await
+    .expect("input must not wait on a released reservation")
+    .expect("closed root should be rejected as a typed admission result");
+    assert_eq!(
+        submission,
+        TurnInputSubmission::NotSubmitted {
+            reason: codex_protocol::turn_input::NotSubmittedReason::ServerDraining,
+        }
+    );
+}
+
+#[tokio::test]
 async fn terminal_root_turn_stays_busy_until_output_is_forwarded() {
     let (session, turn_context, events) = make_session_and_context_with_rx().await;
     let observation = observe_root(&session);

@@ -666,7 +666,8 @@ async fn spawn_failure_context_distinguishes_execution_and_residency_capacity() 
     let source = SessionSource::SubAgent(SubAgentSource::Other("worker".to_string()));
     let running = harness
         .control
-        .execution_guard(MultiAgentVersion::V2, &source);
+        .execution_guard(MultiAgentVersion::V2, &source)
+        .await;
     let execution_error = harness
         .control
         .ensure_execution_capacity(MultiAgentVersion::V2, &source)
@@ -2243,6 +2244,7 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
                 ThreadSettingsAppliedEvent {
                     thread_id: Some(parent_thread_id),
                     thread_settings: ThreadSettingsSnapshot {
+                        context_settings: None,
                         disabled_plugin_ids: Vec::new(),
                         model: "parent-only-model".to_string(),
                         model_provider_id: "parent-only-provider".to_string(),
@@ -5824,3 +5826,6 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }
+
+#[path = "control_tests/polling_completion_tests.rs"]
+mod polling_completion_tests;

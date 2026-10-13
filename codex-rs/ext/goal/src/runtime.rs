@@ -8,8 +8,8 @@ use codex_core::ThreadManager;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
+use codex_core::context::InternalModelContextFragment;
 use codex_protocol::ThreadId;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
@@ -19,7 +19,7 @@ use crate::analytics::GoalEventAttribution;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
 use crate::steering::continuation_steering_item;
-use crate::steering::objective_updated_steering_item;
+use crate::steering::objective_updated_steering_fragment;
 use crate::tool::protocol_goal_from_state;
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
@@ -241,8 +241,9 @@ impl GoalRuntimeHandle {
                         .mark_idle_goal_active(goal.goal_id.clone());
                 }
                 if objective_changed {
-                    let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
-                    self.inject_active_turn_steering(item).await;
+                    let fragment =
+                        objective_updated_steering_fragment(&protocol_goal_from_state(goal));
+                    self.inject_active_turn_steering(fragment).await;
                 }
                 self.continue_if_idle().await?;
             }
@@ -529,7 +530,7 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn inject_active_turn_steering(&self, item: ResponseItem) {
+    pub(crate) async fn inject_active_turn_steering(&self, fragment: InternalModelContextFragment) {
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             tracing::debug!("skipping goal steering because thread manager is unavailable");
             return;
@@ -538,9 +539,7 @@ impl GoalRuntimeHandle {
             tracing::debug!("skipping goal steering because live thread is unavailable");
             return;
         };
-        if thread.inject_if_running(vec![item]).await.is_err() {
-            tracing::debug!("skipping goal steering because no turn is active");
-        }
+        thread.inject_fragment_without_turn(fragment).await;
     }
 
     pub(crate) async fn account_active_goal_progress(

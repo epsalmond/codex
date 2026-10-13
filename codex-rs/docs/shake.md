@@ -258,7 +258,7 @@ it didn't) — so escalation uses the identical enabled / persistent-thread /
 context-window / threshold logic, just evaluated a second time. At most one
 escalated pass runs per pre-sampling point; only after it (or its skip) does
 `run_pre_sampling_compact` re-check `token_limit_reached` and fall through to
-`run_auto_compact`. There is no separate config for this: escalation is on
+`run_inline_compact`. There is no separate config for this: escalation is on
 whenever `auto_shake` is on for the model. See management-plane#988; the
 one-tier-then-fallback shape mirrors oh-my-pi PR #9705's proposed escalation
 (open/unmerged upstream at the time this landed).
@@ -369,7 +369,7 @@ point. It is nevertheless safe at this exact point, and calls
   (`run_hooks_and_record_inputs(.., TurnStart)` comes later), so the rewritten
   history is exactly the settled history of previous turns.
 - Auto-compaction already replaces history wholesale at this same point via
-  `run_auto_compact` → `replace_compacted_history`.
+  `run_inline_compact` → `replace_compacted_history`.
 
 No expected fingerprint is passed: the preview and the shake run back-to-back in
 the same turn with no wait on client input, so there is no stale-confirmation
@@ -429,6 +429,21 @@ Ephemeral children never shake: auto-shake requires a persistent thread (step
 3 of the decision sequence above) because `elide` needs artifact recovery, so
 an ephemeral child falls straight through to compaction like any other
 ephemeral thread.
+
+Manual `/shake` remains an operator command for the current idle thread. Children
+cannot request Shake themselves, and a parent cannot manually reduce a child's
+history through a tool or RPC. Child reduction still runs automatically at the
+existing safe request boundaries. Inline compaction now carries its trigger
+through local, remote V2 and token-budget implementations, with user-request
+reason and phase metadata on local and remote summarization requests. This does
+not add a child maintenance entrypoint or change automatic eligibility.
+
+Internally, Shake distinguishes applied content reductions, actual no-ops,
+ephemeral skips, stale previews and failures (invalid seals, refused replacements
+or an artifact save failure with no reduced content). A successful scan that only
+advances the verified boundary is a no-op. A partially successful artifact pass
+reports only committed reductions; its unprocessed suffix remains available for retry. Root
+completion notices and manual protection windows retain their existing behavior.
 
 A parent can inspect a child's context state without waiting for a failure:
 `list_agents` reports a `context` field per agent
@@ -667,6 +682,66 @@ threshold_tokens = 120000
 [subagent_context_reduction]
 enabled = false
 ```
+
+## Thread context selections
+
+The core thread-settings contract now accepts a sparse
+`ContextSettingsUpdate::Patch { overrides }` or named `Reset`. This stage adds
+storage, policy readback and application to subsequent turns. Self tools, new
+operator update fields, `/context`, and updates to the next request within an
+already running turn are subsequent stages (#129/#131). An accepted write does
+not run Shake or compaction. Existing captured turns retain their settings.
+
+| Thread field | Values and baseline |
+| --- | --- |
+| `shake_threshold` | `Off`, `Percent { percent: 1..=100 }`, or positive `Tokens`; omission uses the family-resolved startup baseline above. The thread choice wins after family resolution. |
+| `shake_cold_resume` | Boolean; baseline enabled. `Off` suppresses this trigger too. |
+| `shake_min_elidable_percent` | 0–100; baseline 30%, with configured family/global safeguards retained. |
+| `shake_min_savings_tokens` | Nonnegative tokens; baseline 4,000. |
+| `compaction_threshold` | Positive `Tokens` or explicit `ModelDefault`; omission follows configured/inherited tokens or the catalog default. There is no automatic compaction Off. |
+| `compaction_scope` | Existing `Total` or `BodyAfterPrefix`; baseline Total. |
+| `post_turn_compaction_percent` | 0–100 percent of usable full model window; baseline zero. Zero disables the post-turn trigger, as in startup configuration. |
+| `child_reduction_enabled`, `child_reduction_threshold_tokens` | Boolean and positive tokens; configured baseline enabled at 272,000, bounded by a smaller usable model window. |
+
+Shake percentages use the resolved raw model window. Shake token triggers are
+bounded by a known raw window and any internal child cap. Total compaction
+retains the model's 90% upper bound; BodyAfterPrefix retains its configured body
+limit. Full prepared-request admission remains independent and uses the usable
+model window. Provider/family maps and cache TTL remain startup configuration,
+not thread controls; the internal Shake maximum is not exposed as a setter.
+
+Omitted fields preserve the current selection. Reset removes this thread's
+choices and recovers the configured/inherited baseline. Explicit ModelDefault
+instead bypasses a configured compaction token limit and resolves the captured
+model's catalog default. Invalid multi-field patches commit no fields.
+`CodexThread::context_settings()` returns requested choices, a scalar baseline,
+effective values, the selected model/provider and both window bases. It does
+not prepare a request or refresh usage observations. A root's child threshold
+is a descendant default; only children report an inherited active cap.
+
+New children inherit the invoking step's sparse choices, then resolve them
+against their final selected model. The original compaction and internal Shake
+limits survive the inherited minimum clamp, nesting and saved state. Raising a
+child threshold or disabling its reduction clamp can therefore recover those
+limits. Reset restores its inherited choices. Mandatory usable model-window
+admission and ephemeral-thread recovery restrictions still apply.
+
+For example, with a raw 400,000-token window, a thread Shake override of 50%
+selects 200,000 tokens. A child threshold of 120,000 caps that child at 120,000;
+a later raise to 250,000 allows the Shake threshold to return to 200,000. The
+root retains the 200,000-token trigger. Compaction body-scope readback does not
+represent the child's full active-context admission limit.
+
+Selections and the retained child baseline use existing owned
+`ThreadSettingsApplied` checkpoints and explicit runtime restore. Resume uses
+the latest snapshot belonging to the resumed thread; old snapshots without the
+field load defaults. Full and partial forks use the supplied history boundary,
+then checkpoint the new thread's own settings. A root fork retains saved
+descendant defaults and un-clamped inputs without acquiring a child active cap.
+A later source update or copied parent event cannot overwrite its owned selection. In-memory
+acceptance precedes event persistence. For persistent threads, disk durability
+is only established by the existing successful checkpoint/flush barrier. A persistence failure does
+not roll back settings already consumed by a request.
 
 ## Maintenance
 

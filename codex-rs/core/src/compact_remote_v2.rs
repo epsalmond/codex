@@ -9,6 +9,7 @@ use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::build_compaction_replacement_history;
 use crate::compact::compaction_status_from_result;
+use crate::compact_invocation::CompactionInvocation;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote_history::HistoryItemGroup;
@@ -76,20 +77,19 @@ const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
-pub(crate) async fn run_inline_remote_auto_compact_task(
+pub(crate) async fn run_inline_remote_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     replacement_step_context: Arc<StepContext>,
     client_session: &mut ModelClientSession,
     world_state: Arc<WorldState>,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    invocation: CompactionInvocation,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
-        CompactionTrigger::Auto,
-        reason,
+        invocation.trigger,
+        invocation.reason,
         CompactionImplementation::ResponsesCompactionV2,
-        phase,
+        invocation.phase,
     );
     run_remote_compact_task_inner(
         &sess,

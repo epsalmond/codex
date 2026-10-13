@@ -18,6 +18,13 @@ struct Observations {
 
 impl ToolLifecycleContributor for Observations {
     fn on_tool_dispatch(&self, input: ToolDispatchInput<'_>) {
+        assert_eq!(input.turn_store.level_id(), input.turn_id);
+        if input.call_id != "exec" && input.call_id != "plan" {
+            assert!(matches!(
+                input.source,
+                codex_extension_api::ToolCallSource::CodeMode { .. }
+            ));
+        }
         self.events
             .lock()
             .expect("observation lock should not be poisoned")
@@ -151,18 +158,19 @@ async fn cancelled_tool_still_reports_handler_timing() -> Result<()> {
     Ok(())
 }
 
+#[test_case("text(await tools.test_sync_tool({sleep_after_ms: 1}));", &["dispatch", "start", "finish"]; "valid_nested_call")]
+#[test_case("try { await tools.test_sync_tool('invalid'); } catch (error) { text(String(error)); }", &["dispatch"]; "malformed_nested_call")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_reports_host_timing_without_nested_dispatch_timing() -> Result<()> {
+async fn code_mode_reports_dispatch_before_parsing_without_nested_timing(
+    code: &str,
+    expected: &[&str],
+) -> Result<()> {
     let server = responses::start_mock_server().await;
     let requests = responses::mount_sse_sequence(
         &server,
         vec![
             responses::sse(vec![
-                responses::ev_custom_tool_call(
-                    "exec",
-                    "exec",
-                    "text(await tools.test_sync_tool({sleep_after_ms: 1}));",
-                ),
+                responses::ev_custom_tool_call("exec", "exec", code),
                 responses::ev_completed("first"),
             ]),
             responses::sse(vec![
@@ -215,6 +223,6 @@ async fn code_mode_reports_host_timing_without_nested_dispatch_timing() -> Resul
         .filter(|(id, _)| id != "exec")
         .map(|(_, event)| *event)
         .collect::<Vec<_>>();
-    assert_eq!(nested, vec!["start", "finish"]);
+    assert_eq!(nested, expected);
     Ok(())
 }

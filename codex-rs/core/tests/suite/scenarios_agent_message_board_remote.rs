@@ -40,6 +40,8 @@ async fn remote_board_uses_the_existing_tools_and_session_identity() -> anyhow::
         .with_config(move |config| {
             configure(config);
             config.ephemeral = true;
+            // The fork's wake-on-report default hides root `wait_agent`; this scenario waits.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.current_time_reminder = Some(codex_core::config::CurrentTimeReminderConfig {
                 clock_source: codex_features::CurrentTimeSource::External,
                 ..Default::default()

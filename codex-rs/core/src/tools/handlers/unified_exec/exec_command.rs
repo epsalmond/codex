@@ -164,6 +164,7 @@ impl ExecCommandHandler {
             tracker,
             call_id,
             payload,
+            source,
             ..
         } = invocation;
 
@@ -177,12 +178,15 @@ impl ExecCommandHandler {
         };
 
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
-        let context = UnifiedExecContext::new(
+        let mut context = UnifiedExecContext::new(
             session.clone(),
             step_context.clone(),
             cancellation_token,
             call_id.clone(),
         );
+        if let crate::tools::context::ToolCallSource::CodeMode { cell_id, .. } = source {
+            context.originating_cell_id = Some(cell_id);
+        }
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
         let turn_environment = resolve_tool_environment(
             &step_context,
@@ -480,7 +484,7 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
         unreachable!("exec_command has a function schema");
     };
     spec.description = spec.description.replacen(
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs are local to this agent; ask the launching agent to interact with its sessions.",
         "Runs a command to completion and returns its output. The process is terminated on timeout or cancellation and cannot be resumed.",
         1,
     );

@@ -69,9 +69,20 @@ impl LocalAgentControl {
                 }
             }
         }
-        self.runtime
+        let completion_inhibition = state
+            .inhibit_automatic_agent_completions(&subtree_thread_ids)
+            .await;
+        for child in self
+            .runtime
             .wake_coordinator
-            .cancel_subtree(&subtree_thread_ids);
+            .cancel_subtree(&subtree_thread_ids)
+        {
+            self.runtime.publish_waiting_parent_report(
+                child,
+                /*child_agent_path*/ None,
+                crate::session_prefix::CLOSED_CHILD_NOTE,
+            );
+        }
         let metadata = self.get_agent_metadata(agent_id);
         let known_agent = metadata.is_some();
         if let Some(agent_graph_store) = state.agent_graph_store() {
@@ -133,6 +144,11 @@ impl LocalAgentControl {
             }
             Err(err) => return Err(err),
         };
+        for thread_id in &subtree_thread_ids {
+            self.runtime.registry.close_completion_delivery(*thread_id);
+        }
+        // Shutdown callbacks can report to these members; do not hold their gates while waiting.
+        drop(completion_inhibition);
         match Box::pin(self.shutdown_agent_tree_with_ids(&subtree_thread_ids)).await {
             Err(err)
                 if known_agent

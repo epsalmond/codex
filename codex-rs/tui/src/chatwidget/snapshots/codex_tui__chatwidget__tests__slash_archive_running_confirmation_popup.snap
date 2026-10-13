@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/slash_commands.rs
-assertion_line: 2937
+assertion_line: 2995
 expression: popup
 ---
 • Wo  Archive this session?
@@ -8,6 +8,6 @@ expression: popup
 
 › As
     › 1. No, don't archive  Return to the current session
-  GP  2. Yes, archive       Archive this session now
+  so  2. Yes, archive       Archive this session now
 
       enter select · esc back

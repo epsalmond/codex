@@ -241,17 +241,18 @@ async fn daemon_startup(command: &str) -> Result<()> {
         };
         let expected = if command == "start" {
             // The draft header is visible before the session's command composer is ready.
-            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            // The fork's default status line shows the model's short name (`terra`).
+            steps.push_back(("terra·", b"/status\r"));
             "Server:Localbackgroundserver"
         } else if elevated_launch || command == "restrictive-job" && elevated {
             if let Some(action) = command.strip_prefix("elevated-") {
                 args.push(action.into());
                 steps.push_back(("Nosessionsyet", b"\x1b"));
             }
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            steps.push_back(("terra·", b"\x14"));
             "Runningasadministrator:sharedbackgroundserverdisabled."
         } else if command == "restrictive-job" {
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            steps.push_back(("terra·", b"\x14"));
             "Runningwithoutthesharedbackgroundserver:thisWindowslauncher"
         } else if mismatch {
             args.extend(if disabling && !persisted {
@@ -269,7 +270,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
             if command == "mismatch-cancel" {
                 "--no-daemon"
             } else {
-                steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+                steps.push_back(("terra·", b"/status\r"));
                 if restart { "Server:Localbackgroundserver" } else { "Model:" }
             }
         } else if bedrock_onboarding {
@@ -277,7 +278,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
         } else {
             args.extend([command.into(), "--strict-config".into()]);
             steps.push_back(("Nosessionsyet", b"\x1b"));
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            steps.push_back(("terra·", b"\x14"));
             if elevated {
                 "Runningasadministrator:sharedbackgroundserverdisabled."
             } else {
@@ -364,6 +365,17 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             ensure!(text.contains("Cannotusethesharedbackgroundserver:Thissessionrequiresapi_key_model_discoverytobedisabled."));
                         } else {
                             ensure!(text.contains("Server:Localbackgroundserver") == restart);
+                            if restart {
+                                let settings: serde_json::Value = serde_json::from_slice(
+                                    &fs::read(home.path().join("app-server-daemon/settings.json"))?
+                                )?;
+                                let flag = if disabling && !persisted {
+                                    "auth_elicitation"
+                                } else {
+                                    "api_key_model_discovery"
+                                };
+                                assert_eq!(settings["featureOverrides"], serde_json::json!({(flag): false}));
+                            }
                         }
                     } else if command == "start" {
                         ensure!(text.contains("Server:Localbackgroundserver"));

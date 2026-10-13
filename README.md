@@ -46,6 +46,39 @@ Run `codex-shake` and sign in as described in
 `codex-shake` shares `~/.codex` (config, sign-in, and sessions) with the
 official `codex`.
 
+### Building codex-shake from a commit
+
+To try a commit before its release is published, build and install it on the
+machine that will run it (Linux x86_64 or macOS arm64):
+
+```sh
+scripts/shake-local-install.sh --dry-run <commit>   # print version, tag, and plan
+scripts/shake-local-install.sh <commit>
+scripts/shake-local-install.sh --host mbp <commit>  # run it on another machine over ssh
+```
+
+The script builds in a fresh worktree with the same steps as the release
+workflow and installs the result next to the published releases under
+`~/.local/share/codex-shake/<tag>`. It then points `current` at it and records
+the switch in `last-local-deploy.json`. The tag sorts just below the official
+release for the same commit, so `codex-shake-update` moves to that release
+once it is published. It needs Rust and Python 3.11 or newer. On Linux it also
+needs `pkg-config` and `libcap-dev` to build `bwrap`. Without them, it reuses
+the installed release's `bwrap` when the `bwrap` sources haven't changed since
+that release. The build worktree is removed on success unless you pass
+`--keep-worktree`.
+
+To roll back, point `current` at an earlier release directory. The previous
+target is `oldTarget` in `last-local-deploy.json`:
+
+```sh
+ln -sfn <older-tag> ~/.local/share/codex-shake/current
+```
+
+The first build of each commit gets few sccache hits. Development builds keep
+the workspace version at `0.0.0`, and stamping the release version changes
+every workspace crate, so only third-party dependencies come from the cache.
+
 ### Windows development build
 
 Install [GitHub CLI](https://cli.github.com) and run `gh auth login` first.

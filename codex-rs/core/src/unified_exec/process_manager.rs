@@ -28,6 +28,7 @@ use crate::plugins::metrics::finish_and_track_measurements;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
+use crate::session::async_completion::CompletionReservation;
 use crate::tools::ApprovalContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::events::ToolEmitter;
@@ -74,6 +75,7 @@ use codex_core_plugins::PLUGIN_METRICS_OUTPUT_ENV_VAR;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginMetricsSidecar;
 use codex_core_plugins::strip_output_env;
+use codex_features::Feature;
 use codex_network_proxy::NetworkPolicyDecider;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -505,9 +507,43 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+        let mut reservation = if context
+            .step_context
+            .turn
+            .config
+            .features
+            .enabled(Feature::AsyncProcessCompletion)
+            && !request.tty
+        {
+            match context.session.services.async_completions.reserve(
+                context.session.thread_id(),
+                &context.step_context.turn,
+                &context.call_id,
+                request.process_id,
+                context.originating_cell_id.as_deref(),
+            ) {
+                Ok(reservation) => Some(reservation),
+                Err(message) => {
+                    self.release_process_id(request.process_id).await;
+                    return Err(UnifiedExecError::process_failed(message.to_owned()));
+                }
+            }
+        } else {
+            None
+        };
         let result = self
-            .exec_command_inner(request, context, /*completion*/ None)
+            .exec_command_inner(
+                request,
+                context,
+                /*completion*/ None,
+                reservation.as_mut(),
+            )
             .await;
+        if !matches!(&result, Ok(output) if output.process_id.is_some())
+            && let Some(reservation) = reservation.take()
+        {
+            reservation.release();
+        }
         let outcome = match &result {
             Ok(output) if output.process_id.is_some() => "yielded",
             Ok(_) => "exited",
@@ -523,6 +559,7 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
         mut completion: Option<&mut Completion<'_>>,
+        reservation: Option<&mut CompletionReservation>,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
         let cwd = request.cwd.clone();
         let process = self
@@ -615,6 +652,7 @@ impl UnifiedExecProcessManager {
                 metrics_sidecar,
                 Arc::clone(&output_buffer),
                 Arc::clone(&initial_exec_command_active),
+                reservation,
             )
             .await;
             InitialExecCommandGuard {
@@ -1204,6 +1242,7 @@ impl UnifiedExecProcessManager {
         metrics_sidecar: Option<PluginMetricsSidecar>,
         output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
         initial_exec_command_active: Arc<AtomicBool>,
+        reservation: Option<&mut CompletionReservation>,
     ) {
         let plugin_metrics_sidecar =
             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
@@ -1228,13 +1267,6 @@ impl UnifiedExecProcessManager {
             store.processes.insert(process_id, entry);
             pruned_entry
         };
-        // prune_processes_if_needed runs while holding process_store; do async
-        // network-approval cleanup only after dropping that lock.
-        if let Some(pruned_entry) = pruned_entry {
-            unregister_network_approval_for_entry(&pruned_entry).await;
-            pruned_entry.process.terminate();
-        }
-
         spawn_exit_watcher(
             Arc::clone(&process),
             context,
@@ -1246,7 +1278,14 @@ impl UnifiedExecProcessManager {
             started_at,
             network_denial_monitor,
             plugin_metrics_sidecar,
+            reservation.map(CompletionReservation::register),
         );
+        // prune_processes_if_needed runs while holding process_store; do async
+        // network-approval cleanup only after dropping that lock.
+        if let Some(pruned_entry) = pruned_entry {
+            unregister_network_approval_for_entry(&pruned_entry).await;
+            pruned_entry.process.terminate();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

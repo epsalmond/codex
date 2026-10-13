@@ -5,6 +5,7 @@ use codex_extension_api::TurnStartPhase;
 use tokio_util::sync::CancellationToken;
 
 use crate::session::TurnInput;
+use crate::session::async_completion::CompletionDrain;
 use crate::session::session::Session;
 use crate::session::startup_prewarm::SessionStartupPrewarmResolution;
 use crate::session::turn::McpStartupRequirements;
@@ -44,6 +45,7 @@ impl SessionTask for RegularTask {
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
+        let completion_drain = CompletionDrain::for_original_input(&ctx.session_source, &input);
         let run_turn_span = trace_span!("run_turn");
         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
         // not wait on startup prewarm resolution.
@@ -106,6 +108,7 @@ impl SessionTask for RegularTask {
                 Arc::clone(&sess),
                 Arc::clone(&ctx),
                 next_input,
+                completion_drain,
                 &mut mcp_startup_requirements,
                 prewarmed_client_session.take(),
                 cancellation_token.child_token(),

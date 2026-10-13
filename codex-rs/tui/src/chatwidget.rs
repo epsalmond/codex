@@ -678,7 +678,7 @@ pub(crate) struct ChatWidget {
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
-    active_subagents: HashSet<ThreadId>,
+    subagent_counts: crate::multi_agents::SubagentCounts,
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
     blocks_direct_input: bool,

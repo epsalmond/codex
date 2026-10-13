@@ -105,7 +105,7 @@ async fn activate_turn_with_new_review_authority(session: &Arc<Session>) -> Arc<
         .await
         .expect("next turn should accept different approval authority");
     session
-        .start_task(
+        .spawn_task(
             current_turn,
             Vec::new(),
             super::NeverEndingTask {
@@ -243,7 +243,7 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
     session
-        .start_task(
+        .spawn_task(
             Arc::clone(&turn_context),
             Vec::new(),
             super::NeverEndingTask {
@@ -716,7 +716,7 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_exec_command_policy_s
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
     session
-        .start_task(
+        .spawn_task(
             Arc::clone(&turn_context),
             Vec::new(),
             super::NeverEndingTask {
@@ -780,7 +780,7 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
     )
     .await;
     session
-        .start_task(
+        .spawn_task(
             Arc::clone(&turn),
             Vec::new(),
             super::NeverEndingTask {

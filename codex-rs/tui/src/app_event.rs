@@ -417,6 +417,8 @@ pub(crate) enum AppEvent {
     SelectAgentThread(ThreadId),
     /// Close and archive a child and its descendants while retaining saved history.
     CloseAgentThread(ThreadId),
+    /// Hide inactive descendant rows locally without stopping or archiving threads.
+    DismissInactiveSubagents,
 
     /// Fork the current thread into a transient side conversation.
     StartSide {

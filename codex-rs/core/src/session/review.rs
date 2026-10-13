@@ -21,11 +21,23 @@ pub(super) async fn spawn_review_thread(
             config.http_client_factory(),
         )
         .await;
-    let review_model_info = sess
+    let mut model_config = config.to_models_manager_config();
+    model_config.model_auto_compact_token_limit = None;
+    let catalog_model = sess
         .services
         .models_manager
-        .get_model_info(&model, &config.to_models_manager_config())
+        .get_model_info(&model, &model_config)
         .await;
+    let (review_model_info, context_view) = super::context_settings::resolve(
+        parent_turn_context
+            .initial_settings
+            .context_baseline
+            .as_deref()
+            .unwrap_or(&parent_turn_context.config),
+        &parent_turn_context.initial_settings.context_selection,
+        &catalog_model,
+        super::context_settings::ContextSettingsTarget::from(&parent_turn_context.session_source),
+    );
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
     let _ = review_features.disable(Feature::WebSearchRequest);
@@ -96,11 +108,22 @@ pub(super) async fn spawn_review_thread(
     selected.collaboration_mode.settings.model = model.clone();
     selected.collaboration_mode.settings.reasoning_effort = reasoning_effort.clone();
     selected.service_tier = service_tier;
-    let step_settings = Arc::new(ResolvedStepSettings::new(
+    let mut step_settings = ResolvedStepSettings::new(
         Arc::new(selected),
         Arc::new(model_info.clone()),
         &review_features,
-    ));
+    );
+    super::context_settings::project_compaction(&mut per_turn_config, &context_view);
+    step_settings.context_settings = Some(Arc::new(context_view));
+    step_settings.context_baseline = parent_turn_context
+        .initial_settings
+        .context_baseline
+        .clone();
+    step_settings.context_selection = parent_turn_context
+        .initial_settings
+        .context_selection
+        .clone();
+    let step_settings = Arc::new(step_settings);
     per_turn_config.model = Some(model);
     per_turn_config.model_reasoning_effort = reasoning_effort;
     per_turn_config.service_tier = step_settings.service_tier.clone();
@@ -180,6 +203,6 @@ pub(super) async fn spawn_review_thread(
     // TODO(ccunningham): Review turns currently rely on `spawn_task` for TurnComplete but do not
     // emit a parent TurnStarted. Consider giving review a full parent turn lifecycle
     // (TurnStarted + TurnComplete) for consistency with other standalone tasks.
-    sess.start_task(Arc::clone(&tc), input, ReviewTask::new())
+    sess.spawn_task(Arc::clone(&tc), input, ReviewTask::new())
         .await;
 }

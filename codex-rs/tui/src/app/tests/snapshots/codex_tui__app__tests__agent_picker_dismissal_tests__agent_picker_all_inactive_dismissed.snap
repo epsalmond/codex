@@ -1,0 +1,11 @@
+---
+source: tui/src/app/tests/agent_picker_dismissal_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 120)"
+---
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+
+› 1. • Main [default]  idle context ?
+
+  enter select · / search · q hide inactive locally · esc back

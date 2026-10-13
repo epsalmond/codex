@@ -1,3 +1,5 @@
+#[path = "reduction_outcome_tests.rs"]
+mod reduction_outcome_tests;
 use crate::agent::LocalAgentControl;
 #[path = "notification_tests.rs"]
 mod notification_tests;
@@ -17,6 +19,7 @@ use super::*;
 mod config_refresh_tests;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
+use crate::compact_invocation::CompactionInvocation;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::config::RuntimeConfigRefresh;
@@ -4475,6 +4478,7 @@ async fn set_rate_limits_retains_previous_credits() {
         },
     };
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
         environments: Vec::new(),
@@ -4598,6 +4602,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         },
     };
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
         environments: Vec::new(),
@@ -5222,6 +5227,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
     };
 
     SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
         environments: Vec::new(),
@@ -6696,6 +6702,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         },
     };
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         provider: create_model_provider(
             config.model_provider.clone(),
@@ -6930,6 +6937,7 @@ pub(crate) async fn make_session_and_context_with_session_source(
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -7037,6 +7045,7 @@ pub(crate) async fn make_session_and_context_with_session_source(
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
+        async_completions: Arc::default(),
         elicitations: crate::elicitation::ElicitationService::new(),
         shell_zsh_path: None,
         main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
@@ -7257,6 +7266,7 @@ async fn make_session_with_config_and_rx(
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -7390,6 +7400,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -9227,6 +9238,7 @@ where
     };
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
+        context_settings: Default::default(),
         turn_extension_init: Default::default(),
         environments: default_environments.clone(),
         provider: create_model_provider(
@@ -9333,6 +9345,7 @@ where
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
+        async_completions: Arc::default(),
         elicitations: crate::elicitation::ElicitationService::new(),
         shell_zsh_path: None,
         main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
@@ -12162,7 +12175,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
     };
     let requests = responses::mount_response_sequence(&server, replies).await;
     let mut client_session = session.services.model_client.new_session();
-    crate::compact_remote_v2::run_inline_remote_auto_compact_task(
+    crate::compact_remote_v2::run_inline_remote_compact_task(
         Arc::clone(&session),
         Arc::clone(&primary),
         Arc::clone(&fallback),
@@ -12173,8 +12186,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
                 .await
                 .unwrap(),
         ),
-        CompactionReason::ModelDownshift,
-        CompactionPhase::PreTurn,
+        CompactionInvocation::automatic(CompactionReason::ModelDownshift, CompactionPhase::PreTurn),
     )
     .await
     .expect("compaction succeeds");

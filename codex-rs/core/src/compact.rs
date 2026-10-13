@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compact_invocation::CompactionInvocation;
 use crate::context::BaseInstructionsFragment;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
@@ -111,13 +112,12 @@ fn assemble_compaction_history(
         .collect()
 }
 
-pub(crate) async fn run_inline_auto_compact_task(
+pub(crate) async fn run_inline_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     replacement_step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    invocation: CompactionInvocation,
 ) -> CodexResult<()> {
     let prompt = turn_context
         .config
@@ -138,10 +138,10 @@ pub(crate) async fn run_inline_auto_compact_task(
         input,
         world_state,
         CompactionTurnMetadata::new(
-            CompactionTrigger::Auto,
-            reason,
+            invocation.trigger,
+            invocation.reason,
             CompactionImplementation::Responses,
-            phase,
+            invocation.phase,
         ),
     )
     .await?;

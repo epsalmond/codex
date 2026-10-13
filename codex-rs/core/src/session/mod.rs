@@ -1,3 +1,4 @@
+pub(crate) mod async_completion;
 pub(crate) mod startup;
 
 use crate::WithTurnExtensionData;
@@ -244,6 +245,7 @@ mod request_admission;
 pub(crate) use request_admission::InsufficientContext;
 pub(crate) use request_admission::ReductionAttempt;
 mod config_refresh;
+pub(crate) mod context_settings;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod environment;
@@ -266,6 +268,9 @@ mod mcp_refresh;
 mod mcp_runtime;
 mod mid_turn_reduction;
 pub(crate) mod multi_agents;
+#[cfg(test)]
+#[path = "owned_completion_wake_tests.rs"]
+mod owned_completion_wake_tests;
 mod plugin_selection;
 pub(crate) mod prompt_cache_clock;
 mod realtime_history;
@@ -685,6 +690,10 @@ impl Session {
             )
         };
 
+        let mut config = config;
+        let context_settings_from_spawn = config.context_settings_from_spawn;
+        // Ordinary later forks must resolve their own selected history boundary.
+        config.context_settings_from_spawn = false;
         let mut config = Arc::new(config);
         let refresh_strategy = if session_source.is_non_root_agent() {
             codex_models_manager::manager::RefreshStrategy::Offline
@@ -871,9 +880,51 @@ impl Session {
         );
         let service_tier =
             get_service_tier(config.service_tier.clone(), &config.features, &model_info);
+        let context_owner = match &conversation_history {
+            InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
+            InitialHistory::Forked(_) if context_settings_from_spawn => None,
+            InitialHistory::Forked(_) => forked_from_thread_id,
+            InitialHistory::New | InitialHistory::Cleared => None,
+        };
+        let mut context_settings = context_owner
+            .and_then(|owner| {
+                conversation_history
+                    .get_rollout_items()
+                    .iter()
+                    .rev()
+                    .find_map(|item| match item {
+                        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                            if event.thread_id == Some(owner) =>
+                        {
+                            Some(
+                                event
+                                    .thread_settings
+                                    .context_settings
+                                    .clone()
+                                    .unwrap_or_else(|| {
+                                        codex_protocol::context_settings::ContextSettingsState {
+                                            overrides: Default::default(),
+                                            inherited: config
+                                                .context_settings
+                                                .as_ref()
+                                                .and_then(|state| state.inherited.clone()),
+                                        }
+                                    }),
+                            )
+                        }
+                        _ => None,
+                    })
+            })
+            .unwrap_or_else(|| config.context_settings.clone().unwrap_or_default());
+        if matches!(session_source, SessionSource::SubAgent(_))
+            && context_settings.inherited.is_none()
+        {
+            context_settings.inherited = Some(context_settings::configured_baseline(&config));
+        }
         let storage_originator = AuthStorageOriginator::from_client_name(&originator);
         let session_configuration = SessionConfiguration {
             turn_extension_init,
+            context_settings,
             provider: create_model_provider(
                 config.model_provider.clone(),
                 Some(Arc::clone(&auth_manager)),
@@ -3943,6 +3994,9 @@ impl Session {
                     Arc::clone(&settings.model_info),
                     &self.features,
                 );
+                inherited_settings.context_settings = settings.context_settings.clone();
+                inherited_settings.context_baseline = settings.context_baseline.clone();
+                inherited_settings.context_selection = settings.context_selection.clone();
                 inherited_settings.mcp_approvals_reviewer_override =
                     settings.mcp_approvals_reviewer_override;
                 settings = Arc::new(inherited_settings);

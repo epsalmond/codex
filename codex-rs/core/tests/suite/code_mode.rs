@@ -54,6 +54,8 @@ use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::TurnInputSubmission;
@@ -7227,12 +7229,20 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
             .write_to(&mut large_image, ImageFormat::Png)?;
     }
     let mut builder = test_codex()
+        .with_session_source(if reviewer_compaction {
+            SessionSource::SubAgent(SubAgentSource::Other("saved-reviewer-parent".to_owned()))
+        } else {
+            SessionSource::Exec
+        })
         .with_model_info_override("gpt-5.5", move |model| {
             model.node_repl_auto_review_required = auto_review_required
         })
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            if reviewer_compaction {
+                config.model_auto_compact_token_limit = Some(100_000);
+            }
             if reviewer_constraint.is_some_and(|value| value != "large_prompt") || check_detail {
                 let reviewer = config
                     .model_catalog

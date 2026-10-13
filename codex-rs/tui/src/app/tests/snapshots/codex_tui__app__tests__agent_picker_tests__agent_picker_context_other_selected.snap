@@ -9,4 +9,4 @@ expression: "render_bottom_popup(&app.chat_widget, 160)"
   1. • Policy [worker]  error context 120000 · cap 100000 · window 272000
 › 2. • Other [worker]   idle context ?
 
-  enter select · / search · x close agent · esc back
+  enter select · / search · x close agent · q hide inactive locally · esc back

@@ -18,12 +18,14 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::turn_input::TurnStartOptions;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
@@ -87,6 +89,53 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 
     assert!(manager.get_thread(root.thread_id).await.is_ok());
     assert!(manager.get_thread(second.thread_id).await.is_ok());
+}
+
+#[tokio::test]
+async fn paused_v2_agent_holding_trigger_mail_is_not_unloadable() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control
+        .runtime
+        .upgrade()
+        .expect("thread manager should be live");
+    let child = spawn_v2_subagent(&control, &state, config, root.thread_id, "worker").await;
+    mark_thread_completed(child.thread.as_ref()).await;
+    assert!(super::is_unloadable(child.thread.as_ref()).await);
+
+    // A wake turn that failed to bind pauses wakeups and holds its accepted trigger mail.
+    let input_queue = &child.thread.session.input_queue;
+    input_queue.pause_wakeups();
+    input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                Vec::new(),
+                "held wake".to_string(),
+                /*trigger_turn*/ true,
+            ),
+            TurnStartOptions::default(),
+        )
+        .await;
+    assert!(input_queue.wakeups_paused());
+    assert_eq!(input_queue.trigger_turn_mailbox_count().await, 1);
+
+    assert!(!super::is_unloadable(child.thread.as_ref()).await);
 }
 
 #[tokio::test]
@@ -541,8 +590,8 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
     );
     assert_eq!(
         coordinator.assignment_status(child.thread_id),
-        None,
-        "closed assignment state is retired"
+        Some(AgentStatus::Interrupted),
+        "the child was interrupted before the close, so it stays for the report that publishes"
     );
     let _ = control.shutdown_live_agent(root.thread_id).await;
     let _ = grandchild_assignment;

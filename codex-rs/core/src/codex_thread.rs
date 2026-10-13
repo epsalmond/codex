@@ -149,6 +149,10 @@ impl ThreadConfigSnapshot {
 /// Thread settings overrides that app-server validates before starting a turn.
 #[derive(Clone, Default)]
 pub struct CodexThreadSettingsOverrides {
+    pub context_settings: Option<codex_protocol::context_settings::ContextSettingsUpdate>,
+    /// Exact retained state for runtime replacement, including an empty selection.
+    #[doc(hidden)]
+    pub restored_context_settings: Option<codex_protocol::context_settings::ContextSettingsState>,
     /// Replaces the data captured by future turns. Omission preserves it.
     pub turn_extension_init: Option<codex_extension_api::ExtensionDataInit>,
     pub environments: Option<TurnEnvironmentRequests>,
@@ -632,11 +636,12 @@ impl CodexThread {
         self.session.set_thread_memory_mode(mode).await
     }
 
-    /// Injects model-visible items into the currently active turn.
+    /// Injects model-visible items into a turn with a registered task.
     ///
     /// This is the thread-level bridge to `Session::inject_if_running` for
     /// callers that only hold a `CodexThread`.
-    /// It returns the unchanged items when this thread has no active turn.
+    /// It returns the unchanged items when this thread has no registered task,
+    /// including while a turn is only reserved.
     pub async fn inject_if_running(
         &self,
         items: Vec<ResponseItem>,
@@ -757,6 +762,8 @@ impl CodexThread {
         overrides: CodexThreadSettingsOverrides,
     ) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
+            context_settings,
+            restored_context_settings,
             turn_extension_init,
             environments: environment_requests,
             runtime_workspace_roots,
@@ -776,6 +783,8 @@ impl CodexThread {
             disabled_plugin_ids,
         } = overrides;
         SessionSettingsUpdate {
+            context_settings,
+            restored_context_settings,
             turn_extension_init,
             step_settings: StepSettingsUpdate {
                 model,
@@ -847,7 +856,10 @@ impl CodexThread {
     }
 
     /// Records a context fragment without creating a new user turn boundary.
-    pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
+    ///
+    /// Queues it into a registered task, or records it in history without starting a turn.
+    /// Producers must bound the fragment's payload.
+    pub async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
         let item = ContextualUserFragment::into(fragment);
         self.session
             .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
@@ -1008,6 +1020,11 @@ impl CodexThread {
         } else {
             self.config_snapshot().await.approvals_reviewer
         }
+    }
+
+    /// Resolves current future-turn policy without preparing a request or observing usage.
+    pub async fn context_settings(&self) -> codex_protocol::context_settings::ContextSettingsView {
+        self.session.context_settings_view().await
     }
 
     /// Returns thread-owned settings suitable for rollout persistence and resume.
