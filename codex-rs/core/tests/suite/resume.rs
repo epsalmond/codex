@@ -398,6 +398,7 @@ async fn context_resume_uses_latest_owned_selection_including_empty_legacy_snaps
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: initial.session_configured.thread_id,
                 history: Arc::new(events),
+                history_revision: None,
                 rollout_path: initial.session_configured.rollout_path.clone(),
                 last_activity_at: None,
             }),
