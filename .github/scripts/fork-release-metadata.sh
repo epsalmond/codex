@@ -6,7 +6,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-fork_branch="eric/local-features"
+fork_branch="main"
 repo_root=""
 event_name=""
 event_ref=""
@@ -168,7 +168,7 @@ if [[ "$event_name" == workflow_dispatch ]]; then
   [[ "$resolved_upstream_sha" == "$upstream_sha" ]] ||
     die "upstream tag $upstream_tag resolves to $resolved_upstream_sha, expected $upstream_sha"
 
-  fork_ref=refs/remotes/fork-release/eric-local-features
+  fork_ref=refs/remotes/fork-release/main
   "${git_cmd[@]}" fetch --no-tags --quiet "$fork_url" \
     "+refs/heads/$fork_branch:$fork_ref" ||
     die "could not fetch the current $fork_branch branch"
@@ -180,7 +180,7 @@ fi
 
 stable_lineage=$(bash "$script_dir/fork-release-build.sh" stable-lineage --repo-root "$repo_root" --sha "$release_sha")
 
-# Like upstream main, eric/local-features keeps the workspace at 0.0.0; the
+# Like upstream main, main keeps the workspace at 0.0.0; the
 # release version comes from the newest exact stable tag it has merged and is
 # stamped into Cargo.toml at build time.
 if [[ "$source_version" == 0.0.0 ]]; then

@@ -23,10 +23,10 @@ EOF
 printf 'Detailed behavior.\n' > "$fixture/releases/feature-two.md"
 git -C "$fixture" add .
 git -C "$fixture" commit -q -m base
-git -C "$fixture" branch -M eric/local-features
+git -C "$fixture" branch -M main
 commit=$(git -C "$fixture" rev-parse HEAD)
 
-body=$(bash "$notes_script" "$fixture" epsalmond/codex eric/local-features "$commit" \
+body=$(bash "$notes_script" "$fixture" epsalmond/codex main "$commit" \
   0.156.1 rust-v0.156.1 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2.35.0 \
   branch-merge local-features-v0.156.1-main-r1 codex-shake_0.156.1_amd64.deb)
 
@@ -50,7 +50,7 @@ fi
 
 # Render the immutable source notes even when the checkout has later edits.
 printf '## Working tree edit\n\nThis must not appear.\n' > "$fixture/RELEASE_NOTES.md"
-immutable_body=$(bash "$notes_script" "$fixture" epsalmond/codex eric/local-features "$commit" \
+immutable_body=$(bash "$notes_script" "$fixture" epsalmond/codex main "$commit" \
   0.156.1 rust-v0.156.1 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2.35.0 \
   branch-merge local-features-v0.156.1-main-r1 codex-shake_0.156.1_amd64.deb)
 if [[ "$immutable_body" != "$expected_body" ]]; then
@@ -59,7 +59,7 @@ if [[ "$immutable_body" != "$expected_body" ]]; then
   exit 1
 fi
 
-none_body=$(bash "$notes_script" "$fixture" epsalmond/codex eric/local-features "$commit" \
+none_body=$(bash "$notes_script" "$fixture" epsalmond/codex main "$commit" \
   0.156.1 none deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2.35.0 \
   branch-merge local-features-v0.156.1-main-r1 codex-shake_0.156.1_amd64.deb)
 expected_none_build=$(cat <<EOF

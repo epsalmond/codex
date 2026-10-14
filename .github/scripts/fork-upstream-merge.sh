@@ -4,7 +4,7 @@ set -euo pipefail
 
 mode=""
 repo_root=""
-fork_branch="eric/local-features"
+fork_branch="main"
 upstream_url="https://github.com/openai/codex.git"
 upstream_tag=""
 upstream_sha=""

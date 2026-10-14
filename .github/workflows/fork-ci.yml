@@ -12,13 +12,13 @@ name: fork-ci
 # binaries do not fit a standard runner's disk or time budget. The build step
 # stays so people running the fork's binaries know they build in CI. Windows
 # also uploads a canonical dev-profile package for testing on a separate VM.
-# Pushes to eric/local-features run the same job only to write the Cargo cache
+# Pushes to main run the same job only to write the Cargo cache
 # that PRs restore; the release itself is fork-release.yml.
 on:
   pull_request:
   push:
     branches:
-      - eric/local-features
+      - main
   workflow_dispatch:
 
 permissions:
@@ -131,7 +131,7 @@ jobs:
           # per target, so a few open PRs exhausted the 10 GB repo budget and
           # evicted the release caches. Only the base branch writes; PRs restore
           # it (a base-branch cache is visible to its PRs).
-          save-if: ${{ github.ref == 'refs/heads/eric/local-features' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Save even when clippy/build fails, so a red push does not leave the
           # next run cold.
           cache-on-failure: true
@@ -188,7 +188,7 @@ jobs:
 
       # The binaries fork-release ships, in the dev profile. Their
       # release-profile build happens in fork-release.yml on push to
-      # eric/local-features.
+      # main.
       - name: cargo build
         shell: bash
         run: |

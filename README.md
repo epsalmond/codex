@@ -21,7 +21,7 @@ platforms, use [upstream Codex CLI](#installing-upstream-codex-cli).
 Install the latest fork release with:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/main/install.sh | sh
 ```
 
 The script installs releases under `~/.local/share/codex-shake` and adds
@@ -82,8 +82,8 @@ every workspace crate, so only third-party dependencies come from the cache.
 ### Windows development build
 
 Install [GitHub CLI](https://cli.github.com) and run `gh auth login` first.
-Download [codex-shake-update.bat](https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/codex-shake-update.bat)
-and [codex-shake-update.ps1](https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/codex-shake-update.ps1)
+Download [codex-shake-update.bat](https://raw.githubusercontent.com/epsalmond/codex/main/codex-shake-update.bat)
+and [codex-shake-update.ps1](https://raw.githubusercontent.com/epsalmond/codex/main/codex-shake-update.ps1)
 into the folder where you want Codex installed. In PowerShell, run:
 
 ```powershell
@@ -94,7 +94,7 @@ cd 'C:\Tools\codex-shake'
 
 For later updates, close any running Codex processes and run the batch file
 from that folder again. It downloads the latest successful `fork-ci.yml`
-push build on `eric/local-features`, verifies the ZIP's SHA-256 checksum, and
+push build on `main`, verifies the ZIP's SHA-256 checksum, and
 extracts into your current folder, overwriting matching files. The ZIP
 includes both updater scripts. These are development builds; GitHub Actions
 artifacts expire after 14 days, so an expired artifact needs a new successful

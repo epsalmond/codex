@@ -18,7 +18,7 @@ git -C "$fixture" add .
 git -C "$fixture" commit -q -m base
 git -C "$fixture" tag rust-v1.2.3
 git -C "$fixture" tag rust-v9.9.9-alpha.1
-git -C "$fixture" branch -M eric/local-features
+git -C "$fixture" branch -M main
 git -C "$fixture" commit --allow-empty -q -m 'fork change'
 fork_tip=$(git -C "$fixture" rev-parse HEAD)
 
@@ -27,9 +27,9 @@ printf 'upstream\n' >> "$fixture/README.md"
 git -C "$fixture" add README.md
 git -C "$fixture" commit -q -m 'upstream change'
 upstream_tip=$(git -C "$fixture" rev-parse HEAD)
-git -C "$fixture" switch -q -c integration-merge eric/local-features
+git -C "$fixture" switch -q -c integration-merge main
 git -C "$fixture" merge -q --no-ff --no-edit -m 'Integrate upstream main' upstream/main
-git -C "$fixture" switch -q eric/local-features
+git -C "$fixture" switch -q main
 git -C "$fixture" merge -q --no-ff --no-edit -m 'GitHub merge pull request' integration-merge
 merge_sha=$(git -C "$fixture" rev-parse HEAD)
 outer_second_parent=$(git -C "$fixture" rev-list --parents -n 1 "$merge_sha" | awk '{ print $3 }')
@@ -51,19 +51,19 @@ git -C "$fixture" tag -d rust-v9.9.9-alpha.1 rust-v2.0.0 >/dev/null
 git -C "$fixture" switch -q -c exact-upstream-merge "$fork_tip"
 git -C "$fixture" merge -q --no-ff --no-edit -m 'Merge exact upstream tag' upstream/main
 dispatch_sha=$(git -C "$fixture" rev-parse HEAD)
-git -C "$fixture" switch -q eric/local-features
+git -C "$fixture" switch -q main
 git -C "$fixture" merge -q --no-ff --no-edit -m 'Record direct upstream merge' exact-upstream-merge
 git -C "$fixture" commit --allow-empty -q -m 'later local head'
 fork_remote="$fixture/fork.git"
 git init --bare -q "$fork_remote"
 git -C "$fixture" push -q "$fork_remote" \
-  eric/local-features:refs/heads/eric/local-features
+  main:refs/heads/main
 
 event_output="$fixture/event-output"
 bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name push \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$merge_sha" \
   --event-before "$fork_tip" \
   --upstream-url "$upstream_remote" \
@@ -89,7 +89,7 @@ dispatch_output="$fixture/dispatch-output"
 bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name workflow_dispatch \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$dispatch_sha" \
   --upstream-url "$upstream_remote" \
   --fork-url "$fork_remote" \
@@ -102,7 +102,7 @@ grep -Fxq 'source_kind=branch-merge' "$dispatch_output"
 if bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name workflow_dispatch \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$merge_sha" \
   --upstream-url "$upstream_remote" \
   --fork-url "$fork_remote" \
@@ -116,7 +116,7 @@ fi
 if bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name workflow_dispatch \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$dispatch_sha" \
   --upstream-url "$upstream_remote" \
   --fork-url "$fork_remote" \
@@ -167,7 +167,7 @@ publish_line=$(grep -n '^      - name: Create or update release after identity v
 [[ "$verify_artifacts_line" -lt "$token_line" && "$token_line" -lt "$publish_line" ]]
 sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
 body=$(bash "$script_dir/fork-release-notes.sh" \
-  "$fixture" epsalmond/codex eric/local-features "$merge_sha" \
+  "$fixture" epsalmond/codex main "$merge_sha" \
   0.154.0 rust-v2.0.0 "$upstream_tip" 2.35.0 branch-merge \
   "$sample_release_tag" codex-shake_0.154.0_amd64.deb)
 
@@ -183,7 +183,7 @@ git -C "$fixture" tag "$release_tag" HEAD
 if bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name push \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$merge_sha" \
   --event-before "$fork_tip" \
   --upstream-url "$upstream_remote" \
@@ -254,7 +254,7 @@ fi
 if bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name push \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$upstream_tip" \
   --event-before "$merge_sha" \
   --output "$fixture/non-ff-output"; then
@@ -264,18 +264,18 @@ fi
 
 # Like upstream main, the branch may keep the workspace at 0.0.0; the release
 # version is then the newest exact stable tag merged into the release commit.
-unstamped_before=$(git -C "$fixture" rev-parse eric/local-features)
-git -C "$fixture" switch -q -c unstamped-workspace eric/local-features
+unstamped_before=$(git -C "$fixture" rev-parse main)
+git -C "$fixture" switch -q -c unstamped-workspace main
 printf '[workspace.package]\nversion = "0.0.0"\n' > "$fixture/codex-rs/Cargo.toml"
 git -C "$fixture" commit -q -am 'Keep workspace version at 0.0.0'
-git -C "$fixture" switch -q eric/local-features
+git -C "$fixture" switch -q main
 git -C "$fixture" merge -q --no-ff --no-edit -m 'Merge unstamped workspace' unstamped-workspace
 unstamped_sha=$(git -C "$fixture" rev-parse HEAD)
 unstamped_output="$fixture/unstamped-output"
 bash "$metadata_script" \
   --repo-root "$fixture" \
   --event-name push \
-  --event-ref refs/heads/eric/local-features \
+  --event-ref refs/heads/main \
   --event-sha "$unstamped_sha" \
   --event-before "$unstamped_before" \
   --upstream-url "$upstream_remote" \

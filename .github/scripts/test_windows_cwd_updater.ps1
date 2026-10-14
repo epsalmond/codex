@@ -20,7 +20,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:UPDATER_TEST_MODE -eq 'list-failure') { exit 23 }
 if ($args[0] -eq 'run' -and $args[1] -eq 'list') {
-    $expected = 'run list -R epsalmond/codex --workflow fork-ci.yml --branch eric/local-features --event push --status success --limit 1 --json databaseId,headSha'
+    $expected = 'run list -R epsalmond/codex --workflow fork-ci.yml --branch main --event push --status success --limit 1 --json databaseId,headSha'
     if (($args -join ' ') -ne $expected) { throw "Unexpected gh arguments: $args" }
     if ($env:UPDATER_TEST_MODE -eq 'invalid-metadata') { '[{"databaseId":123}]'; exit 0 }
     if ($env:UPDATER_TEST_MODE -eq 'invalid-json') { 'not JSON'; exit 0 }
