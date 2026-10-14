@@ -990,6 +990,7 @@ async fn captured_child_selection_can_raise_disable_and_restore_without_losing_b
                 thread_settings: raised_snapshot,
             }),
         )]),
+        history_revision: None,
         rollout_path: None,
         last_activity_at: None,
     });
