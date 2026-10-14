@@ -618,6 +618,14 @@ impl Session {
             .is_some()
     }
 
+    /// Restarts after a stopped turn unless the stop paused wakeups. A pause lets only mail that
+    /// arrives later wake a durable sleep, so Esc never restarts on the mail it returned.
+    async fn maybe_start_turn_after_stop(self: &Arc<Self>) {
+        if !self.input_queue.wakeups_paused() {
+            self.maybe_start_turn_for_pending_work().await;
+        }
+    }
+
     /// Starts a regular turn when the session is idle and pending work is waiting.
     ///
     /// Pending work includes mailbox mail marked with `trigger_turn`, or any mailbox mail while
@@ -647,6 +655,8 @@ impl Session {
     ) -> PendingWorkStartResult {
         // A rejected automatic start waits for explicit recovery. A user pause only holds
         // trigger-turn mail and owned completions: queue-only mail still wakes a durable sleep.
+        // A failed turn pauses without suppressing starts: its error may be transient, and each
+        // retry needs a new message, so a repeating error costs one turn per message, not a loop.
         if self.input_queue.automatic_starts_suppressed() {
             return PendingWorkStartResult::Stale;
         }
@@ -902,7 +912,7 @@ impl Session {
             }
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
-            self.maybe_start_turn_for_pending_work().await;
+            self.maybe_start_turn_after_stop().await;
         }
     }
 
@@ -961,7 +971,7 @@ impl Session {
         }
 
         if reason == TurnAbortReason::Interrupted {
-            self.maybe_start_turn_for_pending_work().await;
+            self.maybe_start_turn_after_stop().await;
         }
     }
 
@@ -1231,6 +1241,7 @@ impl Session {
         } else {
             ThreadIdleCause::Completed
         };
+        let stopped = abort_reason.is_some();
         let event = if let Some(reason) = abort_reason {
             if reason == TurnAbortReason::Interrupted {
                 run_turn_interrupt_hooks(self, &turn_context, &turn_state).await;
@@ -1308,7 +1319,11 @@ impl Session {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
         if cleared_active_turn {
-            self.maybe_start_turn_for_pending_work().await;
+            if stopped {
+                self.maybe_start_turn_after_stop().await;
+            } else {
+                self.maybe_start_turn_for_pending_work().await;
+            }
         }
     }
 

@@ -138,6 +138,70 @@ async fn paused_v2_agent_holding_trigger_mail_is_not_unloadable() {
     assert!(!super::is_unloadable(child.thread.as_ref()).await);
 }
 
+/// Unread controller mail can wake a paused durable sleep only to turn out to be a held report.
+/// That wake releases its reservation and starts no empty turn; the report stays held.
+#[tokio::test]
+async fn paused_durable_sleep_wake_with_only_held_reports_starts_no_turn() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control
+        .runtime
+        .upgrade()
+        .expect("thread manager should be live");
+    let child = spawn_v2_subagent(&control, &state, config, root.thread_id, "worker").await;
+    mark_thread_completed(child.thread.as_ref()).await;
+    let session = &child.thread.session;
+    session.input_queue.pause_wakeups();
+    session
+        .services
+        .thread_extension_data
+        .insert(codex_extension_items::sleep::SleepItem {
+            id: "held-durable-sleep".to_string(),
+            duration_ms: 60_000,
+        });
+    control
+        .runtime
+        .mailboxes
+        .enqueue(
+            child.thread_id,
+            /*id*/ None,
+            vec![InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker/helper").expect("agent path"),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                Vec::new(),
+                "held report".to_string(),
+                /*trigger_turn*/ true,
+            )],
+        )
+        .expect("enqueue controller mail");
+
+    let started = session.maybe_start_turn_for_pending_work().await;
+
+    assert_eq!(
+        (
+            started,
+            session.active_turn.lock().await.is_none(),
+            session.input_queue.wakeups_paused(),
+            session.input_queue.trigger_turn_mailbox_count().await,
+        ),
+        (crate::tasks::PendingWorkStartResult::Stale, true, true, 1)
+    );
+}
+
 #[tokio::test]
 async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     let mut config = test_config().await;

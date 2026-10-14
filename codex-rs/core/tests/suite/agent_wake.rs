@@ -901,6 +901,47 @@ async fn wake_mode_durable_sleep_while_paused_holds_reports() {
     server.shutdown().await;
 }
 
+/// Esc on a turn that queue-only mail woke from a paused durable sleep starts no new turn, even
+/// with more queue-only mail waiting. Only mail that arrives after the stop wakes the sleep again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_mode_interrupted_durable_sleep_wake_does_not_restart() {
+    let (_release_tx, release_rx) = oneshot::channel();
+    let woken = vec![
+        chunk(ev_response_created("resp-1")),
+        gated_chunk(release_rx, vec![ev_completed("resp-1")]),
+    ];
+    let (server, _completions) =
+        start_streaming_sse_server(vec![woken, final_answer_chunks("resp-2", "restarted")]).await;
+    let codex = build_streaming_wake_mode(&server).await;
+
+    pause_idle_root(&codex).await;
+    codex.thread_extension_data().insert(SleepItem {
+        id: "clock-wait-1".to_string(),
+        duration_ms: 60_000,
+    });
+    submit_child_mail(
+        &codex,
+        "/root/worker_a",
+        "progress a",
+        /*trigger_turn*/ false,
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnStarted(_))).await;
+    deliver_child_mail(
+        &codex,
+        "/root/worker_b",
+        "progress b",
+        /*trigger_turn*/ false,
+    )
+    .await;
+    codex.submit(Op::Interrupt).await.expect("interrupt");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    assert_eq!(server.requests().await.len(), 1);
+    server.shutdown().await;
+}
+
 /// Esc right as a wake turn starts returns its report to the mailbox, where the pause holds it
 /// for the next user message. The report is delivered exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
