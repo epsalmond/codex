@@ -974,6 +974,9 @@
             "context_management": {
               "$ref": "#/definitions/FeatureToml_for_ContextManagementConfigToml"
             },
+            "control_tool_hook_observation": {
+              "type": "boolean"
+            },
             "current_time_reminder": {
               "$ref": "#/definitions/FeatureToml_for_CurrentTimeReminderConfigToml"
             },
@@ -7287,6 +7290,9 @@
         },
         "context_management": {
           "$ref": "#/definitions/FeatureToml_for_ContextManagementConfigToml"
+        },
+        "control_tool_hook_observation": {
+          "type": "boolean"
         },
         "current_time_reminder": {
           "$ref": "#/definitions/FeatureToml_for_CurrentTimeReminderConfigToml"

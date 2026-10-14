@@ -11,11 +11,15 @@ use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use futures::future::BoxFuture;
+use serde_json::Value;
+use serde_json::json;
 
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
 use super::WAIT_TOOL_NAME;
 use super::handle_runtime_response;
+use super::observation::code_mode_hook_tool_name;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
 use super::wait_spec::create_wait_tool;
@@ -212,13 +216,44 @@ impl CodeModeWaitHandler {
     }
 }
 
+/// Bounded hook view of a Code Mode `wait` call; it mirrors the model's
+/// arguments, all of which are identifiers, durations, or flags.
+fn wait_observation_input(args: &ExecWaitArgs) -> Value {
+    let mut input = json!({
+        "cell_id": args.cell_id,
+        "yield_time_ms": args.yield_time_ms,
+        "terminate": args.terminate,
+    });
+    if let (Some(max_tokens), Value::Object(fields)) = (args.max_tokens, &mut input) {
+        fields.insert("max_tokens".to_string(), json!(max_tokens));
+    }
+    input
+}
+
 impl CoreToolRuntime for CodeModeWaitHandler {
     fn pre_tool_use_payload(&self, _invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         // Code-mode `wait` is runtime control for an existing code cell, not a
         // standalone user action. Tool calls made from code mode still flow
         // through normal dispatch, but hooks should not block or rewrite the
-        // wait loop itself.
+        // wait loop itself; they observe it through
+        // `observational_pre_tool_use_payload`.
         None
+    }
+
+    fn observational_pre_tool_use_payload<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+    ) -> BoxFuture<'a, Option<PreToolUsePayload>> {
+        Box::pin(async move {
+            let ToolPayload::Function { arguments } = &invocation.payload else {
+                return None;
+            };
+            let args: ExecWaitArgs = parse_arguments(arguments).ok()?;
+            Some(PreToolUsePayload {
+                tool_name: code_mode_hook_tool_name(invocation),
+                tool_input: wait_observation_input(&args),
+            })
+        })
     }
 
     fn post_tool_use_payload(
@@ -229,5 +264,47 @@ impl CoreToolRuntime for CodeModeWaitHandler {
         // The wait result feeds code-mode control flow, so do not let
         // PostToolUse replace it with model-facing hook feedback.
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExecWaitArgs;
+    use super::parse_arguments;
+    use super::wait_observation_input;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn wait_observation_input_uses_defaults_and_bounded_fields() {
+        let args: ExecWaitArgs =
+            parse_arguments(r#"{"cell_id":"3"}"#).expect("parse wait arguments");
+
+        assert_eq!(
+            wait_observation_input(&args),
+            json!({
+                "cell_id": "3",
+                "yield_time_ms": super::DEFAULT_WAIT_YIELD_TIME_MS,
+                "terminate": false,
+            })
+        );
+    }
+
+    #[test]
+    fn wait_observation_input_keeps_terminate_and_token_limit() {
+        let args: ExecWaitArgs = parse_arguments(
+            r#"{"cell_id":"9","terminate":true,"max_tokens":50,"yield_time_ms":5}"#,
+        )
+        .expect("parse wait arguments");
+
+        assert_eq!(
+            wait_observation_input(&args),
+            json!({
+                "cell_id": "9",
+                "yield_time_ms": 5,
+                "terminate": true,
+                "max_tokens": 50,
+            })
+        );
     }
 }

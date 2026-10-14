@@ -226,6 +226,14 @@ impl Hooks {
         self.engine.run_pre_tool_use(request).await
     }
 
+    /// Runs `PreToolUse` hooks for a call they may observe but not block or rewrite.
+    pub async fn run_pre_tool_use_observation(
+        &self,
+        request: PreToolUseRequest,
+    ) -> PreToolUseOutcome {
+        self.engine.run_pre_tool_use_observation(request).await
+    }
+
     pub async fn run_permission_request(
         &self,
         request: PermissionRequestRequest,

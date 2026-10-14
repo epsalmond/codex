@@ -26,6 +26,10 @@
     "model": {
       "type": "string"
     },
+    "observational": {
+      "description": "Codex extension: present and `true` when the call is observed rather than gated. Hooks still run and `additionalContext` reaches the model, but block decisions and `updatedInput` are ignored.",
+      "type": "boolean"
+    },
     "permission_mode": {
       "enum": [
         "default",

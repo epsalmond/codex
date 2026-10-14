@@ -44,6 +44,10 @@ The fork installs as `codex-shake` beside the official `codex` binary and can up
 
 `codex exec` now exits 1 when it cannot write the `--output-last-message` file, after normal shutdown, so CI no longer treats a missing output file as success.
 
+## Hooks observe control-tool waits
+
+`PreToolUse` hooks now see Code Mode `exec` and `wait` calls and unified exec `write_stdin` polls as observational events that cannot block or rewrite them, so loop detectors can spot repeated waits. See [hooks observe control-tool waits](README.md#hooks-observe-control-tool-waits) and the [release notes](releases/2026-10-14-control-tool-hook-observation.md).
+
 ## Getting the most out of codex-shake
 
 Ask for delegation, hand off long waits, and turn repeated work into scripts:

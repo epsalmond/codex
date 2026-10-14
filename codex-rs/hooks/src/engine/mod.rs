@@ -403,6 +403,13 @@ impl ClaudeHooksEngine {
         crate::events::pre_tool_use::run(self, request).await
     }
 
+    pub(crate) async fn run_pre_tool_use_observation(
+        &self,
+        request: PreToolUseRequest,
+    ) -> PreToolUseOutcome {
+        crate::events::pre_tool_use::run_observation(self, request).await
+    }
+
     pub(crate) async fn run_permission_request(
         &self,
         request: PermissionRequestRequest,

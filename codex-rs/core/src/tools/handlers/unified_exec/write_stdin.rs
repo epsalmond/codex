@@ -6,6 +6,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::resolve_tool_environment;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -17,7 +18,10 @@ use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use futures::future::BoxFuture;
 use serde::Deserialize;
+use serde_json::Value;
+use serde_json::json;
 
 use super::super::shell_spec::create_write_stdin_tool;
 use super::post_unified_exec_tool_use_payload;
@@ -144,8 +148,31 @@ impl CoreToolRuntime for WriteStdinHandler {
     fn pre_tool_use_payload(&self, _invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         // `write_stdin` is transport for an existing exec session. Empty writes
         // are background polls, and non-empty writes continue a command that
-        // already ran PreToolUse as Bash, so do not emit a second pre hook here.
+        // already ran PreToolUse as Bash, so it is never gated here; hooks see
+        // it through `observational_pre_tool_use_payload` instead.
         None
+    }
+
+    fn observational_pre_tool_use_payload<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+    ) -> BoxFuture<'a, Option<PreToolUsePayload>> {
+        Box::pin(async move {
+            let ToolPayload::Function { arguments } = &invocation.payload else {
+                return None;
+            };
+            let args: WriteStdinArgs = parse_arguments(arguments).ok()?;
+            let exec_call_id = invocation
+                .session
+                .services
+                .unified_exec_manager
+                .originating_call_id_for_process(args.session_id)
+                .await;
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new("write_stdin"),
+                tool_input: write_stdin_observation_input(&args, exec_call_id),
+            })
+        })
     }
 
     fn post_tool_use_payload(
@@ -156,5 +183,82 @@ impl CoreToolRuntime for WriteStdinHandler {
         // A `write_stdin` poll can observe final completion for the original
         // `exec_command`; emit that command's matching Bash PostToolUse.
         post_unified_exec_tool_use_payload(invocation, result)
+    }
+}
+
+/// Bounded hook view of a `write_stdin` call: identifiers, sizes, and flags,
+/// never the stdin text. `chars: ""` is kept for empty polls so detectors that
+/// key on the model-facing argument still recognise them.
+fn write_stdin_observation_input(args: &WriteStdinArgs, exec_call_id: Option<String>) -> Value {
+    let stdin_empty = args.chars.is_empty();
+    let mut input = json!({
+        "session_id": args.session_id,
+        "stdin_empty": stdin_empty,
+        "stdin_bytes": args.chars.len(),
+        "yield_time_ms": args.yield_time_ms,
+    });
+    let Value::Object(fields) = &mut input else {
+        unreachable!("json object literal");
+    };
+    if stdin_empty {
+        fields.insert("chars".to_string(), Value::String(String::new()));
+    }
+    if let Some(max_output_tokens) = args.max_output_tokens {
+        fields.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+    }
+    if let Some(exec_call_id) = exec_call_id {
+        fields.insert("exec_call_id".to_string(), Value::String(exec_call_id));
+    }
+    input
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WriteStdinArgs;
+    use super::write_stdin_observation_input;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn empty_poll_observation_keeps_empty_chars_and_origin() {
+        let args = WriteStdinArgs {
+            session_id: 1000,
+            chars: String::new(),
+            yield_time_ms: 60_000,
+            max_output_tokens: None,
+        };
+
+        assert_eq!(
+            write_stdin_observation_input(&args, Some("call-exec".to_string())),
+            json!({
+                "session_id": 1000,
+                "chars": "",
+                "stdin_empty": true,
+                "stdin_bytes": 0,
+                "yield_time_ms": 60_000,
+                "exec_call_id": "call-exec",
+            })
+        );
+    }
+
+    #[test]
+    fn input_observation_omits_stdin_text() {
+        let args = WriteStdinArgs {
+            session_id: 7,
+            chars: "secret\n".to_string(),
+            yield_time_ms: 250,
+            max_output_tokens: Some(100),
+        };
+
+        assert_eq!(
+            write_stdin_observation_input(&args, /*exec_call_id*/ None),
+            json!({
+                "session_id": 7,
+                "stdin_empty": false,
+                "stdin_bytes": 7,
+                "yield_time_ms": 250,
+                "max_output_tokens": 100,
+            })
+        );
     }
 }
