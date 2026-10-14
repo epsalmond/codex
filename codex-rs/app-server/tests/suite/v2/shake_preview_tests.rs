@@ -22,7 +22,9 @@ async fn shake_preview_is_read_only_and_rejects_stale_confirmation() -> Result<(
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config("suppress_unstable_features_warning = true")
+        .write(codex_home.path())?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
