@@ -230,7 +230,7 @@ mod tests {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | bash"
+                    "curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/main/install.sh | bash"
                 ][..],
             ))
         );

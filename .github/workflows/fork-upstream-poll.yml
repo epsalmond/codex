@@ -1,6 +1,6 @@
 name: fork-upstream-poll
 # Detects a new stable upstream openai/codex rust-v* tag and creates a
-# workflow_dispatch on eric/local-features so a GitHub-hosted runner can
+# workflow_dispatch on main so a GitHub-hosted runner can
 # merge and validate it. Only actual merge conflicts create the deployment
 # signal consumed by the management-plane webhook forwarder. See
 # epsalmond/management-plane#999.
@@ -11,10 +11,9 @@ name: fork-upstream-poll
 # a free-form payload for the existing management-plane webhook.
 #
 # IMPORTANT (GitHub default-branch constraint): `schedule` only runs from
-# the repository's default branch. This file must exist on whatever branch
-# is set as default for this to fire on its own; see the fork-automation
-# branch / repo-settings note in the management-plane#999 write-up for the
-# two ways to satisfy that.
+# the repository's default branch. `main` is the default branch (it was
+# `fork-automation`, a registration-only branch, before the 2026-10-14
+# rename of eric/local-features to main), so this copy is the one that fires.
 #
 # IMPORTANT (scheduled workflows in forks): GitHub disables `schedule`
 # triggers on a fork until a human opens the Actions tab and enables
@@ -99,7 +98,7 @@ jobs:
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
         run: |
           set -euo pipefail
-          fork_sha=$(gh api "repos/${FORK_REPO}/git/ref/heads/eric/local-features" --jq '.object.sha')
+          fork_sha=$(gh api "repos/${FORK_REPO}/git/ref/heads/main" --jq '.object.sha')
           [[ "$fork_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "feature branch did not resolve to a commit SHA" >&2; exit 1; }
           comparison=$(gh api "repos/${FORK_REPO}/compare/${UPSTREAM_SHA}...${fork_sha}" --jq '.status')
           case "$comparison" in
@@ -154,7 +153,7 @@ jobs:
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           gh workflow run fork-upstream-update.yml \
             --repo "$FORK_REPO" \
-            --ref eric/local-features \
+            --ref main \
             --field mode=upstream \
             --field "upstream_tag=$UPSTREAM_TAG" \
             --field "upstream_sha=$UPSTREAM_SHA" \

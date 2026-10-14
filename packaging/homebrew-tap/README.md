@@ -1,11 +1,11 @@
 # codex-shake Homebrew tap (bootstrap tree)
 
 This directory is a placeholder for `epsalmond/homebrew-codex-shake`, the
-Homebrew tap for `codex-shake` (the `eric/local-features` fork build of Codex
+Homebrew tap for `codex-shake` (the `main`-branch fork build of Codex
 CLI, published alongside an official `codex` install).
 
 `Formula/codex-shake.rb` in that tap repo is **generated**, not hand-edited.
-It is (re)rendered on every published `eric/local-features` release by the
+It is (re)rendered on every published `main` release by the
 "Update Homebrew tap" step in
 [`.github/workflows/fork-release.yml`](../../.github/workflows/fork-release.yml),
 via [`.github/scripts/render-brew-formula.sh`](../../.github/scripts/render-brew-formula.sh):

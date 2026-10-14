@@ -9,7 +9,7 @@ try {
         throw 'Install GitHub CLI (gh) from https://cli.github.com, then run gh auth login.'
     }
 
-    $runJson = & gh run list -R epsalmond/codex --workflow fork-ci.yml --branch eric/local-features --event push --status success --limit 1 --json databaseId,headSha
+    $runJson = & gh run list -R epsalmond/codex --workflow fork-ci.yml --branch main --event push --status success --limit 1 --json databaseId,headSha
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not find the Windows build. Check your connection and run gh auth login.'
     }
@@ -20,7 +20,7 @@ try {
         throw 'GitHub CLI returned invalid build metadata.'
     }
     if ($runs.Count -eq 0) {
-        throw 'No successful fork-ci.yml push build exists for eric/local-features.'
+        throw 'No successful fork-ci.yml push build exists for main.'
     }
     if ($runs.Count -ne 1 -or $null -eq $runs[0] -or
         $null -eq $runs[0].PSObject.Properties['headSha'] -or

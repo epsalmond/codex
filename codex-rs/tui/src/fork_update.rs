@@ -17,7 +17,8 @@ use serde::Deserialize;
 /// `install.sh` at the repo root. Always compiled: `update_action.rs` refers
 /// to it unconditionally (`UpdateAction` itself is not restricted to release
 /// builds).
-pub(crate) const FORK_INSTALL_COMMAND: &str = "curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | bash";
+pub(crate) const FORK_INSTALL_COMMAND: &str =
+    "curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/main/install.sh | bash";
 
 /// The release tag this binary was built from. `None` for upstream/non-fork
 /// builds.
@@ -99,15 +100,15 @@ pub(crate) fn fork_releases_api_url() -> String {
 
 #[cfg(any(not(debug_assertions), test))]
 fn fork_install_command_for_repo(repo: &str) -> String {
-    let script_url =
-        format!("https://raw.githubusercontent.com/{repo}/eric/local-features/install.sh");
+    let script_url = format!("https://raw.githubusercontent.com/{repo}/main/install.sh");
     // try_join fails only on NUL bytes, which an environment variable cannot
     // carry; fall back to the default repo rather than emit an unquoted URL.
-    let curl_command = shlex::try_join(["curl", "-fsSL", script_url.as_str()]).unwrap_or_else(|_| {
-        format!(
-            "curl -fsSL https://raw.githubusercontent.com/{DEFAULT_FORK_REPO}/eric/local-features/install.sh"
-        )
-    });
+    let curl_command =
+        shlex::try_join(["curl", "-fsSL", script_url.as_str()]).unwrap_or_else(|_| {
+            format!(
+                "curl -fsSL https://raw.githubusercontent.com/{DEFAULT_FORK_REPO}/main/install.sh"
+            )
+        });
     format!("{curl_command} | bash")
 }
 
@@ -379,7 +380,7 @@ mod tests {
         );
         assert_eq!(
             fork_install_command_for_repo("owner/repo"),
-            "curl -fsSL https://raw.githubusercontent.com/owner/repo/eric/local-features/install.sh | bash"
+            "curl -fsSL https://raw.githubusercontent.com/owner/repo/main/install.sh | bash"
         );
     }
 
@@ -391,7 +392,7 @@ mod tests {
             vec![
                 "curl",
                 "-fsSL",
-                "https://raw.githubusercontent.com/owner/repo '$x;touch nope'/eric/local-features/install.sh",
+                "https://raw.githubusercontent.com/owner/repo '$x;touch nope'/main/install.sh",
                 "|",
                 "bash",
             ]

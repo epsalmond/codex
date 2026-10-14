@@ -56,7 +56,7 @@ EOF
   local base_sha
   base_sha=$(git -C "$root" rev-parse HEAD)
 
-  git -C "$root" branch -M eric/local-features
+  git -C "$root" branch -M main
   printf 'fork\n' > "$root/README.md"
   git -C "$root" add README.md
   git -C "$root" commit -q -m fork
@@ -88,8 +88,8 @@ EOF
     upstream/main:refs/heads/main refs/tags/rust-v1.2.3:refs/tags/rust-v1.2.3
   git init --bare -q "$fork_remote"
   git -C "$root" push -q "$fork_remote" \
-    eric/local-features:refs/heads/eric/local-features
-  git --git-dir="$fork_remote" symbolic-ref HEAD refs/heads/eric/local-features
+    main:refs/heads/main
+  git --git-dir="$fork_remote" symbolic-ref HEAD refs/heads/main
   git -C "$root" remote add origin "$fork_remote"
 
   printf '%s\n%s\n%s\n%s\n' "$root" "$fork_remote" "$upstream_remote" "$fork_sha" \
@@ -221,7 +221,7 @@ bash "$merge_script" \
   --fork-sha "$fork_sha" \
   --candidate-branch "$recovery_branch" \
   --candidate-sha "$candidate_sha"
-landed_sha=$(git ls-remote "$fork_remote" refs/heads/eric/local-features | awk '{ print $1 }')
+landed_sha=$(git ls-remote "$fork_remote" refs/heads/main | awk '{ print $1 }')
 [[ "$landed_sha" == "$candidate_sha" ]]
 bash "$merge_script" \
   --mode land \
@@ -232,7 +232,7 @@ bash "$merge_script" \
   --fork-sha "$fork_sha" \
   --candidate-branch "$recovery_branch" \
   --candidate-sha "$candidate_sha"
-[[ "$(git ls-remote "$fork_remote" refs/heads/eric/local-features | awk '{ print $1 }')" == "$candidate_sha" ]]
+[[ "$(git ls-remote "$fork_remote" refs/heads/main | awk '{ print $1 }')" == "$candidate_sha" ]]
 
 make_fixture stale clean
 read_fixture stale
@@ -252,7 +252,7 @@ git clone -q "$fork_remote" "$other"
 git -C "$other" config user.email test@example.com
 git -C "$other" config user.name "Concurrent Writer"
 git -C "$other" commit --allow-empty -q -m "advance fork while candidate validates"
-git -C "$other" push -q origin eric/local-features
+git -C "$other" push -q origin main
 if bash "$merge_script" \
   --mode land \
   --repo-root "$root" \

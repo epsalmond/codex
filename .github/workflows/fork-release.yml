@@ -1,6 +1,6 @@
 name: fork-release
 
-# Builds and publishes the eric/local-features test builds on GitHub-hosted
+# Builds and publishes the main test builds on GitHub-hosted
 # runners. A branch push is accepted only for a fast-forward two-parent merge;
 # the workflow then creates its deterministic tag after validation and both
 # archives succeed. Existing local-features-v* tag pushes remain a manual
@@ -8,13 +8,13 @@ name: fork-release
 on:
   push:
     branches:
-      - eric/local-features
+      - main
     tags:
       - "local-features-v*"
   workflow_dispatch:
     inputs:
       release_sha:
-        description: Exact upstream merge commit already landed on eric/local-features.
+        description: Exact upstream merge commit already landed on main.
         required: true
         type: string
       upstream_tag:
@@ -26,12 +26,12 @@ on:
         required: true
         type: string
       fork_sha:
-        description: Exact eric/local-features parent of the upstream merge.
+        description: Exact main parent of the upstream merge.
         required: true
         type: string
 
 env:
-  FORK_BRANCH: eric/local-features
+  FORK_BRANCH: main
 
 permissions:
   contents: read
@@ -172,7 +172,7 @@ jobs:
           # recovery) saved a 1.3-1.6 GB copy scoped to that tag, which no
           # branch run could restore and which still counted against the 10 GB
           # repo budget.
-          save-if: ${{ github.ref == 'refs/heads/eric/local-features' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Packaging steps after the build can fail; keep the compiled
           # dependencies when they do.
           cache-on-failure: true

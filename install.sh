@@ -1,7 +1,7 @@
 #!/bin/sh
-# Install the latest eric/local-features test build of Codex as `codex-shake`.
+# Install the latest main-branch test build of Codex as `codex-shake`.
 #
-#   curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/eric/local-features/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/main/install.sh | sh
 #
 # Also available via Homebrew (macOS Apple Silicon, or Linux x86_64):
 #   brew install epsalmond/codex-shake/codex-shake
@@ -210,7 +210,7 @@ bin_q=$(shell_quote "$bin_dir")
 current_codex_q=$(shell_quote "$home_dir/current/codex")
 cat > "$wrapper.tmp.$$" <<EOF
 #!/bin/sh
-# codex-shake: eric/local-features test build. Reinstall/update with install.sh.
+# codex-shake: main-branch test build. Reinstall/update with install.sh.
 CODEX_SHAKE_REPO=$repo_q
 CODEX_SHAKE_HOME=$home_q
 CODEX_SHAKE_BIN_DIR=$bin_q

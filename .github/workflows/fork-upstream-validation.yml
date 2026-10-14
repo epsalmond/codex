@@ -76,9 +76,9 @@ jobs:
         with:
           workspaces: codex-rs -> target
           key: fork-release-validate
-          # Runs on eric/local-features (release and updater both dispatch
+          # Runs on main (release and updater both dispatch
           # there). Anywhere else would be a ref-scoped copy nobody can read.
-          save-if: ${{ github.ref == 'refs/heads/eric/local-features' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
       - uses: ./.github/actions/setup-rusty-v8

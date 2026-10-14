@@ -19,7 +19,7 @@ on:
         required: true
         type: string
       fork_sha:
-        description: Expected current eric/local-features commit and first merge parent.
+        description: Expected current main commit and first merge parent.
         required: true
         type: string
       recovery_branch:
@@ -32,7 +32,7 @@ on:
         type: string
 
 env:
-  FORK_BRANCH: eric/local-features
+  FORK_BRANCH: main
   UPSTREAM_URL: https://github.com/openai/codex.git
 
 permissions:

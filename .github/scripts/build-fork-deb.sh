@@ -130,7 +130,7 @@ if [[ -f "$repo_root/LICENSE" ]]; then
   install -m 0644 "$repo_root/LICENSE" "$pkg_root/usr/share/doc/codex-shake/LICENSE"
 fi
 cat > "$pkg_root/usr/share/doc/codex-shake/README" <<EOF
-codex-shake is a fork build of Codex CLI (eric/local-features,
+codex-shake is a fork build of Codex CLI (main branch,
 epsalmond/codex) installed as /usr/bin/codex-shake, beside your official
 codex install. It is not affiliated with, and does not overwrite, an
 existing "codex" binary.
@@ -203,8 +203,8 @@ Priority: optional
 Maintainer: Eric Psalmond <epsalmond@gmail.com>
 Homepage: https://github.com/epsalmond/codex
 Depends: $depends
-Description: eric/local-features fork build of Codex CLI, installed as codex-shake
- Installs the eric/local-features test build of Codex CLI (epsalmond/codex)
+Description: fork build of Codex CLI (epsalmond/codex), installed as codex-shake
+ Installs the main-branch test build of Codex CLI (epsalmond/codex)
  as /usr/bin/codex-shake, alongside an existing official "codex" install.
  It never overwrites or otherwise touches an official codex install.
 EOF

@@ -35,7 +35,7 @@ never prints the private key or token.
 
 ## Verify a release
 
-After configuration, merge the reviewed fix into `eric/local-features` through
+After configuration, merge the reviewed fix into `main` through
 the normal two-parent PR merge. Confirm its branch-merge release run creates a
 tag resolving to that exact merge commit and publishes all six release assets.
 The five binaries/archives must verify against the sixth asset, `SHA256SUMS`.
