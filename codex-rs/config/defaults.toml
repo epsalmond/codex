@@ -12,6 +12,9 @@ file_opener = "vscode"
 hide_agent_reasoning = false
 chatgpt_base_url = "https://chatgpt.com/backend-api/"
 project_root_markers = [".git"]
+# The fork ships under-development features (below) on by default; do not
+# warn about them on every session.
+suppress_unstable_features_warning = true
 
 [features]
 async_process_completion = true
