@@ -210,7 +210,11 @@ with unfinished delegated work waits without reporting completion, then
 resumes when a descendant reports. `send_message` only queues a message;
 `followup_task` resumes a waiting child. An interrupted child attempt reports
 its interruption to the parent; automatic wakeups stay paused until an
-explicit follow-up.
+explicit follow-up. While paused, a `send_message` still wakes an agent in a
+durable sleep, and that turn leaves held child results for the next message.
+When an automatic turn fails to start, its accepted messages stay queued and no
+turn starts automatically, durable sleep included, until an explicit follow-up
+or user turn.
 
 Wake-mode agents keep `clock.curr_time` and Code Mode's `wait` tool, while
 `clock.sleep` and `collaboration.wait_agent` are omitted. Set

@@ -645,7 +645,9 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
-        if self.input_queue.wakeups_paused() {
+        // A rejected automatic start waits for explicit recovery. A user pause only holds
+        // trigger-turn mail and owned completions: queue-only mail still wakes a durable sleep.
+        if self.input_queue.automatic_starts_suppressed() {
             return PendingWorkStartResult::Stale;
         }
         let cause = if self.input_queue.has_pending_mailbox_items().await
@@ -653,7 +655,9 @@ impl Session {
                 || self.has_outstanding_durable_sleep())
         {
             PendingWorkCause::Mailbox
-        } else if let Some(cause) = self.ready_owned_completion().await {
+        } else if !self.input_queue.wakeups_paused()
+            && let Some(cause) = self.ready_owned_completion().await
+        {
             cause
         } else {
             return PendingWorkStartResult::Stale;
@@ -707,6 +711,12 @@ impl Session {
         }
         let (mut input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
+        // Unread mail can turn out to be held trigger-turn mail; a pause leaves nothing to wake.
+        if input.is_empty() && matches!(cause, PendingWorkCause::Mailbox) {
+            self.abandon_root_turn_lifecycle(&sub_id);
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return PendingWorkStartResult::Stale;
+        }
         let retained_start_options = start_options.clone();
         if !input.iter().any(
             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
@@ -806,7 +816,7 @@ impl Session {
                 _ => None,
             });
             if has_held_work {
-                self.input_queue.pause_wakeups();
+                self.input_queue.suppress_automatic_starts();
                 self.input_queue
                     .return_to_mailbox_with_start_options(&mut input, retained_start_options)
                     .await;

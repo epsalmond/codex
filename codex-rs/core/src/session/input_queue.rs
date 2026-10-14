@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
@@ -100,8 +100,21 @@ pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
-    /// Holds trigger-turn mail after an interrupt until the next user message.
-    wakeups_paused: AtomicBool,
+    /// Holds trigger-turn mail until an explicit resume. See [`WakeupState`].
+    wakeups: AtomicU8,
+}
+
+/// Why automatic wakeups are held. Both states clear on the next user turn or explicit followup.
+///
+/// A user pause (Esc, an aborted approval, a failed turn) holds child reports and other
+/// trigger-turn mail, but queue-only mail still wakes an outstanding durable sleep. A rejected
+/// automatic start also holds that mail and suppresses every automatic start, so a deterministic
+/// startup failure is not repeated by later mail.
+#[repr(u8)]
+enum WakeupState {
+    Active = 0,
+    Paused = 1,
+    StartFailed = 2,
 }
 
 pub(crate) struct PendingMailboxCommunication {
@@ -117,7 +130,7 @@ impl InputQueue {
             activity_tx,
             controller: None,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
-            wakeups_paused: AtomicBool::new(false),
+            wakeups: AtomicU8::new(WakeupState::Active as u8),
         }
     }
 
@@ -275,17 +288,32 @@ impl InputQueue {
             .count()
     }
 
+    /// Holds trigger-turn mail until an explicit resume. Keeps a stronger failed-start state.
     pub(crate) fn pause_wakeups(&self) {
-        self.wakeups_paused.store(true, Ordering::SeqCst);
+        self.wakeups
+            .fetch_max(WakeupState::Paused as u8, Ordering::SeqCst);
+    }
+
+    /// Holds trigger-turn mail and suppresses every automatic start until an explicit resume.
+    pub(crate) fn suppress_automatic_starts(&self) {
+        self.wakeups
+            .store(WakeupState::StartFailed as u8, Ordering::SeqCst);
     }
 
     /// Clears the pause and returns whether wakeups were paused.
     pub(crate) fn resume_wakeups(&self) -> bool {
-        self.wakeups_paused.swap(false, Ordering::SeqCst)
+        self.wakeups
+            .swap(WakeupState::Active as u8, Ordering::SeqCst)
+            != WakeupState::Active as u8
     }
 
     pub(crate) fn wakeups_paused(&self) -> bool {
-        self.wakeups_paused.load(Ordering::SeqCst)
+        self.wakeups.load(Ordering::SeqCst) != WakeupState::Active as u8
+    }
+
+    /// Returns whether a rejected automatic start suppresses every automatic start.
+    pub(crate) fn automatic_starts_suppressed(&self) -> bool {
+        self.wakeups.load(Ordering::SeqCst) == WakeupState::StartFailed as u8
     }
 
     /// Drains all mail, including mail held by paused wakeups.
@@ -1075,6 +1103,41 @@ mod tests {
                 "paused={paused} reason={reason:?} mode={mode:?}"
             );
         }
+    }
+
+    /// A user pause holds trigger-turn mail but leaves automatic starts possible; a rejected start
+    /// also suppresses them. A later pause keeps the suppression, and one explicit resume clears
+    /// either state.
+    #[test]
+    fn user_pause_and_failed_start_are_distinct_wakeup_states() {
+        let input_queue = InputQueue::new();
+        let state =
+            |queue: &InputQueue| (queue.wakeups_paused(), queue.automatic_starts_suppressed());
+        let mut observed = vec![state(&input_queue)];
+        input_queue.pause_wakeups();
+        observed.push(state(&input_queue));
+        input_queue.suppress_automatic_starts();
+        observed.push(state(&input_queue));
+        input_queue.pause_wakeups();
+        observed.push(state(&input_queue));
+        let resumed = input_queue.resume_wakeups();
+        observed.push(state(&input_queue));
+        let resumed_again = input_queue.resume_wakeups();
+
+        assert_eq!(
+            (observed, resumed, resumed_again),
+            (
+                vec![
+                    (false, false),
+                    (true, false),
+                    (true, true),
+                    (true, true),
+                    (false, false),
+                ],
+                true,
+                false,
+            )
+        );
     }
 
     /// Held trigger-turn mail has nothing to deliver, so it must not interrupt a `sleep`.
