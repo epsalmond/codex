@@ -3030,6 +3030,7 @@ async fn code_mode_late_truncated_result_metadata_survives_waits() -> Result<()>
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(control);
     let builder = result_metadata_apps_builder(apps_server.chatgpt_base_url, "user@example.com")
+        .keep_polling_tools()
         .with_extensions(Arc::new(extensions.build()))
         .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
         .with_config(|config| {
