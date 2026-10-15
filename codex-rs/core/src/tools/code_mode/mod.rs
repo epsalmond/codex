@@ -1,6 +1,7 @@
 mod delegate;
 mod execute_handler;
 pub(crate) mod execute_spec;
+mod observation;
 mod output;
 mod response_adapter;
 mod telemetry;

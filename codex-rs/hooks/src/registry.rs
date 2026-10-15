@@ -226,6 +226,20 @@ impl Hooks {
         self.engine.run_pre_tool_use(request).await
     }
 
+    /// Whether any `PreToolUse` hook matches `tool_name` or its aliases.
+    pub fn has_pre_tool_use_handlers(&self, tool_name: &str, matcher_aliases: &[String]) -> bool {
+        self.engine
+            .has_pre_tool_use_handlers(tool_name, matcher_aliases)
+    }
+
+    /// Runs `PreToolUse` hooks for a call they may observe but not block or rewrite.
+    pub async fn run_pre_tool_use_observation(
+        &self,
+        request: PreToolUseRequest,
+    ) -> PreToolUseOutcome {
+        self.engine.run_pre_tool_use_observation(request).await
+    }
+
     pub async fn run_permission_request(
         &self,
         request: PermissionRequestRequest,

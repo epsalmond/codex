@@ -73,6 +73,52 @@ pub(crate) async fn run(
     engine: &ClaudeHooksEngine,
     request: PreToolUseRequest,
 ) -> PreToolUseOutcome {
+    run_with_mode(engine, request, DispatchMode::Control).await
+}
+
+/// Whether any configured `PreToolUse` handler matches this tool name.
+pub(crate) fn has_handlers(
+    handlers: &[ConfiguredHandler],
+    tool_name: &str,
+    matcher_aliases: &[String],
+) -> bool {
+    let matcher_inputs = common::matcher_inputs(tool_name, matcher_aliases);
+    !dispatcher::select_handlers_for_matcher_inputs(
+        handlers,
+        HookEventName::PreToolUse,
+        &matcher_inputs,
+    )
+    .is_empty()
+}
+
+/// Observed calls are on the tool's hot path, so their hooks get a short,
+/// fixed budget. Handlers still running at the deadline are killed.
+const OBSERVATIONAL_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Runs `PreToolUse` hooks for a call that hooks may observe but not gate.
+///
+/// Hook stdin carries `"observational": true`. Matching hooks run exactly as
+/// they do for gated tools, and their `additionalContext` still reaches the
+/// model, but block decisions, exit code 2, and `updatedInput` are reported as
+/// ignored and never reach the caller.
+pub(crate) async fn run_observation(
+    engine: &ClaudeHooksEngine,
+    request: PreToolUseRequest,
+) -> PreToolUseOutcome {
+    run_with_mode(engine, request, DispatchMode::Observational).await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchMode {
+    Control,
+    Observational,
+}
+
+async fn run_with_mode(
+    engine: &ClaudeHooksEngine,
+    request: PreToolUseRequest,
+    mode: DispatchMode,
+) -> PreToolUseOutcome {
     let matcher_inputs = common::matcher_inputs(&request.tool_name, &request.matcher_aliases);
     let matched = dispatcher::select_handlers_for_matcher_inputs(
         &engine.handlers,
@@ -89,7 +135,7 @@ pub(crate) async fn run(
         };
     }
 
-    let input_json = match command_input_json(&request) {
+    let input_json = match command_input_json_with_mode(&request, mode) {
         Ok(input_json) => input_json,
         Err(error) => {
             let hook_events = common::serialization_failure_hook_events_for_tool_use(
@@ -102,15 +148,38 @@ pub(crate) async fn run(
         }
     };
 
-    let results = dispatcher::execute_handlers(
+    let parse = match mode {
+        DispatchMode::Control => parse_completed,
+        DispatchMode::Observational => parse_completed_observational,
+    };
+    let observed_handlers = (mode == DispatchMode::Observational).then(|| matched.clone());
+    let execution = dispatcher::execute_handlers(
         engine,
         matched,
         input_json,
         request.cwd.as_path(),
         Some(request.turn_id.clone()),
-        parse_completed,
-    )
-    .await;
+        parse,
+    );
+    let results = match observed_handlers {
+        None => execution.await,
+        Some(handlers) => match tokio::time::timeout(OBSERVATIONAL_HOOK_TIMEOUT, execution).await {
+            Ok(results) => results,
+            Err(_) => {
+                return serialization_failure_outcome(
+                    common::serialization_failure_hook_events_for_tool_use(
+                        handlers,
+                        Some(request.turn_id.clone()),
+                        format!(
+                            "observational PreToolUse hook timed out after {}ms",
+                            OBSERVATIONAL_HOOK_TIMEOUT.as_millis()
+                        ),
+                        &request.tool_use_id,
+                    ),
+                );
+            }
+        },
+    };
 
     let should_block = results.iter().any(|result| result.data.should_block);
     let block_reason = results
@@ -172,7 +241,15 @@ fn latest_updated_input(
 /// the canonical `tool_name` so audit logs and downstream policy decisions stay
 /// stable. Shell-like tools pass `{ "command": ... }` as `tool_input`; MCP
 /// tools pass their resolved JSON arguments.
+#[cfg(test)]
 fn command_input_json(request: &PreToolUseRequest) -> Result<String, serde_json::Error> {
+    command_input_json_with_mode(request, DispatchMode::Control)
+}
+
+fn command_input_json_with_mode(
+    request: &PreToolUseRequest,
+    mode: DispatchMode,
+) -> Result<String, serde_json::Error> {
     let subagent = SubagentCommandInputFields::from(request.subagent.as_ref());
     serde_json::to_string(&PreToolUseCommandInput {
         session_id: request.session_id.to_string(),
@@ -187,6 +264,7 @@ fn command_input_json(request: &PreToolUseRequest) -> Result<String, serde_json:
         tool_name: request.tool_name.clone(),
         tool_input: request.tool_input.clone(),
         tool_use_id: request.tool_use_id.clone(),
+        observational: (mode == DispatchMode::Observational).then_some(true),
     })
 }
 
@@ -195,6 +273,30 @@ fn parse_completed(
     run_result: HandlerRunResult,
     turn_id: Option<String>,
 ) -> dispatcher::ParsedHandler<PreToolUseHandlerData> {
+    parse_completed_with_mode(handler, run_result, turn_id, DispatchMode::Control)
+}
+
+fn parse_completed_observational(
+    handler: &ConfiguredHandler,
+    run_result: HandlerRunResult,
+    turn_id: Option<String>,
+) -> dispatcher::ParsedHandler<PreToolUseHandlerData> {
+    parse_completed_with_mode(handler, run_result, turn_id, DispatchMode::Observational)
+}
+
+const OBSERVATIONAL_DECISION_IGNORED: &str =
+    "PreToolUse decision ignored: this tool call is observed by hooks, not gated";
+
+fn parse_completed_with_mode(
+    handler: &ConfiguredHandler,
+    run_result: HandlerRunResult,
+    turn_id: Option<String>,
+    mode: DispatchMode,
+) -> dispatcher::ParsedHandler<PreToolUseHandlerData> {
+    // Observed calls treat every hook like an async hook: context is kept, but
+    // no decision can block or rewrite the call.
+    let observational = mode == DispatchMode::Observational;
+    let can_apply_control_effects = handler.can_apply_control_effects() && !observational;
     let mut entries = Vec::new();
     let mut status = HookRunStatus::Completed;
     let mut should_block = false;
@@ -221,7 +323,7 @@ fn parse_completed(
                             text: system_message,
                         });
                     }
-                    if (!handler.can_apply_control_effects() || parsed.invalid_reason.is_none())
+                    if (!can_apply_control_effects || parsed.invalid_reason.is_none())
                         && let Some(additional_context) = parsed.additional_context
                     {
                         common::append_additional_context(
@@ -231,7 +333,16 @@ fn parse_completed(
                             additional_context,
                         );
                     }
-                    if handler.can_apply_control_effects() {
+                    if observational
+                        && handler.can_apply_control_effects()
+                        && (parsed.block_reason.is_some() || parsed.updated_input.is_some())
+                    {
+                        entries.push(HookOutputEntry {
+                            kind: HookOutputEntryKind::Warning,
+                            text: OBSERVATIONAL_DECISION_IGNORED.to_string(),
+                        });
+                    }
+                    if can_apply_control_effects {
                         if let Some(invalid_reason) = parsed.invalid_reason {
                             status = HookRunStatus::Failed;
                             entries.push(HookOutputEntry {
@@ -258,7 +369,13 @@ fn parse_completed(
                     });
                 }
             }
-            Some(2) if handler.can_apply_control_effects() => {
+            Some(2) if observational && handler.can_apply_control_effects() => {
+                entries.push(HookOutputEntry {
+                    kind: HookOutputEntryKind::Warning,
+                    text: OBSERVATIONAL_DECISION_IGNORED.to_string(),
+                });
+            }
+            Some(2) if can_apply_control_effects => {
                 if let Some(reason) = common::trimmed_non_empty(&run_result.stderr) {
                     status = HookRunStatus::Blocked;
                     should_block = true;
@@ -330,10 +447,14 @@ mod tests {
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
 
+    use super::DispatchMode;
+    use super::OBSERVATIONAL_DECISION_IGNORED;
     use super::PreToolUseHandlerData;
     use super::command_input_json;
+    use super::command_input_json_with_mode;
     use super::latest_updated_input;
     use super::parse_completed;
+    use super::parse_completed_observational;
     use super::preview;
     use crate::engine::ConfiguredHandler;
     use crate::engine::HandlerRunResult;
@@ -649,6 +770,99 @@ mod tests {
                     text: "do not run that".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn observational_input_marks_payload_and_control_input_omits_marker() {
+        let request = request_for_tool_use("call-wait");
+        let control: serde_json::Value = serde_json::from_str(
+            &command_input_json(&request).expect("serialize control command input"),
+        )
+        .expect("parse control command input");
+        let observed: serde_json::Value = serde_json::from_str(
+            &command_input_json_with_mode(&request, DispatchMode::Observational)
+                .expect("serialize observational command input"),
+        )
+        .expect("parse observational command input");
+
+        assert_eq!(control.get("observational"), None);
+        assert_eq!(observed["observational"], true);
+        assert_eq!(observed["hook_event_name"], "PreToolUse");
+    }
+
+    #[test]
+    fn observational_deny_is_ignored_but_context_is_kept() {
+        let parsed = parse_completed_observational(
+            &handler(),
+            run_result(
+                Some(0),
+                r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"stop polling","additionalContext":"poll advisory"}}"#,
+                "",
+            ),
+            Some("turn-1".to_string()),
+        );
+
+        assert_eq!(
+            parsed.data,
+            PreToolUseHandlerData {
+                should_block: false,
+                block_reason: None,
+                additional_contexts_for_model: vec![AdditionalContext {
+                    text: "poll advisory".to_string(),
+                    limit: AdditionalContextLimit::default(),
+                }],
+                updated_input: None,
+            }
+        );
+        assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
+        assert_eq!(
+            parsed.completed.run.entries,
+            vec![
+                HookOutputEntry {
+                    kind: HookOutputEntryKind::Context,
+                    text: "poll advisory".to_string(),
+                },
+                HookOutputEntry {
+                    kind: HookOutputEntryKind::Warning,
+                    text: OBSERVATIONAL_DECISION_IGNORED.to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn observational_allow_rewrite_is_ignored() {
+        let parsed = parse_completed_observational(
+            &handler(),
+            run_result(
+                Some(0),
+                r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"session_id":7}}}"#,
+                "",
+            ),
+            Some("turn-1".to_string()),
+        );
+
+        assert_eq!(parsed.data, PreToolUseHandlerData::default());
+        assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
+    }
+
+    #[test]
+    fn observational_exit_code_two_does_not_block() {
+        let parsed = parse_completed_observational(
+            &handler(),
+            run_result(Some(2), "", "stop polling"),
+            Some("turn-1".to_string()),
+        );
+
+        assert_eq!(parsed.data, PreToolUseHandlerData::default());
+        assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
+        assert_eq!(
+            parsed.completed.run.entries,
+            vec![HookOutputEntry {
+                kind: HookOutputEntryKind::Warning,
+                text: OBSERVATIONAL_DECISION_IGNORED.to_string(),
+            }]
         );
     }
 

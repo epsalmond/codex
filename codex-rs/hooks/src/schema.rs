@@ -293,6 +293,11 @@ pub(crate) struct PreToolUseCommandInput {
     pub tool_name: String,
     pub tool_input: Value,
     pub tool_use_id: String,
+    /// Codex extension: present and `true` when the call is observed rather
+    /// than gated. Hooks still run and `additionalContext` reaches the model,
+    /// but block decisions and `updatedInput` are ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observational: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1213,6 +1218,7 @@ mod tests {
             tool_name: "Bash".to_string(),
             tool_input: json!({ "command": "echo hello" }),
             tool_use_id: "tool-1".to_string(),
+            observational: None,
         };
 
         assert_eq!(
@@ -1246,9 +1252,11 @@ mod tests {
             tool_name: "Bash".to_string(),
             tool_input: json!({ "command": "echo hello" }),
             tool_use_id: "tool-1".to_string(),
+            observational: None,
         };
         let root_input = serde_json::to_value(root_input).expect("serialize root hook input");
         assert_eq!(root_input.get("agent_id"), None);
         assert_eq!(root_input.get("agent_type"), None);
+        assert_eq!(root_input.get("observational"), None);
     }
 }

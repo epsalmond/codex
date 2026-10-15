@@ -877,6 +877,78 @@ raise SystemExit(2)
     Ok(())
 }
 
+/// `decision` is `"deny"` (deny with context) or `"rewrite"` (allow with a
+/// broken `updatedInput` and context).
+fn write_observing_pre_and_logging_post_tool_use_hooks(
+    home: &Path,
+    pre_matcher: &str,
+    decision: &str,
+    reason: &str,
+) -> Result<()> {
+    let pre_script_path = home.join("pre_tool_use_hook.py");
+    let pre_log_path = home.join("pre_tool_use_hook_log.jsonl");
+    let post_script_path = home.join("post_tool_use_hook.py");
+    let post_log_path = home.join("post_tool_use_hook_log.jsonl");
+    let reason_json = serde_json::to_string(reason).context("serialize observer reason")?;
+    let decision_json = serde_json::to_string(decision).context("serialize observer decision")?;
+    let pre_script = format!(
+        r#"import json
+from pathlib import Path
+import sys
+
+payload = json.load(sys.stdin)
+with Path(r"{pre_log_path}").open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(payload) + "\n")
+output = {{"hookEventName": "PreToolUse", "additionalContext": {reason_json}}}
+if {decision_json} == "deny":
+    output.update({{"permissionDecision": "deny", "permissionDecisionReason": {reason_json}}})
+else:
+    output.update({{
+        "permissionDecision": "allow",
+        "updatedInput": {{"session_id": 424242, "cell_id": "424242", "chars": "rewritten"}},
+    }})
+print(json.dumps({{"hookSpecificOutput": output}}))
+"#,
+        pre_log_path = pre_log_path.display(),
+    );
+    let post_script = format!(
+        r#"import json
+from pathlib import Path
+import sys
+
+payload = json.load(sys.stdin)
+with Path(r"{post_log_path}").open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(payload) + "\n")
+"#,
+        post_log_path = post_log_path.display(),
+    );
+    let hooks = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": pre_matcher,
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("python3 {}", pre_script_path.display()),
+                    "statusMessage": "observing control tool",
+                }]
+            }],
+            "PostToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("python3 {}", post_script_path.display()),
+                    "statusMessage": "logging post tool use",
+                }]
+            }]
+        }
+    });
+
+    fs::write(&pre_script_path, pre_script).context("write observing pre hook script")?;
+    fs::write(&post_script_path, post_script).context("write logging post hook script")?;
+    fs::write(home.join("hooks.json"), hooks.to_string()).context("write hooks.json")?;
+    Ok(())
+}
+
 fn write_session_start_hook_recording_transcript(home: &Path, stop: bool) -> Result<()> {
     let script_path = home.join("session_start_hook.py");
     let log_path = home.join("session_start_hook_log.jsonl");
@@ -5817,6 +5889,286 @@ async fn post_tool_use_blocks_when_exec_session_completes_via_write_stdin() -> R
             .is_some_and(|tool_response| tool_response.contains("session-post-hook-output")),
         "PostToolUse should see the final session output, got {:?}",
         post_hook_inputs[0]["tool_response"]
+    );
+
+    Ok(())
+}
+
+fn write_stdin_poll_responses(
+    start_call_id: &str,
+    poll_call_id: &str,
+    command: &str,
+) -> Result<Vec<String>> {
+    let start_args = serde_json::json!({
+        "cmd": command,
+        "shell": "/bin/sh",
+        "login": false,
+        "tty": false,
+        "yield_time_ms": 250,
+    });
+    let poll_args = serde_json::json!({
+        "session_id": 1000,
+        "chars": "",
+        "yield_time_ms": 5_000,
+    });
+    Ok(vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(
+                start_call_id,
+                "exec_command",
+                &serde_json::to_string(&start_args)?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_function_call(
+                poll_call_id,
+                "write_stdin",
+                &serde_json::to_string(&poll_args)?,
+            ),
+            ev_completed("resp-2"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_assistant_message("msg-1", "poll observed"),
+            ev_completed("resp-3"),
+        ]),
+    ])
+}
+
+#[tokio::test]
+async fn pre_tool_use_observes_write_stdin_poll_without_gating_it() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_host_windows!(Ok(()));
+
+    let server = start_mock_server().await;
+    let start_call_id = "observe-write-stdin-start";
+    let poll_call_id = "observe-write-stdin-poll";
+    let command = "sleep 1; printf observed-session-output";
+    let responses = mount_sse_sequence(
+        &server,
+        write_stdin_poll_responses(start_call_id, poll_call_id, command)?,
+    )
+    .await;
+    let advisory = "observer advisory: repeated empty polls";
+    let mut builder = test_codex()
+        .with_pre_build_hook(move |home| {
+            write_observing_pre_and_logging_post_tool_use_hooks(
+                home,
+                "^write_stdin$",
+                "rewrite",
+                advisory,
+            )
+            .expect("failed to write observing hook fixture");
+        })
+        .with_config(trust_discovered_hooks);
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("poll the exec session").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let output = requests[2]
+        .function_call_output(poll_call_id)
+        .get("output")
+        .and_then(Value::as_str)
+        .expect("write_stdin output string")
+        .to_string();
+    assert!(
+        output.contains("observed-session-output"),
+        "observer rewrite must not change the poll target or result, got {output:?}"
+    );
+    assert!(
+        requests[2]
+            .message_input_texts("developer")
+            .contains(&advisory.to_string()),
+        "observer additionalContext should reach the model",
+    );
+
+    let pre_hook_inputs = read_pre_tool_use_hook_inputs(test.codex_home_path())?;
+    assert_eq!(pre_hook_inputs.len(), 1);
+    assert_eq!(pre_hook_inputs[0]["hook_event_name"], "PreToolUse");
+    assert_eq!(pre_hook_inputs[0]["observational"], true);
+    assert_eq!(pre_hook_inputs[0]["tool_name"], "write_stdin");
+    assert_eq!(pre_hook_inputs[0]["tool_use_id"], poll_call_id);
+    assert_eq!(
+        pre_hook_inputs[0]["tool_input"],
+        json!({
+            "session_id": 1000,
+            "chars": "",
+            "stdin_empty": true,
+            "stdin_bytes": 0,
+            "yield_time_ms": 5_000,
+            "exec_call_id": start_call_id,
+        })
+    );
+
+    // The completed command's PostToolUse stays attributed to the original Bash call.
+    let post_hook_inputs = read_post_tool_use_hook_inputs(test.codex_home_path())?;
+    assert_eq!(post_hook_inputs.len(), 1);
+    assert_eq!(post_hook_inputs[0]["tool_name"], "Bash");
+    assert_eq!(post_hook_inputs[0]["tool_use_id"], start_call_id);
+    assert_eq!(post_hook_inputs[0]["tool_input"]["command"], command);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_tool_hook_observation_can_be_disabled() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_host_windows!(Ok(()));
+
+    let server = start_mock_server().await;
+    let poll_call_id = "observe-disabled-poll";
+    let responses = mount_sse_sequence(
+        &server,
+        write_stdin_poll_responses("observe-disabled-start", poll_call_id, "sleep 1; printf ok")?,
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            write_observing_pre_and_logging_post_tool_use_hooks(
+                home,
+                "^write_stdin$",
+                "deny",
+                "unused",
+            )
+            .expect("failed to write observing hook fixture");
+        })
+        .with_config(|config| {
+            let _ = config.features.disable(Feature::ControlToolHookObservation);
+            trust_discovered_hooks(config);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("poll the exec session").await?;
+
+    assert_eq!(responses.requests().len(), 3);
+    assert!(
+        !test
+            .codex_home_path()
+            .join("pre_tool_use_hook_log.jsonl")
+            .exists(),
+        "disabled observation should not run PreToolUse for write_stdin"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_tool_use_observes_code_mode_exec_and_wait_without_gating_them() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let advisory = "observer advisory: waiting on a cell";
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_pre_build_hook(move |home| {
+            write_observing_pre_and_logging_post_tool_use_hooks(
+                home,
+                "^(exec|wait)$",
+                "deny",
+                advisory,
+            )
+            .expect("failed to write observing hook fixture");
+        })
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            trust_discovered_hooks(config);
+        });
+    let test = builder.build(&server).await?;
+
+    let code = "text(\"phase 1\");\nyield_control();\ntext(\"phase 2\");\n";
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("observe-exec", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "yielded"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the cell").await?;
+
+    let first_request = first.single_request();
+    let exec_output =
+        code_mode_custom_tool_output_text(&first_request.custom_tool_call_output("observe-exec"));
+    let cell_id = exec_output
+        .strip_prefix("Script running with cell ID ")
+        .and_then(|rest| rest.split('\n').next())
+        .with_context(|| format!("observer must not block the exec cell: {exec_output:?}"))?
+        .to_string();
+    assert!(exec_output.contains("phase 1"));
+
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_function_call(
+                "observe-wait",
+                "wait",
+                &serde_json::to_string(&json!({ "cell_id": cell_id, "yield_time_ms": 1_000 }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "done"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait for the cell").await?;
+
+    let second_request = second.single_request();
+    let wait_output = second_request
+        .function_call_output("observe-wait")
+        .to_string();
+    assert!(
+        wait_output.contains("Script completed") && wait_output.contains("phase 2"),
+        "observer deny must not block the wait, got {wait_output}"
+    );
+    assert!(
+        second_request
+            .message_input_texts("developer")
+            .contains(&advisory.to_string()),
+        "observer additionalContext should reach the model",
+    );
+
+    let hook_inputs = read_pre_tool_use_hook_inputs(test.codex_home_path())?;
+    assert_eq!(hook_inputs.len(), 2);
+    assert_eq!(hook_inputs[0]["observational"], true);
+    assert_eq!(hook_inputs[0]["tool_name"], "exec");
+    assert_eq!(hook_inputs[0]["tool_use_id"], "observe-exec");
+    assert_eq!(hook_inputs[0]["tool_input"]["source_bytes"], code.len());
+    assert_eq!(
+        hook_inputs[0]["tool_input"]["source_sha1"]
+            .as_str()
+            .map(str::len),
+        Some(40)
+    );
+    assert!(!hook_inputs[0]["tool_input"].to_string().contains("phase"));
+    assert_eq!(hook_inputs[1]["observational"], true);
+    assert_eq!(hook_inputs[1]["tool_name"], "wait");
+    assert_eq!(hook_inputs[1]["tool_use_id"], "observe-wait");
+    assert_eq!(
+        hook_inputs[1]["tool_input"],
+        json!({ "cell_id": cell_id, "yield_time_ms": 1_000, "terminate": false })
     );
 
     Ok(())

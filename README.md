@@ -341,6 +341,31 @@ validation; manual controls were Unknown and one exceeded the call cap. The
 automatic returned-results control did not hold. Tune with the same effective
 profile in live execution and replay rather than assuming general accuracy.
 
+### Hooks observe control-tool waits
+
+`PreToolUse` hooks also receive Code Mode `exec` cells, Code Mode `wait`, and
+unified exec `write_stdin`, including empty polls. These events carry
+`"observational": true`: hooks run and their `additionalContext` reaches the
+model, but deny, exit code 2, and `updatedInput` are ignored, so the call runs
+with its original input and result. Observational hooks run only when a hook
+matches, and they get 1 second before they are stopped. `tool_use_id` is the control call's own
+call id, which matches its output in the rollout. Payloads carry only bounded
+metadata:
+
+| `tool_name` | `tool_input` |
+|---|---|
+| `write_stdin` | `session_id`, `stdin_empty`, `stdin_bytes`, `yield_time_ms`, optional `max_output_tokens`, `exec_call_id` (the originating `exec_command` call), and `"chars": ""` only for empty polls. Stdin text is never sent. |
+| `wait` | `cell_id`, `yield_time_ms`, `terminate`, optional `max_tokens`. |
+| `exec` | `source_bytes`, `source_sha1`, and optional pragma `yield_time_ms`/`max_output_tokens`. Source text is never sent. |
+
+The command a `write_stdin` call continues keeps its single `Bash`
+`PostToolUse`. To stop these events, add this to `~/.codex/config.toml`:
+
+```toml
+[features]
+control_tool_hook_observation = false
+```
+
 ### Installing upstream Codex CLI
 
 The official OpenAI release installs as `codex`.

@@ -1859,6 +1859,16 @@ impl UnifiedExecProcessManager {
             .map(|entry| entry.environment_id.clone())
     }
 
+    /// The `exec_command` call that started `process_id`, for hook correlation.
+    pub(crate) async fn originating_call_id_for_process(&self, process_id: i32) -> Option<String> {
+        self.process_store
+            .lock()
+            .await
+            .processes
+            .get(&process_id)
+            .map(|entry| entry.call_id.clone())
+    }
+
     pub(crate) async fn list_processes(&self) -> Vec<BackgroundTerminalInfo> {
         let store = self.process_store.lock().await;
         let mut entries = store

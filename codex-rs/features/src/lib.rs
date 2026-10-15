@@ -112,6 +112,9 @@ pub enum Feature {
     SleepTool,
     /// Enable Claude-style lifecycle hooks loaded from hooks.json files.
     CodexHooks,
+    /// Send Code Mode `exec`/`wait` and unified exec `write_stdin` calls to
+    /// PreToolUse hooks as observational events that cannot block or rewrite.
+    ControlToolHookObservation,
     /// Store CLI auth in the encrypted local secrets backend when keyring storage is selected.
     SecretAuthStorage,
 
@@ -1305,6 +1308,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CodexHooks,
         key: "hooks",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ControlToolHookObservation,
+        key: "control_tool_hook_observation",
         stage: Stage::Stable,
         default_enabled: true,
     },

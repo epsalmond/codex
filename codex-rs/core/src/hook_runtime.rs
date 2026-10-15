@@ -244,6 +244,47 @@ pub(crate) async fn run_pre_tool_use_hooks(
     }
 }
 
+/// Runs `PreToolUse` hooks for a control call that hooks may observe but not gate.
+///
+/// Callers check `Hooks::has_pre_tool_use_handlers` first, so the transcript
+/// path is only materialized when a hook will run. Matching hooks receive
+/// `"observational": true`. Their `additionalContext` is recorded like any
+/// other PreToolUse context; block decisions and input rewrites are ignored,
+/// so the call always proceeds with its original input.
+pub(crate) async fn run_observational_pre_tool_use_hooks(
+    sess: &Arc<Session>,
+    step_context: &StepContext,
+    tool_use_id: String,
+    tool_name: &HookToolName,
+    tool_input: &Value,
+) {
+    let turn_context = &step_context.turn;
+    let request = PreToolUseRequest {
+        session_id: sess.session_id().into(),
+        turn_id: turn_context.sub_id.clone(),
+        subagent: thread_spawn_subagent_hook_context(sess, turn_context),
+        cwd: tool_hook_cwd(&step_context.environments, turn_context),
+        transcript_path: sess.hook_transcript_path().await,
+        model: step_context.settings.model_info.slug.clone(),
+        permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
+        tool_name: tool_name.name().to_string(),
+        matcher_aliases: tool_name.matcher_aliases().to_vec(),
+        tool_use_id,
+        tool_input: tool_input.clone(),
+    };
+    let hooks = sess.hooks();
+    let preview_runs = hooks.preview_pre_tool_use(&request);
+    emit_hook_started_events(sess, turn_context, preview_runs).await;
+
+    let PreToolUseOutcome {
+        hook_events,
+        additional_contexts,
+        ..
+    } = hooks.run_pre_tool_use_observation(request).await;
+    emit_hook_completed_events(sess, turn_context, hook_events).await;
+    record_additional_contexts(sess, turn_context, additional_contexts).await;
+}
+
 #[allow(deprecated)]
 fn tool_hook_cwd(environments: &TurnEnvironmentSnapshot, turn: &TurnContext) -> AbsolutePathBuf {
     // Hooks run on the host, so a remote workspace cannot replace the local fallback.

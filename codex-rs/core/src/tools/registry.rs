@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::function_tool::FunctionCallError;
 use crate::hook_runtime::PreToolUseHookResult;
 use crate::hook_runtime::record_additional_contexts;
+use crate::hook_runtime::run_observational_pre_tool_use_hooks;
 use crate::hook_runtime::run_post_tool_use_hooks;
 use crate::hook_runtime::run_pre_tool_use_hooks;
 use crate::memory_usage::emit_metric_for_tool_read;
@@ -30,6 +31,7 @@ use crate::util::error_or_panic;
 use codex_analytics::ControlToolCallStatus;
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolPolicy;
+use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -147,6 +149,25 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
             tool_name: function_hook_tool_name(invocation),
             tool_input: function_hook_tool_input(arguments),
         })
+    }
+
+    /// Hook-facing name for a control call that PreToolUse hooks may observe
+    /// but never block or rewrite.
+    ///
+    /// Only consulted when `pre_tool_use_payload` returns `None`. Kept cheap
+    /// and synchronous so dispatch can skip observation when no hook matches.
+    fn observational_hook_tool_name(&self, _invocation: &ToolInvocation) -> Option<HookToolName> {
+        None
+    }
+
+    /// Bounded `tool_input` for an observed call, built only when a hook
+    /// matches. It must carry identifiers and flags only, never command
+    /// output or stdin content.
+    fn observational_hook_tool_input<'a>(
+        &'a self,
+        _invocation: &'a ToolInvocation,
+    ) -> BoxFuture<'a, Option<Value>> {
+        Box::pin(async { None })
     }
 
     /// Rebuilds a tool invocation from hook-facing `tool_input`.
@@ -659,6 +680,29 @@ impl ToolRegistry {
                     updated_input: None,
                 } => {}
             }
+        } else if invocation
+            .turn
+            .config
+            .features
+            .get()
+            .enabled(Feature::ControlToolHookObservation)
+            && let Some(observed_name) = tool.observational_hook_tool_name(&invocation)
+            && invocation
+                .session
+                .hooks()
+                .has_pre_tool_use_handlers(observed_name.name(), observed_name.matcher_aliases())
+            && let Some(observed_input) = tool.observational_hook_tool_input(&invocation).await
+        {
+            // Observers see the call before it runs, but the outcome is
+            // discarded so control calls keep their original input and result.
+            run_observational_pre_tool_use_hooks(
+                &invocation.session,
+                invocation.step_context.as_ref(),
+                invocation.call_id.clone(),
+                &observed_name,
+                &observed_input,
+            )
+            .await;
         }
 
         if tool.mcp_server_name().is_none() {
