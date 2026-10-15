@@ -18,6 +18,12 @@ pub const SESSION_RESOURCE_LIMITS_CAPABILITY: &str = "session-cell-execution-res
 /// Support for yielding an in-flight execute or wait observation.
 pub const YIELD_OBSERVATION_CAPABILITY: &str = "yield-observation";
 
+/// Support for `cell/terminalReady` notifications after buffered cell completion.
+///
+/// Hosts report readiness only to clients that negotiate this capability. Clients
+/// without it never receive the notification and must observe cells with `session/wait`.
+pub const CELL_TERMINAL_READY_CAPABILITY: &str = "cell-terminal-ready";
+
 pub use codec::EncodedFrame;
 pub use codec::FramedReader;
 pub use codec::FramedWriter;
@@ -34,6 +40,8 @@ pub use message::HostResponse;
 pub use message::HostToClient;
 pub use message::WireResult;
 pub use payload::WireCellId;
+pub use payload::WireCellOutputKind;
+pub use payload::WireCellTerminalStatus;
 pub use payload::WireContentItem;
 pub use payload::WireExecuteRequest;
 pub use payload::WireImageDetail;

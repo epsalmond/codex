@@ -8,6 +8,8 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::host::DelegateRequest;
 use codex_code_mode_protocol::host::DelegateRequestId;
@@ -38,6 +40,7 @@ pub(super) struct HostPeer {
     next_request_id: AtomicI64,
     disconnected: CancellationToken,
     failure: StdMutex<Option<String>>,
+    terminal_ready_supported: bool,
 }
 
 struct PendingDelegate {
@@ -57,6 +60,7 @@ enum CellMessage {
         request: DelegateRequest,
         dispatched_tx: oneshot::Sender<Result<(), String>>,
     },
+    TerminalReady(CellTerminalReady),
     Closed,
 }
 
@@ -66,7 +70,10 @@ struct InitialRequest {
 }
 
 impl HostPeer {
-    pub(super) fn new(outgoing_tx: mpsc::Sender<EncodedFrame>) -> Self {
+    pub(super) fn new(
+        outgoing_tx: mpsc::Sender<EncodedFrame>,
+        terminal_ready_supported: bool,
+    ) -> Self {
         Self {
             outgoing_tx,
             pending: Mutex::new(HashMap::new()),
@@ -76,6 +83,7 @@ impl HostPeer {
             next_request_id: AtomicI64::new(1),
             disconnected: CancellationToken::new(),
             failure: StdMutex::new(None),
+            terminal_ready_supported,
         }
     }
 
@@ -260,6 +268,17 @@ impl HostPeer {
         initial_response_sent_rx
     }
 
+    /// Queues readiness behind the cell's initial response and before its closure.
+    ///
+    /// Clients that did not negotiate the capability never receive it.
+    pub(super) fn report_terminal_ready(&self, session_id: SessionId, ready: CellTerminalReady) {
+        if !self.terminal_ready_supported {
+            return;
+        }
+        let key = (session_id, ready.cell_id.clone());
+        let _ = self.route_cell_message(key, CellMessage::TerminalReady(ready));
+    }
+
     pub(super) fn close_cell(&self, session_id: SessionId, cell_id: CellId) {
         let _ = self.route_cell_message((session_id, cell_id), CellMessage::Closed);
     }
@@ -425,6 +444,11 @@ async fn drive_cell(
     _active_cell_permit: OwnedSemaphorePermit,
 ) {
     let mut initial_response_sent_tx = Some(initial_response_sent_tx);
+    // Readiness may precede the initial response. Hold it so the client always
+    // learns the initial disposition first.
+    let mut early_terminal_ready = None;
+    // Inline results and terminations are delivered by the initial response itself.
+    let mut yielded = false;
     let initial_response = started.initial_response();
     tokio::pin!(initial_response);
     let closed = loop {
@@ -433,6 +457,7 @@ async fn drive_cell(
             result = &mut initial_response => {
                 // Freeze the request duration before response conversion or delivery.
                 let code_mode_host_duration = request.received_at.elapsed();
+                yielded = matches!(result, Ok(RuntimeResponse::Yielded { .. }));
                 peer.initial_response(
                     request.id,
                     result.and_then(|response| {
@@ -443,6 +468,9 @@ async fn drive_cell(
                 if let Some(initial_response_sent_tx) = initial_response_sent_tx.take() {
                     let _ = initial_response_sent_tx.send(());
                 }
+                if yielded && let Some(ready) = early_terminal_ready.take() {
+                    peer.send_terminal_ready(&key.0, ready);
+                }
                 break false;
             }
             message = messages_rx.recv() => match message {
@@ -452,6 +480,9 @@ async fn drive_cell(
                     dispatched_tx,
                 }) => {
                     peer.send_delegate_if_pending(id, key.0.clone(), request, dispatched_tx).await;
+                }
+                Some(CellMessage::TerminalReady(ready)) => {
+                    early_terminal_ready.get_or_insert(ready);
                 }
                 Some(CellMessage::Closed) | None => break true,
             },
@@ -486,6 +517,11 @@ async fn drive_cell(
                     }) => {
                         peer.send_delegate_if_pending(id, key.0.clone(), request, dispatched_tx).await;
                     }
+                    Some(CellMessage::TerminalReady(ready)) => {
+                        if yielded {
+                            peer.send_terminal_ready(&key.0, ready);
+                        }
+                    }
                     Some(CellMessage::Closed) | None => break,
                 },
                 _ = peer.disconnected.cancelled() => {
@@ -503,6 +539,15 @@ async fn drive_cell(
 }
 
 impl HostPeer {
+    fn send_terminal_ready(&self, session_id: &SessionId, ready: CellTerminalReady) {
+        let _ = self.send(HostToClient::CellTerminalReady {
+            session_id: session_id.clone(),
+            cell_id: ready.cell_id.into(),
+            status: ready.status.into(),
+            output_kind: ready.output_kind.into(),
+        });
+    }
+
     fn remove_cell_route(&self, key: &(SessionId, CellId)) {
         let removed = self
             .cell_routes

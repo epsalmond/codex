@@ -1,4 +1,7 @@
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminalReadySupport;
 use codex_code_mode_protocol::host::ClientToHost;
 use codex_code_mode_protocol::host::EncodedFrame;
 use codex_code_mode_protocol::host::HostRequest;
@@ -13,6 +16,7 @@ use super::cell_ids::public_runtime_response;
 use super::cell_ids::public_wait_outcome;
 use super::cell_ids::runtime_response_cell_id;
 use super::cell_ids::wait_outcome_cell_id;
+use super::notify_terminal_ready;
 use super::request_tracker::CancellationAction;
 use super::session_registry::CellAdmissionError;
 use super::types::DeliveredExecute;
@@ -103,6 +107,14 @@ impl ConnectionDriver {
                 !self.sessions.contains_cell(session_id, cell_id)
                     && self.requests.has_pending_execute_for_session(session_id)
             }
+            HostToClient::CellTerminalReady {
+                session_id,
+                cell_id,
+                ..
+            } => {
+                !self.sessions.contains_cell(session_id, cell_id)
+                    && self.requests.has_pending_execute_for_session(session_id)
+            }
             HostToClient::Response { .. }
             | HostToClient::InitialResponse { .. }
             | HostToClient::CellClosed { .. }
@@ -139,6 +151,12 @@ impl ConnectionDriver {
                 session_id,
                 cell_id,
             } => self.close_cell(session_id, cell_id),
+            HostToClient::CellTerminalReady {
+                session_id,
+                cell_id,
+                status,
+                output_kind,
+            } => self.admit_terminal_ready(session_id, cell_id, status, output_kind),
             HostToClient::HostHello(_) | HostToClient::HandshakeRejected { .. } => {
                 self.fail("code-mode host sent a second handshake response".to_string());
                 false
@@ -210,13 +228,16 @@ impl ConnectionDriver {
                     self.requests.insert_initial_response(
                         id,
                         InitialResponse {
+                            session_id: session.id.clone(),
                             generation: session.generation,
                             cell_id: remote_cell_id.clone(),
                             response_tx: initial_response_tx,
                             _yield_observation: yield_observation,
                         },
                     );
-                    let started = StartedCell::from_result_receiver(public_id, initial_response_rx);
+                    let mut started =
+                        StartedCell::from_result_receiver(public_id, initial_response_rx);
+                    started.terminal_ready_support = self.terminal_ready_support;
                     if cancellation.is_cancelled() || response_tx.is_closed() {
                         return self.terminate_abandoned_cell(session, remote_cell_id);
                     }
@@ -416,6 +437,7 @@ impl ConnectionDriver {
     }
 
     fn terminate_abandoned_cell(&mut self, session: RemoteSession, cell_id: WireCellId) -> bool {
+        self.sessions.settle_terminal_ready(&session.id, &cell_id);
         let Some(is_closing) = self.sessions.is_closing(&session.id) else {
             self.fail(format!(
                 "code-mode host admitted an abandoned cell in unknown session {}",
@@ -468,7 +490,35 @@ impl ConnectionDriver {
             }
             Err(err) => Err(err),
         };
+        let yielded = matches!(response, Ok(RuntimeResponse::Yielded { .. }));
         let _ = initial.response_tx.send(response);
+        let ready =
+            self.sessions
+                .resolve_initial_response(&initial.session_id, &initial.cell_id, yielded);
+        notify_terminal_ready(ready);
+        true
+    }
+
+    fn admit_terminal_ready(
+        &mut self,
+        session_id: codex_code_mode_protocol::host::SessionId,
+        cell_id: WireCellId,
+        status: codex_code_mode_protocol::host::WireCellTerminalStatus,
+        output_kind: codex_code_mode_protocol::host::WireCellOutputKind,
+    ) -> bool {
+        if self.terminal_ready_support != TerminalReadySupport::Supported {
+            self.fail("code-mode host sent terminal readiness without negotiating it".to_string());
+            return false;
+        }
+        let ready = CellTerminalReady {
+            cell_id: cell_id.clone().into(),
+            status: status.into(),
+            output_kind: output_kind.into(),
+        };
+        let ready = self
+            .sessions
+            .admit_terminal_ready(&session_id, &cell_id, ready);
+        notify_terminal_ready(ready);
         true
     }
 }

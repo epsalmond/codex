@@ -9,6 +9,9 @@ use std::time::Duration;
 use std::os::unix::fs::PermissionsExt;
 
 use codex_code_mode::CellId;
+use codex_code_mode::CellOutputKind;
+use codex_code_mode::CellTerminalReady;
+use codex_code_mode::CellTerminalStatus;
 use codex_code_mode::CodeModeNestedToolCall;
 use codex_code_mode::CodeModeSession;
 use codex_code_mode::CodeModeSessionCellExecutionLimits;
@@ -20,11 +23,31 @@ use codex_code_mode::FunctionCallOutputContentItem;
 use codex_code_mode::NotificationFuture;
 use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_code_mode::RuntimeResponse;
+use codex_code_mode::TerminalReadySupport;
 use codex_code_mode::ToolDefinition;
 use codex_code_mode::ToolInvocationFuture;
 use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
+use codex_code_mode::host::Capability;
+use codex_code_mode::host::CapabilitySet;
+use codex_code_mode::host::ClientHello;
+use codex_code_mode::host::ClientToHost;
+use codex_code_mode::host::FramedReader;
+use codex_code_mode::host::FramedWriter;
+use codex_code_mode::host::HostHello;
+use codex_code_mode::host::HostRequest;
+use codex_code_mode::host::HostResponse;
+use codex_code_mode::host::HostToClient;
 use codex_code_mode::host::MAX_FRAME_BYTES;
+use codex_code_mode::host::ProtocolVersion;
+use codex_code_mode::host::RequestId;
+use codex_code_mode::host::SessionId;
+use codex_code_mode::host::SupportedProtocolVersions;
+use codex_code_mode::host::WireExecuteRequest;
+use codex_code_mode::host::WireResult;
+use codex_code_mode::host::WireRuntimeResponse;
+use codex_code_mode::host::WireWaitOutcome;
+use codex_code_mode::host::WireWaitRequest;
 use codex_protocol::ToolName;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -1105,4 +1128,315 @@ async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
         events_a.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ReadyEvent {
+    Ready(CellTerminalReady),
+    Closed(CellId),
+}
+
+struct ReadyDelegate {
+    events_tx: mpsc::UnboundedSender<ReadyEvent>,
+}
+
+impl ReadyDelegate {
+    fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<ReadyEvent>) {
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        (Arc::new(Self { events_tx }), events_rx)
+    }
+}
+
+impl CodeModeSessionDelegate for ReadyDelegate {
+    fn invoke_tool<'a>(
+        &'a self,
+        _invocation: CodeModeNestedToolCall,
+        _cancellation_token: CancellationToken,
+    ) -> ToolInvocationFuture<'a> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+
+    fn notify<'a>(
+        &'a self,
+        _call_id: String,
+        _cell_id: CellId,
+        _text: String,
+        _cancellation_token: CancellationToken,
+    ) -> NotificationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn cell_terminal_ready(&self, ready: CellTerminalReady) {
+        let _ = self.events_tx.send(ReadyEvent::Ready(ready));
+    }
+
+    fn cell_closed(&self, cell_id: &CellId) {
+        let _ = self.events_tx.send(ReadyEvent::Closed(cell_id.clone()));
+    }
+}
+
+async fn next_ready_event(events_rx: &mut mpsc::UnboundedReceiver<ReadyEvent>) -> ReadyEvent {
+    tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .expect("delegate event timeout")
+        .expect("delegate event stream closed")
+}
+
+fn stdio_provider() -> ProcessOwnedCodeModeSessionProvider {
+    ProcessOwnedCodeModeSessionProvider::with_host_program(
+        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+    )
+}
+
+#[tokio::test]
+async fn stdio_terminal_ready_reported_once_when_negotiated() {
+    let provider = stdio_provider();
+    assert_eq!(
+        provider.terminal_ready_capability(),
+        TerminalReadySupport::Supported
+    );
+    let session = provider.create_session().await.expect("create session");
+    let (delegate, mut events) = ReadyDelegate::new();
+    let started = session
+        .execute(
+            execute_request(r#"text("before"); yield_control(); text("after");"#),
+            delegate,
+            /*preempt*/ None,
+        )
+        .await
+        .expect("start execution");
+    assert_eq!(
+        started.terminal_ready_support,
+        TerminalReadySupport::Supported
+    );
+    let cell_id = started.cell_id.clone();
+    let initial = started.initial_response().await.expect("initial response");
+    assert!(matches!(initial, RuntimeResponse::Yielded { .. }));
+    assert_eq!(
+        next_ready_event(&mut events).await,
+        ReadyEvent::Ready(CellTerminalReady {
+            cell_id: cell_id.clone(),
+            status: CellTerminalStatus::Completed,
+            output_kind: CellOutputKind::Text,
+        })
+    );
+
+    // Readiness does not consume the result; one wait still retrieves it.
+    let outcome = session
+        .wait(
+            WaitRequest {
+                cell_id: cell_id.clone(),
+                yield_time_ms: 60_000,
+            },
+            /*preempt*/ None,
+        )
+        .await
+        .expect("wait for result");
+    let WaitOutcome::LiveCell(RuntimeResponse::Result {
+        content_items,
+        error_text: None,
+        ..
+    }) = outcome
+    else {
+        panic!("expected the retained result, got {outcome:?}");
+    };
+    assert_eq!(
+        content_items,
+        vec![FunctionCallOutputContentItem::InputText {
+            text: "after".to_string()
+        }]
+    );
+    assert_eq!(
+        next_ready_event(&mut events).await,
+        ReadyEvent::Closed(cell_id)
+    );
+    session.shutdown().await.expect("shutdown session");
+    assert!(events.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn stdio_terminal_ready_not_reported_for_inline_or_terminated_cells() {
+    let session = stdio_provider()
+        .create_session()
+        .await
+        .expect("create session");
+    let (delegate, mut events) = ReadyDelegate::new();
+
+    let started = session
+        .execute(
+            execute_request(r#"text("inline");"#),
+            delegate.clone(),
+            /*preempt*/ None,
+        )
+        .await
+        .expect("start inline execution");
+    let inline_cell = started.cell_id.clone();
+    let initial = started.initial_response().await.expect("inline response");
+    assert!(matches!(initial, RuntimeResponse::Result { .. }));
+    // Any readiness would precede closure on the ordered connection.
+    assert_eq!(
+        next_ready_event(&mut events).await,
+        ReadyEvent::Closed(inline_cell)
+    );
+
+    let started = session
+        .execute(
+            execute_request(r#"text("before"); yield_control(); await new Promise(() => {});"#),
+            delegate,
+            /*preempt*/ None,
+        )
+        .await
+        .expect("start running execution");
+    let running_cell = started.cell_id.clone();
+    let initial = started.initial_response().await.expect("initial response");
+    assert!(matches!(initial, RuntimeResponse::Yielded { .. }));
+    let outcome = session
+        .terminate(running_cell.clone())
+        .await
+        .expect("terminate cell");
+    assert!(matches!(
+        outcome,
+        WaitOutcome::LiveCell(RuntimeResponse::Terminated { .. })
+    ));
+    assert_eq!(
+        next_ready_event(&mut events).await,
+        ReadyEvent::Closed(running_cell)
+    );
+    session.shutdown().await.expect("shutdown session");
+    assert!(events.try_recv().is_err());
+}
+
+async fn read_host_frame(reader: &mut FramedReader<tokio::process::ChildStdout>) -> HostToClient {
+    tokio::time::timeout(Duration::from_secs(5), reader.read::<HostToClient>())
+        .await
+        .expect("host frame timeout")
+        .expect("read host frame")
+        .expect("host frame")
+}
+
+#[tokio::test]
+async fn stdio_terminal_ready_absent_without_capability() {
+    let host_program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host");
+    let mut child = tokio::process::Command::new(host_program)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn host");
+    let mut writer = FramedWriter::new(child.stdin.take().expect("host stdin"));
+    let mut reader = FramedReader::new(child.stdout.take().expect("host stdout"));
+
+    // An old client omits `cell-terminal-ready` from its hello.
+    let optional = CapabilitySet::try_new([Capability::new("yield-observation").expect("cap")])
+        .expect("capabilities");
+    writer
+        .write(&ClientToHost::ClientHello(
+            ClientHello::new(
+                SupportedProtocolVersions::try_new([ProtocolVersion::V1]).expect("versions"),
+                CapabilitySet::empty(),
+                optional.clone(),
+            )
+            .expect("client hello"),
+        ))
+        .await
+        .expect("write hello");
+    assert_eq!(
+        read_host_frame(&mut reader).await,
+        HostToClient::HostHello(HostHello::new(ProtocolVersion::V1, optional))
+    );
+
+    let session_id = SessionId::new("session-1").expect("session ID");
+    writer
+        .write(&ClientToHost::Request {
+            id: RequestId::new(/*value*/ 1),
+            request: HostRequest::OpenSession {
+                session_id: session_id.clone(),
+                cell_execution_limits: None,
+            },
+        })
+        .await
+        .expect("open session");
+    assert!(matches!(
+        read_host_frame(&mut reader).await,
+        HostToClient::Response {
+            result: WireResult::Ok {
+                value: HostResponse::SessionReady { .. }
+            },
+            ..
+        }
+    ));
+    writer
+        .write(&ClientToHost::Request {
+            id: RequestId::new(/*value*/ 2),
+            request: HostRequest::Execute {
+                session_id: session_id.clone(),
+                request: WireExecuteRequest {
+                    tool_call_id: "call-1".to_string(),
+                    enabled_tools: Vec::new(),
+                    source: r#"text("before"); yield_control(); text("after");"#.to_string(),
+                    yield_time_ms: None,
+                    max_output_tokens: None,
+                },
+            },
+        })
+        .await
+        .expect("execute");
+    assert!(matches!(
+        read_host_frame(&mut reader).await,
+        HostToClient::Response {
+            result: WireResult::Ok {
+                value: HostResponse::ExecutionStarted { .. }
+            },
+            ..
+        }
+    ));
+    let HostToClient::InitialResponse {
+        result:
+            WireResult::Ok {
+                value: WireRuntimeResponse::Yielded { cell_id, .. },
+            },
+        ..
+    } = read_host_frame(&mut reader).await
+    else {
+        panic!("expected a yielded initial response");
+    };
+
+    // The cell finishes in the background. A negotiated client would now receive
+    // `cell/terminalReady`; this one must see nothing until it waits.
+    let quiet = tokio::time::timeout(Duration::from_millis(500), reader.read::<HostToClient>());
+    assert!(quiet.await.is_err(), "host sent an unrequested frame");
+    writer
+        .write(&ClientToHost::Request {
+            id: RequestId::new(/*value*/ 3),
+            request: HostRequest::Wait {
+                session_id,
+                request: WireWaitRequest {
+                    cell_id: cell_id.clone(),
+                    yield_time_ms: 60_000,
+                },
+            },
+        })
+        .await
+        .expect("wait");
+    // The wait response and closure may arrive in either order.
+    let frames = [
+        read_host_frame(&mut reader).await,
+        read_host_frame(&mut reader).await,
+    ];
+    assert!(frames.iter().any(|frame| matches!(
+        frame,
+        HostToClient::Response {
+            result: WireResult::Ok {
+                value: HostResponse::WaitCompleted {
+                    outcome: WireWaitOutcome::LiveCell(WireRuntimeResponse::Result { .. })
+                }
+            },
+            ..
+        }
+    )));
+    assert!(frames.iter().any(|frame| matches!(
+        frame,
+        HostToClient::CellClosed { cell_id: closed, .. } if closed == &cell_id
+    )));
 }

@@ -12,6 +12,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
+use codex_code_mode_protocol::host::CELL_TERMINAL_READY_CAPABILITY;
 use codex_code_mode_protocol::host::Capability;
 use codex_code_mode_protocol::host::CapabilitySet;
 use codex_code_mode_protocol::host::ClientToHost;
@@ -61,7 +62,7 @@ const OUTGOING_CHANNEL_CAPACITY: usize = 128;
 
 enum NegotiatedConnection {
     Rejected,
-    Accepted,
+    Accepted(CapabilitySet),
 }
 
 struct HostLimits {
@@ -110,12 +111,15 @@ where
 {
     let mut reader = FramedReader::new(reader);
     let mut writer = FramedWriter::new(writer);
-    match negotiate(&mut reader, &mut writer).await? {
+    let capabilities = match negotiate(&mut reader, &mut writer).await? {
         NegotiatedConnection::Rejected => return Ok(()),
-        NegotiatedConnection::Accepted => {}
-    }
+        NegotiatedConnection::Accepted(capabilities) => capabilities,
+    };
+    let terminal_ready_supported = capabilities
+        .iter()
+        .any(|capability| capability.as_str() == CELL_TERMINAL_READY_CAPABILITY);
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<EncodedFrame>(OUTGOING_CHANNEL_CAPACITY);
-    let peer = Arc::new(HostPeer::new(outgoing_tx));
+    let peer = Arc::new(HostPeer::new(outgoing_tx, terminal_ready_supported));
     let state = Arc::new(HostState {
         sessions: Mutex::new(HashMap::new()),
         limits: Arc::new(HostLimits::new()),
@@ -261,6 +265,7 @@ async fn negotiate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         [
             SESSION_RESOURCE_LIMITS_CAPABILITY,
             YIELD_OBSERVATION_CAPABILITY,
+            CELL_TERMINAL_READY_CAPABILITY,
         ]
         .into_iter()
         .map(Capability::new)
@@ -287,12 +292,12 @@ async fn negotiate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         return Ok(NegotiatedConnection::Rejected);
     }
 
-    let hello = HostHello::new(ProtocolVersion::V1, host_capabilities);
+    let hello = HostHello::new(ProtocolVersion::V1, host_capabilities.clone());
     writer
         .write(&HostToClient::HostHello(hello))
         .await
         .context("failed to write code-mode host hello")?;
-    Ok(NegotiatedConnection::Accepted)
+    Ok(NegotiatedConnection::Accepted(host_capabilities))
 }
 
 struct HostState {

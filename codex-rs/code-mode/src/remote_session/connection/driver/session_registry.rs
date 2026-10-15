@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellTerminalReady;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::host::SessionId;
 use codex_code_mode_protocol::host::WireCellId;
@@ -14,6 +15,69 @@ pub(super) struct CellOwner {
     pub(super) session_id: SessionId,
     pub(super) cell_id: CellId,
     pub(super) delegate: Arc<dyn CodeModeSessionDelegate>,
+    terminal_ready: TerminalReadyLatch,
+}
+
+pub(super) type ReadyCell = (CellTerminalReady, Arc<dyn CodeModeSessionDelegate>);
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum InitialDisposition {
+    #[default]
+    Pending,
+    Yielded,
+    /// Delivered inline, failed, or abandoned; readiness is never reported.
+    Settled,
+}
+
+/// Holds early readiness until the initial response proves the cell yielded.
+#[derive(Default)]
+struct TerminalReadyLatch {
+    initial: InitialDisposition,
+    ready: Option<CellTerminalReady>,
+    reported: bool,
+}
+
+impl TerminalReadyLatch {
+    fn admit(&mut self, ready: CellTerminalReady) {
+        if !self.reported && self.ready.is_none() && self.initial != InitialDisposition::Settled {
+            self.ready = Some(ready);
+        }
+    }
+
+    fn resolve_initial(&mut self, yielded: bool) {
+        if self.initial == InitialDisposition::Pending {
+            self.initial = if yielded {
+                InitialDisposition::Yielded
+            } else {
+                InitialDisposition::Settled
+            };
+        }
+        if self.initial == InitialDisposition::Settled {
+            self.ready = None;
+        }
+    }
+
+    fn settle(&mut self) {
+        self.initial = InitialDisposition::Settled;
+        self.ready = None;
+    }
+
+    fn take(&mut self) -> Option<CellTerminalReady> {
+        if self.initial != InitialDisposition::Yielded || self.reported {
+            return None;
+        }
+        let ready = self.ready.take()?;
+        self.reported = true;
+        Some(ready)
+    }
+}
+
+impl CellOwner {
+    fn take_terminal_ready(&mut self) -> Option<ReadyCell> {
+        let mut ready = self.terminal_ready.take()?;
+        ready.cell_id = self.cell_id.clone();
+        Some((ready, Arc::clone(&self.delegate)))
+    }
 }
 
 pub(super) struct DelegateTarget {
@@ -141,6 +205,7 @@ impl SessionRegistry {
                 session_id: session.id.clone(),
                 cell_id: public_id.clone(),
                 delegate,
+                terminal_ready: TerminalReadyLatch::default(),
             },
         );
         Ok(public_id)
@@ -166,6 +231,42 @@ impl SessionRegistry {
             cell_id: owner.cell_id.clone(),
             delegate: Arc::clone(&owner.delegate),
         })
+    }
+
+    /// Latches host readiness; reports it once the initial response yielded.
+    pub(super) fn admit_terminal_ready(
+        &mut self,
+        session_id: &SessionId,
+        cell_id: &WireCellId,
+        ready: CellTerminalReady,
+    ) -> Option<ReadyCell> {
+        // Readiness can race local abandonment or closure; it is advisory, so drop it.
+        let owner = self.cell_mut(session_id, cell_id)?;
+        owner.terminal_ready.admit(ready);
+        owner.take_terminal_ready()
+    }
+
+    /// Records the initial disposition and releases any latched readiness.
+    pub(super) fn resolve_initial_response(
+        &mut self,
+        session_id: &SessionId,
+        cell_id: &WireCellId,
+        yielded: bool,
+    ) -> Option<ReadyCell> {
+        let owner = self.cell_mut(session_id, cell_id)?;
+        owner.terminal_ready.resolve_initial(yielded);
+        owner.take_terminal_ready()
+    }
+
+    /// Stops readiness for a cell whose caller abandoned it.
+    pub(super) fn settle_terminal_ready(&mut self, session_id: &SessionId, cell_id: &WireCellId) {
+        if let Some(owner) = self.cell_mut(session_id, cell_id) {
+            owner.terminal_ready.settle();
+        }
+    }
+
+    fn cell_mut(&mut self, session_id: &SessionId, cell_id: &WireCellId) -> Option<&mut CellOwner> {
+        self.records.get_mut(session_id)?.cells.get_mut(cell_id)
     }
 
     pub(super) fn remove_cell(

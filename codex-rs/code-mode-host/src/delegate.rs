@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellTerminalReady;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::NotificationFuture;
@@ -76,6 +77,11 @@ impl CodeModeSessionDelegate for RemoteDelegate {
                 }
             }
         })
+    }
+
+    fn cell_terminal_ready(&self, ready: CellTerminalReady) {
+        self.peer
+            .report_terminal_ready(self.session_id.clone(), ready);
     }
 
     fn cell_closed(&self, cell_id: &CellId) {

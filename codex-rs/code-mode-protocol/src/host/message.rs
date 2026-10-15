@@ -13,6 +13,8 @@ use super::RequestId;
 use super::SessionId;
 use super::SupportedProtocolVersions;
 use super::WireCellId;
+use super::WireCellOutputKind;
+use super::WireCellTerminalStatus;
 use super::WireExecuteRequest;
 use super::WireNestedToolCall;
 use super::WireRuntimeResponse;
@@ -175,6 +177,18 @@ pub enum HostToClient {
     CellClosed {
         session_id: SessionId,
         cell_id: WireCellId,
+    },
+    /// Reports buffered terminal output for a yielded cell, at most once.
+    ///
+    /// Sent only on connections that negotiated `cell-terminal-ready`, after the
+    /// cell's initial response and before its `cell/closed`. It neither consumes
+    /// nor acknowledges the output; `session/wait` still retrieves it.
+    #[serde(rename = "cell/terminalReady")]
+    CellTerminalReady {
+        session_id: SessionId,
+        cell_id: WireCellId,
+        status: WireCellTerminalStatus,
+        output_kind: WireCellOutputKind,
     },
 }
 

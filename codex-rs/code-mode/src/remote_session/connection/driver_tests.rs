@@ -6,11 +6,15 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellOutputKind;
+use codex_code_mode_protocol::CellTerminalReady;
+use codex_code_mode_protocol::CellTerminalStatus;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::NotificationFuture;
+use codex_code_mode_protocol::TerminalReadySupport;
 use codex_code_mode_protocol::ToolInvocationFuture;
 use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::host::CapabilitySet;
@@ -24,6 +28,9 @@ use codex_code_mode_protocol::host::HostToClient;
 use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_code_mode_protocol::host::RequestId;
 use codex_code_mode_protocol::host::SessionId;
+use codex_code_mode_protocol::host::WireCellId;
+use codex_code_mode_protocol::host::WireCellOutputKind;
+use codex_code_mode_protocol::host::WireCellTerminalStatus;
 use codex_code_mode_protocol::host::WireNestedToolCall;
 use codex_code_mode_protocol::host::WireResult;
 use codex_code_mode_protocol::host::WireRuntimeResponse;
@@ -57,6 +64,10 @@ struct DriverHarness {
 
 impl DriverHarness {
     fn start() -> Self {
+        Self::start_with_terminal_ready(TerminalReadySupport::Unsupported)
+    }
+
+    fn start_with_terminal_ready(terminal_ready_support: TerminalReadySupport) -> Self {
         let (command_tx, command_rx) = mpsc::channel(/*max_capacity*/ 16);
         let (event_tx, event_rx) = mpsc::channel(/*max_capacity*/ 16);
         let (outgoing_tx, outgoing_rx) = mpsc::channel(/*max_capacity*/ 16);
@@ -73,6 +84,7 @@ impl DriverHarness {
                 failure: Arc::clone(&failure),
                 cancellation: cancellation.clone(),
             },
+            terminal_ready_support,
         );
         let driver_task = tokio::spawn(driver.run());
         Self {
@@ -2091,4 +2103,207 @@ async fn dropped_shutdown_waiter_does_not_abort_remote_cleanup() {
         harness.outgoing_rx.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ReadyEvent {
+    Ready(CellTerminalReady),
+    Closed(CellId),
+}
+
+struct ReadyDelegate {
+    events_tx: mpsc::UnboundedSender<ReadyEvent>,
+}
+
+impl CodeModeSessionDelegate for ReadyDelegate {
+    fn invoke_tool<'a>(
+        &'a self,
+        _invocation: CodeModeNestedToolCall,
+        _cancellation_token: CancellationToken,
+    ) -> ToolInvocationFuture<'a> {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn notify<'a>(
+        &'a self,
+        _call_id: String,
+        _cell_id: CellId,
+        _text: String,
+        _cancellation_token: CancellationToken,
+    ) -> NotificationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn cell_terminal_ready(&self, ready: CellTerminalReady) {
+        let _ = self.events_tx.send(ReadyEvent::Ready(ready));
+    }
+
+    fn cell_closed(&self, cell_id: &CellId) {
+        let _ = self.events_tx.send(ReadyEvent::Closed(cell_id.clone()));
+    }
+}
+
+impl DriverHarness {
+    async fn send_host(&self, message: HostToClient) {
+        self.event_tx
+            .send(DriverEvent::HostMessage(message))
+            .await
+            .expect("host message");
+    }
+
+    async fn send_ready(&self, session: &RemoteSession, cell_id: &str) {
+        self.send_host(HostToClient::CellTerminalReady {
+            session_id: session.id.clone(),
+            cell_id: WireCellId::new(cell_id),
+            status: WireCellTerminalStatus::Completed,
+            output_kind: WireCellOutputKind::Text,
+        })
+        .await;
+    }
+
+    /// Proves the driver handled every earlier host message.
+    async fn sync(&mut self, session: &RemoteSession, id: i64) {
+        self.send_host(HostToClient::DelegateRequest {
+            id: DelegateRequestId::new(id),
+            session_id: session.id.clone(),
+            request: DelegateRequest::Notify {
+                call_id: "sync".to_string(),
+                cell_id: WireCellId::new("unknown"),
+                text: String::new(),
+            },
+        })
+        .await;
+        let frame = self.outgoing_rx.recv().await.expect("sync frame");
+        assert!(matches!(
+            EncodedFrame::decode_framed::<ClientToHost>(&frame.into_framed_bytes()).expect("decode"),
+            ClientToHost::DelegateResponse { id: response_id, result: WireResult::Err { .. } }
+                if response_id == DelegateRequestId::new(id)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn started_cell_reports_negotiated_support() {
+    for support in [
+        TerminalReadySupport::Supported,
+        TerminalReadySupport::Unsupported,
+    ] {
+        let mut harness = DriverHarness::start_with_terminal_ready(support);
+        let session = remote_session();
+        let _cleanup = harness.open(session.clone()).await;
+        let started = harness
+            .start_cell(
+                session.clone(),
+                /*request_id*/ 2,
+                "1",
+                Arc::new(RecordingDelegate::default()),
+            )
+            .await;
+        assert_eq!(started.terminal_ready_support, support);
+
+        if support == TerminalReadySupport::Unsupported {
+            // A host that did not negotiate readiness must not send it.
+            harness.send_ready(&session, "1").await;
+            tokio::time::timeout(Duration::from_secs(5), &mut harness.driver_task)
+                .await
+                .expect("driver stops")
+                .expect("driver task");
+            assert_eq!(
+                harness.failure.lock().expect("failure").clone(),
+                Some("code-mode host sent terminal readiness without negotiating it".to_string())
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn early_ready_latched_until_initial_response() {
+    let mut harness = DriverHarness::start_with_terminal_ready(TerminalReadySupport::Supported);
+    let session = RemoteSession {
+        id: SessionId::new("session-1").expect("session ID"),
+        generation: 2,
+    };
+    let _cleanup = harness.open(session.clone()).await;
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let delegate = Arc::new(ReadyDelegate { events_tx });
+    let yielded = harness
+        .start_cell(
+            session.clone(),
+            /*request_id*/ 2,
+            "1",
+            delegate.clone(),
+        )
+        .await;
+    let inline = harness
+        .start_cell(session.clone(), /*request_id*/ 3, "2", delegate)
+        .await;
+
+    // Readiness for both cells arrives before either initial response.
+    harness.send_ready(&session, "1").await;
+    harness.send_ready(&session, "2").await;
+    harness.sync(&session, /*id*/ 100).await;
+    assert!(events_rx.try_recv().is_err());
+
+    harness
+        .send_host(HostToClient::InitialResponse {
+            id: RequestId::new(/*value*/ 2),
+            result: WireResult::Ok {
+                value: WireRuntimeResponse::Yielded {
+                    cell_id: WireCellId::new("1"),
+                    content_items: Vec::new(),
+                    code_mode_host_duration_ns: 1,
+                },
+            },
+        })
+        .await;
+    assert!(matches!(
+        yielded.initial_response().await,
+        Ok(codex_code_mode_protocol::RuntimeResponse::Yielded { .. })
+    ));
+    assert_eq!(
+        events_rx.recv().await,
+        Some(ReadyEvent::Ready(CellTerminalReady {
+            cell_id: CellId::new("g2:1".to_string()),
+            status: CellTerminalStatus::Completed,
+            output_kind: CellOutputKind::Text,
+        }))
+    );
+
+    // Inline results never report latched readiness.
+    harness
+        .send_host(HostToClient::InitialResponse {
+            id: RequestId::new(/*value*/ 3),
+            result: WireResult::Ok {
+                value: WireRuntimeResponse::Result {
+                    cell_id: WireCellId::new("2"),
+                    content_items: Vec::new(),
+                    error_text: None,
+                    code_mode_host_duration_ns: 1,
+                },
+            },
+        })
+        .await;
+    assert!(matches!(
+        inline.initial_response().await,
+        Ok(codex_code_mode_protocol::RuntimeResponse::Result { .. })
+    ));
+
+    // Readiness is reported at most once per cell.
+    harness.send_ready(&session, "1").await;
+    for cell_id in ["2", "1"] {
+        harness
+            .send_host(HostToClient::CellClosed {
+                session_id: session.id.clone(),
+                cell_id: WireCellId::new(cell_id),
+            })
+            .await;
+    }
+    assert_eq!(
+        events_rx.recv().await,
+        Some(ReadyEvent::Closed(CellId::new("g2:2".to_string())))
+    );
+    assert_eq!(
+        events_rx.recv().await,
+        Some(ReadyEvent::Closed(CellId::new("g2:1".to_string())))
+    );
 }

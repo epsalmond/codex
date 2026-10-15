@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_code_mode_protocol::CodeModeSessionProvider;
+use codex_code_mode_protocol::TerminalReadySupport;
 use pretty_assertions::assert_eq;
 
+use super::DisabledCodeModeSessionProvider;
 use super::ProcessOwnedCodeModeSession;
 use super::ProcessOwnedCodeModeSessionProvider;
 use super::connection::ConnectionError;
@@ -18,6 +20,23 @@ fn provider_reuses_its_live_process_host() {
     let second = provider.process_host();
 
     assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[test]
+fn providers_report_fixed_terminal_ready_capability() {
+    assert_eq!(
+        ProcessOwnedCodeModeSessionProvider::default().terminal_ready_capability(),
+        TerminalReadySupport::Supported
+    );
+    assert_eq!(
+        crate::GrpcCodeModeSessionProvider::new("http://127.0.0.1:1".to_string())
+            .terminal_ready_capability(),
+        TerminalReadySupport::Supported
+    );
+    assert_eq!(
+        DisabledCodeModeSessionProvider.terminal_ready_capability(),
+        TerminalReadySupport::Unsupported
+    );
 }
 
 #[test]

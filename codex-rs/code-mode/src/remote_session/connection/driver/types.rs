@@ -146,6 +146,7 @@ impl ObservationYield {
 }
 
 pub(super) struct InitialResponse {
+    pub(super) session_id: SessionId,
     pub(super) generation: u64,
     pub(super) cell_id: WireCellId,
     pub(super) response_tx: oneshot::Sender<Result<RuntimeResponse, String>>,
