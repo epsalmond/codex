@@ -278,9 +278,22 @@ impl App {
     }
 
     pub(super) fn open_url_in_browser(&mut self, url: String) {
-        if let Err(err) = webbrowser::open(&url) {
-            self.chat_widget
-                .add_error_message(format!("Failed to open browser for {url}: {err}"));
+        self.open_url_in_browser_with(url, webbrowser::open);
+    }
+
+    fn open_url_in_browser_with(
+        &mut self,
+        url: String,
+        open: impl FnOnce(&str) -> std::io::Result<()>,
+    ) {
+        match open(&url) {
+            Ok(()) => self.chat_widget.add_info_message(
+                format!("Browser launch requested for {url}."),
+                /*hint*/ None,
+            ),
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to open browser for {url}: {err}")),
         }
     }
 
