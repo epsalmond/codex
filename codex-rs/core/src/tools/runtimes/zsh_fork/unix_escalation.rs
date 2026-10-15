@@ -161,6 +161,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         ),
         prompt_permissions: req.additional_permissions.clone(),
         stopwatch: Stopwatch::unlimited(),
+        code_mode_nested: crate::tools::approvals::in_code_mode_nested_call(),
     };
 
     let escalate_server = EscalateServer::new(
@@ -193,6 +194,9 @@ struct CoreShellActionProvider {
     approval_sandbox_permissions: SandboxPermissions,
     prompt_permissions: Option<AdditionalPermissionProfile>,
     stopwatch: Stopwatch,
+    /// Whether a Code Mode cell's nested call started this command. Its escalations are
+    /// reviewed on the escalation server's task, so the idle approval refusal needs it.
+    code_mode_nested: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -282,22 +286,34 @@ impl CoreShellActionProvider {
         };
         match stopwatch
             .pause_for(async {
-                let (turn_context, settings, _, strict_auto_review) = self
+                let (review_context, strict_auto_review) = match self
                     .session
                     .active_turn_context_and_strict_auto_review()
                     .await
-                    .ok_or_else(|| {
-                        ToolError::Rejected(
+                {
+                    Some((turn_context, settings, _, strict_auto_review)) => (
+                        GuardianReviewContext::from_resolved_settings(
+                            Arc::clone(&turn_context),
+                            &settings,
+                            self.review_context.environments(),
+                        ),
+                        strict_auto_review,
+                    ),
+                    // A Code Mode cell can outlive its turn. Its launch context still runs
+                    // permission hooks before the shared idle refusal.
+                    None if self.code_mode_nested => (
+                        self.review_context.clone(),
+                        self.review_context.turn().strict_auto_review_enabled(),
+                    ),
+                    None => {
+                        return Err(ToolError::Rejected(
                             "cannot approve intercepted execution without an active turn"
                                 .to_string(),
-                        )
-                    })?;
+                        ));
+                    }
+                };
                 let approval_ctx = ApprovalContext {
-                    review_context: GuardianReviewContext::from_resolved_settings(
-                        Arc::clone(&turn_context),
-                        &settings,
-                        self.review_context.environments(),
-                    ),
+                    review_context,
                     // The running process can outlive its launching tool or code-mode cell.
                     cancellation_token: None,
                     call_id: self.call_id.clone(),
@@ -307,7 +323,11 @@ impl CoreShellActionProvider {
                     retry_reason: None,
                     network_approval_context: None,
                 };
-                self.session.request_approval(action, approval_ctx).await
+                crate::tools::approvals::scope_code_mode_nested_call(
+                    self.code_mode_nested,
+                    self.session.request_approval(action, approval_ctx),
+                )
+                .await
             })
             .await
         {

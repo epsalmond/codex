@@ -65,6 +65,37 @@ pub(crate) fn scope_code_mode_nested_call<F: std::future::Future>(
     CODE_MODE_NESTED_CALL.scope(nested, Box::pin(future))
 }
 
+/// True on the task that runs a Code Mode cell's nested tool call.
+///
+/// Work that raises approvals on another task (network proxy, zsh-fork escalation, MCP
+/// elicitation) captures this where the nested call starts it, then restores it with
+/// [`scope_code_mode_nested_call`] or checks it through the session's idle refusal helpers.
+pub(crate) fn in_code_mode_nested_call() -> bool {
+    CODE_MODE_NESTED_CALL
+        .try_with(|nested| *nested)
+        .unwrap_or(false)
+}
+
+fn idle_code_mode_refusal_message(subject: &str) -> String {
+    format!(
+        "{subject} needs approval, but no turn is active: the code mode cell that \
+         requested it outlived its turn, so no approval prompt or automatic review was \
+         requested. Rerun this call inside a turn."
+    )
+}
+
+fn idle_refusal_subject(action: &ApprovalAction, tool_name: &ToolName) -> String {
+    match action {
+        ApprovalAction::NetworkAccess { target, .. } => format!("network access to `{target}`"),
+        #[cfg(unix)]
+        ApprovalAction::Execve { command, .. } => format!(
+            "escalated command `{}`",
+            codex_shell_command::parse_command::shlex_join(command)
+        ),
+        _ => format!("`{tool_name}`"),
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ApprovalContext {
     pub(crate) review_context: GuardianReviewContext,
@@ -503,18 +534,35 @@ impl Session {
         &self,
         tool_name: &ToolName,
     ) -> Option<String> {
-        if !CODE_MODE_NESTED_CALL
-            .try_with(|nested| *nested)
-            .unwrap_or(false)
-            || self.active_turn.lock().await.is_some()
+        self.idle_code_mode_refusal(&format!("`{tool_name}`")).await
+    }
+
+    /// The idle refusal for `subject` when this task runs a Code Mode nested call and no
+    /// turn is active.
+    async fn idle_code_mode_refusal(&self, subject: &str) -> Option<String> {
+        if !in_code_mode_nested_call() || self.active_turn.lock().await.is_some() {
+            return None;
+        }
+        Some(idle_code_mode_refusal_message(subject))
+    }
+
+    /// The idle refusal for an MCP elicitation from `server_name`.
+    ///
+    /// Server-initiated elicitations arrive on the MCP client's task, so besides this
+    /// task's marker they also count as Code Mode work when a nested call to the same
+    /// server is still in flight.
+    pub(crate) async fn idle_code_mode_elicitation_refusal(
+        &self,
+        server_name: &str,
+    ) -> Option<String> {
+        if self.active_turn.lock().await.is_some()
+            || !(in_code_mode_nested_call() || self.code_mode_mcp_tool_call_in_flight(server_name))
         {
             return None;
         }
-        Some(format!(
-            "`{tool_name}` needs approval, but no turn is active: the code mode cell that \
-             called it outlived its turn, so no approval prompt or automatic review was \
-             requested. Rerun this call inside a turn."
-        ))
+        Some(idle_code_mode_refusal_message(&format!(
+            "MCP elicitation from `{server_name}`"
+        )))
     }
 
     pub(crate) async fn request_approval(
@@ -563,7 +611,10 @@ impl Session {
                 source: ApprovalResolutionSource::Hook,
             },
             None => {
-                if let Some(reason) = self.idle_code_mode_approval_refusal(&ctx.tool_name).await {
+                if let Some(reason) = self
+                    .idle_code_mode_refusal(&idle_refusal_subject(&action, &ctx.tool_name))
+                    .await
+                {
                     return Err(ToolError::Rejected(reason));
                 }
                 self.request_reviewer_approval(action, &ctx).await

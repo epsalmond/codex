@@ -61,6 +61,14 @@ pub trait ElicitationReviewer: Send + Sync {
         &self,
         request: ElicitationReviewRequest,
     ) -> BoxFuture<'static, Result<Option<ElicitationResponse>>>;
+
+    /// Returns why this elicitation must be declined before any review or user prompt.
+    ///
+    /// The owner uses this when nobody can answer, such as a Code Mode cell that keeps
+    /// calling an MCP server after its turn ended.
+    fn idle_refusal(&self, _server_name: &str) -> BoxFuture<'static, Option<String>> {
+        futures::future::ready(None).boxed()
+    }
 }
 
 pub type ElicitationReviewerHandle = Arc<dyn ElicitationReviewer>;
@@ -376,6 +384,9 @@ impl ElicitationRequestManager {
                         let Some(reviewer) = reviewer.as_ref() else {
                             return Ok(strict_auto_review_decline());
                         };
+                        if let Some(reason) = reviewer.idle_refusal(&server_name).await {
+                            return Ok(idle_refusal_decline(reason));
+                        }
                         let _active_elicitation =
                             lifecycle.as_ref().map(ElicitationLifecycle::start);
                         return Ok(
@@ -423,6 +434,12 @@ impl ElicitationRequestManager {
                         content: Some(serde_json::json!({})),
                         meta: None,
                     });
+                }
+
+                if let Some(reviewer) = reviewer
+                    && let Some(reason) = reviewer.idle_refusal(&server_name).await
+                {
+                    return Ok(idle_refusal_decline(reason));
                 }
 
                 let should_surface_form_in_full_access = router.full_access_form_input_enabled()
@@ -546,6 +563,14 @@ fn strict_auto_review_decline() -> ElicitationResponse {
         meta: Some(serde_json::json!({
             "message": STRICT_AUTO_REVIEW_DECLINE_MESSAGE,
         })),
+    }
+}
+
+fn idle_refusal_decline(reason: String) -> ElicitationResponse {
+    ElicitationResponse {
+        action: ElicitationAction::Decline,
+        content: None,
+        meta: Some(serde_json::json!({ "message": reason })),
     }
 }
 

@@ -3566,3 +3566,65 @@ async fn approval_metadata_is_released_when_the_invocation_future_is_dropped() {
         ],
     );
 }
+
+#[tokio::test]
+async fn idle_code_mode_mcp_elicitations_are_refused() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let reviewer = session.mcp_elicitation_reviewer();
+    assert_eq!(
+        reviewer.idle_refusal("docs").await,
+        None,
+        "elicitations outside Code Mode keep their current routing"
+    );
+
+    // A Code Mode cell's MCP call to `docs` is still running after its turn ended.
+    let invocation = McpInvocation {
+        server: "docs".to_string(),
+        tool: "search".to_string(),
+        arguments: None,
+    };
+    let call = crate::tools::scope_code_mode_nested_call(/*nested*/ true, async {
+        session.register_mcp_tool_approval_metadata(
+            "call-1",
+            &invocation,
+            approval_metadata(None, None, None, None, None),
+            GuardianReviewContext::from(&turn_context),
+        )
+    })
+    .await;
+    let refusal = reviewer
+        .idle_refusal("docs")
+        .await
+        .expect("a server elicitation for an idle cell is refused");
+    assert!(
+        refusal.starts_with("MCP elicitation from `docs` needs approval")
+            && refusal.ends_with("Rerun this call inside a turn."),
+        "unexpected refusal: {refusal}"
+    );
+    assert_eq!(reviewer.idle_refusal("other").await, None);
+
+    // Codex's own elicitations from an idle nested call are refused without an event.
+    let outcome = crate::tools::scope_code_mode_nested_call(
+        /*nested*/ true,
+        session.request_mcp_server_elicitation(
+            turn_context.as_ref(),
+            "codex_apps".to_string(),
+            rmcp::model::RequestId::String("request-1".into()),
+            ElicitationRequest::Url {
+                meta: None,
+                message: "Connect this app to continue.".to_string(),
+                url: "https://example.com/connect".to_string(),
+                elicitation_id: "connect-1".to_string(),
+            },
+        ),
+    )
+    .await;
+    assert_eq!(outcome.response, None);
+    assert!(!outcome.sent);
+    assert!(rx.try_recv().is_err(), "no elicitation is surfaced");
+
+    // Once a turn is active, the elicitation is routed as usual.
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    assert_eq!(reviewer.idle_refusal("docs").await, None);
+    drop(call);
+}
