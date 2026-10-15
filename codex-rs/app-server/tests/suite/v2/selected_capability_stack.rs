@@ -606,7 +606,7 @@ fn selected_capability_fixture(
         serde_json::to_vec_pretty(&json!({
             "mcpServers": {
                 (MCP_SERVER_NAME): {
-                    "command": stdio_server_bin()?,
+                    "command": stdio_server_bin(),
                     "env": {
                         "MCP_TEST_PID_FILE": pid_file.to_string_lossy(),
                     },

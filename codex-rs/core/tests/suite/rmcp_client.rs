@@ -235,7 +235,7 @@ pub(super) fn remote_aware_environment_id() -> String {
 /// the remote test environment is active, copy the binary into the executor
 /// container and return that in-container path instead.
 pub(super) fn remote_aware_stdio_server_bin() -> anyhow::Result<String> {
-    let bin = stdio_server_bin()?;
+    let bin = stdio_server_bin();
     let Some(container_name) = test_docker_container_name() else {
         return Ok(bin);
     };
@@ -486,7 +486,7 @@ async fn assert_openai_form_capability_advertisement(expected: bool) -> anyhow::
 
     let server = start_mock_server().await;
     let server_name = "capabilities";
-    let command = stdio_server_bin()?;
+    let command = stdio_server_bin();
     let mut builder = test_codex().with_config(move |config| {
         insert_mcp_server(
             config,
@@ -1684,7 +1684,7 @@ async fn startup_prewarm_connects_before_delayed_mcp_tools_then_reuses_socket(
         vec![requests]
     };
     let server = responses::start_websocket_server(connections).await;
-    let command = stdio_server_bin()?;
+    let command = stdio_server_bin();
     let service_tier = ServiceTier::Fast.request_value();
     let fixture = test_codex()
         .with_model("gpt-5.4")
@@ -2075,7 +2075,7 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
     let server_name = "rmcp_local_fallback_cwd";
     let expected_cwd = Arc::new(Mutex::new(None::<PathBuf>));
     let expected_cwd_for_config = Arc::clone(&expected_cwd);
-    let rmcp_test_server_bin = cargo_bin("test_stdio_server")?;
+    let rmcp_test_server_bin = PathBuf::from(stdio_server_bin());
     let relative_server_path = PathBuf::from("mcp-bin").join(
         rmcp_test_server_bin
             .file_name()

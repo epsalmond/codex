@@ -317,7 +317,7 @@ async fn active_cell_completion(case: Case) -> Result<()> {
     let inner = if hosted {
         Some(
             ProcessOwnedCodeModeSessionProvider::with_host_program(
-                codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?,
+                core_test_support::code_mode_host_bin(),
             )
             .create_session()
             .await

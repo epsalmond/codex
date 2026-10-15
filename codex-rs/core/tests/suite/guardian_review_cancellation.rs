@@ -64,8 +64,7 @@ async fn cancelling_tool_aborts_its_guardian_review(cancellation: Cancellation) 
             }
         });
     if !matches!(cancellation, Cancellation::DirectTool) {
-        builder = builder
-            .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?);
+        builder = builder.with_code_mode_host_program(core_test_support::code_mode_host_bin());
     }
     let test = builder.build_with_auto_env(&server).await?;
     let output_file = test.cwd.path().join("cancelled-guardian-command.txt");

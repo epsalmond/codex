@@ -129,7 +129,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
     let temp_dir = tempfile::tempdir()?;
     let pid_file = temp_dir.path().join("mcp.pid");
     let pid_file_for_config = pid_file.clone();
-    let command = stdio_server_bin()?;
+    let command = stdio_server_bin();
     let fixture = test_codex()
         .with_config(move |config| {
             let mut servers = config.mcp_servers.get().clone();

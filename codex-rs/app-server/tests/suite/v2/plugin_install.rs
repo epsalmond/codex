@@ -2414,7 +2414,7 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
         serde_json::to_vec(&json!({
             "mcpServers": {
                 "sample-mcp": {
-                    "command": stdio_server_bin()?,
+                    "command": stdio_server_bin(),
                 }
             }
         }))?,

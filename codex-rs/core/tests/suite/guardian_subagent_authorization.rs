@@ -360,7 +360,7 @@ async fn code_mode_messaging_fixture(
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_code_mode_host_program(core_test_support::code_mode_host_bin())
         .with_config(move |config| {
             for feature in [
                 Feature::Apps,
@@ -791,7 +791,7 @@ async fn run_guardian_subagent_review(
     if code_mode {
         builder = builder
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?);
+            .with_code_mode_host_program(core_test_support::code_mode_host_bin());
     }
     let mut test = builder.build_with_auto_env(&server).await?;
     if matches!(root_context, RootContext::Migrating) {

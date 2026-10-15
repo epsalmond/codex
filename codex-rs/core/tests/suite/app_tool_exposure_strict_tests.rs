@@ -39,7 +39,7 @@ text(JSON.stringify({names, result: t ? (await tools[t.name]({})).content[0].tex
     )
     .await;
     let mut builder = search_capable_apps_builder(server.uri())
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_code_mode_host_program(core_test_support::code_mode_host_bin())
         .with_auth(codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_extensions(Arc::new(extensions.build()))
         .with_pre_build_hook(|home| {

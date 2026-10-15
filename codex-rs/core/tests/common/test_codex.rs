@@ -860,10 +860,12 @@ impl TestCodexBuilder {
             .models_manager
             .clone()
             .unwrap_or_else(|| codex_core::build_models_manager(&config, auth_manager.clone()));
-        let code_mode_host_program = self
-            .code_mode_host_program
-            .take()
-            .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
+        let code_mode_host_program = self.code_mode_host_program.take().or_else(|| {
+            config
+                .features
+                .enabled(Feature::CodeModeHost)
+                .then(crate::code_mode_host_bin)
+        });
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
             codex_core::install_agent_message_board(&mut extensions, manager.clone());
