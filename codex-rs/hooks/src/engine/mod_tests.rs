@@ -2887,3 +2887,89 @@ async fn mcp_interrupt_hooks_expand_event_input_and_bound_timeout() {
         }]
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn observational_pre_tool_use_matches_by_name_and_times_out_slow_hooks() {
+    let temp = tempdir().expect("create temp dir");
+    let managed_dir =
+        AbsolutePathBuf::try_from(temp.path().join("managed-hooks")).expect("absolute path");
+    fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
+    let managed_hooks = managed_hooks_for_current_platform(
+        managed_dir,
+        HookEventsToml {
+            pre_tool_use: vec![MatcherGroup {
+                matcher: Some("^write_stdin$".to_string()),
+                hooks: vec![HookHandlerConfig::Command {
+                    command: "sleep 30".to_string(),
+                    command_windows: None,
+                    timeout_sec: Some(60),
+                    r#async: false,
+                    status_message: None,
+                    additional_context_limit: None,
+                }],
+            }],
+            ..Default::default()
+        },
+    );
+    let config_layer_stack = ConfigLayerStack::new(
+        Vec::new(),
+        ConfigRequirements {
+            managed_hooks: Some(ConstrainedWithSource::new(
+                Constrained::allow_any(managed_hooks.clone()),
+                Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
+            )),
+            ..ConfigRequirements::default()
+        },
+        ConfigRequirementsToml {
+            hooks: Some(managed_hooks),
+            ..ConfigRequirementsToml::default()
+        },
+    )
+    .expect("config layer stack");
+    let engine = ClaudeHooksEngine::new(
+        /*enabled*/ true,
+        /*bypass_hook_trust*/ false,
+        Some(&config_layer_stack),
+        Vec::new(),
+        Vec::new(),
+        command_runtime(CommandShell {
+            program: String::new(),
+            args: Vec::new(),
+        }),
+        mcp_executor(),
+    );
+
+    assert!(engine.has_pre_tool_use_handlers("write_stdin", &[]));
+    assert!(!engine.has_pre_tool_use_handlers("Bash", &[]));
+
+    let started = std::time::Instant::now();
+    let outcome = engine
+        .run_pre_tool_use_observation(PreToolUseRequest {
+            session_id: ThreadId::new(),
+            turn_id: "turn-1".to_string(),
+            subagent: None,
+            cwd: cwd(),
+            transcript_path: None,
+            model: "gpt-test".to_string(),
+            permission_mode: "default".to_string(),
+            tool_name: "write_stdin".to_string(),
+            matcher_aliases: Vec::new(),
+            tool_use_id: "poll-1".to_string(),
+            tool_input: serde_json::json!({ "session_id": 1, "chars": "" }),
+        })
+        .await;
+
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(!outcome.should_block);
+    assert_eq!(outcome.updated_input, None);
+    assert_eq!(outcome.hook_events.len(), 1);
+    assert_eq!(outcome.hook_events[0].run.status, HookRunStatus::Failed);
+    assert_eq!(
+        outcome.hook_events[0].run.entries,
+        vec![HookOutputEntry {
+            kind: HookOutputEntryKind::Error,
+            text: "observational PreToolUse hook timed out after 1000ms".to_string(),
+        }]
+    );
+}

@@ -151,16 +151,22 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         })
     }
 
-    /// Bounded PreToolUse payload for a control call that hooks may observe
+    /// Hook-facing name for a control call that PreToolUse hooks may observe
     /// but never block or rewrite.
     ///
-    /// Only consulted when `pre_tool_use_payload` returns `None`. The payload
-    /// must carry identifiers and flags only, never command output or stdin
-    /// content.
-    fn observational_pre_tool_use_payload<'a>(
+    /// Only consulted when `pre_tool_use_payload` returns `None`. Kept cheap
+    /// and synchronous so dispatch can skip observation when no hook matches.
+    fn observational_hook_tool_name(&self, _invocation: &ToolInvocation) -> Option<HookToolName> {
+        None
+    }
+
+    /// Bounded `tool_input` for an observed call, built only when a hook
+    /// matches. It must carry identifiers and flags only, never command
+    /// output or stdin content.
+    fn observational_hook_tool_input<'a>(
         &'a self,
         _invocation: &'a ToolInvocation,
-    ) -> BoxFuture<'a, Option<PreToolUsePayload>> {
+    ) -> BoxFuture<'a, Option<Value>> {
         Box::pin(async { None })
     }
 
@@ -680,7 +686,12 @@ impl ToolRegistry {
             .features
             .get()
             .enabled(Feature::ControlToolHookObservation)
-            && let Some(observed) = tool.observational_pre_tool_use_payload(&invocation).await
+            && let Some(observed_name) = tool.observational_hook_tool_name(&invocation)
+            && invocation
+                .session
+                .hooks()
+                .has_pre_tool_use_handlers(observed_name.name(), observed_name.matcher_aliases())
+            && let Some(observed_input) = tool.observational_hook_tool_input(&invocation).await
         {
             // Observers see the call before it runs, but the outcome is
             // discarded so control calls keep their original input and result.
@@ -688,8 +699,8 @@ impl ToolRegistry {
                 &invocation.session,
                 invocation.step_context.as_ref(),
                 invocation.call_id.clone(),
-                &observed.tool_name,
-                &observed.tool_input,
+                &observed_name,
+                &observed_input,
             )
             .await;
         }

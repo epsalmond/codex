@@ -5,6 +5,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -235,24 +236,24 @@ impl CoreToolRuntime for CodeModeWaitHandler {
         // Code-mode `wait` is runtime control for an existing code cell, not a
         // standalone user action. Tool calls made from code mode still flow
         // through normal dispatch, but hooks should not block or rewrite the
-        // wait loop itself; they observe it through
-        // `observational_pre_tool_use_payload`.
+        // wait loop itself; they observe it as an observational event.
         None
     }
 
-    fn observational_pre_tool_use_payload<'a>(
+    fn observational_hook_tool_name(&self, invocation: &ToolInvocation) -> Option<HookToolName> {
+        Some(code_mode_hook_tool_name(invocation))
+    }
+
+    fn observational_hook_tool_input<'a>(
         &'a self,
         invocation: &'a ToolInvocation,
-    ) -> BoxFuture<'a, Option<PreToolUsePayload>> {
+    ) -> BoxFuture<'a, Option<Value>> {
         Box::pin(async move {
             let ToolPayload::Function { arguments } = &invocation.payload else {
                 return None;
             };
             let args: ExecWaitArgs = parse_arguments(arguments).ok()?;
-            Some(PreToolUsePayload {
-                tool_name: code_mode_hook_tool_name(invocation),
-                tool_input: wait_observation_input(&args),
-            })
+            Some(wait_observation_input(&args))
         })
     }
 

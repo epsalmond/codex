@@ -343,7 +343,8 @@ profile in live execution and replay rather than assuming general accuracy.
 unified exec `write_stdin`, including empty polls. These events carry
 `"observational": true`: hooks run and their `additionalContext` reaches the
 model, but deny, exit code 2, and `updatedInput` are ignored, so the call runs
-with its original input and result. `tool_use_id` is the control call's own
+with its original input and result. Observational hooks run only when a hook
+matches, and they get 1 second before they are stopped. `tool_use_id` is the control call's own
 call id, which matches its output in the rollout. Payloads carry only bounded
 metadata:
 

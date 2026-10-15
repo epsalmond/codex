@@ -246,9 +246,11 @@ pub(crate) async fn run_pre_tool_use_hooks(
 
 /// Runs `PreToolUse` hooks for a control call that hooks may observe but not gate.
 ///
-/// Matching hooks receive `"observational": true`. Their `additionalContext`
-/// is recorded like any other PreToolUse context; block decisions and input
-/// rewrites are ignored, so the call always proceeds with its original input.
+/// Callers check `Hooks::has_pre_tool_use_handlers` first, so the transcript
+/// path is only materialized when a hook will run. Matching hooks receive
+/// `"observational": true`. Their `additionalContext` is recorded like any
+/// other PreToolUse context; block decisions and input rewrites are ignored,
+/// so the call always proceeds with its original input.
 pub(crate) async fn run_observational_pre_tool_use_hooks(
     sess: &Arc<Session>,
     step_context: &StepContext,
@@ -272,9 +274,6 @@ pub(crate) async fn run_observational_pre_tool_use_hooks(
     };
     let hooks = sess.hooks();
     let preview_runs = hooks.preview_pre_tool_use(&request);
-    if preview_runs.is_empty() {
-        return;
-    }
     emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let PreToolUseOutcome {

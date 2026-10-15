@@ -16,6 +16,10 @@ default.
   for the model. A deny, exit code 2, or `updatedInput` is ignored and shown as
   a warning on the hook run. The call proceeds with its original input, and its
   result is unchanged.
+- Synchronous hooks get a 1-second budget, because these calls are on the
+  tool's critical path. A hook still running at the deadline is killed and its
+  run is reported as failed. Codex builds the payload only when a `PreToolUse`
+  matcher selects the tool.
 - `tool_use_id` is the control call's own call id. Its output in the rollout
   (`function_call_output` or `custom_tool_call_output`) has the same id, so an
   observer can correlate the call with its result.

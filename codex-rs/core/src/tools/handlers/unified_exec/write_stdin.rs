@@ -149,14 +149,18 @@ impl CoreToolRuntime for WriteStdinHandler {
         // `write_stdin` is transport for an existing exec session. Empty writes
         // are background polls, and non-empty writes continue a command that
         // already ran PreToolUse as Bash, so it is never gated here; hooks see
-        // it through `observational_pre_tool_use_payload` instead.
+        // it as an observational event instead.
         None
     }
 
-    fn observational_pre_tool_use_payload<'a>(
+    fn observational_hook_tool_name(&self, _invocation: &ToolInvocation) -> Option<HookToolName> {
+        Some(HookToolName::new("write_stdin"))
+    }
+
+    fn observational_hook_tool_input<'a>(
         &'a self,
         invocation: &'a ToolInvocation,
-    ) -> BoxFuture<'a, Option<PreToolUsePayload>> {
+    ) -> BoxFuture<'a, Option<Value>> {
         Box::pin(async move {
             let ToolPayload::Function { arguments } = &invocation.payload else {
                 return None;
@@ -168,10 +172,7 @@ impl CoreToolRuntime for WriteStdinHandler {
                 .unified_exec_manager
                 .originating_call_id_for_process(args.session_id)
                 .await;
-            Some(PreToolUsePayload {
-                tool_name: HookToolName::new("write_stdin"),
-                tool_input: write_stdin_observation_input(&args, exec_call_id),
-            })
+            Some(write_stdin_observation_input(&args, exec_call_id))
         })
     }
 

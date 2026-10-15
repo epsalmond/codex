@@ -76,6 +76,25 @@ pub(crate) async fn run(
     run_with_mode(engine, request, DispatchMode::Control).await
 }
 
+/// Whether any configured `PreToolUse` handler matches this tool name.
+pub(crate) fn has_handlers(
+    handlers: &[ConfiguredHandler],
+    tool_name: &str,
+    matcher_aliases: &[String],
+) -> bool {
+    let matcher_inputs = common::matcher_inputs(tool_name, matcher_aliases);
+    !dispatcher::select_handlers_for_matcher_inputs(
+        handlers,
+        HookEventName::PreToolUse,
+        &matcher_inputs,
+    )
+    .is_empty()
+}
+
+/// Observed calls are on the tool's hot path, so their hooks get a short,
+/// fixed budget. Handlers still running at the deadline are killed.
+const OBSERVATIONAL_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Runs `PreToolUse` hooks for a call that hooks may observe but not gate.
 ///
 /// Hook stdin carries `"observational": true`. Matching hooks run exactly as
@@ -133,15 +152,34 @@ async fn run_with_mode(
         DispatchMode::Control => parse_completed,
         DispatchMode::Observational => parse_completed_observational,
     };
-    let results = dispatcher::execute_handlers(
+    let observed_handlers = (mode == DispatchMode::Observational).then(|| matched.clone());
+    let execution = dispatcher::execute_handlers(
         engine,
         matched,
         input_json,
         request.cwd.as_path(),
         Some(request.turn_id.clone()),
         parse,
-    )
-    .await;
+    );
+    let results = match observed_handlers {
+        None => execution.await,
+        Some(handlers) => match tokio::time::timeout(OBSERVATIONAL_HOOK_TIMEOUT, execution).await {
+            Ok(results) => results,
+            Err(_) => {
+                return serialization_failure_outcome(
+                    common::serialization_failure_hook_events_for_tool_use(
+                        handlers,
+                        Some(request.turn_id.clone()),
+                        format!(
+                            "observational PreToolUse hook timed out after {}ms",
+                            OBSERVATIONAL_HOOK_TIMEOUT.as_millis()
+                        ),
+                        &request.tool_use_id,
+                    ),
+                );
+            }
+        },
+    };
 
     let should_block = results.iter().any(|result| result.data.should_block);
     let block_reason = results

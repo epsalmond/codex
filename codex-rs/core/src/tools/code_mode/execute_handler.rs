@@ -2,14 +2,15 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
-use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use codex_prompts::ResolvedModelMessages;
 use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use futures::future::BoxFuture;
+use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -258,18 +259,19 @@ impl CoreToolRuntime for CodeModeExecuteHandler {
 
     // The cell is not gated by PreToolUse (its nested tool calls are), but
     // hooks observe that it started.
-    fn observational_pre_tool_use_payload<'a>(
+    fn observational_hook_tool_name(&self, invocation: &ToolInvocation) -> Option<HookToolName> {
+        is_exec_tool_name(&invocation.tool_name).then(|| code_mode_hook_tool_name(invocation))
+    }
+
+    fn observational_hook_tool_input<'a>(
         &'a self,
         invocation: &'a ToolInvocation,
-    ) -> BoxFuture<'a, Option<PreToolUsePayload>> {
+    ) -> BoxFuture<'a, Option<Value>> {
         Box::pin(async move {
             let ToolPayload::Custom { input } = &invocation.payload else {
                 return None;
             };
-            is_exec_tool_name(&invocation.tool_name).then(|| PreToolUsePayload {
-                tool_name: code_mode_hook_tool_name(invocation),
-                tool_input: exec_observation_input(input),
-            })
+            Some(exec_observation_input(input))
         })
     }
 }
