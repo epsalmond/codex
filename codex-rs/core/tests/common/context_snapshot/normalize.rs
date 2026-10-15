@@ -96,8 +96,9 @@ impl Normalizer {
     fn normalize_uuids(&mut self, text: &str) -> String {
         uuid_regex()
             .replace_all(text, |captures: &regex_lite::Captures<'_>| {
-                let id = captures[0].to_ascii_lowercase();
-                format!("<UUID {}>", stable_index(&mut self.uuids, &id))
+                let prefix = captures.get(1).map_or("", |prefix| prefix.as_str());
+                let id = captures[2].to_ascii_lowercase();
+                format!("{prefix}<UUID {}>", stable_index(&mut self.uuids, &id))
             })
             .into_owned()
     }
@@ -142,6 +143,7 @@ impl Normalizer {
         } else {
             text
         };
+        let text = normalize_unix_seconds(&text);
         normalize_skill_references(&self.normalize_uuids(&text))
     }
 
@@ -405,18 +407,31 @@ fn normalize_stable_text(text: &str) -> String {
         SANDBOX.get_or_init(|| Regex::new(r#""sandbox":"[^"]+""#).expect("sandbox regex"));
     let text = normalize_line_endings(text);
     let text = skill.replace_all(&text, "<SYSTEM_SKILLS_ROOT>/$1/SKILL.md");
-    let text = uuid_regex().replace_all(&text, "<UUID>");
+    let text = uuid_regex().replace_all(&text, "$1<UUID>");
     let text = time.replace_all(&text, r#""turn_started_at_unix_ms":<UNIX_MS>"#);
+    let text = normalize_unix_seconds(&text);
     sandbox
         .replace_all(&text, r#""sandbox":"<SANDBOX>""#)
         .into_owned()
 }
 
+// Wall-clock Unix seconds in agent context telemetry (`list_agents` output).
+fn normalize_unix_seconds(text: &str) -> String {
+    static UNIX_SECONDS: OnceLock<Regex> = OnceLock::new();
+    UNIX_SECONDS
+        .get_or_init(|| {
+            Regex::new(r#""(observed_at|provider_usage_at)":\d+"#).expect("unix seconds regex")
+        })
+        .replace_all(text, r#""$1":<UNIX_S>"#)
+        .into_owned()
+}
+
+// Group 1 keeps a `msg_` prefix, which `\b` alone would not split from the UUID.
 fn uuid_regex() -> &'static Regex {
     static UUID: OnceLock<Regex> = OnceLock::new();
     UUID.get_or_init(|| {
         Regex::new(
-            r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+            r"(?:\b|(msg_))([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b",
         )
         .expect("uuid regex")
     })

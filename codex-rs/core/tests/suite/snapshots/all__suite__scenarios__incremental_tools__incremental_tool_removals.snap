@@ -16,8 +16,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=7748a53142f449b7):
-        - namespace/functions; hash=124fee69a69ed6b2
+00:additional_tools/developer (3; hash=467897fdb74b211d):
+        - namespace/functions; hash=d1dbea39f27ead58
           - function/exec_command
           - function/write_stdin
           - function/list_mcp_resources
@@ -26,12 +26,12 @@ Settings:
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=2327142bda177c50
-          - function/close_agent
-          - function/resume_agent
-          - function/send_input
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
           - function/spawn_agent
-          - function/wait_agent
         - namespace/mcp__echo_service: Echo service instructions.; hash=a5144e5d70d01799
           - function/cwd
           - function/echo
@@ -39,21 +39,41 @@ Settings:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
+03:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+04:message/developer:
+    <MULTI_AGENT_MODE>
+05:message/user:
     <ENVIRONMENT_CONTEXT>
-04:message/user:
+06:message/user:
     Begin with the echo service.
 -- request 2 (turn) --
-05:message/developer:
+07:message/developer:
     The following tools are no longer available. Do not call them:
     - mcp__echo_service.cwd
-06:message/user:
+08:message/user:
     Continue after disabling the cwd tool.
 -- request 3 (turn) --
-07:message/user:
+09:message/user:
     Continue with the remaining echo tool.
 -- request 4 (turn) --
-08:message/developer:
+10:message/developer:
     The following namespaces are no longer available. Do not call tools in them unless those tools are declared in a later update:
     - mcp__echo_service
 
@@ -61,13 +81,13 @@ Settings:
     - functions.list_mcp_resource_templates
     - functions.list_mcp_resources
     - functions.read_mcp_resource
-09:message/user:
+11:message/user:
     Continue after removing the echo service.
 -- request 5 (turn) --
-10:message/user:
+12:message/user:
     Continue without the echo service.
 -- request 6 (turn) --
-11:additional_tools/developer (2; hash=817ef381d2e3ba83):
+13:additional_tools/developer (2; hash=817ef381d2e3ba83):
         - namespace/functions: This is an incremental namespace update. Previously declared tools remain available for direct ca...; hash=b54767a7496e2119
           - function/list_mcp_resources
           - function/list_mcp_resource_templates
@@ -75,8 +95,8 @@ Settings:
         - namespace/mcp__echo_service: Echo service instructions.; hash=a5144e5d70d01799
           - function/cwd
           - function/echo
-12:message/user:
+14:message/user:
     Continue with the restored echo service.
 -- request 7 (turn) --
-13:message/user:
+15:message/user:
     Continue with the same restored tools.

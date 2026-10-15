@@ -36,6 +36,16 @@ pub static CODEX_ALIASES_TEMP_DIR: Option<TestBinaryDispatchGuard> = {
     })
 };
 
+// User skill discovery scans `$HOME/.agents/skills`. Point it at a directory that is never
+// created so a developer's personal skills cannot reach recorded model context or snapshots.
+#[ctor]
+fn pin_user_skill_home() {
+    let home = std::env::temp_dir().join("codex-core-tests-without-user-skills");
+    if let Ok(home) = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(home) {
+        codex_skills_extension::pin_user_skill_home_for_tests(home);
+    }
+}
+
 mod abort_lifecycle;
 #[cfg(not(target_os = "windows"))]
 mod abort_tasks;

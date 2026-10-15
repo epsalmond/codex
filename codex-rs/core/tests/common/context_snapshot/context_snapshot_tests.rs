@@ -433,6 +433,26 @@ fn uuid_labels_preserve_identity_across_message_and_function_content() {
 }
 
 #[test]
+fn message_ids_and_agent_clock_times_are_masked() {
+    let render = |id: &str, seconds: u64| {
+        let text = format!(
+            "<async_tool_completion>id=msg_{id} status=completed\n{{\"observed_at\":{seconds},\"provider_usage_at\":{seconds}}}"
+        );
+        render_test_items(
+            &[json!({ "type": "message", "role": "user", "content": [{ "text": text }] })],
+            &ContextSnapshotOptions::default(),
+        )
+    };
+    let first = render("01a13ea6-09d3-72d1-9ef8-1bf76fd5de41", 1_792_052_430);
+    assert!(first.contains("id=msg_<UUID 1> status=completed"));
+    assert!(first.contains(r#"{"observed_at":<UNIX_S>,"provider_usage_at":<UNIX_S>}"#));
+    assert_eq!(
+        first,
+        render("01a14043-1452-73e3-93ce-f8714c44fbed", 1_792_079_499)
+    );
+}
+
+#[test]
 fn rewritten_model_and_personality_use_plain_tags() {
     let render = |text| {
         render_test_items(

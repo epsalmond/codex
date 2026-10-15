@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
@@ -25,6 +26,15 @@ const AGENTS_DIR_NAME: &str = ".agents";
 const SKILLS_DIR_NAME: &str = "skills";
 const MAX_CONCURRENT_ANCESTOR_PROBES: usize = 256;
 
+/// Replaces the home directory whose `.agents/skills` folder is scanned for user skills.
+static USER_HOME_OVERRIDE: OnceLock<AbsolutePathBuf> = OnceLock::new();
+
+/// Pins user skill discovery to `home` instead of the real home directory for the rest of the
+/// process, so test binaries never pick up a developer's personal skills. The first call wins.
+pub fn pin_user_skill_home_for_tests(home: AbsolutePathBuf) {
+    let _ = USER_HOME_OVERRIDE.set(home);
+}
+
 pub(crate) async fn resolve_skill_roots(
     repository_file_system: Option<Arc<dyn ExecutorFileSystem>>,
     config_layer_stack: &ConfigLayerStack,
@@ -32,8 +42,9 @@ pub(crate) async fn resolve_skill_roots(
     plugin_skill_roots: Vec<PluginSkillRoot>,
     extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<HostSkillRoot> {
-    let home_dir =
-        home_dir().and_then(|path| AbsolutePathBuf::from_absolute_path_checked(path).ok());
+    let home_dir = USER_HOME_OVERRIDE.get().cloned().or_else(|| {
+        home_dir().and_then(|path| AbsolutePathBuf::from_absolute_path_checked(path).ok())
+    });
     resolve_skill_roots_with_home_dir(
         repository_file_system,
         config_layer_stack,
