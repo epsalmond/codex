@@ -1218,7 +1218,7 @@ impl Session {
             .then(|| invocation.clone()),
             metadata,
             review_context,
-            code_mode_nested: crate::tools::approvals::in_code_mode_nested_call(),
+            code_mode_nested: crate::tools::in_code_mode_nested_call(),
         });
         let mut registry = self
             .mcp_tool_approval_metadata

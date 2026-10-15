@@ -3569,8 +3569,6 @@ async fn approval_metadata_is_released_when_the_invocation_future_is_dropped() {
 
 #[tokio::test]
 async fn idle_code_mode_mcp_elicitations_are_refused() {
-    use codex_mcp::ElicitationReviewer as _;
-
     let (session, turn_context, rx) = make_session_and_context_with_rx().await;
     let reviewer = session.mcp_elicitation_reviewer();
     assert_eq!(
@@ -3585,7 +3583,7 @@ async fn idle_code_mode_mcp_elicitations_are_refused() {
         tool: "search".to_string(),
         arguments: None,
     };
-    let call = crate::tools::approvals::scope_code_mode_nested_call(/*nested*/ true, async {
+    let call = crate::tools::scope_code_mode_nested_call(/*nested*/ true, async {
         session.register_mcp_tool_approval_metadata(
             "call-1",
             &invocation,
@@ -3606,7 +3604,7 @@ async fn idle_code_mode_mcp_elicitations_are_refused() {
     assert_eq!(reviewer.idle_refusal("other").await, None);
 
     // Codex's own elicitations from an idle nested call are refused without an event.
-    let outcome = crate::tools::approvals::scope_code_mode_nested_call(
+    let outcome = crate::tools::scope_code_mode_nested_call(
         /*nested*/ true,
         session.request_mcp_server_elicitation(
             turn_context.as_ref(),
