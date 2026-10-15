@@ -230,7 +230,7 @@ async fn idle_owner_receives_native_completion(v2: bool, case: IdleCase) -> Resu
                 .clone()
         };
         assert_eq!(receipt(&requests[2]), receipt(&requests[4]));
-        assert!(serde_json::to_vec(&receipt(&requests[4]))?.len() <= 4096);
+        assert!(serde_json::to_vec(&receipt(&requests[4]))?.len() <= 3072);
         test.codex.submit(Op::Compact).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))

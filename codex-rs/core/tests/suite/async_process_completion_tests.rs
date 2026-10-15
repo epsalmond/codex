@@ -310,7 +310,7 @@ async fn native_completion_is_appended_in_the_active_turn_without_stdin(
             .iter()
             .find(|item| item["content"][0]["text"].as_str() == Some(text.as_str()))
             .unwrap();
-        assert!(serde_json::to_vec(item)?.len() <= 4096);
+        assert!(serde_json::to_vec(item)?.len() <= 3072);
         assert!(item["internal_chat_message_metadata_passthrough"]["create_time"].is_number());
         assert!(item["internal_chat_message_metadata_passthrough"]["turn_id"].is_string());
     }
@@ -519,7 +519,7 @@ async fn idle_native_completion_paused_by_an_idle_interrupt_is_recovered_by_an_e
         origin
     );
     assert!(item["internal_chat_message_metadata_passthrough"]["create_time"].is_number());
-    assert!(serde_json::to_vec(item)?.len() <= 4096);
+    assert!(serde_json::to_vec(item)?.len() <= 3072);
     test.codex.submit(Op::Compact).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
