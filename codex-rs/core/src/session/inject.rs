@@ -41,6 +41,16 @@ impl Session {
         }
     }
 
+    /// Whether `turn_id` is the turn whose task is currently running.
+    pub(crate) async fn is_running_turn(&self, turn_id: &str) -> bool {
+        self.active_turn
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|active_turn| active_turn.task.as_ref())
+            .is_some_and(|task| task.turn_context.sub_id == turn_id)
+    }
+
     /// Injects hook context into the running turn atomically.
     #[expect(
         clippy::await_holding_invalid_type,

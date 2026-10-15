@@ -40,10 +40,12 @@ impl CodeModeExecuteHandler {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     async fn execute(
         &self,
         session: std::sync::Arc<crate::session::session::Session>,
         step_context: Arc<crate::session::step_context::StepContext>,
+        tracker: crate::tools::context::SharedTurnDiffTracker,
         call_id: String,
         originating_call: Option<crate::tools::context::ToolCallOrigin>,
         code: String,
@@ -95,6 +97,7 @@ impl CodeModeExecuteHandler {
                     max_output_tokens: args.max_output_tokens,
                 },
                 Arc::clone(&step_context),
+                tracker,
             )
             .await
             .map_err(FunctionCallError::RespondToModel)?;
@@ -129,6 +132,10 @@ impl CodeModeExecuteHandler {
             .services
             .code_mode_service
             .mark_cell_ready_for_dispatch(&cell_id, originating_call);
+        exec.session
+            .services
+            .code_mode_service
+            .retain_dispatch_worker_for_cell(&exec.session, &cell_id);
         let response = started_cell
             .initial_response()
             .await
@@ -213,6 +220,7 @@ impl CodeModeExecuteHandler {
             session,
             turn,
             step_context,
+            tracker,
             call_id,
             tool_name,
             payload,
@@ -232,6 +240,7 @@ impl CodeModeExecuteHandler {
                 .execute(
                     session,
                     step_context,
+                    tracker,
                     call_id,
                     originating_call,
                     input,

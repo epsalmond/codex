@@ -50,6 +50,21 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing::warn;
 
+tokio::task_local! {
+    /// True on the task that runs one Code Mode cell's nested tool call.
+    static CODE_MODE_NESTED_CALL: bool;
+}
+
+/// Runs `future` with the Code Mode nested-call marker used by the idle approval policy.
+///
+/// The future is boxed so the marker does not grow the caller's stack frames.
+pub(crate) fn scope_code_mode_nested_call<F: std::future::Future>(
+    nested: bool,
+    future: F,
+) -> impl std::future::Future<Output = F::Output> {
+    CODE_MODE_NESTED_CALL.scope(nested, Box::pin(future))
+}
+
 #[derive(Clone)]
 pub(crate) struct ApprovalContext {
     pub(crate) review_context: GuardianReviewContext,
@@ -476,6 +491,32 @@ impl ApprovalResolution {
 }
 
 impl Session {
+    /// Idle approval policy for live Code Mode cells.
+    ///
+    /// A cell can keep calling tools after the turn that started it has ended. When no
+    /// turn is active, nobody is there to answer a prompt, and an automatic review would
+    /// run unattended. So a nested call that would need a user prompt or a Guardian
+    /// decision is refused with an error the script can see. Permission hooks still run
+    /// first, because they need no one present. Calls made while any turn is active
+    /// prompt as usual.
+    pub(crate) async fn idle_code_mode_approval_refusal(
+        &self,
+        tool_name: &ToolName,
+    ) -> Option<String> {
+        if !CODE_MODE_NESTED_CALL
+            .try_with(|nested| *nested)
+            .unwrap_or(false)
+            || self.active_turn.lock().await.is_some()
+        {
+            return None;
+        }
+        Some(format!(
+            "`{tool_name}` needs approval, but no turn is active: the code mode cell that \
+             called it outlived its turn, so no approval prompt or automatic review was \
+             requested. Rerun this call inside a turn."
+        ))
+    }
+
     pub(crate) async fn request_approval(
         self: &Arc<Self>,
         action: ApprovalAction,
@@ -521,7 +562,12 @@ impl Session {
                 decision: ReviewDecision::denied(message),
                 source: ApprovalResolutionSource::Hook,
             },
-            None => self.request_reviewer_approval(action, &ctx).await,
+            None => {
+                if let Some(reason) = self.idle_code_mode_approval_refusal(&ctx.tool_name).await {
+                    return Err(ToolError::Rejected(reason));
+                }
+                self.request_reviewer_approval(action, &ctx).await
+            }
         };
         // Network approvals record their final telemetry after validation and persistence.
         if !is_network_approval {

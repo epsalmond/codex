@@ -94,6 +94,12 @@ impl RequestPermissionsHandler {
             ));
         }
 
+        if let Some(reason) = session
+            .idle_code_mode_approval_refusal(&self.tool_name())
+            .await
+        {
+            return Err(FunctionCallError::RespondToModel(reason));
+        }
         let response = session
             .request_permissions_for_environment(
                 &step_context,

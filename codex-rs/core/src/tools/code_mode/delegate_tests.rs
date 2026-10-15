@@ -26,12 +26,14 @@ use super::DispatchMessage;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::router::ToolRouter;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 #[derive(Default)]
@@ -88,13 +90,13 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
         })
     }
 
-    fn handle<'a>(&'a self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
     where
         ToolInvocation: 'a,
     {
-        Box::pin(async {
+        Box::pin(async move {
             Ok(Box::new(FunctionToolOutput::from_text(
-                "audit-probe-ok".to_string(),
+                probe_marker(&invocation.turn.sub_id, &invocation.tracker),
                 Some(true),
             )) as Box<dyn crate::tools::context::ToolOutput>)
         })
@@ -102,6 +104,21 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
 }
 
 impl CoreToolRuntime for TestHandler {}
+
+// Identifies the turn and diff tracker a nested call actually ran with.
+fn probe_marker(turn_id: &str, tracker: &SharedTurnDiffTracker) -> String {
+    format!("audit-probe-ok:{turn_id}:{:p}", Arc::as_ptr(tracker))
+}
+
+fn probe_call(cell_id: &CellId) -> CodeModeNestedToolCall {
+    CodeModeNestedToolCall {
+        cell_id: cell_id.clone(),
+        runtime_tool_call_id: "runtime-audit-call".to_string(),
+        tool_name: ToolName::plain("audit_probe"),
+        tool_kind: CodeModeToolKind::Function,
+        input: Some(serde_json::json!({})),
+    }
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn detached_code_mode_callback_keeps_thread_id_on_dispatch_span() -> anyhow::Result<()> {
@@ -127,33 +144,26 @@ async fn detached_code_mode_callback_keeps_thread_id_on_dispatch_span() -> anyho
     let subscriber = tracing_subscriber::registry().with(DispatchCapture(Arc::clone(&records)));
     let _untraced = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let _subscriber = tracing::subscriber::set_default(subscriber);
+    let tracker: SharedTurnDiffTracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
     let delegate = CodeModeCellDelegate {
         broker: Arc::clone(&broker),
         step_context: Arc::clone(&step),
+        tracker: Arc::clone(&tracker),
     };
-    let _worker = broker.start_turn_worker(
-        Arc::new(session),
-        step,
-        Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
-    );
+    let session = Arc::new(session);
+    let _worker = broker.start_worker(&session);
     // Process-owned code-mode callbacks run on a fresh task without a turn span.
     let result = tokio::spawn(async move {
         delegate
-            .invoke_tool(
-                CodeModeNestedToolCall {
-                    cell_id,
-                    runtime_tool_call_id: "runtime-audit-call".to_string(),
-                    tool_name: ToolName::plain("audit_probe"),
-                    tool_kind: CodeModeToolKind::Function,
-                    input: Some(serde_json::json!({})),
-                },
-                CancellationToken::new(),
-            )
+            .invoke_tool(probe_call(&cell_id), CancellationToken::new())
             .await
     })
     .await?
     .map_err(anyhow::Error::msg)?;
-    assert_eq!(result, serde_json::json!("audit-probe-ok"));
+    assert_eq!(
+        result,
+        serde_json::json!(probe_marker(&turn.sub_id, &tracker))
+    );
     let records = records.lock().unwrap();
     let [(fields, has_turn_ancestor)] = records.as_slice() else {
         panic!("expected one nested dispatch span, got {records:?}");
@@ -186,6 +196,7 @@ async fn dropped_tool_callbacks_release_the_origin_before_dispatch() {
     let delegate = CodeModeCellDelegate {
         broker: Arc::clone(&broker),
         step_context: StepContext::for_test(Arc::clone(&turn)),
+        tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
     };
     let origin = Arc::downgrade(&delegate.step_context);
     let cell_id = CellId::new("queued-cell".to_string());
@@ -222,14 +233,71 @@ async fn dropped_tool_callbacks_release_the_origin_before_dispatch() {
     *queued_response = response_tx;
     broker.dispatch_tx.send(message).await.unwrap();
     broker.mark_cell_ready_for_dispatch(&cell_id, /*originating_call*/ None);
-    let _worker = broker.start_turn_worker(
-        Arc::clone(&session),
-        StepContext::for_test(Arc::clone(&turn)),
-        Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
-    );
+    let _worker = broker.start_worker(&session);
     let response = response_rx.await;
     assert_eq!(
         response.unwrap(),
         Err("code mode nested tool call cancelled".to_string()),
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn worker_lease_outlives_turn_and_releases_on_cell_close() -> anyhow::Result<()> {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let registry = ToolRegistry::with_handler_for_test(Arc::new(TestHandler));
+    let router = Arc::new(ToolRouter::from_registry(
+        &turn,
+        turn.model_info(),
+        registry,
+        /*hosted_specs*/ Vec::new(),
+        &Default::default(),
+    ));
+    let broker = Arc::new(CodeModeDispatchBroker::new(
+        session.thread_id,
+        /*executed_tool_calls*/ Default::default(),
+    ));
+    let tracker: SharedTurnDiffTracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let delegate = CodeModeCellDelegate {
+        broker: Arc::clone(&broker),
+        step_context: StepContext::for_test(Arc::clone(&turn)).with_tool_router_for_test(router),
+        tracker: Arc::clone(&tracker),
+    };
+    let cell_id = CellId::new("idle-cell".to_string());
+
+    // The sampling step's lease, then the cell's own lease once it is admitted.
+    let turn_worker = broker.start_worker(&session);
+    broker.mark_cell_ready_for_dispatch(&cell_id, /*originating_call*/ None);
+    broker.retain_worker_for_cell(&cell_id, broker.start_worker(&session));
+    drop(turn_worker);
+    assert!(broker.has_live_worker(), "a live cell keeps the receiver");
+
+    // The turn is over, but the cell's nested call still runs with its original step.
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        delegate.invoke_tool(probe_call(&cell_id), CancellationToken::new()),
+    )
+    .await?
+    .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        result,
+        serde_json::json!(probe_marker(&turn.sub_id, &tracker))
+    );
+
+    broker.close_cell(&cell_id);
+    assert!(
+        !broker.has_live_worker(),
+        "closing the last live cell releases the receiver"
+    );
+    let later_cell = CellId::new("later-cell".to_string());
+    broker.mark_cell_ready_for_dispatch(&later_cell, /*originating_call*/ None);
+    let pending = tokio::time::timeout(
+        Duration::from_millis(200),
+        delegate.invoke_tool(probe_call(&later_cell), CancellationToken::new()),
+    )
+    .await;
+    assert!(pending.is_err(), "no receiver serves calls without a lease");
+    assert_eq!(broker.dispatch_rx.len(), 1);
+    Ok(())
 }

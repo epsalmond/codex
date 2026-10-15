@@ -52,6 +52,21 @@ pub(crate) struct ToolCallRuntime {
 }
 
 impl ToolCallRuntime {
+    /// Runs a live cell's nested calls with its original step, tracker and execution gate.
+    pub(crate) fn for_retained_cell(
+        session: Arc<Session>,
+        step_context: Arc<StepContext>,
+        tracker: SharedTurnDiffTracker,
+        parallel_execution: Arc<RwLock<()>>,
+    ) -> Self {
+        Self {
+            session,
+            step_context,
+            tracker,
+            parallel_execution,
+        }
+    }
+
     pub(crate) fn new(
         session: Arc<Session>,
         step_context: Arc<StepContext>,
@@ -201,8 +216,9 @@ impl ToolCallRuntime {
         );
         let abort_dispatch_span = dispatch_span.clone();
 
+        let nested_code_mode_call = matches!(source, ToolCallSource::CodeMode { .. });
         let mut dispatch_handle = AbortOnDropHandle::new(tokio::spawn(
-            async move {
+            super::approvals::scope_code_mode_nested_call(nested_code_mode_call, async move {
                 let _message_admission = message_admission?;
                 if let Some(tool_runtime) = tool_runtime
                     && let Some(readiness) = tool_runtime.wait_until_ready(&session)
@@ -248,7 +264,7 @@ impl ToolCallRuntime {
                     );
                 }
                 result
-            }
+            })
             .in_current_span(),
         ));
 

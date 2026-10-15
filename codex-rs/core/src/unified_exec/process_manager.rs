@@ -507,6 +507,13 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+        // A live cell can keep calling tools after its turn ends. That turn can no longer own
+        // new automatic completions, so the cell observes such a process itself, as with TTY.
+        let cell_outlived_turn = context.originating_cell_id.is_some()
+            && !context
+                .session
+                .is_running_turn(&context.step_context.turn.sub_id)
+                .await;
         let mut reservation = if context
             .step_context
             .turn
@@ -514,6 +521,7 @@ impl UnifiedExecProcessManager {
             .features
             .enabled(Feature::AsyncProcessCompletion)
             && !request.tty
+            && !cell_outlived_turn
         {
             match context.session.services.async_completions.reserve(
                 context.session.thread_id(),

@@ -128,10 +128,15 @@ impl CodeModeService {
         Arc::clone(&self.session_provider)
     }
 
+    /// Starts a cell whose nested calls keep `step_context` and `tracker` for its lifetime.
+    ///
+    /// The retained step freezes the sandbox and approval policy at `exec` time; later
+    /// `/approvals` or permission changes do not apply to a cell that is already running.
     pub(crate) async fn execute(
         &self,
         mut request: codex_code_mode::ExecuteRequest,
         step_context: Arc<StepContext>,
+        tracker: SharedTurnDiffTracker,
     ) -> Result<codex_code_mode::StartedCell, String> {
         request
             .yield_time_ms
@@ -140,6 +145,7 @@ impl CodeModeService {
         let delegate = Arc::new(CodeModeCellDelegate {
             broker: Arc::clone(&self.dispatch_broker),
             step_context,
+            tracker,
         });
         self.session()
             .await?
@@ -184,6 +190,7 @@ impl CodeModeService {
 
     pub(crate) async fn shutdown(&self) -> Result<(), String> {
         self.shutdown_token.cancel();
+        self.dispatch_broker.shutdown().await;
         // Join any initialization already in progress without initializing an unused service.
         match self
             .session
@@ -219,20 +226,22 @@ impl CodeModeService {
         self.dispatch_broker.close_cell(cell_id);
     }
 
+    /// Keeps nested calls from a live cell dispatching after its turn ends, until it closes.
+    pub(crate) fn retain_dispatch_worker_for_cell(&self, session: &Arc<Session>, cell_id: &CellId) {
+        self.dispatch_broker
+            .retain_worker_for_cell(cell_id, self.dispatch_broker.start_worker(session));
+    }
+
     pub(crate) fn start_turn_worker(
         &self,
         session: &Arc<Session>,
-        step_context: Arc<StepContext>,
-        tracker: SharedTurnDiffTracker,
+        step_context: &StepContext,
     ) -> Option<CodeModeDispatchWorker> {
         if !step_context.tool_router.requires_code_mode_worker() {
             return None;
         }
 
-        Some(
-            self.dispatch_broker
-                .start_turn_worker(Arc::clone(session), step_context, tracker),
-        )
+        Some(self.dispatch_broker.start_worker(session))
     }
 
     pub(crate) async fn session(&self) -> Result<Arc<dyn CodeModeSession>, String> {
@@ -485,7 +494,6 @@ mod tests {
     use crate::tools::context::ToolPayload;
     use crate::tools::registry::ToolRegistry;
     use crate::tools::router::ToolRouter;
-    use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_code_mode::CodeModeToolKind;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::openai_models::ToolMode;
@@ -510,13 +518,10 @@ mod tests {
             &[],
         ));
         let step_context = step_context.with_tool_router_for_test(router);
-        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-
-        let worker =
-            session
-                .services
-                .code_mode_service
-                .start_turn_worker(&session, step_context, tracker);
+        let worker = session
+            .services
+            .code_mode_service
+            .start_turn_worker(&session, &step_context);
 
         assert!(worker.is_some());
     }
