@@ -935,6 +935,8 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
             "exec".to_string(),
             "wait".to_string(),
             "request_user_input".to_string(),
+            // Multi-agent v2 is on by default in the fork and stays a direct model tool.
+            "collaboration".to_string(),
             "web_search".to_string()
         ]
     );
@@ -3811,6 +3813,8 @@ if (!tool) {
             "exec".to_string(),
             "wait".to_string(),
             "request_user_input".to_string(),
+            // Multi-agent v2 is on by default in the fork and stays a direct model tool.
+            "collaboration".to_string(),
             "web_search".to_string()
         ]
     );
