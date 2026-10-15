@@ -63,6 +63,9 @@ enum Case {
     Shutdown,
     Rejected,
     CompletedOnly,
+    /// The session reports readiness support but this cell does not, so `wait` is hidden and the
+    /// core watcher collects the result.
+    Fallback,
 }
 
 struct Provider(Arc<Cell>);
@@ -79,6 +82,14 @@ struct Cell {
 impl CodeModeSessionProvider for Provider {
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_> {
         Box::pin(async { Ok(self.0.clone() as Arc<dyn CodeModeSession>) })
+    }
+
+    fn terminal_ready_capability(&self) -> TerminalReadySupport {
+        if self.0.case == Case::Fallback {
+            TerminalReadySupport::Supported
+        } else {
+            TerminalReadySupport::Unsupported
+        }
     }
 }
 impl Cell {
@@ -139,7 +150,10 @@ impl CodeModeSession for Cell {
                 return Ok(started);
             }
             *self.delegate.lock().expect("cell fixture mutex poisoned") = Some(delegate);
-            if !matches!(self.case, Case::Manual | Case::TerminateFirst) {
+            if !matches!(
+                self.case,
+                Case::Manual | Case::TerminateFirst | Case::Fallback
+            ) {
                 self.ready();
                 self.ready();
             }
@@ -167,7 +181,7 @@ impl CodeModeSession for Cell {
                     }
                 })
             });
-            if case != Case::Unsupported {
+            if !matches!(case, Case::Unsupported | Case::Fallback) {
                 started.terminal_ready_support = TerminalReadySupport::Supported;
             }
             Ok(started)
@@ -293,6 +307,7 @@ impl CodeModeSession for Cell {
 #[test_case::test_case(Case::Shutdown; "shutdown_cancels_collector")]
 #[test_case::test_case(Case::Rejected; "rejected_cell_rebuild_created")]
 #[test_case::test_case(Case::CompletedOnly; "rejected_cell_rebuild_completed_only")]
+#[test_case::test_case(Case::Fallback; "unsupported_runtime_provider_falls_back_to_core_observer")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn active_cell_completion(case: Case) -> Result<()> {
     let hosted = matches!(

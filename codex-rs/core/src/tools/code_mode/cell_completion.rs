@@ -39,8 +39,11 @@ pub(super) struct CellCompletion {
     turn: Arc<TurnContext>,
     shutdown: CancellationToken,
     /// True when the model has no `wait` tool to read the result itself. Media results are then
-    /// published as their text parts plus an omission note instead of being left for `wait`.
+    /// published as their text parts plus an omission note instead of being left for `wait`, and
+    /// a cell whose provider cannot report readiness is watched instead of released.
     wait_hidden: bool,
+    /// Stops the fallback watcher; `exec_terminate` triggers it before taking the observation lock.
+    watch_cancel: CancellationToken,
 }
 
 struct State {
@@ -54,6 +57,8 @@ struct State {
     /// An interrupt's terminate is in flight; its own close must not release the reservation.
     interrupting: bool,
     closed: bool,
+    /// The provider could not report readiness, so a core watcher polls the cell instead.
+    watched: bool,
 }
 
 impl State {
@@ -111,12 +116,14 @@ impl CellCompletion {
                 collecting: false,
                 interrupting: false,
                 closed: false,
+                watched: false,
             }),
             observation: Arc::new(tokio::sync::Mutex::new(())),
             owner: Arc::downgrade(owner),
             turn,
             shutdown,
             wait_hidden,
+            watch_cancel: CancellationToken::new(),
         })
     }
 
@@ -131,10 +138,12 @@ impl CellCompletion {
         Arc::clone(&self.observation).lock_owned().await
     }
 
-    /// Binds the provider's cell ID, or releases when the provider cannot report readiness.
+    /// Binds the provider's cell ID. When the provider cannot report readiness, the result is left
+    /// to `wait`, or, where `wait` is hidden, to a core watcher started once the cell yields.
     pub(super) fn admit(&self, started: &StartedCell, provider: &Arc<dyn CodeModeSession>) {
         let mut state = self.state();
-        let bound = started.terminal_ready_support == TerminalReadySupport::Supported
+        let supported = started.terminal_ready_support == TerminalReadySupport::Supported;
+        let bound = (supported || self.wait_hidden)
             && !state.closed
             && state
                 .ready
@@ -146,6 +155,7 @@ impl CellCompletion {
                 .is_some_and(|reservation| reservation.bind_cell(started.cell_id.as_str()).is_ok());
         if bound {
             state.binding = Some((started.cell_id.clone(), Arc::downgrade(provider)));
+            state.watched = !supported;
         } else {
             // A provider without readiness leaves the result to `wait`.
             state.release();
@@ -172,8 +182,130 @@ impl CellCompletion {
             } else {
                 state.release();
             }
+            if state.watched && state.publisher.is_some() && !state.closed {
+                // The watcher owns the terminal read for the cell's whole life.
+                state.elected = true;
+                state.collecting = true;
+                let completion = Arc::clone(self);
+                tokio::spawn(async move {
+                    completion.watch().await;
+                });
+                return;
+            }
         }
         self.collect_if_ready();
+    }
+
+    /// Stops the fallback watcher before a model terminate takes the observation lock.
+    pub(super) fn cancel_watcher(&self) {
+        self.watch_cancel.cancel();
+    }
+
+    /// Fallback for a cell whose provider cannot report readiness while `wait` is hidden: poll the
+    /// cell under the observation lock and publish its final result with a bounded text tail.
+    async fn watch(self: Arc<Self>) {
+        let mut tail = Vec::new();
+        let mut omitted = 0usize;
+        loop {
+            let permit = tokio::select! {
+                _ = self.shutdown.cancelled() => {
+                    self.stop_watching(/*release*/ true);
+                    return;
+                }
+                _ = self.watch_cancel.cancelled() => {
+                    // `exec_terminate` reads the result inline and releases the reservation.
+                    self.stop_watching(/*release*/ false);
+                    return;
+                }
+                permit = self.observe() => permit,
+            };
+            let binding = {
+                let state = self.state();
+                if state.reservation.is_none() || state.publisher.is_none() {
+                    None
+                } else {
+                    state.binding.clone()
+                }
+            };
+            let Some((cell_id, provider)) = binding else {
+                self.stop_watching(/*release*/ false);
+                return;
+            };
+            let result = match provider.upgrade() {
+                Some(provider) => tokio::select! {
+                    _ = self.shutdown.cancelled() => {
+                        self.stop_watching(/*release*/ true);
+                        return;
+                    }
+                    result = provider.wait(
+                        WaitRequest {
+                            cell_id: cell_id.clone(),
+                            yield_time_ms: super::DEFAULT_WAIT_YIELD_TIME_MS,
+                        },
+                        Some(self.watch_cancel.clone()),
+                    ) => result,
+                },
+                None => Err("terminal provider unavailable".to_owned()),
+            };
+            let status = match &result {
+                Ok(WaitOutcome::LiveCell(RuntimeResponse::Yielded { content_items, .. })) => {
+                    let (piece, piece_omitted) = text_tail(content_items, /*error*/ None);
+                    append_tail(&mut tail, &mut omitted, &piece, piece_omitted);
+                    if self.watch_cancel.is_cancelled() {
+                        self.stop_watching(/*release*/ false);
+                        return;
+                    }
+                    drop(permit);
+                    continue;
+                }
+                Ok(WaitOutcome::LiveCell(
+                    response @ RuntimeResponse::Result {
+                        content_items,
+                        error_text,
+                        ..
+                    },
+                )) => {
+                    self.record_closed(&cell_id, response);
+                    let (piece, piece_omitted) = text_tail(content_items, error_text.as_deref());
+                    append_tail(&mut tail, &mut omitted, &piece, piece_omitted);
+                    terminal_status(error_text.as_deref())
+                }
+                Ok(WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                    content_items, ..
+                })) => {
+                    let (piece, piece_omitted) = text_tail(content_items, /*error*/ None);
+                    append_tail(&mut tail, &mut omitted, &piece, piece_omitted);
+                    CompletionStatus::Cancelled
+                }
+                // Only an interrupt or shutdown removes a live cell the model cannot wait on.
+                Ok(WaitOutcome::MissingCell(_)) => CompletionStatus::Cancelled,
+                Err(_) => {
+                    tail = b"terminal output could not be collected".to_vec();
+                    omitted = 0;
+                    CompletionStatus::CollectionFailed
+                }
+            };
+            {
+                let mut state = self.state();
+                state.publish(status, &tail, omitted);
+                state.collecting = false;
+            }
+            if let Some(owner) = self.owner.upgrade() {
+                owner
+                    .services
+                    .code_mode_service
+                    .finish_cell_dispatch(&cell_id);
+            }
+            return;
+        }
+    }
+
+    fn stop_watching(&self, release: bool) {
+        let mut state = self.state();
+        state.collecting = false;
+        if release || state.closed {
+            state.release();
+        }
     }
 
     pub(super) fn ready(self: &Arc<Self>, ready: CellTerminalReady) {
@@ -403,6 +535,28 @@ impl CellCompletion {
                 cell_id: cell_id.to_string(),
             });
     }
+}
+
+/// Appends a bounded piece to the watcher's tail, keeping the newest `MAX_FRAGMENT_BYTES`.
+fn append_tail(tail: &mut Vec<u8>, omitted: &mut usize, piece: &[u8], piece_omitted: usize) {
+    if piece.is_empty() {
+        *omitted = omitted.saturating_add(piece_omitted);
+        return;
+    }
+    if !tail.is_empty() {
+        tail.push(b'\n');
+    }
+    // Bytes dropped inside the piece precede its kept bytes, so earlier output is omitted too.
+    if piece_omitted > 0 {
+        *omitted = omitted
+            .saturating_add(tail.len())
+            .saturating_add(piece_omitted);
+        tail.clear();
+    }
+    tail.extend_from_slice(piece);
+    let excess = tail.len().saturating_sub(MAX_FRAGMENT_BYTES);
+    tail.drain(..excess);
+    *omitted = omitted.saturating_add(excess);
 }
 
 fn terminal_status(error_text: Option<&str>) -> CompletionStatus {

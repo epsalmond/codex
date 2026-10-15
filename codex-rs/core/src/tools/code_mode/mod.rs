@@ -214,6 +214,10 @@ impl CodeModeService {
         cause: TerminateCause,
     ) -> Result<codex_code_mode::WaitOutcome, String> {
         let completion = self.dispatch_broker.completion(&cell_id);
+        if let (Some(completion), TerminateCause::Model) = (&completion, cause) {
+            // A fallback watcher holds the observation lock while it polls; stop it first.
+            completion.cancel_watcher();
+        }
         // An interrupt must not queue behind a long model `wait`; the completion's own state
         // still decides whether the interrupt or a concurrent read owns the terminal result.
         let _permit = match (&completion, cause) {

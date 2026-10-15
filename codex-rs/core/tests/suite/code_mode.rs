@@ -5799,6 +5799,96 @@ text("after terminate");
     Ok(())
 }
 
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_terminate_after_delivery_reports_already_delivered() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+    let finish_gate = test.workspace_path("code-mode-finish.ready");
+    let finish_wait = wait_for_file_source(&finish_gate)?;
+    let code = format!(
+        r#"
+text("started");
+yield_control();
+{finish_wait}
+text("finished-tail");
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", &code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the exec and end the turn").await?;
+    let first_items = custom_tool_output_items(&first_completion.single_request(), "call-1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+
+    // The finished cell wakes the idle root; that turn then tries to stop the delivered cell.
+    let wake = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                codex_code_mode::TERMINATE_TOOL_NAME,
+                &serde_json::to_string(&serde_json::json!({ "cell_id": cell_id.clone() }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let after_terminate = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "done"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+    std::fs::write(&finish_gate, "ready")?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let wake_body = wake.single_request().body_json().to_string();
+    assert!(wake_body.contains("async_tool_completion"), "{wake_body}");
+    assert!(wake_body.contains("kind=cell"), "{wake_body}");
+    assert!(wake_body.contains("finished-tail"), "{wake_body}");
+    let (content, success) = after_terminate
+        .single_request()
+        .function_call_output_content_and_success("call-2")
+        .expect("exec_terminate output should be present");
+    assert_eq!(
+        content,
+        Some(format!(
+            "cell {cell_id} already finished; its result was delivered automatically"
+        ))
+    );
+    assert_ne!(success, Some(true));
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_hidden_wait_explains_automatic_delivery() -> Result<()> {
     skip_if_no_network!(Ok(()));

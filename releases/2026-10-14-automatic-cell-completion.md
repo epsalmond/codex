@@ -61,14 +61,17 @@ async_process_completion = false
 
 ## Validation
 
-- `tools::spec_plan_tests`: `automatic_completion_replaces_wait_with_exec_terminate`,
+- `tools::spec_plan::tests`: `automatic_completion_replaces_wait_with_exec_terminate`,
   `wait_kept_when_async_completion_off`, `wait_kept_when_polling_tools_keep`,
   `wait_kept_for_polling_child`, `wait_kept_when_provider_lacks_readiness`.
 - `suite::code_mode`: `code_mode_terminate_tool_can_terminate_and_continue`,
-  `code_mode_terminate_after_delivery_reports_already_delivered`,
-  `unsupported_runtime_provider_falls_back_to_core_observer`, and the hidden
-  `wait` refusal.
-- `suite::unified_exec`: `write_stdin_empty_poll_refused_under_automatic_completion`,
-  `write_stdin_input_and_tty_poll_still_work_under_automatic_completion`, and a
-  nested in-cell empty poll.
-- Existing polling tests run with `polling_tools = "keep"`.
+  `code_mode_terminate_after_delivery_reports_already_delivered`, and
+  `code_mode_hidden_wait_explains_automatic_delivery`.
+- `tools::code_mode::cell_completion::tests`: a terminate that reads the result
+  after readiness fired but before collection leaves nothing to deliver; the
+  fallback watcher publishes once and yields to `exec_terminate`.
+- `suite::async_cell_completion_tests::active_cell_completion::unsupported_runtime_provider_falls_back_to_core_observer`.
+- `suite::unified_exec::async_process_completion_tests::polling_tools_tests`:
+  the model's empty poll is refused; input, TTY polls, and in-cell polls work.
+- Existing polling tests run with `polling_tools = "keep"`, or with
+  `async_process_completion = false` where they read a finished cell manually.

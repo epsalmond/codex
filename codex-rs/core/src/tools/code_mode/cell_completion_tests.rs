@@ -315,3 +315,110 @@ async fn cell_completion_unsupported_readiness_releases_at_admission() {
     completion.admit(&started, &provider);
     assert!(!session.services.async_completions.has_owned_work());
 }
+
+#[tokio::test]
+async fn cell_completion_terminate_after_readiness_before_collection_releases() {
+    let fixture = Fixture::yielded(
+        RuntimeResponse::Result {
+            cell_id: cell_id(),
+            content_items: vec![text("collected")],
+            error_text: None,
+            code_mode_host_duration: None,
+        },
+        /*wait_hidden*/ true,
+    )
+    .await;
+    // `exec_terminate` holds the observation lock when readiness elects the collector.
+    let permit = fixture.completion.observe().await;
+    fixture.completion.ready(ready(CellOutputKind::Text));
+    tokio::task::yield_now().await;
+    fixture
+        .completion
+        .observed(&Ok(WaitOutcome::LiveCell(RuntimeResponse::Result {
+            cell_id: cell_id(),
+            content_items: vec![text("read-by-terminate")],
+            error_text: None,
+            code_mode_host_duration: None,
+        })));
+    drop(permit);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(fixture.store().published_texts().is_empty());
+    assert!(!fixture.store().has_owned_work());
+}
+
+/// A provider that reports readiness support for the session but not for this cell.
+async fn watched_fixture(terminal: RuntimeResponse) -> Fixture {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let reservation = session
+        .services
+        .async_completions
+        .reserve_cell(session.thread_id(), &turn, "cell-call")
+        .expect("reserve cell");
+    let completion = CellCompletion::new(
+        reservation,
+        &session,
+        turn,
+        CancellationToken::new(),
+        /*wait_hidden*/ true,
+    );
+    let provider: Arc<dyn CodeModeSession> = Arc::new(FixedSession(terminal));
+    let mut started = started_cell();
+    started.terminal_ready_support = TerminalReadySupport::Unsupported;
+    completion.admit(&started, &provider);
+    completion.initial(&yielded());
+    Fixture {
+        session,
+        completion,
+        _provider: provider,
+    }
+}
+
+#[tokio::test]
+async fn cell_completion_watches_unsupported_cell_when_wait_is_hidden() {
+    let fixture = watched_fixture(RuntimeResponse::Result {
+        cell_id: cell_id(),
+        content_items: vec![text("watched-tail")],
+        error_text: None,
+        code_mode_host_duration: None,
+    })
+    .await;
+    let published = fixture.published().await;
+    assert_eq!(published.len(), 1);
+    assert!(published[0].contains("kind=cell"));
+    assert!(published[0].contains("status=completed"));
+    assert!(published[0].ends_with("\nwatched-tail"));
+}
+
+#[tokio::test]
+async fn cell_completion_cancelled_watcher_leaves_the_result_to_terminate() {
+    let fixture = watched_fixture(yielded()).await;
+    fixture.completion.cancel_watcher();
+    let _permit = fixture.completion.observe().await;
+    fixture
+        .completion
+        .observed(&Ok(WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+            cell_id: cell_id(),
+            content_items: vec![text("read-by-terminate")],
+            code_mode_host_duration: None,
+        })));
+    assert!(fixture.store().published_texts().is_empty());
+    assert!(!fixture.store().has_owned_work());
+}
+
+#[test]
+fn cell_completion_watcher_tail_keeps_newest_bytes() {
+    let mut tail = Vec::new();
+    let mut omitted = 0;
+    append_tail(&mut tail, &mut omitted, b"first", 0);
+    append_tail(&mut tail, &mut omitted, b"second", 0);
+    assert_eq!(tail, b"first\nsecond");
+    assert_eq!(omitted, 0);
+    let long = vec![b'x'; MAX_FRAGMENT_BYTES];
+    append_tail(&mut tail, &mut omitted, &long, 3);
+    assert_eq!(tail, long);
+    assert_eq!(omitted, "first\nsecond\n".len() + 3);
+}
