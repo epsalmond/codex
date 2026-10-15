@@ -2031,6 +2031,10 @@ async fn code_mode_mcp_metadata_keeps_originating_window_after_compaction() -> R
     extensions.tool_lifecycle_contributor(control);
     let mut builder =
         result_metadata_apps_builder(apps_server.chatgpt_base_url, "user@example.com")
+            // Legacy polling: the model reads this finished cell through `wait`.
+            .with_config(|config| {
+                let _ = config.features.disable(Feature::AsyncProcessCompletion);
+            })
             .with_model("test-gpt-5.1-codex")
             .with_extensions(Arc::new(extensions.build()));
     let test = builder.build_with_auto_env(&server).await?;
@@ -2855,6 +2859,10 @@ async fn code_mode_result_metadata_keeps_prepared_call_binding_across_runtime_re
     extensions.mcp_server_contributor(control.clone());
     extensions.tool_lifecycle_contributor(control.clone());
     let builder = result_metadata_apps_builder(apps_server.chatgpt_base_url, "user@example.com")
+        // Legacy polling: the model reads this finished cell through `wait`.
+        .with_config(|config| {
+            let _ = config.features.disable(Feature::AsyncProcessCompletion);
+        })
         .with_extensions(Arc::new(extensions.build()));
     let arguments = serde_json::json!({
         "query": "launch plan",
@@ -3149,6 +3157,8 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
     let server = responses::start_mock_server().await;
     let configure = |config: &mut Config| {
         let _ = config.features.enable(Feature::CodeMode);
+        // Legacy polling: the model reads this finished cell through `wait`.
+        let _ = config.features.disable(Feature::AsyncProcessCompletion);
         let _ = config.features.enable(Feature::CodeModeHost);
         let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
         config.code_mode.disable_in_process_fallback = true;
@@ -5107,6 +5117,8 @@ async fn code_mode_can_run_multiple_yielded_sessions() -> Result<()> {
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
+        // Legacy polling: the model reads this finished cell through `wait`.
+        let _ = config.features.disable(Feature::AsyncProcessCompletion);
         let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
     });
     let test = builder.build(&server).await?;
@@ -5674,6 +5686,9 @@ async fn code_mode_wait_terminate_returns_completed_session_if_it_finished_after
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
+        // Legacy polling: the model reads the finished cell through `terminate`. With automatic
+        // delivery the finished cell's result is delivered instead.
+        let _ = config.features.disable(Feature::AsyncProcessCompletion);
     });
     let test = builder.build(&server).await?;
     let session_a_gate = test.workspace_path("code-mode-session-a-finished.ready");
@@ -6210,6 +6225,8 @@ async fn code_mode_wait_uses_its_own_max_tokens_budget() -> Result<()> {
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
+        // Legacy polling: the model reads this finished cell through `wait`.
+        let _ = config.features.disable(Feature::AsyncProcessCompletion);
     });
     let test = builder.build(&server).await?;
 
@@ -7752,6 +7769,8 @@ async fn yielded_code_mode_tool_callbacks_keep_their_originating_step() -> Resul
         })
         .with_config(|config| {
             config.features.enable(Feature::CodeMode).unwrap();
+            // Legacy polling: the model reads this finished cell through `wait`.
+            let _ = config.features.disable(Feature::AsyncProcessCompletion);
         });
     let test = builder.build_with_auto_env(&server).await?;
     // A cannot invoke its editor until B is executing in the next turn.

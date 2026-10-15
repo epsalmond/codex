@@ -169,14 +169,19 @@ fn callback_source(callback: Callback) -> &'static str {
     }
 }
 
-#[test_case(Callback::Native; "native_callback_after_idle")]
-#[test_case(Callback::Notify; "notify_after_idle")]
-#[test_case(Callback::UserApproval; "user_approval_refused_while_idle")]
-#[test_case(Callback::GuardianApproval; "guardian_approval_refused_while_idle")]
-#[test_case(Callback::Shutdown; "shutdown_stops_idle_callback")]
+// Without automatic delivery the model reads the cell with `wait`; with it, the finished cell
+// wakes the idle owner once with its bounded tail.
+#[test_case(Callback::Native, false; "native_callback_after_idle")]
+#[test_case(Callback::Notify, false; "notify_after_idle")]
+#[test_case(Callback::UserApproval, false; "user_approval_refused_while_idle")]
+#[test_case(Callback::GuardianApproval, false; "guardian_approval_refused_while_idle")]
+#[test_case(Callback::Shutdown, false; "shutdown_stops_idle_callback")]
+#[test_case(Callback::Native, true; "native_callback_after_idle_delivered_automatically")]
+#[test_case(Callback::UserApproval, true; "user_approval_refusal_delivered_automatically")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hosted_callback_settles_after_original_owner_becomes_idle(
     callback: Callback,
+    automatic_delivery: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -212,6 +217,10 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
                 .features
                 .disable(Feature::CodeModeHost)
                 .expect("disable host lookup");
+            config
+                .features
+                .set_enabled(Feature::AsyncProcessCompletion, automatic_delivery)
+                .expect("set automatic delivery");
             if matches!(
                 callback,
                 Callback::UserApproval | Callback::GuardianApproval
@@ -254,6 +263,22 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
         custom_tool_output_items(&first_completion.single_request(), "original-cell-call");
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
+    let automatic = if automatic_delivery {
+        Some(
+            responses::mount_sse_once(
+                &server,
+                sse(vec![
+                    ev_response_created("resp-auto"),
+                    ev_assistant_message("msg-auto", "integrated"),
+                    ev_completed("resp-auto"),
+                ]),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
     // The original turn is over; release the held callback while the owner is idle.
     gates.release.notify_one();
     if callback == Callback::Shutdown {
@@ -268,6 +293,44 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
     tokio::time::timeout(HOLD_TIMEOUT, gates.settled.notified())
         .await
         .context("an idle cell callback must settle without a new turn")?;
+    if let Some(automatic) = automatic {
+        // The finished cell wakes the idle owner once; no Guardian review or other request.
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let completions = automatic
+            .single_request()
+            .input()
+            .into_iter()
+            .filter_map(|item| item["content"][0]["text"].as_str().map(str::to_owned))
+            .filter(|text| text.starts_with("<async_tool_completion>"))
+            .collect::<Vec<_>>();
+        assert_eq!(completions.len(), 1, "{completions:?}");
+        let completion = &completions[0];
+        assert!(
+            completion.contains(&format!("call=original-cell-call kind=cell cell={cell_id}")),
+            "{completion}"
+        );
+        assert!(completion.contains("status=completed"), "{completion}");
+        assert!(completion.contains("cell-tail"), "{completion}");
+        match callback {
+            Callback::Native => assert!(completion.contains("native-tail"), "{completion}"),
+            Callback::UserApproval => {
+                assert!(completion.contains(IDLE_REFUSAL), "{completion}");
+                assert!(!test.workspace_path("escalated-ran").exists());
+            }
+            Callback::Notify | Callback::GuardianApproval | Callback::Shutdown => {
+                unreachable!("not exercised with automatic delivery")
+            }
+        }
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            3
+        );
+        test.codex.shutdown_and_wait().await?;
+        return Ok(());
+    }
     // Settling while idle starts no model request (and no Guardian review).
     assert_eq!(
         server.received_requests().await.unwrap_or_default().len(),

@@ -265,6 +265,7 @@ async fn worker_lease_outlives_turn_and_releases_on_cell_close() -> anyhow::Resu
         broker: Arc::clone(&broker),
         step_context: StepContext::for_test(Arc::clone(&turn)).with_tool_router_for_test(router),
         tracker: Arc::clone(&tracker),
+        completion: None,
     };
     let cell_id = CellId::new("idle-cell".to_string());
 

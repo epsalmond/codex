@@ -51,10 +51,17 @@ struct State {
     yielded: bool,
     elected: bool,
     collecting: bool,
+    /// An interrupt's terminate is in flight; its own close must not release the reservation.
+    interrupting: bool,
     closed: bool,
 }
 
 impl State {
+    /// True while a collector or an interrupt owns the terminal result.
+    fn settling(&self) -> bool {
+        self.collecting || self.interrupting
+    }
+
     fn release(&mut self) {
         self.publisher = None;
         if let Some(reservation) = self.reservation.take() {
@@ -102,6 +109,7 @@ impl CellCompletion {
                 yielded: false,
                 elected: false,
                 collecting: false,
+                interrupting: false,
                 closed: false,
             }),
             observation: Arc::new(tokio::sync::Mutex::new(())),
@@ -183,7 +191,7 @@ impl CellCompletion {
                     .as_ref()
                     .is_some_and(|previous| previous != &ready)
             {
-                if !state.collecting {
+                if !state.settling() {
                     state.release();
                 }
                 return;
@@ -199,8 +207,8 @@ impl CellCompletion {
             return;
         }
         state.closed = true;
-        // The collector's own read closes the cell before it returns the consumed result.
-        if !state.collecting {
+        // The collector's read or the interrupt's terminate closes the cell before it returns.
+        if !state.settling() {
             state.release();
         }
     }
@@ -225,10 +233,19 @@ impl CellCompletion {
         self.collect_if_ready();
     }
 
+    /// Called before an Esc interrupt or failed turn terminates the cell.
+    pub(super) fn begin_interrupt(&self) {
+        let mut state = self.state();
+        if !state.collecting && state.publisher.is_some() {
+            state.interrupting = true;
+        }
+    }
+
     /// Called after an Esc interrupt or failed turn terminated the cell. The model never reads
     /// that result, so it is published (as `cancelled` when terminated) instead of released.
     pub(super) fn interrupted(&self, result: &Result<WaitOutcome, String>) {
         let mut state = self.state();
+        state.interrupting = false;
         // The collector already owns the terminal read and publishes it.
         if state.collecting || state.reservation.is_none() {
             return;
@@ -251,7 +268,11 @@ impl CellCompletion {
                 state.publish(terminal_status(error_text.as_deref()), &tail, omitted);
             }
             // The cell may still be live; its readiness or close settles the reservation.
-            Err(_) => {}
+            Err(_) => {
+                if state.closed {
+                    state.release();
+                }
+            }
             Ok(
                 WaitOutcome::MissingCell(_)
                 | WaitOutcome::LiveCell(RuntimeResponse::Yielded { .. }),
@@ -269,6 +290,7 @@ impl CellCompletion {
                 None => false,
             };
             if state.elected
+                || state.interrupting
                 || state.closed
                 || !state.yielded
                 || state.reservation.is_none()
@@ -294,7 +316,11 @@ impl CellCompletion {
         };
         let (cell_id, provider) = {
             let mut state = self.state();
-            if state.closed || state.reservation.is_none() || state.publisher.is_none() {
+            if state.closed
+                || state.interrupting
+                || state.reservation.is_none()
+                || state.publisher.is_none()
+            {
                 return;
             }
             let Some((cell_id, provider)) = state.binding.clone() else {

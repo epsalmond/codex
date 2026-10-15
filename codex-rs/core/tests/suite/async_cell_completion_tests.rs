@@ -32,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Encoded bound of one completion message, including its metadata.
 const MAX_COMPLETION_BYTES: usize = 4096;
+/// A valid 1x1 PNG, so the media result survives image processing.
+const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 /// Long enough for a spurious wake turn to have issued its request.
 const SETTLE: Duration = Duration::from_millis(750);
 
@@ -215,7 +217,7 @@ impl CodeModeSession for Cell {
                     },
                     content_items: vec![if self.case == Case::Media {
                         FunctionCallOutputContentItem::InputImage {
-                            image_url: "data:image/png;base64,full-media".to_owned(),
+                            image_url: format!("data:image/png;base64,{PNG_1X1}"),
                             detail: None,
                         }
                     } else {
@@ -291,7 +293,7 @@ impl CodeModeSession for Cell {
 #[test_case::test_case(Case::Shutdown; "shutdown_cancels_collector")]
 #[test_case::test_case(Case::Rejected; "rejected_cell_rebuild_created")]
 #[test_case::test_case(Case::CompletedOnly; "rejected_cell_rebuild_completed_only")]
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn active_cell_completion(case: Case) -> Result<()> {
     let hosted = matches!(
         case,
@@ -579,12 +581,19 @@ async fn active_cell_completion(case: Case) -> Result<()> {
         }
     }
     if case == Case::Media {
+        // Media stays readable through `wait`; it is not reduced to a text tail.
+        let last = requests.last().expect("model request captured");
+        let observed = last["input"]
+            .as_array()
+            .expect("model input array")
+            .iter()
+            .find(|item| item["type"] == "function_call_output" && item["call_id"] == "observe")
+            .expect("wait output recorded");
         assert!(
-            requests
-                .last()
-                .expect("model request captured")
-                .to_string()
-                .contains("full-media")
+            observed["output"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["type"] == "input_image")),
+            "{observed}"
         );
     }
     server.shutdown().await;
@@ -948,6 +957,9 @@ async fn interrupt_publishes_cancelled_cell_completion_once() -> Result<()> {
     })
     .await;
     drop(release_held);
+    tokio::time::timeout(Duration::from_secs(10), cells.terminated.notified())
+        .await
+        .context("the interrupt terminates the yielded cell")?;
     assert_eq!(cells.terminations.load(Ordering::SeqCst), 1);
     assert_eq!(cells.reads.load(Ordering::SeqCst), 0);
     // A late readiness report after the interrupt publishes nothing more.
@@ -1010,7 +1022,8 @@ async fn cell_reservation_capacity_rejects_before_execution() -> Result<()> {
         .filter(|(_, output)| output.contains("async completion capacity exhausted"))
         .map(|(call_id, _)| call_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(rejected.len(), 1);
+    // Only the call past capacity is rejected, and it never reached the provider.
+    assert_eq!(rejected, vec![format!("cell-{}", CELLS - 1).as_str()]);
     server.shutdown().await;
     Ok(())
 }

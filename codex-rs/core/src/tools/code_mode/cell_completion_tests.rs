@@ -275,9 +275,11 @@ async fn cell_completion_interrupt_publishes_cancelled_tail_once() {
         content_items: vec![text("partial-tail")],
         code_mode_host_duration: None,
     }));
-    fixture.completion.interrupted(&terminated);
-    fixture.completion.interrupted(&terminated);
+    // Providers close the cell during terminate, before it returns the terminated result.
+    fixture.completion.begin_interrupt();
     fixture.completion.closed(&cell_id());
+    fixture.completion.interrupted(&terminated);
+    fixture.completion.interrupted(&terminated);
     fixture.completion.ready(ready(CellOutputKind::Text));
     let published = fixture.store().published_texts();
     assert_eq!(published.len(), 1);

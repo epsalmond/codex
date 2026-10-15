@@ -142,7 +142,7 @@ impl CodeModeService {
     /// `/approvals` or permission changes do not apply to a cell that is already running.
     /// A supplied `completion` is bound to the started cell, or released when the provider
     /// cannot report its terminal readiness.
-    pub(crate) async fn execute(
+    async fn execute(
         &self,
         mut request: codex_code_mode::ExecuteRequest,
         step_context: Arc<StepContext>,
@@ -210,6 +210,9 @@ impl CodeModeService {
             (Some(completion), TerminateCause::Model) => Some(completion.observe().await),
             (None, _) | (Some(_), TerminateCause::Interrupt) => None,
         };
+        if let (Some(completion), TerminateCause::Interrupt) = (&completion, cause) {
+            completion.begin_interrupt();
+        }
         let result = match self.session().await {
             Ok(session) => session.terminate(cell_id).await,
             Err(error) => Err(error),
