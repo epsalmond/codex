@@ -209,7 +209,7 @@ async fn wait_for_raw_unified_exec_output(
         .with_context(|| format!("failed to parse raw unified exec output for {call_id}"))
 }
 
-async fn submit_unified_exec_turn(
+pub(super) async fn submit_unified_exec_turn(
     test: &TestCodex,
     prompt: &str,
     permission_profile: PermissionProfile,

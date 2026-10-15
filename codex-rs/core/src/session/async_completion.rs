@@ -23,7 +23,7 @@ use codex_protocol::user_input::UserInput;
 const MAX_RESERVATIONS: usize = 64;
 /// Bounds each rendered completion message by its encoded UTF-8 bytes, including IDs, metadata
 /// and escapes. 64 reservations at this size match the 256 KiB per-owner stored payload bound.
-const MAX_FRAGMENT_BYTES: usize = 4096;
+pub(crate) const MAX_FRAGMENT_BYTES: usize = 4096;
 /// Correlation identifiers are preserved exactly, never truncated.
 const MAX_IDENTIFIER_BYTES: usize = 128;
 const MAX_NEW_REQUEST_FRAGMENTS: usize = 8;
@@ -128,29 +128,8 @@ pub(crate) enum CompletionStatus {
     /// Interrupted or cancelled work, for processes and cells alike.
     Cancelled,
     TimedOut,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Code Mode cell producers are wired in a follow-up change"
-        )
-    )]
     CellCompleted,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Code Mode cell producers are wired in a follow-up change"
-        )
-    )]
     CellError,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Code Mode cell producers are wired in a follow-up change"
-        )
-    )]
     CollectionFailed,
 }
 
@@ -174,6 +153,21 @@ impl AsyncCompletions {
 
     pub(crate) fn has_owned_work(&self) -> bool {
         !self.state().records.is_empty()
+    }
+
+    /// Published fragment texts, in record order.
+    #[cfg(test)]
+    pub(crate) fn published_texts(&self) -> Vec<String> {
+        self.state()
+            .records
+            .values()
+            .filter_map(|record| {
+                record
+                    .terminal
+                    .as_ref()
+                    .map(|fragment| fragment.text.clone())
+            })
+            .collect()
     }
 
     pub(crate) fn owns_assignment(&self, assignment: &AgentAssignmentId) -> bool {
@@ -256,13 +250,6 @@ impl AsyncCompletions {
 
     /// Reserves capacity for a Code Mode cell before it starts; bind the provider's cell ID with
     /// [`CompletionReservation::bind_cell`] before publishing.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Code Mode cell producers are wired in a follow-up change"
-        )
-    )]
     pub(crate) fn reserve_cell(
         self: &Arc<Self>,
         owner: ThreadId,
@@ -475,13 +462,6 @@ impl CompletionReservation {
     /// Binds the provider's cell ID to an unbound cell reservation. Rejects IDs over 128 bytes,
     /// non-cell or already-bound reservations, and IDs whose escaped metadata cannot fit; a
     /// rejected reservation stays unbound.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Code Mode cell producers are wired in a follow-up change"
-        )
-    )]
     pub(crate) fn bind_cell(&mut self, cell_id: &str) -> Result<(), &'static str> {
         if cell_id.len() > MAX_IDENTIFIER_BYTES {
             return Err("async completion identifiers exceed the bounded record limit");

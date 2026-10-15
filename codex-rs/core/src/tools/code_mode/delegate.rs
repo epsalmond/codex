@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use super::PUBLIC_TOOL_NAME;
+use super::cell_completion::CellCompletion;
 use super::telemetry::DispatchInterruption;
 use super::telemetry::NestedToolDispatchTrace;
 use super::telemetry::trace_id;
@@ -42,6 +43,8 @@ pub(super) struct CodeModeDispatchBroker {
     receiver_permit: Arc<tokio::sync::Mutex<()>>,
     tasks: TaskTracker,
     shutdown: CancellationToken,
+    // Live cells with an automatic-completion observer; one outlives close while it collects.
+    completions: Mutex<HashMap<CellId, Arc<CellCompletion>>>,
 }
 
 /// Retains the step advertised to one execution, including callbacks after it yields.
@@ -54,6 +57,7 @@ pub(super) struct CodeModeCellDelegate {
     pub(super) broker: Arc<CodeModeDispatchBroker>,
     pub(super) step_context: Arc<StepContext>,
     pub(super) tracker: SharedTurnDiffTracker,
+    pub(super) completion: Option<Arc<CellCompletion>>,
 }
 
 struct CellDispatchGate {
@@ -79,7 +83,27 @@ impl CodeModeDispatchBroker {
             receiver_permit: Arc::new(tokio::sync::Mutex::new(())),
             tasks: TaskTracker::new(),
             shutdown: CancellationToken::new(),
+            completions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Makes the cell's completion observable to `wait` and `terminate` until the cell closes.
+    pub(super) fn attach_completion(&self, cell_id: &CellId, completion: Arc<CellCompletion>) {
+        let mut completions = self
+            .completions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !completion.is_closed() {
+            completions.insert(cell_id.clone(), completion);
+        }
+    }
+
+    pub(super) fn completion(&self, cell_id: &CellId) -> Option<Arc<CellCompletion>> {
+        self.completions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(cell_id)
+            .cloned()
     }
 
     pub(super) fn mark_cell_ready_for_dispatch(
@@ -134,6 +158,20 @@ impl CodeModeDispatchBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Dropping the gate releases the cell's worker lease.
         dispatch_gates.remove(cell_id);
+        drop(dispatch_gates);
+        {
+            let mut completions = self
+                .completions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A collector's own read closes the cell; keep it observable until it publishes.
+            if let Some(completion) = completions.get(cell_id) {
+                completion.closed(cell_id);
+                if !completion.collecting() {
+                    completions.remove(cell_id);
+                }
+            }
+        }
         self.executed_tool_calls.finish_cell_recording(cell_id);
     }
 
@@ -311,7 +349,16 @@ impl CodeModeSessionDelegate for CodeModeCellDelegate {
         })
     }
 
+    fn cell_terminal_ready(&self, ready: codex_code_mode::CellTerminalReady) {
+        if let Some(completion) = &self.completion {
+            completion.ready(ready);
+        }
+    }
+
     fn cell_closed(&self, cell_id: &CellId) {
+        if let Some(completion) = &self.completion {
+            completion.closed(cell_id);
+        }
         self.broker.close_cell(cell_id);
     }
 }

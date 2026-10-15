@@ -149,6 +149,7 @@ async fn detached_code_mode_callback_keeps_thread_id_on_dispatch_span() -> anyho
         broker: Arc::clone(&broker),
         step_context: Arc::clone(&step),
         tracker: Arc::clone(&tracker),
+        completion: None,
     };
     let session = Arc::new(session);
     let _worker = broker.start_worker(&session);
@@ -197,6 +198,7 @@ async fn dropped_tool_callbacks_release_the_origin_before_dispatch() {
         broker: Arc::clone(&broker),
         step_context: StepContext::for_test(Arc::clone(&turn)),
         tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+        completion: None,
     };
     let origin = Arc::downgrade(&delegate.step_context);
     let cell_id = CellId::new("queued-cell".to_string());
@@ -263,6 +265,7 @@ async fn worker_lease_outlives_turn_and_releases_on_cell_close() -> anyhow::Resu
         broker: Arc::clone(&broker),
         step_context: StepContext::for_test(Arc::clone(&turn)).with_tool_router_for_test(router),
         tracker: Arc::clone(&tracker),
+        completion: None,
     };
     let cell_id = CellId::new("idle-cell".to_string());
 
