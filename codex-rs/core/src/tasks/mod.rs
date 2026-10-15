@@ -618,6 +618,14 @@ impl Session {
             .is_some()
     }
 
+    /// Restarts after a stopped turn unless the stop paused wakeups. A pause lets only mail that
+    /// arrives later wake a durable sleep, so Esc never restarts on the mail it returned.
+    async fn maybe_start_turn_after_stop(self: &Arc<Self>) {
+        if !self.input_queue.wakeups_paused() {
+            self.maybe_start_turn_for_pending_work().await;
+        }
+    }
+
     /// Starts a regular turn when the session is idle and pending work is waiting.
     ///
     /// Pending work includes mailbox mail marked with `trigger_turn`, or any mailbox mail while
@@ -645,7 +653,11 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
-        if self.input_queue.wakeups_paused() {
+        // A rejected automatic start waits for explicit recovery. A user pause only holds
+        // trigger-turn mail and owned completions: queue-only mail still wakes a durable sleep.
+        // A failed turn pauses without suppressing starts: its error may be transient, and each
+        // retry needs a new message, so a repeating error costs one turn per message, not a loop.
+        if self.input_queue.automatic_starts_suppressed() {
             return PendingWorkStartResult::Stale;
         }
         let cause = if self.input_queue.has_pending_mailbox_items().await
@@ -653,7 +665,9 @@ impl Session {
                 || self.has_outstanding_durable_sleep())
         {
             PendingWorkCause::Mailbox
-        } else if let Some(cause) = self.ready_owned_completion().await {
+        } else if !self.input_queue.wakeups_paused()
+            && let Some(cause) = self.ready_owned_completion().await
+        {
             cause
         } else {
             return PendingWorkStartResult::Stale;
@@ -707,6 +721,12 @@ impl Session {
         }
         let (mut input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
+        // Unread mail can turn out to be held trigger-turn mail; a pause leaves nothing to wake.
+        if input.is_empty() && matches!(cause, PendingWorkCause::Mailbox) {
+            self.abandon_root_turn_lifecycle(&sub_id);
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return PendingWorkStartResult::Stale;
+        }
         let retained_start_options = start_options.clone();
         if !input.iter().any(
             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
@@ -806,7 +826,7 @@ impl Session {
                 _ => None,
             });
             if has_held_work {
-                self.input_queue.pause_wakeups();
+                self.input_queue.suppress_automatic_starts();
                 self.input_queue
                     .return_to_mailbox_with_start_options(&mut input, retained_start_options)
                     .await;
@@ -892,7 +912,7 @@ impl Session {
             }
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
-            self.maybe_start_turn_for_pending_work().await;
+            self.maybe_start_turn_after_stop().await;
         }
     }
 
@@ -951,7 +971,7 @@ impl Session {
         }
 
         if reason == TurnAbortReason::Interrupted {
-            self.maybe_start_turn_for_pending_work().await;
+            self.maybe_start_turn_after_stop().await;
         }
     }
 
@@ -1221,6 +1241,7 @@ impl Session {
         } else {
             ThreadIdleCause::Completed
         };
+        let stopped = abort_reason.is_some();
         let event = if let Some(reason) = abort_reason {
             if reason == TurnAbortReason::Interrupted {
                 run_turn_interrupt_hooks(self, &turn_context, &turn_state).await;
@@ -1298,7 +1319,11 @@ impl Session {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
         if cleared_active_turn {
-            self.maybe_start_turn_for_pending_work().await;
+            if stopped {
+                self.maybe_start_turn_after_stop().await;
+            } else {
+                self.maybe_start_turn_for_pending_work().await;
+            }
         }
     }
 

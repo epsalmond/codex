@@ -12,13 +12,15 @@ use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[test_case::test_case(false, false; "ordinary path")]
-#[test_case::test_case(true, false; "oversized valid path")]
-#[test_case::test_case(false, true; "durable sleep queue-only mail")]
+#[test_case::test_case(false, false, false; "ordinary path")]
+#[test_case::test_case(true, false, false; "oversized valid path")]
+#[test_case::test_case(false, true, false; "durable sleep queue-only mail")]
+#[test_case::test_case(false, true, true; "paused durable sleep queue-only mail")]
 #[tokio::test]
 async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resume(
     oversized_path: bool,
     wake_from_sleep: bool,
+    paused_first: bool,
 ) {
     let server = core_test_support::responses::start_mock_server().await;
     let parent_thread_id = ThreadId::new();
@@ -165,6 +167,10 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
         .input_queue
         .enqueue_mailbox_communication(communication.clone(), options.clone())
         .await;
+    // A user pause lets queue-only mail wake the sleep; the rejected start then suppresses starts.
+    if paused_first {
+        session.input_queue.pause_wakeups();
+    }
     assert_eq!(
         session
             .maybe_start_turn_for_pending_work_with_sub_id("rejected-followup".to_string())
@@ -173,6 +179,23 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
     );
     assert!(session.active_turn.lock().await.is_none());
     assert!(session.input_queue.wakeups_paused());
+    assert!(session.input_queue.automatic_starts_suppressed());
+    if paused_first {
+        // Fresh queue-only mail would wake a merely paused sleep, but not after a failed start.
+        session
+            .input_queue
+            .enqueue_mailbox_communication(
+                InterAgentCommunication::new(
+                    AgentPath::root(),
+                    worker_path.clone(),
+                    Vec::new(),
+                    "fresh progress".to_string(),
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+    }
     assert_eq!(
         session.input_queue.trigger_turn_mailbox_count().await,
         usize::from(!wake_from_sleep)

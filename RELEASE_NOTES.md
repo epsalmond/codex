@@ -16,6 +16,10 @@ Interactive MultiAgentV2 roots, `codex exec` roots, and eligible V2 child agents
 
 With `agent_polling = "enabled"`, `wait_agent` without `timeout_ms` in `codex exec` and in subagents now waits up to 300 seconds (interactive sessions keep 30 seconds), returns as soon as an agent reports, and returns at once when no child is running; a configured `default_wait_timeout_ms` applies everywhere. Wake-mode agents have no `wait_agent`, so the default does not apply to them.
 
+## Durable sleep wakes while reports are paused
+
+A `send_message` again wakes an agent in a durable sleep while Esc has paused its wakeups; held child reports still wait for the next message. A failed automatic start still waits for an explicit follow-up. See the [release notes](releases/2026-10-14-durable-sleep-paused-wake.md).
+
 ## Exec drains its agent tree by default
 
 `codex exec` roots now wake on child reports, and exec stays open until the agent tree is idle, including after `exec resume` and `exec fork`. It prints the last completed root turn's answer and exits 1 if any root turn failed or was interrupted. `--json` emits a `turn.started` event for every root turn, followed by `turn.completed`, or `turn.failed` for a failed turn. The first Ctrl-C interrupts the running root turn; a Ctrl-C between turns, or a second one, stops waiting and exits 1.
