@@ -25,9 +25,22 @@ die() {
   exit 1
 }
 
-version=$(python3 "$repo_root/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version) \
-  || die "could not resolve the v8 crate version from codex-rs/Cargo.lock"
-target=${RUSTY_V8_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}
+# Plain awk instead of a TOML parser so this runs on any python-less or pre-3.11 host.
+versions=$(awk '
+  /^\[\[package\]\]/ { name = "" }
+  /^name = / { name = $3 }
+  /^version = / && name == "\"v8\"" { gsub(/"/, "", $3); print $3 }
+' "$repo_root/codex-rs/Cargo.lock" | sort -u)
+[[ -n "$versions" ]] || die "no v8 package in codex-rs/Cargo.lock"
+[[ "$versions" != *$'\n'* ]] || die "expected one v8 version in codex-rs/Cargo.lock, found: ${versions//$'\n'/ }"
+version=$versions
+
+if [[ -n "${RUSTY_V8_TARGET:-}" ]]; then
+  target=$RUSTY_V8_TARGET
+else
+  command -v rustc >/dev/null 2>&1 || die "rustc not found on PATH; install Rust or set RUSTY_V8_TARGET"
+  target=$(rustc -vV | sed -n 's/^host: //p')
+fi
 [[ -n "$target" ]] || die "could not determine the Rust host target; set RUSTY_V8_TARGET"
 [[ "$target" != *-pc-windows-msvc ]] || die "Windows targets are not supported by this script"
 

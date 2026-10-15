@@ -93,7 +93,14 @@ fn check_built_from_workspace(bin: &Path, name: &str, workspace: &Path) -> Resul
                 .as_deref()
                 .is_some_and(|canonical| dep.starts_with(canonical))
     };
-    let workspace_deps: Vec<&PathBuf> = deps.iter().filter(|dep| in_workspace(dep)).collect();
+    let mut workspace_deps: Vec<&PathBuf> = deps.iter().filter(|dep| in_workspace(dep)).collect();
+    if workspace_deps.is_empty() {
+        // The binary may have been built through a symlinked path to this checkout.
+        workspace_deps = deps
+            .iter()
+            .filter(|dep| dep.canonicalize().is_ok_and(|dep| in_workspace(&dep)))
+            .collect();
+    }
     if workspace_deps.is_empty() {
         // Prefer a source path over a build-script output inside the target dir.
         let target_dir = bin.parent().unwrap_or(bin);
