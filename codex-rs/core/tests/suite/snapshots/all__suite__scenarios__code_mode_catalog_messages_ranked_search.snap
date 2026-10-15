@@ -15,20 +15,17 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (7; hash=40e072f613a5e3eb):
-    - custom/exec: Catalog exec instructions. Default yield: 1234 ms. `image(imageUrlOrItem: string | { image_url: s...; hash=1b186fc5b7e14af3
+  tools (6; hash=d142be2fef791ea4):
+    - custom/exec: Catalog exec instructions. Default yield: 1234 ms. `image(imageUrlOrItem: string | { image_url: s...; hash=c03e765b69db8101
     - function/wait: Catalog wait instructions: resume the yielded cell.; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=67bc0f04da3505b3
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/request_user_input_async: Ask the user one or more questions during ongoing work. Use this tool only to request missing inf...; args=[questions]; hash=d6d74f33db330162
-    - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
-      - function/sleep
-    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
       - function/followup_task
       - function/interrupt_agent
       - function/list_agents
       - function/send_message
       - function/spawn_agent
-      - function/wait_agent
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
 00:message/developer:
@@ -79,11 +76,11 @@ Settings:
 
     You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
     `send_message` calls may be read by a human, so ensure they are legible. Always put proper spaces between words and/or numbers.
-    <OMITTED 17 LINES; ~246 TOKENS; hash=780031e2df907944>
+    <OMITTED 17 LINES; ~243 TOKENS; hash=6048934914270a67>
     - All agents use the same current working directory.
     - As a result, edits made by one agent are immediately visible to all other agents.
 
-    When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
 
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 

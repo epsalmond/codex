@@ -6,21 +6,18 @@ Scenario: Settlement helpers deliver fulfilled and rejected records with input i
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (2; hash=6572e54c76a8ab95):
+        - namespace/functions; hash=7ee68ce725506a82
           - custom/exec
-          - function/wait
+          - function/exec_terminate
           - function/request_user_input
           - function/request_user_input_async
-        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
-          - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
           - function/send_message
           - function/spawn_agent
-          - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer[2]:

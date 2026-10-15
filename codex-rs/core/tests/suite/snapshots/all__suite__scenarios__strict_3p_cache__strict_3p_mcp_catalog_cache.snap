@@ -16,21 +16,18 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn; turn 1: no MCP server registered) --
-00:additional_tools/developer (3; hash=<INITIAL_BUILD_HASH>):
+00:additional_tools/developer (2; hash=<INITIAL_BUILD_HASH>):
         - namespace/functions; hash=<INITIAL_BUILD_HASH>
           - custom/exec
-          - function/wait
+          - function/exec_terminate
           - function/request_user_input
           - function/request_user_input_async
-        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
-          - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
           - function/send_message
           - function/spawn_agent
-          - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer[2]:
