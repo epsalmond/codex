@@ -4,11 +4,11 @@ use pretty_assertions::assert_eq;
 
 enum Rejection {
     Capacity,
-    Metadata,
+    Identifier,
 }
 
 #[test_case::test_case(Rejection::Capacity; "capacity")]
-#[test_case::test_case(Rejection::Metadata; "metadata")]
+#[test_case::test_case(Rejection::Identifier; "identifier")]
 #[tokio::test]
 async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
     use crate::tools::context::ToolCallSource;
@@ -23,10 +23,7 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
         .expect("native completion fixture can enable the feature");
     let (call_id, expected) = match rejection {
         Rejection::Capacity => ("rejected".to_owned(), "capacity exhausted"),
-        Rejection::Metadata => {
-            turn.sub_id = "\n".repeat(128);
-            ("\"".repeat(128), "metadata exceeds")
-        }
+        Rejection::Identifier => ("\"".repeat(129), "identifiers exceed"),
     };
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -80,8 +77,10 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
     assert!(!marker.exists());
 }
 
+#[test_case::test_case(Producer::Process { process_id: 1, cell_id: None }; "process")]
+#[test_case::test_case(Producer::Cell { cell_id: None }; "cell")]
 #[tokio::test]
-async fn history_append_is_retained_until_model_acceptance() {
+async fn history_append_is_retained_until_model_acceptance(producer: Producer) {
     let (session, mut turn) = make_session_and_context().await;
     Arc::make_mut(&mut turn.config)
         .features
@@ -90,17 +89,19 @@ async fn history_append_is_retained_until_model_acceptance() {
     turn.sub_id = "quoted\"turn\\\n".repeat(3);
     let original_turn = turn.sub_id.clone();
     let store = &session.services.async_completions;
+    let cell = matches!(producer, Producer::Cell { .. });
     let mut yielded = store
-        .reserve(
-            session.thread_id(),
-            &turn,
-            "yielded",
-            /*process_id*/ 1,
-            /*cell_id*/ None,
-        )
+        .reserve_producer(session.thread_id(), &turn, "yielded", producer)
         .unwrap();
+    if cell {
+        yielded.bind_cell("generation:exact-cell").unwrap();
+    }
     yielded.register().publish(
-        CompletionStatus::Exited(0),
+        if cell {
+            CompletionStatus::CellCompleted
+        } else {
+            CompletionStatus::Exited(0)
+        },
         "\n\"\\世界".repeat(1000).as_bytes(),
         /*omitted_bytes*/ 0,
     );
