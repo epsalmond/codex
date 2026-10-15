@@ -220,15 +220,29 @@ async fn encoded_metadata_is_admitted_before_publication_and_output_is_bounded()
     assert!(reserve(&store, &session, &turn, "empty-origin").is_err());
     turn.sub_id = "\u{1}".repeat(129);
     assert!(reserve(&store, &session, &turn, "long-origin").is_err());
-    // Identifiers at the 128-byte bound with the widest JSON escapes still leave room for a tail.
+    // Identifiers at the 128-byte bound made entirely of the widest JSON escapes cannot fit a
+    // fragment, so admission rejects them before publication.
     turn.sub_id = "\u{1}".repeat(128);
+    assert!(
+        store
+            .reserve(
+                session.thread_id(),
+                &turn,
+                &"\u{1}".repeat(128),
+                /*process_id*/ i32::MIN,
+                Some(&"\u{1}".repeat(128)),
+            )
+            .is_err()
+    );
+    // Identifiers at the 128-byte bound still leave room for a tail.
+    turn.sub_id = "t".repeat(128);
     let mut widest = store
         .reserve(
             session.thread_id(),
             &turn,
-            &"\u{1}".repeat(128),
+            &"c".repeat(128),
             /*process_id*/ i32::MIN,
-            Some(&"\u{1}".repeat(128)),
+            Some(&"p".repeat(128)),
         )
         .unwrap();
     widest.register().publish(
