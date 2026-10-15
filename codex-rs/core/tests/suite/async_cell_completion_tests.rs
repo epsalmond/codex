@@ -31,7 +31,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 /// Encoded bound of one completion message, including its metadata.
-const MAX_COMPLETION_BYTES: usize = 4096;
+const MAX_COMPLETION_BYTES: usize = 3072;
 /// A valid 1x1 PNG, so the media result survives image processing.
 const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 /// Long enough for a spurious wake turn to have issued its request.

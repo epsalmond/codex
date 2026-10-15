@@ -12,7 +12,7 @@ gone where delivery is guaranteed.
   finish. An idle root starts a turn; a wake-mode subagent reports through its
   assignment; a busy agent receives it with its next model request.
 - The message carries a header (`kind=process` or `kind=cell`, the call and
-  turn, `status=` and `truncated=<bytes omitted>`) and at most 4096 bytes of
+  turn, `status=` and `truncated=<bytes omitted>`) and at most 3072 bytes of
   the output's tail. A cell's images and audio are left out and counted.
 - Code Mode registers `exec_terminate({cell_id})` in place of `wait`. It stops
   the cell and returns its output inline, and no automatic message follows,

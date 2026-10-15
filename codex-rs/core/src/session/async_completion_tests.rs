@@ -411,7 +411,7 @@ async fn explicit_root_recovery_uses_the_same_owner_policy_for_claim_and_accepta
 }
 
 #[tokio::test]
-async fn fragment_reports_truncated_bytes_and_uses_the_4096_byte_bound() {
+async fn fragment_reports_truncated_bytes_and_uses_the_3072_byte_bound() {
     let (session, turn) = make_session_and_context().await;
     let store = Arc::new(AsyncCompletions::default());
     let mut short = reserve(&store, &session, &turn, "short").unwrap();
@@ -451,7 +451,7 @@ async fn fragment_reports_truncated_bytes_and_uses_the_4096_byte_bound() {
     assert!(encoded <= MAX_FRAGMENT_BYTES);
     // The tail fills the bound instead of stopping near the former 768-byte cap.
     assert!(encoded > MAX_FRAGMENT_BYTES - 16);
-    assert!(tail.len() > 3_000);
+    assert!(tail.len() > MAX_FRAGMENT_BYTES * 3 / 4);
 }
 
 #[tokio::test]
