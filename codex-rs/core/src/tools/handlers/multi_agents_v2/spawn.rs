@@ -10,14 +10,11 @@ use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::codex_thread::ThreadConfigSnapshot;
-use crate::session::multi_agents::resolve_subagent_context_token_cap;
-use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use crate::turn_timing::now_unix_timestamp_ms;
-use codex_prompts::ResolvedModelMessages;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
@@ -155,7 +152,6 @@ async fn handle_spawn_agent(
             "agent_type '{role_name}' switches model_provider to `{provider_id}` and cannot be used with a forked history; spawn it with fork_turns set to \"none\""
         )));
     }
-    let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
     let spawn_source = thread_spawn_source(
         session.thread_id,
         &turn.session_source,
@@ -168,33 +164,6 @@ async fn handle_spawn_agent(
             "spawned agent is missing a canonical task name".to_string(),
         )
     })?;
-    let multi_agent_v2_usage_hints =
-        if is_full_history_fork && turn.multi_agent_version == MultiAgentVersion::V2 {
-            let child_model_info = match config.model.as_deref() {
-                Some(model) if model != turn.model_info().slug => Some(
-                    session
-                        .services
-                        .models_manager
-                        .get_model_info(model, &config.to_models_manager_config())
-                        .await,
-                ),
-                _ => None,
-            };
-            let child_multi_agent_messages = ResolvedModelMessages::from_model(
-                child_model_info.as_ref().unwrap_or(turn.model_info()),
-            )
-            .multi_agent();
-            let subagent_context_token_cap =
-                resolve_subagent_context_token_cap(&session.services.models_manager, &config).await;
-            Some(resolve_usage_hints(
-                &config.multi_agent_v2,
-                child_multi_agent_messages,
-                !config.update_plan_enabled && config.model_catalog.is_none(),
-                subagent_context_token_cap,
-            ))
-        } else {
-            None
-        };
     let (spawned_agent, agent_snapshot) = session
         .services
         .agent_control
@@ -214,7 +183,6 @@ async fn handle_spawn_agent(
                 root_turn_id: turn.turn_metadata_state.root_turn_id(),
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                 environments: Some(step_context.environments.clone()),
-                multi_agent_v2_usage_hints,
                 cyber_access_program: turn.cyber_access_program,
             },
         })

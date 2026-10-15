@@ -11,7 +11,6 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::types::AgentMessage;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
-use crate::agent::types::ResolvedMultiAgentV2UsageHints;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::agent_communication::AgentCommunicationContext;
@@ -2943,14 +2942,11 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         expected_final_answer,
         expected_standalone_output,
         tool_declarations,
-        ContextualUserFragment::into(MultiAgentRoleInstructions::Configured(
-            "Child subagent guidance.".to_string(),
-        )),
     ];
     assert_eq!(
         strip_response_item_ids(&history_items),
         strip_response_item_ids(&expected_history),
-        "full-history forked child history should replace parent usage hints with the child subagent hint while filtering non-final assistant/tool chatter"
+        "full-history forked child history should drop parent usage hints, leave the child's role instructions to its first step, and filter non-final assistant/tool chatter"
     );
     assert_eq!(
         serde_json::to_value(child_thread.session.reference_context_item().await)
@@ -3230,10 +3226,6 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
                 fork_mode: Some(SpawnAgentForkMode::FullHistory),
-                multi_agent_v2_usage_hints: Some(ResolvedMultiAgentV2UsageHints {
-                    root: None,
-                    subagent: Some(catalog_role("Catalog child subagent guidance.")),
-                }),
                 ..Default::default()
             },
         )
@@ -3281,8 +3273,8 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         "forked child history should strip the resolved parent hint from compacted replacement history"
     );
     assert!(
-        history_contains_text(history.raw_items(), "Catalog child subagent guidance."),
-        "full-history forked child should add the resolved child hint after compacted-history sanitization"
+        !history_contains_text(history.raw_items(), "Child subagent guidance."),
+        "full-history forks leave the child's role instructions to its first step"
     );
     assert!(
         !history
