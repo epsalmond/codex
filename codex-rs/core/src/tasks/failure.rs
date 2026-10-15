@@ -3,6 +3,7 @@
 use super::Session;
 use super::TaskCancellation;
 use crate::agent::control::TurnEndDisposition;
+use crate::session::TurnInput;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -61,9 +62,20 @@ impl Session {
         }
         self.cancel_running_task(&mut task, &TaskCancellation::Failed)
             .await;
-        self.input_queue
+        // Accepted agent mail survives a host failure, held like a failed turn's until an explicit
+        // follow-up or user turn. Other pending input is dropped.
+        let mut pending = self
+            .input_queue
             .take_pending_input_for_turn_state(&active_turn.turn_state)
             .await;
+        if pending
+            .iter()
+            .any(|item| matches!(item, TurnInput::InterAgentCommunication(_)))
+        {
+            self.input_queue.pause_wakeups();
+            self.input_queue.return_to_mailbox(&mut pending).await;
+            self.emit_agent_wakeups_updated().await;
+        }
         self.send_event(&context, EventMsg::Error(error.clone()))
             .await;
         let started_at = context.turn_timing_state.started_at_unix_secs().await;

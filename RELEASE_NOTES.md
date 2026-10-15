@@ -20,6 +20,10 @@ With `agent_polling = "enabled"`, `wait_agent` without `timeout_ms` in `codex ex
 
 A `send_message` again wakes an agent in a durable sleep while Esc has paused its wakeups; held child reports still wait for the next message. A failed automatic start still waits for an explicit follow-up. See the [release notes](releases/2026-10-14-durable-sleep-paused-wake.md).
 
+## Polling agents keep reports across interrupts
+
+With `agent_polling = "enabled"`, reports and messages already accepted by a turn now survive Esc and arrive with the next turn; an interrupted `followup_task` waits for the next explicit follow-up. See the [release notes](releases/2026-10-14-polling-mail-retention.md).
+
 ## Exec drains its agent tree by default
 
 `codex exec` roots now wake on child reports, and exec stays open until the agent tree is idle, including after `exec resume` and `exec fork`. It prints the last completed root turn's answer and exits 1 if any root turn failed or was interrupted. `--json` emits a `turn.started` event for every root turn, followed by `turn.completed`, or `turn.failed` for a failed turn. The first Ctrl-C interrupts the running root turn; a Ctrl-C between turns, or a second one, stops waiting and exits 1.

@@ -618,10 +618,12 @@ impl Session {
             .is_some()
     }
 
-    /// Restarts after a stopped turn unless the stop paused wakeups. A pause lets only mail that
-    /// arrives later wake a durable sleep, so Esc never restarts on the mail it returned.
+    /// Restarts after a stopped turn unless the stop paused wakeups or the thread polls. Then only
+    /// mail that arrives later wakes a durable sleep, so Esc never restarts on mail already queued.
     async fn maybe_start_turn_after_stop(self: &Arc<Self>) {
-        if !self.input_queue.wakeups_paused() {
+        if !self.input_queue.wakeups_paused()
+            && self.child_report_mode().await != Some(ChildReportMode::WaitAgent)
+        {
             self.maybe_start_turn_for_pending_work().await;
         }
     }
