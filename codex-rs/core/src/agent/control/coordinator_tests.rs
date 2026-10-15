@@ -277,7 +277,7 @@ fn recorded_report_removed_by_compaction_is_requeued_for_delivery() {
     let parent = new_root(&coordinator);
     let child = new_child(&coordinator, &parent, "child-turn");
     let report = terminal_report(&coordinator, &child, "child-turn");
-    let report_id = report.id.clone().expect("report has a stable ID");
+    let report_id = report.id.expect("report has a stable ID");
     assert!(coordinator.mark_report_recorded(&report_id));
 
     assert_eq!(
