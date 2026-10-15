@@ -21,8 +21,11 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 
 const MAX_RESERVATIONS: usize = 64;
-// Byte-fallback bounds tokens by encoded UTF-8 bytes, including IDs, metadata and escapes.
-const MAX_FRAGMENT_BYTES: usize = 768;
+/// Bounds each rendered completion message by its encoded UTF-8 bytes, including IDs, metadata
+/// and escapes. 64 reservations at this size match the 256 KiB per-owner stored payload bound.
+const MAX_FRAGMENT_BYTES: usize = 4096;
+/// Correlation identifiers are preserved exactly, never truncated.
+const MAX_IDENTIFIER_BYTES: usize = 128;
 const MAX_NEW_REQUEST_FRAGMENTS: usize = 8;
 
 /// Fixed at regular-task entry; steering and reentry cannot grant recovery authority.
@@ -87,13 +90,23 @@ struct Record {
     turn_id: String,
     create_time: serde_json::Number,
     call_id: String,
-    process_id: i32,
-    cell_id: Option<String>,
+    producer: Producer,
     assignment: Option<AgentAssignmentId>,
     yielded: bool,
     claimed: bool,
     terminal: Option<AsyncToolCompletion>,
     recorded: bool,
+}
+
+enum Producer {
+    /// A native process, optionally launched from inside a Code Mode cell.
+    Process {
+        process_id: i32,
+        cell_id: Option<String>,
+    },
+    /// A Code Mode cell; `None` until the provider assigns its cell ID, and unbound cells never
+    /// publish.
+    Cell { cell_id: Option<String> },
 }
 
 /// Releases an inline result; cancellation after registration retains its record.
@@ -112,8 +125,33 @@ pub(crate) struct CompletionPublisher {
 pub(crate) enum CompletionStatus {
     Exited(i32),
     Failed,
+    /// Interrupted or cancelled work, for processes and cells alike.
     Cancelled,
     TimedOut,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Code Mode cell producers are wired in a follow-up change"
+        )
+    )]
+    CellCompleted,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Code Mode cell producers are wired in a follow-up change"
+        )
+    )]
+    CellError,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Code Mode cell producers are wired in a follow-up change"
+        )
+    )]
+    CollectionFailed,
 }
 
 /// Returning an unrecorded claim makes it available to the next permitted turn.
@@ -205,6 +243,45 @@ impl AsyncCompletions {
         process_id: i32,
         cell_id: Option<&str>,
     ) -> Result<CompletionReservation, &'static str> {
+        self.reserve_producer(
+            owner,
+            turn,
+            call_id,
+            Producer::Process {
+                process_id,
+                cell_id: cell_id.map(str::to_owned),
+            },
+        )
+    }
+
+    /// Reserves capacity for a Code Mode cell before it starts; bind the provider's cell ID with
+    /// [`CompletionReservation::bind_cell`] before publishing.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Code Mode cell producers are wired in a follow-up change"
+        )
+    )]
+    pub(crate) fn reserve_cell(
+        self: &Arc<Self>,
+        owner: ThreadId,
+        turn: &TurnContext,
+        call_id: &str,
+    ) -> Result<CompletionReservation, &'static str> {
+        self.reserve_producer(owner, turn, call_id, Producer::Cell { cell_id: None })
+    }
+
+    fn reserve_producer(
+        self: &Arc<Self>,
+        owner: ThreadId,
+        turn: &TurnContext,
+        call_id: &str,
+        producer: Producer,
+    ) -> Result<CompletionReservation, &'static str> {
+        let cell_id = match &producer {
+            Producer::Process { cell_id, .. } | Producer::Cell { cell_id } => cell_id.as_deref(),
+        };
         if self
             .owner
             .get()
@@ -219,9 +296,9 @@ impl AsyncCompletions {
         }
         // Preserve correlation exactly; do not silently truncate identifiers.
         if turn.sub_id.is_empty()
-            || call_id.len() > 128
-            || turn.sub_id.len() > 128
-            || cell_id.is_some_and(|id| id.len() > 128)
+            || call_id.len() > MAX_IDENTIFIER_BYTES
+            || turn.sub_id.len() > MAX_IDENTIFIER_BYTES
+            || cell_id.is_some_and(|id| id.len() > MAX_IDENTIFIER_BYTES)
         {
             return Err("async completion identifiers exceed the bounded record limit");
         }
@@ -242,8 +319,7 @@ impl AsyncCompletions {
                 turn_id: turn.sub_id.clone(),
                 create_time: Session::response_item_create_time(),
                 call_id: call_id.to_owned(),
-                process_id,
-                cell_id: cell_id.map(str::to_owned),
+                producer,
                 assignment: turn.agent_assignment.get().cloned(),
                 yielded: false,
                 claimed: false,
@@ -251,8 +327,7 @@ impl AsyncCompletions {
                 recorded: false,
             };
             // Preserve every identifier; reject before launch if escaped metadata cannot fit.
-            let metadata = record.fragment(&id, "exited(-2147483648)", "", usize::MAX);
-            if record.encoded_size(&metadata, &id) > MAX_FRAGMENT_BYTES {
+            if !record.metadata_fits(&id) {
                 return Err("async completion metadata exceeds the encoded fragment limit");
             }
             records.insert(id.clone(), record);
@@ -397,6 +472,37 @@ impl CompletionWake {
 }
 
 impl CompletionReservation {
+    /// Binds the provider's cell ID to an unbound cell reservation. Rejects IDs over 128 bytes,
+    /// non-cell or already-bound reservations, and IDs whose escaped metadata cannot fit; a
+    /// rejected reservation stays unbound.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Code Mode cell producers are wired in a follow-up change"
+        )
+    )]
+    pub(crate) fn bind_cell(&mut self, cell_id: &str) -> Result<(), &'static str> {
+        if cell_id.len() > MAX_IDENTIFIER_BYTES {
+            return Err("async completion identifiers exceed the bounded record limit");
+        }
+        let mut state = self.store.state();
+        let Some(record) = state.records.get_mut(&self.id) else {
+            return Err("async completion reservation is no longer held");
+        };
+        if !matches!(record.producer, Producer::Cell { cell_id: None }) {
+            return Err("async completion reservation is not an unbound cell");
+        }
+        record.producer = Producer::Cell {
+            cell_id: Some(cell_id.to_owned()),
+        };
+        if !record.metadata_fits(&self.id) {
+            record.producer = Producer::Cell { cell_id: None };
+            return Err("async completion metadata exceeds the encoded fragment limit");
+        }
+        Ok(())
+    }
+
     pub(crate) fn register(&mut self) -> CompletionPublisher {
         self.registered = true;
         CompletionPublisher {
@@ -436,7 +542,9 @@ impl CompletionPublisher {
         let Some(record) = records.get_mut(&self.id) else {
             return;
         };
-        if record.terminal.is_some() {
+        // A cell publishes only after its provider-assigned ID is bound.
+        if record.terminal.is_some() || matches!(record.producer, Producer::Cell { cell_id: None })
+        {
             return;
         }
         let status = match status {
@@ -444,6 +552,9 @@ impl CompletionPublisher {
             CompletionStatus::Failed => "failed".to_owned(),
             CompletionStatus::Cancelled => "cancelled".to_owned(),
             CompletionStatus::TimedOut => "timedOut".to_owned(),
+            CompletionStatus::CellCompleted => "completed".to_owned(),
+            CompletionStatus::CellError => "error".to_owned(),
+            CompletionStatus::CollectionFailed => "collectionFailed".to_owned(),
         };
         let start = output.len().saturating_sub(MAX_FRAGMENT_BYTES);
         let tail = String::from_utf8_lossy(&output[start..]);
@@ -456,14 +567,30 @@ impl CompletionPublisher {
                 record.terminal = Some(fragment);
                 break;
             }
-            // Escapes can expand bytes; trim whole UTF-8 characters from the oldest end.
-            trim = (trim + encoded - MAX_FRAGMENT_BYTES).min(tail.len());
-            while !tail.is_char_boundary(trim) {
-                trim += 1;
+            // Escapes can expand bytes; trim whole UTF-8 characters from the oldest end until
+            // their encoded width covers the excess, so escaped output keeps the full bound.
+            // Admission guarantees the metadata alone fits, so an empty tail always terminates.
+            let excess = encoded - MAX_FRAGMENT_BYTES;
+            let mut removed = 0;
+            for ch in tail[trim..].chars() {
+                if removed >= excess {
+                    break;
+                }
+                removed += json_escaped_len(ch);
+                trim += ch.len_utf8();
             }
         }
         drop(state);
         store.changed();
+    }
+}
+
+/// Encoded width of one character inside a JSON string, matching `serde_json` escaping.
+fn json_escaped_len(ch: char) -> usize {
+    match ch {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        '\0'..='\u{1f}' => 6,
+        _ => ch.len_utf8(),
     }
 }
 
@@ -485,6 +612,12 @@ impl Record {
             .len()
     }
 
+    /// Checks the longest status and truncation count, so publication only ever trims the tail.
+    fn metadata_fits(&self, id: &ResponseItemId) -> bool {
+        let metadata = self.fragment(id, "exited(-2147483648)", "", usize::MAX);
+        self.encoded_size(&metadata, id) <= MAX_FRAGMENT_BYTES
+    }
+
     fn fragment(
         &self,
         id: &ResponseItemId,
@@ -497,21 +630,25 @@ impl Record {
             .as_ref()
             .map(|assignment| assignment.generation.to_string())
             .unwrap_or_else(|| "none".to_owned());
-        let header = format!(
-            "id={id} owner={} turn={} call={} kind=process process={} cell={} assignment={generation} status={status}\n",
-            self.owner,
-            self.turn_id,
-            self.call_id,
-            self.process_id,
-            self.cell_id.as_deref().unwrap_or("none"),
-        );
-        let truncation = if omitted > 0 {
-            format!("[output truncated; omitted about {omitted} bytes]\n")
-        } else {
-            String::new()
+        let producer = match &self.producer {
+            Producer::Process {
+                process_id,
+                cell_id,
+            } => format!(
+                "kind=process process={process_id} cell={}",
+                cell_id.as_deref().unwrap_or("none")
+            ),
+            Producer::Cell { cell_id } => {
+                format!("kind=cell cell={}", cell_id.as_deref().unwrap_or("unbound"))
+            }
         };
+        // `truncated` is always present so the header shape is stable; it counts output bytes
+        // omitted before the tail, including any the producer dropped before publication.
         AsyncToolCompletion {
-            text: format!("{header}{truncation}{tail}"),
+            text: format!(
+                "id={id} owner={} turn={} call={} {producer} assignment={generation} status={status} truncated={omitted}\n{tail}",
+                self.owner, self.turn_id, self.call_id,
+            ),
         }
     }
 }

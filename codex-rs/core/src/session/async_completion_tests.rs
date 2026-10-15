@@ -31,6 +31,29 @@ fn current_items(
     )
 }
 
+/// Returns the fragment body without its type markers.
+fn fragment_text(item: &ResponseItemEnvelope) -> String {
+    let item = serde_json::to_value(&item.item).unwrap();
+    let (start, end) = AsyncToolCompletion::type_markers();
+    item["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .strip_prefix(start)
+        .unwrap()
+        .strip_suffix(end)
+        .unwrap()
+        .to_owned()
+}
+
+fn header_field<'a>(text: &'a str, key: &str) -> &'a str {
+    let header = text.lines().next().unwrap();
+    assert!(header.starts_with("id="));
+    header
+        .split(' ')
+        .find_map(|field| field.strip_prefix(key)?.strip_prefix('='))
+        .unwrap()
+}
+
 fn reserve(
     store: &Arc<AsyncCompletions>,
     session: &Session,
@@ -195,18 +218,34 @@ async fn encoded_metadata_is_admitted_before_publication_and_output_is_bounded()
     let store = Arc::new(AsyncCompletions::default());
     turn.sub_id.clear();
     assert!(reserve(&store, &session, &turn, "empty-origin").is_err());
-    turn.sub_id = "\n".repeat(128);
-    assert!(
-        store
-            .reserve(
-                session.thread_id(),
-                &turn,
-                &"\"".repeat(128),
-                /*process_id*/ 1,
-                Some(&"\\".repeat(128))
-            )
-            .is_err()
+    turn.sub_id = "\u{1}".repeat(129);
+    assert!(reserve(&store, &session, &turn, "long-origin").is_err());
+    // Identifiers at the 128-byte bound with the widest JSON escapes still leave room for a tail.
+    turn.sub_id = "\u{1}".repeat(128);
+    let mut widest = store
+        .reserve(
+            session.thread_id(),
+            &turn,
+            &"\u{1}".repeat(128),
+            /*process_id*/ i32::MIN,
+            Some(&"\u{1}".repeat(128)),
+        )
+        .unwrap();
+    widest.register().publish(
+        CompletionStatus::Exited(i32::MIN),
+        "\n\"\\世界".repeat(1000).as_bytes(),
+        /*omitted_bytes*/ usize::MAX,
     );
+    drop(widest);
+    let (claim, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
+    let encoded = serde_json::to_vec(&items[0].item).unwrap().len();
+    assert!(encoded <= MAX_FRAGMENT_BYTES);
+    // Escaped output is trimmed by its encoded width, so the tail fills the remaining room.
+    assert!(encoded > MAX_FRAGMENT_BYTES - 16);
+    assert!(fragment_text(&items[0]).ends_with("世界"));
+    drop(claim);
+    store.accept(&[items[0].item.id().unwrap().clone()]);
     turn.sub_id = "bounded-turn".to_owned();
     let mut reservation = reserve(&store, &session, &turn, "bounded-call").unwrap();
     reservation.register().publish(
@@ -369,4 +408,180 @@ async fn explicit_root_recovery_uses_the_same_owner_policy_for_claim_and_accepta
             .1
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn fragment_reports_truncated_bytes_and_uses_the_4096_byte_bound() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let mut short = reserve(&store, &session, &turn, "short").unwrap();
+    short.register().publish(
+        CompletionStatus::Exited(0),
+        b"whole output",
+        /*omitted_bytes*/ 0,
+    );
+    drop(short);
+    let output = format!("{}END", "a".repeat(10_000));
+    let mut long = reserve(&store, &session, &turn, "long").unwrap();
+    long.register().publish(
+        CompletionStatus::Exited(1),
+        output.as_bytes(),
+        /*omitted_bytes*/ 5,
+    );
+    drop(long);
+    let (_, items) = current_items(&store, &session, &turn);
+    let texts = items.iter().map(fragment_text).collect::<Vec<_>>();
+    let short = texts
+        .iter()
+        .find(|text| header_field(text, "call") == "short")
+        .unwrap();
+    assert_eq!(header_field(short, "truncated"), "0");
+    assert!(short.contains("status=exited(0) truncated=0\nwhole output"));
+    let (index, long) = texts
+        .iter()
+        .enumerate()
+        .find(|(_, text)| header_field(text, "call") == "long")
+        .unwrap();
+    assert!(long.contains("kind=process process=1 cell=none"));
+    let omitted: usize = header_field(long, "truncated").parse().unwrap();
+    let tail = long.split_once('\n').unwrap().1;
+    assert!(tail.ends_with("END"));
+    assert_eq!(omitted + tail.len(), output.len() + 5);
+    let encoded = serde_json::to_vec(&items[index].item).unwrap().len();
+    assert!(encoded <= MAX_FRAGMENT_BYTES);
+    // The tail fills the bound instead of stopping near the former 768-byte cap.
+    assert!(encoded > MAX_FRAGMENT_BYTES - 16);
+    assert!(tail.len() > 3_000);
+}
+
+#[tokio::test]
+async fn cell_fragment_has_cell_kind_and_bounded_tail() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let id = "generation:exact-cell";
+    let mut cell = store
+        .reserve_cell(session.thread_id(), &turn, "cell-call")
+        .unwrap();
+    // An unbound cell has no correlatable identity, so it cannot publish.
+    cell.register().publish(
+        CompletionStatus::CellCompleted,
+        b"unbound",
+        /*omitted_bytes*/ 0,
+    );
+    assert!(current_items(&store, &session, &turn).1.is_empty());
+    cell.bind_cell(id).unwrap();
+    assert!(cell.bind_cell("rebound").is_err());
+    let output = format!("{}cell-tail", "\\\"世界".repeat(2000));
+    cell.register().publish(
+        CompletionStatus::CellError,
+        output.as_bytes(),
+        /*omitted_bytes*/ 0,
+    );
+    drop(cell);
+    let mut native = store
+        .reserve(
+            session.thread_id(),
+            &turn,
+            "native-call",
+            /*process_id*/ 7,
+            Some(id),
+        )
+        .unwrap();
+    assert!(native.bind_cell(id).is_err());
+    native.register().publish(
+        CompletionStatus::Exited(3),
+        b"native",
+        /*omitted_bytes*/ 0,
+    );
+    drop(native);
+    let (claim, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 2);
+    let texts = items.iter().map(fragment_text).collect::<Vec<_>>();
+    let cell = texts
+        .iter()
+        .find(|text| header_field(text, "call") == "cell-call")
+        .unwrap();
+    assert!(cell.contains(" kind=cell cell=generation:exact-cell assignment=none status=error "));
+    assert!(!cell.contains("process="));
+    let omitted: usize = header_field(cell, "truncated").parse().unwrap();
+    let tail = cell.split_once('\n').unwrap().1;
+    assert!(omitted > 0);
+    assert!(tail.ends_with("cell-tail"));
+    assert_eq!(omitted + tail.len(), output.len());
+    let native = texts
+        .iter()
+        .find(|text| header_field(text, "call") == "native-call")
+        .unwrap();
+    assert!(native.contains(" kind=process process=7 cell=generation:exact-cell "));
+    assert!(native.contains("status=exited(3) truncated=0\nnative"));
+    for item in &items {
+        assert!(serde_json::to_vec(&item.item).unwrap().len() <= MAX_FRAGMENT_BYTES);
+    }
+    drop(claim);
+    let (other, _) = make_session_and_context().await;
+    assert!(
+        store
+            .claim(
+                other.thread_id(),
+                &turn,
+                CompletionDrain::ExplicitRootRecovery,
+                &[]
+            )
+            .1
+            .is_empty()
+    );
+    // Cells share the native reservation capacity.
+    let mut held = vec![];
+    for _ in 2..MAX_RESERVATIONS {
+        held.push(
+            store
+                .reserve_cell(session.thread_id(), &turn, "pending")
+                .unwrap(),
+        );
+    }
+    assert!(reserve(&store, &session, &turn, "full-native").is_err());
+    assert!(
+        store
+            .reserve_cell(session.thread_id(), &turn, "full-cell")
+            .is_err()
+    );
+    drop(held);
+    assert!(
+        store
+            .reserve_cell(session.thread_id(), &turn, "available")
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn bind_cell_rejects_identifiers_over_128_bytes() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let mut cell = store
+        .reserve_cell(session.thread_id(), &turn, "cell-call")
+        .unwrap();
+    assert_eq!(
+        cell.bind_cell(&"c".repeat(129)),
+        Err("async completion identifiers exceed the bounded record limit")
+    );
+    // The rejected reservation stays unbound, so it still cannot publish.
+    let publisher = cell.register();
+    publisher.publish(
+        CompletionStatus::CellCompleted,
+        b"rejected",
+        /*omitted_bytes*/ 0,
+    );
+    let bound = "\u{1}".repeat(128);
+    cell.bind_cell(&bound).unwrap();
+    publisher.publish(
+        CompletionStatus::CollectionFailed,
+        b"bound",
+        /*omitted_bytes*/ 0,
+    );
+    drop(cell);
+    let (_, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
+    let text = fragment_text(&items[0]);
+    assert_eq!(header_field(&text, "cell"), bound);
+    assert!(text.ends_with("status=collectionFailed truncated=0\nbound"));
 }
