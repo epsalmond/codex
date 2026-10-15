@@ -1,3 +1,4 @@
+mod cell_completion;
 mod delegate;
 mod execute_handler;
 pub(crate) mod execute_spec;
@@ -50,6 +51,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text_content_items_with_policy;
 use codex_utils_output_truncation::truncate_function_output_items_with_policy;
 
+use cell_completion::CellCompletion;
 use delegate::CodeModeCellDelegate;
 use delegate::CodeModeDispatchBroker;
 use delegate::CodeModeDispatchWorker;
@@ -66,6 +68,12 @@ pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = codex_code_mode::DEFAULT_WAIT
 /// Returns true for the code-mode `exec` tool in the default namespace.
 pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
     tool_name.is_default_namespace() && tool_name.name == PUBLIC_TOOL_NAME
+}
+
+#[derive(Clone, Copy)]
+enum TerminateCause {
+    Model,
+    Interrupt,
 }
 
 #[derive(Clone)]
@@ -132,40 +140,87 @@ impl CodeModeService {
     ///
     /// The retained step freezes the sandbox and approval policy at `exec` time; later
     /// `/approvals` or permission changes do not apply to a cell that is already running.
+    /// A supplied `completion` is bound to the started cell, or released when the provider
+    /// cannot report its terminal readiness.
     pub(crate) async fn execute(
         &self,
         mut request: codex_code_mode::ExecuteRequest,
         step_context: Arc<StepContext>,
         tracker: SharedTurnDiffTracker,
+        completion: Option<Arc<CellCompletion>>,
     ) -> Result<codex_code_mode::StartedCell, String> {
         request
             .yield_time_ms
             .get_or_insert(self.default_exec_yield_time_ms);
         let preempt = step_context.preempt.clone();
+        let provider = self.session().await?;
         let delegate = Arc::new(CodeModeCellDelegate {
             broker: Arc::clone(&self.dispatch_broker),
             step_context,
             tracker,
+            completion: completion.clone(),
         });
-        self.session()
-            .await?
-            .execute(request, delegate, preempt)
-            .await
+        let started = provider.execute(request, delegate, preempt).await?;
+        if let Some(completion) = completion {
+            completion.admit(&started, &provider);
+            self.dispatch_broker
+                .attach_completion(&started.cell_id, completion);
+        }
+        Ok(started)
     }
 
+    /// Reads a cell under its observation lock; a final result read here is not delivered again.
     pub(crate) async fn wait(
         &self,
         request: codex_code_mode::WaitRequest,
         preempt: Option<CancellationToken>,
     ) -> Result<codex_code_mode::WaitOutcome, String> {
-        self.session().await?.wait(request, preempt).await
+        let completion = self.dispatch_broker.completion(&request.cell_id);
+        let _permit = match &completion {
+            Some(completion) => Some(completion.observe().await),
+            None => None,
+        };
+        let result = match self.session().await {
+            Ok(session) => session.wait(request, preempt).await,
+            Err(error) => Err(error),
+        };
+        if let Some(completion) = &completion {
+            completion.observed(&result);
+        }
+        result
     }
 
+    /// Terminates a cell for the model, which receives its result inline.
     pub(crate) async fn terminate(
         &self,
         cell_id: CellId,
     ) -> Result<codex_code_mode::WaitOutcome, String> {
-        self.session().await?.terminate(cell_id).await
+        self.terminate_for(cell_id, TerminateCause::Model).await
+    }
+
+    async fn terminate_for(
+        &self,
+        cell_id: CellId,
+        cause: TerminateCause,
+    ) -> Result<codex_code_mode::WaitOutcome, String> {
+        let completion = self.dispatch_broker.completion(&cell_id);
+        // An interrupt must not queue behind a long model `wait`; the completion's own state
+        // still decides whether the interrupt or a concurrent read owns the terminal result.
+        let _permit = match (&completion, cause) {
+            (Some(completion), TerminateCause::Model) => Some(completion.observe().await),
+            (None, _) | (Some(_), TerminateCause::Interrupt) => None,
+        };
+        let result = match self.session().await {
+            Ok(session) => session.terminate(cell_id).await,
+            Err(error) => Err(error),
+        };
+        if let Some(completion) = &completion {
+            match cause {
+                TerminateCause::Model => completion.observed(&result),
+                TerminateCause::Interrupt => completion.interrupted(&result),
+            }
+        }
+        result
     }
 
     pub(crate) async fn interrupt_active_cells(&self) {
@@ -176,12 +231,17 @@ impl CodeModeService {
         self.dispatch_broker.active_cell_ids()
     }
 
+    /// Terminates cells for an Esc interrupt or failed turn; their results are delivered as
+    /// automatic completions because the model never reads them.
     pub(crate) async fn interrupt_cells(&self, cells: Vec<CellId>) {
-        let Some(session) = self.session.get() else {
+        if self.session.get().is_none() {
             return;
-        };
+        }
         join_all(cells.into_iter().map(|cell_id| async move {
-            if let Err(error) = session.terminate(cell_id.clone()).await {
+            if let Err(error) = self
+                .terminate_for(cell_id.clone(), TerminateCause::Interrupt)
+                .await
+            {
                 tracing::warn!(%cell_id, %error, "failed to terminate interrupted code-mode cell");
             }
         }))

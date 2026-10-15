@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
+use super::cell_completion::CellCompletion;
+use super::cell_completion::InitialCompletion;
 use super::handle_runtime_response;
 use super::is_exec_tool_name;
 use super::observation::code_mode_hook_tool_name;
@@ -83,6 +85,34 @@ impl CodeModeExecuteHandler {
         )
         .map_err(|error| FunctionCallError::Fatal(error.to_string()))?
         .apply_code_mode(&mut enabled_tools);
+        // Reserve before the cell runs, so a full store rejects without side effects. Eligibility
+        // matches the native process producer: the feature gate, then the store's owner checks.
+        let completion = if exec
+            .turn
+            .config
+            .features
+            .enabled(codex_features::Feature::AsyncProcessCompletion)
+        {
+            let reservation = exec
+                .session
+                .services
+                .async_completions
+                .reserve_cell(exec.session.thread_id(), &exec.turn, &call_id)
+                .map_err(|error| FunctionCallError::RespondToModel(error.to_owned()))?;
+            Some(InitialCompletion(CellCompletion::new(
+                reservation,
+                &exec.session,
+                Arc::clone(&exec.turn),
+                exec.session
+                    .services
+                    .code_mode_service
+                    .shutdown_token
+                    .clone(),
+                /*wait_hidden*/ false,
+            )))
+        } else {
+            None
+        };
         let started_at = std::time::Instant::now();
         let started_cell = exec
             .session
@@ -98,6 +128,7 @@ impl CodeModeExecuteHandler {
                 },
                 Arc::clone(&step_context),
                 tracker,
+                completion.as_ref().map(|initial| Arc::clone(&initial.0)),
             )
             .await
             .map_err(FunctionCallError::RespondToModel)?;
@@ -147,6 +178,9 @@ impl CodeModeExecuteHandler {
         // is produced by `handle_runtime_response` and later linked through
         // `CodeCell.output_item_ids` in the reduced trace.
         code_cell_trace.record_initial_response(&response);
+        if let Some(completion) = &completion {
+            completion.0.initial(&response);
+        }
         // Yielded cells keep running, so terminal lifecycle is only emitted
         // here when the first response also ended the runtime.
         if !matches!(response, codex_code_mode::RuntimeResponse::Yielded { .. }) {

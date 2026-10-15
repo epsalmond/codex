@@ -881,11 +881,7 @@ impl TestCodexBuilder {
                 /*attestation_provider*/ None,
                 /*external_time_provider*/ self.external_time_provider.clone(),
             );
-            let thread_manager = match self.thread_manager_configurer.take() {
-                Some(configure) => configure(thread_manager),
-                None => thread_manager,
-            };
-            if config.features.enabled(Feature::CodeModeHost)
+            let thread_manager = if config.features.enabled(Feature::CodeModeHost)
                 && let Some(code_mode_host_program) = code_mode_host_program
             {
                 codex_core::test_support::with_code_mode_host_program(
@@ -895,6 +891,11 @@ impl TestCodexBuilder {
                 )
             } else {
                 thread_manager
+            };
+            // A configured provider (for example, one wrapping the host) takes precedence.
+            match self.thread_manager_configurer.take() {
+                Some(configure) => configure(thread_manager),
+                None => thread_manager,
             }
         });
         let user_shell_override = self.user_shell_override.clone();

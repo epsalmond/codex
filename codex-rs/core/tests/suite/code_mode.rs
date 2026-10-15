@@ -5584,6 +5584,23 @@ text("after terminate");
         text_item(&third_items, /*index*/ 0),
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
+    // The model read the terminated cell's result inline, so no automatic completion follows.
+    for request in [&second_request, &third_request] {
+        assert!(
+            !request
+                .body_json()
+                .to_string()
+                .contains("async_tool_completion")
+        );
+    }
+    let responses_requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+        .count();
+    assert_eq!(responses_requests, 6);
 
     Ok(())
 }
