@@ -940,6 +940,51 @@ async fn wake_mode_interrupted_durable_sleep_wake_does_not_restart() {
     server.shutdown().await;
 }
 
+/// Polling copy of `wake_mode_interrupted_durable_sleep_wake_does_not_restart`: Esc on a turn
+/// that queue-only mail woke from a durable sleep starts no new turn, even with more mail queued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn polling_mode_interrupted_durable_sleep_wake_does_not_restart() {
+    let (_release_tx, release_rx) = oneshot::channel();
+    let woken = vec![
+        chunk(ev_response_created("resp-1")),
+        gated_chunk(release_rx, vec![ev_completed("resp-1")]),
+    ];
+    let (server, _completions) =
+        start_streaming_sse_server(vec![woken, final_answer_chunks("resp-2", "restarted")]).await;
+    let codex = test_codex()
+        .with_model("gpt-5.4")
+        .with_session_source(SessionSource::Cli)
+        .with_config(|config| configure_multi_agent(config, Some(AgentPolling::Enabled)))
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session")
+        .codex;
+
+    codex.thread_extension_data().insert(SleepItem {
+        id: "clock-wait-1".to_string(),
+        duration_ms: 60_000,
+    });
+    submit_child_mail(
+        &codex,
+        "/root/worker_a",
+        "progress a",
+        /*trigger_turn*/ false,
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnStarted(_))).await;
+    deliver_child_mail(
+        &codex,
+        "/root/worker_b",
+        "progress b",
+        /*trigger_turn*/ false,
+    )
+    .await;
+    codex.submit(Op::Interrupt).await.expect("interrupt");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+    server.shutdown().await;
+}
+
 /// Esc right as a wake turn starts returns its report to the mailbox, where the pause holds it
 /// for the next user message. The report is delivered exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

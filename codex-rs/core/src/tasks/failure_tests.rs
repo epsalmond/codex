@@ -62,3 +62,66 @@ async fn emitted_error_and_completion_share_the_terminal_predicate(
     assert_eq!(completed.error, expected);
     assert_eq!(*context.terminal_error.lock().await, expected);
 }
+
+/// Never reads its input, so mail handed to the turn stays accepted but unrecorded.
+struct PendingTask;
+impl SessionTask for PendingTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+    fn span_name(&self) -> &'static str {
+        "session_task.pending_test"
+    }
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<Session>,
+        _context: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        cancel: CancellationToken,
+    ) -> SessionTaskResult {
+        cancel.cancelled().await;
+        Ok(None)
+    }
+}
+
+/// A host failure keeps agent mail the turn accepted but had not recorded, held until an
+/// explicit follow-up or user turn.
+#[tokio::test]
+async fn host_failure_returns_accepted_mail_and_pauses_wakeups() {
+    let (session, context, _receiver) = make_session_and_context_with_rx().await;
+    let mail = codex_protocol::protocol::InterAgentCommunication::new(
+        codex_protocol::AgentPath::root(),
+        codex_protocol::AgentPath::try_from("/root/worker").expect("agent path"),
+        Vec::new(),
+        "accepted followup".to_string(),
+        /*trigger_turn*/ true,
+    );
+    session
+        .input_queue
+        .enqueue_mailbox_communication(mail.clone(), Default::default())
+        .await;
+    session
+        .spawn_task(Arc::clone(&context), Vec::new(), PendingTask)
+        .await;
+
+    session
+        .fail_turn_if_active(
+            &context.sub_id,
+            ErrorEvent {
+                message: "host failure".to_owned(),
+                codex_error_info: None,
+                misalignment: None,
+            },
+        )
+        .await;
+    let paused = session.input_queue.wakeups_paused();
+    session.input_queue.resume_wakeups();
+
+    assert_eq!(
+        (
+            paused,
+            session.input_queue.drain_mailbox_input_items().await.0
+        ),
+        (true, vec![TurnInput::InterAgentCommunication(mail)])
+    );
+}

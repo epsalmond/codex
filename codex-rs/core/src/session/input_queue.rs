@@ -410,9 +410,9 @@ impl InputQueue {
     /// Unconsumed agent mail returns to the front of the mailbox in order; other input is dropped.
     /// In wake mode the next turn delivers it or a pause holds it, and an unpaused interrupt drops
     /// it instead, so an interrupted `followup_task` does not restart a subagent. In polling mode
-    /// it is always kept for the next explicit turn: unless a replacing turn takes it, returned
-    /// trigger-turn mail pauses wakeups so it cannot start a turn on its own. Returns whether any
-    /// mail was returned.
+    /// it is always kept for the next explicit turn: unless a replacing turn takes it, returning
+    /// mail pauses wakeups, so the stop cannot restart on it. Returns whether any mail was
+    /// returned.
     pub(crate) async fn clear_pending(
         &self,
         active_turn: &ActiveTurn,
@@ -432,9 +432,9 @@ impl InputQueue {
             }
             ChildReportMode::WaitAgent => {
                 if *reason != TurnAbortReason::Replaced
-                    && items.iter().any(|item| {
-                        matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn)
-                    })
+                    && items
+                        .iter()
+                        .any(|item| matches!(item, TurnInput::InterAgentCommunication(_)))
                 {
                     self.pause_wakeups();
                 }
@@ -1159,9 +1159,9 @@ mod tests {
         );
     }
 
-    /// Polling mode keeps accepted mail across an interrupt, but returned trigger-turn mail (an
-    /// interrupted `followup_task`) pauses wakeups so it waits for an explicit turn. Queue-only
-    /// mail needs no pause, and a replacing turn takes the mail itself. Steers are dropped.
+    /// Polling mode keeps accepted mail across an interrupt and pauses wakeups, so an interrupted
+    /// `followup_task` waits for an explicit turn; queue-only mail stays deliverable. A replacing
+    /// turn takes the mail itself without a pause. Steers are dropped.
     #[tokio::test]
     async fn polling_clear_pending_holds_returned_trigger_mail_until_explicit_turn() {
         let parent = AgentPath::try_from("/root/worker").expect("agent path");
@@ -1219,7 +1219,7 @@ mod tests {
             outcomes,
             vec![
                 (true, true, vec![progress.clone()], vec![followup.clone()]),
-                (true, false, vec![progress], Vec::new()),
+                (true, true, vec![progress], Vec::new()),
                 (true, false, vec![followup], Vec::new()),
             ]
         );

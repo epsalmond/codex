@@ -8,20 +8,22 @@ case: mail a polling turn had accepted but not yet read.
 
 ## Behavior
 
-Applies with `agent_polling = "enabled"` (wake mode already kept this mail).
+Applies with `agent_polling = "enabled"`; wake mode already kept this mail,
+except after a host-reported turn failure, which now keeps it in both modes.
 
-When Esc, a replacing turn or another abort ends a turn before it reads agent
-mail it accepted, that mail returns to the front of the mailbox in order.
-Steers and other user input from the aborted turn are still dropped.
+When Esc, a replacing turn, a host-reported turn failure or another abort ends a
+turn before it reads agent mail it accepted, that mail returns to the front of
+the mailbox in order. Steers and other user input from the aborted turn are
+still dropped.
 
-- A root's child reports are queue-only in polling mode. The next user turn
-  takes them, and no turn starts on its own.
-- A subagent's interrupted `followup_task` pauses that subagent's wakeups, so
-  it does not restart by itself. The next explicit `followup_task` or user turn
-  clears the pause and delivers both messages once, in order. A replacing turn
-  takes the mail directly and does not pause.
-- Queue-only mail that arrives after the stop still wakes an outstanding
-  durable sleep, as in wake mode.
+- Unless a replacing turn takes the mail, returning it pauses that agent's
+  wakeups. A root's child reports are queue-only in polling mode, so the next
+  user turn takes them. A subagent's interrupted `followup_task` is held until
+  the next explicit `followup_task` or user turn, which clears the pause and
+  delivers both messages once, in order.
+- A stopped polling turn never restarts on its own, even on mail already
+  queued behind an outstanding durable sleep. Queue-only mail that arrives after
+  the stop still wakes the sleep, as in wake mode.
 
 ## Configuration
 
@@ -34,5 +36,7 @@ provide. Pending mail is kept only while the Codex process runs.
   report that entered the turn's input survives Esc and no turn starts on its
   own; the next user turn takes it and a later request carries it once. It fails
   without this change.
-- `session::input_queue` unit tests for polling-mode retention, the follow-up
-  pause, and the replaced-turn case.
+- `agent_wake::polling_mode_interrupted_durable_sleep_wake_does_not_restart`.
+- `tasks::failure_tests::host_failure_returns_accepted_mail_and_pauses_wakeups`.
+- `session::input_queue` unit tests for polling-mode retention, the pause, and
+  the replaced-turn case.
