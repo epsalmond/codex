@@ -1901,15 +1901,14 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .iter()
             .filter(|message| message.contains(&format!("{expected_model} subagent role.")))
             .collect::<Vec<_>>();
-        // A full-history fork keeps the parent's polling instructions and appends the
-        // current child's wake-mode instructions. Both fragments are needed: the latter
-        // is the mode delta for this assignment, not a duplicate to remove from history.
-        assert_eq!(retained_role_messages.len(), 2);
-        assert!(retained_role_messages[0].contains("When calling `wait_agent`, use long timeouts"));
+        // The child renders its role instructions once, from its own first step, so they
+        // carry its wake-mode guidance rather than spawn-time polling guidance.
+        assert_eq!(retained_role_messages.len(), 1);
         assert!(
-            retained_role_messages[1]
+            retained_role_messages[0]
                 .contains("When delegated work remains and you have no independent task")
         );
+        assert!(!retained_role_messages[0].contains("When calling `wait_agent`"));
     }
     assert!(!child_developer_messages.iter().any(|message| {
         message.contains(&format!("{INHERITED_MODEL} root role."))
@@ -1957,19 +1956,16 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
                     .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
                     .count(),
             ),
-            (1, 1, 0, 2)
+            (1, 1, 0, 1)
         );
         let shared_hint_messages = child_developer_messages
             .iter()
             .filter(|message| message.contains(FULL_HISTORY_SHARED_USAGE_HINT))
             .collect::<Vec<_>>();
-        assert_eq!(shared_hint_messages.len(), 2);
-        assert_eq!(
-            shared_hint_messages[0].as_str(),
-            FULL_HISTORY_SHARED_USAGE_HINT
-        );
+        assert_eq!(shared_hint_messages.len(), 1);
+        assert!(shared_hint_messages[0].starts_with(FULL_HISTORY_SHARED_USAGE_HINT));
         assert!(
-            shared_hint_messages[1]
+            shared_hint_messages[0]
                 .contains("When delegated work remains and you have no independent task")
         );
     }

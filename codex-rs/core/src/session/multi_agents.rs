@@ -146,6 +146,7 @@ pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRo
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_usage_hints(
     config: &MultiAgentV2Config,
     multi_agent_messages: ResolvedMultiAgentMessages<'_>,

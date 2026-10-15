@@ -34,7 +34,6 @@ pub struct SpawnAgentOptions {
     pub root_turn_id: Option<String>,
     /// Exact environment bindings from the step that requested the child.
     pub environments: Option<TurnEnvironmentSnapshot>,
-    pub multi_agent_v2_usage_hints: Option<ResolvedMultiAgentV2UsageHints>,
     pub cyber_access_program: Option<CyberAccessProgram>,
 }
 

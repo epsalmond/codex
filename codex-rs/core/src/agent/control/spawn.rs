@@ -23,7 +23,6 @@ use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::ChildReportMode;
 use crate::session::multi_agents::resolve_subagent_context_token_cap;
-use crate::session::multi_agents::resolve_usage_hints;
 use crate::session::multi_agents::resolve_usage_hints_with_root_polling;
 use crate::shake::watermark;
 use codex_context_fragments::set_annotated_content;
@@ -1355,6 +1354,9 @@ impl LocalAgentControl {
                 }
                 RolloutItem::WorldState(world_state) => {
                     if multi_agent_version == MultiAgentVersion::V2 {
+                        // The child renders its own role instructions on its first step, from that
+                        // step's settings. Injecting a spawn-time copy here would duplicate them
+                        // whenever the two computations disagree (e.g. wake-on-report mode).
                         world_state.state.remove("multi_agent_usage_hint");
                     }
                     true
@@ -1387,31 +1389,6 @@ impl LocalAgentControl {
                 subagent_developer_instructions,
             ));
             forked_rollout_items.push(RolloutItem::ResponseItem(developer_message.into()));
-        }
-        let subagent_usage_hint =
-            if !preserve_context_baselines || multi_agent_version != MultiAgentVersion::V2 {
-                None
-            } else if let Some(hints) = options.multi_agent_v2_usage_hints.as_ref() {
-                hints.subagent.clone()
-            } else {
-                let subagent_context_token_cap = resolve_subagent_context_token_cap(
-                    &parent_thread.session.services.models_manager,
-                    &config,
-                )
-                .await;
-                resolve_usage_hints(
-                    &config.multi_agent_v2,
-                    ResolvedModelMessages::bundled().multi_agent(),
-                    !config.update_plan_enabled,
-                    subagent_context_token_cap,
-                )
-                .subagent
-            };
-        if let Some(subagent_usage_hint) = subagent_usage_hint {
-            let subagent_usage_hint_message = ContextualUserFragment::into(subagent_usage_hint);
-            forked_rollout_items.push(RolloutItem::ResponseItem(
-                subagent_usage_hint_message.into(),
-            ));
         }
         let mut thread_extension_init = ExtensionDataInit::new();
         thread_extension_init.insert(selected_capability_roots);
