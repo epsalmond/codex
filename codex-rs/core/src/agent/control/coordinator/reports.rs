@@ -403,6 +403,55 @@ impl AgentWakeCoordinator {
         })
     }
 
+    /// Returns recorded trigger reports omitted by a wholesale history replacement to the
+    /// mailbox, where normal delivery can put them back into a model-visible prompt.
+    pub(crate) fn requeue_recorded_reports_missing_from_history(
+        &self,
+        parent: &AgentAssignmentId,
+        history_ids: &HashSet<ResponseItemId>,
+    ) -> bool {
+        let requeued = {
+            let mut state = self.lock_state();
+            if state.current_by_thread.get(&parent.thread_id) != Some(parent)
+                || !state
+                    .assignments
+                    .get(parent)
+                    .is_some_and(|assignment| assignment.phase.is_open())
+            {
+                return false;
+            }
+            let report_ids = state
+                .pending_by_parent
+                .get(parent)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut requeued = false;
+            for report_id in report_ids {
+                if history_ids.contains(&report_id) {
+                    continue;
+                }
+                let Some(report) = state.reports.get_mut(&report_id) else {
+                    continue;
+                };
+                if report.delivery != ReportDeliveryState::Recorded
+                    || !report.communication.trigger_turn
+                {
+                    continue;
+                }
+                report.delivery = ReportDeliveryState::PendingMailbox;
+                report.mailbox_inserted = false;
+                requeued = true;
+            }
+            requeued
+        };
+        if requeued {
+            self.request_wake(parent.clone());
+        }
+        requeued
+    }
+
     pub(crate) fn mark_report_recorded(&self, report_id: &ResponseItemId) -> bool {
         let mut state = self.lock_state();
         let Some(report) = state.reports.get_mut(report_id) else {

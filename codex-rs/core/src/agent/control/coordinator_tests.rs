@@ -14,6 +14,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -271,6 +272,55 @@ fn recorded_report_after_sampling_snapshot_wakes_without_mailbox_reinsertion() {
 }
 
 #[test]
+fn recorded_report_removed_by_compaction_is_requeued_for_delivery() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let parent = new_root(&coordinator);
+    let child = new_child(&coordinator, &parent, "child-turn");
+    let report = terminal_report(&coordinator, &child, "child-turn");
+    let report_id = report.id.clone().expect("report has a stable ID");
+    assert!(coordinator.mark_report_recorded(&report_id));
+
+    assert_eq!(
+        coordinator.classify_turn_end(&parent, "root-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
+    );
+    let first_wake = coordinator
+        .claim_next_wake_request()
+        .expect("recorded report wakes its waiting parent");
+    first_wake.complete();
+
+    let retained_history_ids = HashSet::from([report_id.clone()]);
+    assert!(
+        !coordinator.requeue_recorded_reports_missing_from_history(&parent, &retained_history_ids)
+    );
+    assert!(coordinator.has_recorded_reports(&parent));
+
+    // Simulate compaction replacing history without the report's stable ID.
+    assert!(coordinator.requeue_recorded_reports_missing_from_history(&parent, &HashSet::new()));
+    assert!(!coordinator.has_recorded_reports(&parent));
+    let delivery_wake = coordinator
+        .claim_next_wake_request()
+        .expect("compaction loss schedules report redelivery");
+    assert_eq!(delivery_wake.assignment(), Some(&parent));
+    delivery_wake.complete();
+
+    let redelivered = coordinator
+        .claim_next_mailbox_report(&parent)
+        .expect("lost report is restored to the mailbox");
+    assert_eq!(redelivered.id, report_id);
+    let report = redelivered.communication.clone();
+    assert!(redelivered.mark_enqueued());
+    assert!(coordinator.acknowledge_report_mailbox_delivery(&report_id, parent.thread_id));
+    assert!(coordinator.mark_report_recorded(&report_id));
+
+    let prompt = input_with_report(&report);
+    let candidates = coordinator.report_ids_in_prompt(&parent, &prompt);
+    assert_eq!(candidates, vec![report_id]);
+    assert_eq!(coordinator.accept_reports(&parent, &candidates), 1);
+    assert!(!coordinator.has_pending_reports(&parent));
+}
+
+#[test]
 fn recorded_queue_only_report_does_not_request_an_automatic_turn() {
     let coordinator = Arc::new(AgentWakeCoordinator::default());
     let parent = new_root(&coordinator);
@@ -288,6 +338,7 @@ fn recorded_queue_only_report_does_not_request_an_automatic_turn() {
     initial_wake.complete();
     assert!(coordinator.mark_report_recorded(&report_id));
 
+    assert!(!coordinator.requeue_recorded_reports_missing_from_history(&parent, &HashSet::new()));
     assert!(!coordinator.has_recorded_reports(&parent));
     assert!(coordinator.claim_next_wake_request().is_none());
 }

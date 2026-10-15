@@ -558,6 +558,15 @@ impl LocalAgentRuntime {
         self.wake_coordinator.has_recorded_reports(assignment)
     }
 
+    pub(crate) fn requeue_recorded_wake_reports_missing_from_history(
+        &self,
+        assignment: &AgentAssignmentId,
+        history_ids: &std::collections::HashSet<ResponseItemId>,
+    ) -> bool {
+        self.wake_coordinator
+            .requeue_recorded_reports_missing_from_history(assignment, history_ids)
+    }
+
     pub(crate) async fn wait_for_queue_only_wake_reports_enqueued_for_thread(
         &self,
         thread_id: ThreadId,
