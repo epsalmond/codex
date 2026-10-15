@@ -198,6 +198,8 @@ async fn remote_tool_mode_selector_overrides_feature_flags() -> Result<()> {
             codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
             codex_code_mode::WAIT_TOOL_NAME.to_string(),
             "request_user_input".to_string(),
+            // Multi-agent v2 is on by default in the fork and stays a direct model tool.
+            MULTI_AGENT_V2_NAMESPACE.to_string(),
             // Hosted Responses tool.
             "web_search".to_string(),
         ]
@@ -398,8 +400,7 @@ async fn multi_agent_config_precedence_overrides_remote_model_selector() -> Resu
 
     let mut disabled_model = remote_model("test-multi-agent-disabled");
     disabled_model.multi_agent_version = Some(MultiAgentVersion::Disabled);
-    let v2_body = response_body_for_remote_model(disabled_model, |config| {
-        config.agents_enabled = false;
+    let v2_body = response_body_for_remote_model(disabled_model.clone(), |config| {
         config
             .features
             .enable(Feature::MultiAgentV2)
@@ -407,6 +408,17 @@ async fn multi_agent_config_precedence_overrides_remote_model_selector() -> Resu
     })
     .await?;
     assert!(tool_names(&v2_body).contains(&MULTI_AGENT_V2_NAMESPACE.to_string()));
+
+    // The fork enables multi-agent v2 by default, so `agents.enabled = false` is its off switch.
+    let agents_disabled_body = response_body_for_remote_model(disabled_model, |config| {
+        config.agents_enabled = false;
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    })
+    .await?;
+    assert!(!tool_names(&agents_disabled_body).contains(&MULTI_AGENT_V2_NAMESPACE.to_string()));
 
     Ok(())
 }
@@ -441,6 +453,12 @@ async fn remote_multi_agent_selector_uses_model_selected_before_first_turn() -> 
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.model = Some(ROOT_MODEL.to_string());
+            // The fork enables multi-agent v2 by default, which would pin the version before
+            // the remote model selector runs.
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
     assert_eq!(
