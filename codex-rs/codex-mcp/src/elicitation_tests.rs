@@ -801,3 +801,60 @@ async fn user_verification_rejects_attached_servers_even_if_they_use_the_plugin_
         assert!(events.try_recv().is_err());
     }
 }
+
+struct IdleReviewer {
+    reviews: AtomicUsize,
+}
+
+impl ElicitationReviewer for IdleReviewer {
+    fn review(
+        &self,
+        _request: ElicitationReviewRequest,
+    ) -> BoxFuture<'static, Result<Option<ElicitationResponse>>> {
+        self.reviews.fetch_add(/*val*/ 1, Relaxed);
+        async { Ok(None) }.boxed()
+    }
+
+    fn idle_refusal(&self, server_name: &str) -> BoxFuture<'static, Option<String>> {
+        let reason = format!("MCP elicitation from `{server_name}` needs approval");
+        async move { Some(reason) }.boxed()
+    }
+}
+
+#[tokio::test]
+async fn idle_refusal_declines_before_review_or_prompt() {
+    for strict_auto_review in [None, Some(Value::Bool(true))] {
+        let reviewer = Arc::new(IdleReviewer {
+            reviews: AtomicUsize::default(),
+        });
+        let manager = ElicitationRequestManager::new(
+            test_elicitation_config(
+                "independent-mcp",
+                AskForApproval::OnRequest,
+                PermissionProfile::read_only(),
+            ),
+            Some(reviewer.clone()),
+            /*lifecycle*/ None,
+            ElicitationRequestRouter::default(),
+        );
+        let (tx_event, events) = async_channel::bounded(1);
+        let sender = manager.make_sender(
+            "independent-mcp".to_string(),
+            Some(tx_event),
+            &ClientMcpExtensions::default(),
+        );
+
+        assert_eq!(
+            send_elicitation(&sender, strict_auto_review).await,
+            ElicitationResponse {
+                action: ElicitationAction::Decline,
+                content: None,
+                meta: Some(json!({
+                    "message": "MCP elicitation from `independent-mcp` needs approval",
+                })),
+            }
+        );
+        assert_eq!(reviewer.reviews.load(Relaxed), 0);
+        assert!(events.try_recv().is_err(), "no elicitation is surfaced");
+    }
+}

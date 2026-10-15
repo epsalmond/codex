@@ -640,6 +640,7 @@ async fn register_call_with_default_shell_trigger(
             permission_profile: PermissionProfile::workspace_write(),
             environments: TurnEnvironmentSnapshot::default(),
             cancellation_token: cancellation_token.clone(),
+            code_mode_step: None,
         })
         .await;
     cancellation_token
@@ -671,6 +672,7 @@ async fn active_call_preserves_triggering_command_context() {
             permission_profile: PermissionProfile::workspace_write(),
             environments: TurnEnvironmentSnapshot::default(),
             cancellation_token: CancellationToken::new(),
+            code_mode_step: None,
         })
         .await;
 
@@ -896,4 +898,88 @@ async fn attributed_blocked_request_targets_one_of_multiple_active_calls() {
             "Network access to \"example.com\" was blocked: domain is not on the allowlist for the current sandbox mode.".to_string()
         )
     );
+}
+
+#[tokio::test]
+async fn idle_code_mode_network_request_is_refused_without_prompt() {
+    let (session, turn, events) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                config.permissions.approval_policy =
+                    crate::config::Constrained::allow_any(AskForApproval::OnRequest);
+                config.approvals_reviewer = codex_config::types::ApprovalsReviewer::User;
+            },
+        )
+        .await;
+    let service = &session.services.network_approval;
+    // No turn is active: the Code Mode cell that started this execution outlived its turn.
+    service
+        .register_call(ActiveNetworkApprovalCall {
+            registration_id: "execution-1".to_string(),
+            turn_id: turn.sub_id.clone(),
+            tool_name: ToolName::plain("exec_command"),
+            trigger: GuardianNetworkAccessTrigger {
+                call_id: "call-1".to_string(),
+                tool_name: "exec_command".to_string(),
+                command: vec!["curl".to_string(), "http://example.com".to_string()],
+                cwd: PathUri::from_abs_path(&test_path_buf("/tmp").abs()),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                additional_permissions: None,
+                justification: None,
+                tty: None,
+            },
+            command: "curl http://example.com".to_string(),
+            environment_id: "local".to_string(),
+            permission_profile: PermissionProfile::workspace_write(),
+            environments: TurnEnvironmentSnapshot::default(),
+            cancellation_token: CancellationToken::new(),
+            code_mode_step: Some(StepContext::for_test(Arc::clone(&turn))),
+        })
+        .await;
+
+    let decision = timeout(
+        Duration::from_secs(5),
+        service.handle_inline_policy_request(
+            Arc::clone(&session),
+            NetworkPolicyRequest {
+                protocol: NetworkProtocol::Http,
+                host: "example.com".to_string(),
+                port: 80,
+                environment_id: Some("local".to_string()),
+                execution_id: Some("execution-1".to_string()),
+                client_addr: None,
+                method: None,
+                command: None,
+                exec_policy_hint: None,
+                disconnect: None,
+                cancellation: None,
+            },
+        ),
+    )
+    .await
+    .expect("idle network request must not wait for a prompt");
+
+    assert_eq!(decision, NetworkDecision::deny("not_allowed"));
+    let outcome = service
+        .take_call_outcome("execution-1")
+        .await
+        .expect("idle refusal is recorded for the execution");
+    assert!(
+        outcome.starts_with("network access to `http://example.com:80` needs approval")
+            && outcome.ends_with("Rerun this call inside a turn."),
+        "unexpected refusal: {outcome}"
+    );
+    assert!(service.pending_host_approvals.lock().unwrap().is_empty());
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(
+                event.msg,
+                EventMsg::ExecApprovalRequest(_) | EventMsg::GuardianAssessment(_)
+            ),
+            "idle network request must not prompt or review: {:?}",
+            event.msg
+        );
+    }
 }

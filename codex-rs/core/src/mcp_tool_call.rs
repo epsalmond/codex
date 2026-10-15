@@ -1199,6 +1199,8 @@ pub(crate) struct McpToolApprovalContext {
     pub(crate) invocation: Option<McpInvocation>,
     pub(crate) metadata: McpToolApprovalMetadata,
     pub(crate) review_context: GuardianReviewContext,
+    /// Whether a Code Mode cell's nested call made this MCP call.
+    pub(crate) code_mode_nested: bool,
 }
 
 impl Session {
@@ -1216,6 +1218,7 @@ impl Session {
             .then(|| invocation.clone()),
             metadata,
             review_context,
+            code_mode_nested: crate::tools::approvals::in_code_mode_nested_call(),
         });
         let mut registry = self
             .mcp_tool_approval_metadata
@@ -1239,6 +1242,17 @@ impl Session {
             .get(&(server.to_string(), call_id.to_string()))
             .and_then(std::sync::Weak::upgrade)
             .map(|metadata| (*metadata).clone())
+    }
+
+    /// True while a Code Mode nested call to `server` is still running.
+    pub(crate) fn code_mode_mcp_tool_call_in_flight(&self, server: &str) -> bool {
+        self.mcp_tool_approval_metadata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|((entry_server, _), _)| entry_server == server)
+            .filter_map(|(_, metadata)| metadata.upgrade())
+            .any(|metadata| metadata.code_mode_nested)
     }
 }
 

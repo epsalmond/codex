@@ -92,6 +92,17 @@ impl ElicitationReviewer for GuardianMcpElicitationReviewer {
             review_guardian_mcp_elicitation(session, request).await
         })
     }
+
+    fn idle_refusal(&self, server_name: &str) -> BoxFuture<'static, Option<String>> {
+        let session = self.session.clone();
+        let server_name = server_name.to_string();
+        Box::pin(async move {
+            session
+                .upgrade()?
+                .idle_code_mode_elicitation_refusal(&server_name)
+                .await
+        })
+    }
 }
 
 impl Session {
@@ -593,6 +604,14 @@ impl Session {
                     content: Some(serde_json::json!({})),
                     meta: None,
                 }),
+                sent: false,
+            };
+        }
+
+        if let Some(reason) = self.idle_code_mode_elicitation_refusal(&server_name).await {
+            warn!("{reason}");
+            return McpServerElicitationOutcome {
+                response: None,
                 sent: false,
             };
         }

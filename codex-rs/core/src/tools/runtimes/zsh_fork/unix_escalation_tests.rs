@@ -456,6 +456,7 @@ async fn preapproved_additional_permissions_escalate_intercepted_exec() -> anyho
         approval_sandbox_permissions: SandboxPermissions::UseDefault,
         prompt_permissions: Some(requested_permissions),
         stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+        code_mode_nested: false,
     };
 
     let action = codex_shell_escalation::EscalationPolicy::determine_action(
@@ -613,6 +614,7 @@ async fn execve_permission_request_hook_short_circuits_prompt() -> anyhow::Resul
         approval_sandbox_permissions: SandboxPermissions::RequireEscalated,
         prompt_permissions: None,
         stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+        code_mode_nested: false,
     };
 
     let action = tokio::time::timeout(
@@ -824,6 +826,7 @@ prefix_rule(pattern = ["{cat_path_literal}"], decision = "allow")
         approval_sandbox_permissions: SandboxPermissions::UseDefault,
         prompt_permissions: None,
         stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+        code_mode_nested: false,
     };
 
     let action = codex_shell_escalation::EscalationPolicy::determine_action(
@@ -867,6 +870,7 @@ async fn denied_reads_keep_granular_sandbox_rejection_for_escalation() -> anyhow
         approval_sandbox_permissions: SandboxPermissions::RequireEscalated,
         prompt_permissions: None,
         stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+        code_mode_nested: false,
     };
 
     let action = codex_shell_escalation::EscalationPolicy::determine_action(
@@ -964,4 +968,63 @@ host_executable(name = "git", paths = ["{allowed_git_literal}"])
         &evaluation.matched_rules,
         evaluation.decision
     ));
+}
+
+#[tokio::test]
+async fn idle_code_mode_escalation_is_refused_without_prompt() -> anyhow::Result<()> {
+    let (session, turn_context, events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    // No turn is active: the Code Mode cell that started this command outlived its turn.
+    let provider = CoreShellActionProvider {
+        policy: Arc::new(RwLock::new(codex_execpolicy::Policy::empty())),
+        session: Arc::clone(&session),
+        review_context: GuardianReviewContext::from(turn_context),
+        call_id: "idle-code-mode-escalation".to_string(),
+        environment_id: "local".to_string(),
+        source: GuardianCommandSource::UnifiedExec,
+        tool_name: ToolName::plain("exec_command"),
+        approval_policy: AskForApproval::OnRequest,
+        permission_profile: PermissionProfile::read_only(),
+        sandbox_permissions: SandboxPermissions::RequireEscalated,
+        approval_sandbox_permissions: SandboxPermissions::RequireEscalated,
+        prompt_permissions: None,
+        stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+        code_mode_nested: true,
+    };
+
+    let action = tokio::time::timeout(
+        Duration::from_secs(5),
+        codex_shell_escalation::EscalationPolicy::determine_action(
+            &provider,
+            &AbsolutePathBuf::from_absolute_path("/usr/bin/touch")?,
+            &["touch".to_string(), "escalated".to_string()],
+            &test_sandbox_cwd(),
+        ),
+    )
+    .await
+    .context("idle escalation must not wait for a prompt")??;
+
+    let codex_shell_escalation::EscalationDecision::Deny {
+        reason: Some(reason),
+    } = action
+    else {
+        panic!("expected an idle refusal, got {action:?}");
+    };
+    assert!(
+        reason.starts_with("escalated command `/usr/bin/touch escalated` needs approval")
+            && reason.ends_with("Rerun this call inside a turn."),
+        "unexpected refusal: {reason}"
+    );
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(
+                event.msg,
+                codex_protocol::protocol::EventMsg::ExecApprovalRequest(_)
+                    | codex_protocol::protocol::EventMsg::GuardianAssessment(_)
+            ),
+            "idle escalation must not prompt or review: {:?}",
+            event.msg
+        );
+    }
+    Ok(())
 }

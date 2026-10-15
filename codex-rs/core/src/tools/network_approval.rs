@@ -4,7 +4,7 @@ use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::GuardianReviewContext;
 use crate::network_policy_decision::denied_network_policy_message;
 use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::approvals::ApprovalAction;
 use crate::tools::approvals::ApprovalContext;
@@ -245,6 +245,10 @@ struct ActiveNetworkApprovalCall {
     permission_profile: PermissionProfile,
     environments: TurnEnvironmentSnapshot,
     cancellation_token: CancellationToken,
+    /// The step of the Code Mode nested call that started this execution, if any.
+    /// Proxy requests are reviewed on the proxy's task, so the idle approval refusal
+    /// needs this to recognize them.
+    code_mode_step: Option<Arc<StepContext>>,
 }
 
 enum ActiveNetworkApprovalAttribution {
@@ -648,7 +652,22 @@ impl NetworkApprovalService {
         {
             return NetworkDecision::deny(REASON_NOT_ALLOWED);
         }
-        let active_turn = session.active_turn_context_and_strict_auto_review().await;
+        let code_mode_step = owner_call
+            .as_ref()
+            .and_then(|call| call.code_mode_step.as_ref());
+        let active_turn = match session.active_turn_context_and_strict_auto_review().await {
+            Some(active_turn) => Some(active_turn),
+            // A Code Mode cell can outlive its turn. Its step still runs permission hooks
+            // before the shared idle refusal.
+            None => code_mode_step.map(|step| {
+                (
+                    Arc::clone(&step.turn),
+                    Arc::clone(&step.settings),
+                    step.environments.clone(),
+                    step.turn.strict_auto_review_enabled(),
+                )
+            }),
+        };
         let Some(environment_id) = active_environment_id.or_else(|| {
             active_turn
                 .as_ref()
@@ -804,7 +823,10 @@ impl NetworkApprovalService {
             retry_reason: Some(policy_denial_message.clone()),
             network_approval_context: Some(network_approval_context.clone()),
         };
-        let approval = session.request_approval(action, approval_context);
+        let approval = crate::tools::approvals::scope_code_mode_nested_call(
+            code_mode_step.is_some(),
+            session.request_approval(action, approval_context),
+        );
         let approval_result = if let Some(owner_call) = &owner_call {
             // A ready review result takes precedence over concurrent cancellation.
             let Some(result) = owner_call
@@ -1094,8 +1116,7 @@ pub(crate) fn build_network_policy_decider(
 
 pub(crate) async fn begin_network_approval(
     session: &Arc<Session>,
-    turn: &TurnContext,
-    environments: &TurnEnvironmentSnapshot,
+    step_context: &Arc<StepContext>,
     managed_network_active: bool,
     spec: Option<NetworkApprovalSpec>,
 ) -> Result<Option<ActiveNetworkApproval>, ToolError> {
@@ -1115,6 +1136,8 @@ pub(crate) async fn begin_network_approval(
         return Ok(None);
     }
 
+    let turn = step_context.turn.as_ref();
+    let environments = &step_context.environments;
     let controller = turn.config.permissions.network.as_ref();
     let environment = environments
         .turn_environments()
@@ -1229,6 +1252,8 @@ pub(crate) async fn begin_network_approval(
             permission_profile,
             environments: environments.clone(),
             cancellation_token: cancellation_token.clone(),
+            code_mode_step: crate::tools::approvals::in_code_mode_nested_call()
+                .then(|| Arc::clone(step_context)),
         })
         .await;
 
