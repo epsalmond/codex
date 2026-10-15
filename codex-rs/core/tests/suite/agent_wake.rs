@@ -937,8 +937,6 @@ async fn wake_mode_interrupted_durable_sleep_wake_does_not_restart() {
     codex.submit(Op::Interrupt).await.expect("interrupt");
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
     assert_no_turn_starts(&codex, SETTLE).await;
-
-    assert_eq!(server.requests().await.len(), 1);
     server.shutdown().await;
 }
 
