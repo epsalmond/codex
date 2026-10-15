@@ -372,6 +372,18 @@
       ],
       "type": "string"
     },
+    "AsyncProcessCompletionConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "polling_tools": {
+          "$ref": "#/definitions/PollingToolsMode"
+        }
+      },
+      "type": "object"
+    },
     "AuthCredentialsStoreMode": {
       "description": "Determine where Codex should store CLI auth credentials.",
       "oneOf": [
@@ -888,7 +900,7 @@
               ]
             },
             "async_process_completion": {
-              "type": "boolean"
+              "$ref": "#/definitions/FeatureToml_for_AsyncProcessCompletionConfigToml"
             },
             "auth_elicitation": {
               "type": "boolean"
@@ -1682,6 +1694,16 @@
         }
       },
       "type": "object"
+    },
+    "FeatureToml_for_AsyncProcessCompletionConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/AsyncProcessCompletionConfigToml"
+        }
+      ]
     },
     "FeatureToml_for_CodeModeConfigToml": {
       "anyOf": [
@@ -3864,6 +3886,25 @@
         }
       },
       "type": "object"
+    },
+    "PollingToolsMode": {
+      "description": "Whether polling tools stay visible when async completion delivers results automatically.",
+      "oneOf": [
+        {
+          "description": "Replace Code Mode `wait` with `exec_terminate` and refuse empty `write_stdin` polls of processes whose results are delivered automatically.",
+          "enum": [
+            "omit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Keep Code Mode `wait` and empty `write_stdin` polls alongside automatic delivery.",
+          "enum": [
+            "keep"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "ProfileTui": {
       "additionalProperties": false,
@@ -7205,7 +7246,7 @@
           ]
         },
         "async_process_completion": {
-          "type": "boolean"
+          "$ref": "#/definitions/FeatureToml_for_AsyncProcessCompletionConfigToml"
         },
         "auth_elicitation": {
           "type": "boolean"

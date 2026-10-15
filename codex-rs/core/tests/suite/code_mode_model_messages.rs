@@ -41,6 +41,7 @@ async fn code_mode_wait_overrides_are_independent(
         )?),
     ] {
         let test = test_codex()
+            .keep_polling_tools()
             .with_model_info_override("gpt-5.5", move |model| {
                 model.tool_mode = Some(tool_mode);
                 model.use_responses_lite = false;

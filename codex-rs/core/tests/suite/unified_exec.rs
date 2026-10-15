@@ -267,9 +267,12 @@ async fn create_workspace_directory(
 async fn exec_command_rejects_login_when_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let builder = test_codex().with_model("gpt-5.4").with_config(|config| {
-        config.permissions.allow_login_shell = false;
-    });
+    let builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config.permissions.allow_login_shell = false;
+        });
     let harness = TestCodexHarness::with_builder(builder).await?;
     let call_id = "exec-command-login-disabled";
     let arguments = json!({
@@ -306,11 +309,14 @@ async fn exec_command_rejects_login_when_disabled() -> Result<()> {
 async fn exec_command_hides_and_rejects_tty_when_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let builder = test_codex().with_model("gpt-5.4").with_cloud_config_bundle(
-        CloudConfigBundleFixture::loader_with_enterprise_requirement(
-            "[features]\nunified_exec_tty = false\n",
-        ),
-    );
+    let builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.4")
+        .with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                "[features]\nunified_exec_tty = false\n",
+            ),
+        );
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let call_id = "tty-denied";
     let arguments = json!({"cmd": "echo should-not-run > tty-disabled-rejected", "tty": true});
@@ -357,11 +363,14 @@ async fn exec_command_runs_without_tty_when_tty_disabled() -> Result<()> {
         "basic PowerShell execution through Wine is unavailable"
     );
 
-    let builder = test_codex().with_model("gpt-5.4").with_cloud_config_bundle(
-        CloudConfigBundleFixture::loader_with_enterprise_requirement(
-            "[features]\nunified_exec_tty = false\n",
-        ),
-    );
+    let builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.4")
+        .with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                "[features]\nunified_exec_tty = false\n",
+            ),
+        );
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let mut responses = Vec::new();
     for (call_id, arguments) in [
@@ -400,16 +409,19 @@ async fn exec_command_does_not_expose_configured_noise_auth_token() -> Result<()
         "basic PowerShell execution through Wine is unavailable"
     );
 
-    let builder = test_codex().with_model("gpt-5.4").with_config(|config| {
-        config.permissions.shell_environment_policy.r#set.insert(
-            CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
-            "configured-noise-token".to_string(),
-        );
-        config.permissions.shell_environment_policy.r#set.insert(
-            CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_ascii_lowercase(),
-            "case-variant-noise-token".to_string(),
-        );
-    });
+    let builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config.permissions.shell_environment_policy.r#set.insert(
+                CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
+                "configured-noise-token".to_string(),
+            );
+            config.permissions.shell_environment_policy.r#set.insert(
+                CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_ascii_lowercase(),
+                "case-variant-noise-token".to_string(),
+            );
+        });
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let command = match core_test_support::test_target_os() {
         core_test_support::TestTargetOs::Linux | core_test_support::TestTargetOs::MacOs => {
@@ -455,21 +467,24 @@ async fn exec_command_uses_installed_environment_shell_policy_with_explicit_over
     );
     skip_if_no_network!(Ok(()));
 
-    let builder = test_codex().with_model("gpt-5.4").with_config(|config| {
-        config.permissions.shell_environment_policy = ShellEnvironmentPolicy {
-            inherit: ShellEnvironmentPolicyInherit::None,
-            include_only: vec![EnvironmentVariablePattern::new_case_insensitive("DROP")],
-            r#set: HashMap::from([
-                ("KEEP".to_string(), "preserved".to_string()),
-                ("DROP".to_string(), "filtered".to_string()),
-                (
-                    "CODEX_VERSION".to_string(),
-                    "configured-version".to_string(),
-                ),
-            ]),
-            ..Default::default()
-        };
-    });
+    let builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config.permissions.shell_environment_policy = ShellEnvironmentPolicy {
+                inherit: ShellEnvironmentPolicyInherit::None,
+                include_only: vec![EnvironmentVariablePattern::new_case_insensitive("DROP")],
+                r#set: HashMap::from([
+                    ("KEEP".to_string(), "preserved".to_string()),
+                    ("DROP".to_string(), "filtered".to_string()),
+                    (
+                        "CODEX_VERSION".to_string(),
+                        "configured-version".to_string(),
+                    ),
+                ]),
+                ..Default::default()
+            };
+        });
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let selection = harness
         .test()
@@ -561,7 +576,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_host_windows!(Ok(()));
 
-    let builder = test_codex();
+    let builder = test_codex().keep_polling_tools();
     let harness = TestCodexHarness::with_builder(builder).await?;
 
     let patch =
@@ -694,7 +709,7 @@ async fn unified_exec_rejects_justification_without_sandbox_permissions() -> Res
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.2");
+    let mut builder = test_codex().keep_polling_tools().with_model("gpt-5.2");
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-missing-sandbox-permissions";
@@ -767,7 +782,7 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5.2");
+    let mut builder = test_codex().keep_polling_tools().with_model("gpt-5.2");
     let test = builder.build_with_auto_env(&server).await?;
     let cwd = test.config.cwd.to_path_buf();
 
@@ -824,7 +839,7 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5.2");
+    let mut builder = test_codex().keep_polling_tools().with_model("gpt-5.2");
     let test = builder.build_with_auto_env(&server).await?;
 
     let workdir_rel = std::path::PathBuf::from("uexec_relative_workdir");
@@ -888,7 +903,7 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5.2");
+    let mut builder = test_codex().keep_polling_tools().with_model("gpt-5.2");
     let test = builder.build_with_auto_env(&server).await?;
 
     let workdir = create_workspace_directory(&test, "uexec_workdir_test").await?;
@@ -948,7 +963,7 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-end-event";
@@ -1016,7 +1031,7 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-delta-1";
@@ -1124,7 +1139,7 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-full-lifecycle";
@@ -1358,6 +1373,7 @@ allow_local_binding = true
     );
     let permission_profile = permission_profile_for_config.clone();
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_home(home)
         .with_cloud_config_bundle(managed_network_requirements_loader())
         .with_config(move |config| {
@@ -1449,14 +1465,16 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin(
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_config(move |config| {
-        if stdin_approval {
-            config
-                .features
-                .enable(Feature::WriteStdinApproval)
-                .expect("enable stdin approvals");
-        }
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            if stdin_approval {
+                config
+                    .features
+                    .enable(Feature::WriteStdinApproval)
+                    .expect("enable stdin approvals");
+            }
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     let open_call_id = "uexec-open";
@@ -1582,7 +1600,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let open_call_id = "uexec-delayed-open";
@@ -1757,7 +1775,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let open_call_id = "uexec-open-session";
@@ -1875,7 +1893,7 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-metadata";
@@ -1964,9 +1982,12 @@ async fn exec_command_clamps_model_requested_max_output_tokens_to_policy() -> Re
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
-        config.tool_output_token_limit = Some(50);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.5")
+        .with_config(|config| {
+            config.tool_output_token_limit = Some(50);
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-clamped-max-output";
@@ -2023,9 +2044,12 @@ async fn write_stdin_clamps_model_requested_max_output_tokens_to_policy() -> Res
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
-        config.tool_output_token_limit = Some(50);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_model("gpt-5.5")
+        .with_config(|config| {
+            config.tool_output_token_limit = Some(50);
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     let start_call_id = "uexec-stdin-clamp-start";
@@ -2109,7 +2133,7 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-default-pipe";
@@ -2174,7 +2198,7 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-tty-enabled";
@@ -2236,7 +2260,7 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-early-exit";
@@ -2315,7 +2339,7 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let start_call_id = "uexec-cat-start";
@@ -2518,7 +2542,7 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_config(|config| {
+    let mut builder = test_codex().keep_polling_tools().with_config(|config| {
         config
             .features
             .enable(Feature::WriteStdinApproval)
@@ -2668,7 +2692,7 @@ async fn write_stdin_ctrl_c_terminates_non_tty_session_on_windows() -> Result<()
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let start_call_id = "uexec-windows-interrupt-start";
@@ -2757,7 +2781,7 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let start_call_id = "uexec-end-on-exit-start";
@@ -2843,7 +2867,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let TestCodex {
         codex,
         cwd,
@@ -2944,7 +2968,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let TestCodex {
         codex,
         cwd,
@@ -3034,7 +3058,7 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let first_call_id = "uexec-start";
@@ -3128,7 +3152,7 @@ async fn unified_exec_streams_after_lagged_output() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let script = r#"python3 - <<'PY'
@@ -3239,7 +3263,7 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let first_call_id = "uexec-timeout";
@@ -3320,7 +3344,7 @@ async fn managed_unified_exec_disable_runs_commands_without_retained_authority()
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_cloud_config_bundle(
+    let mut builder = test_codex().keep_polling_tools().with_cloud_config_bundle(
         CloudConfigBundleFixture::loader_with_enterprise_requirement(
             r#"
 [features]
@@ -3385,7 +3409,7 @@ async fn managed_one_shot_command_is_terminated_when_the_turn_is_interrupted() -
     skip_if_target_windows!(Ok(()), "uses a POSIX command and process checks");
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_cloud_config_bundle(
+    let mut builder = test_codex().keep_polling_tools().with_cloud_config_bundle(
         CloudConfigBundleFixture::loader_with_enterprise_requirement(
             r#"
 [features]
@@ -3453,7 +3477,7 @@ async fn unified_exec_formats_large_output_summary() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let output_line = "token token \n";
@@ -3544,7 +3568,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let TestCodex {
         codex,
         cwd,
@@ -3631,25 +3655,27 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
-        file_system_sandbox_policy
-            .entries
-            .push(FileSystemSandboxEntry {
-                path: FileSystemPath::GlobPattern {
-                    pattern: format!("{}/**/*.env", config.cwd.as_path().display()),
-                },
-                access: FileSystemAccessMode::Deny,
-                missing_path_behavior: None,
-            });
-        config
-            .permissions
-            .set_permission_profile(PermissionProfile::from_runtime_permissions(
-                &file_system_sandbox_policy,
-                NetworkSandboxPolicy::Restricted,
-            ))
-            .expect("set permission profile");
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
+            file_system_sandbox_policy
+                .entries
+                .push(FileSystemSandboxEntry {
+                    path: FileSystemPath::GlobPattern {
+                        pattern: format!("{}/**/*.env", config.cwd.as_path().display()),
+                    },
+                    access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
+                });
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::from_runtime_permissions(
+                    &file_system_sandbox_policy,
+                    NetworkSandboxPolicy::Restricted,
+                ))
+                .expect("set permission profile");
+        });
     let TestCodex {
         codex,
         cwd,
@@ -3767,7 +3793,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let TestCodex {
         codex,
         cwd,
@@ -3897,7 +3923,7 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().keep_polling_tools();
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec";
@@ -3955,7 +3981,7 @@ async fn write_stdin_calls_run_in_parallel_across_sessions() -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses bash and POSIX file rendezvous commands");
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.4");
+    let mut builder = test_codex().keep_polling_tools().with_model("gpt-5.4");
     let test = builder.build_with_auto_env(&server).await?;
 
     let start_args = serde_json::to_string(&json!({

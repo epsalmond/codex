@@ -108,7 +108,7 @@ impl CodeModeExecuteHandler {
                     .code_mode_service
                     .shutdown_token
                     .clone(),
-                /*wait_hidden*/ false,
+                exec.turn.code_mode_automatic_completion(),
             )))
         } else {
             None
@@ -208,6 +208,7 @@ impl CodeModeExecuteHandler {
             args.max_output_tokens,
             wall_time,
             exec.turn.config.code_mode.experimental_show_cell_overhead,
+            exec.turn.code_mode_automatic_completion(),
         ))
     }
 }

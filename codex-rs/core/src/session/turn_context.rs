@@ -331,6 +331,9 @@ pub struct TurnContext {
     /// Call state at turn creation; model requests use the `StepContext` snapshot.
     pub(crate) realtime_active: bool,
     pub(crate) code_mode_available: bool,
+    /// Whether the session's Code Mode provider reports terminal readiness. Fixed per session so
+    /// the tool list stays stable for prompt caching.
+    pub(crate) code_mode_terminal_ready: codex_code_mode::TerminalReadySupport,
     /// Turn-scoped configuration. Read step-specific settings such as service tier and
     /// approvals reviewer from the corresponding `StepContext` instead.
     pub config: Arc<Config>,
@@ -406,6 +409,29 @@ enum TurnContextBuildMode {
 }
 
 impl TurnContext {
+    /// Whether results of yielded work reach the model automatically and polling tools are
+    /// omitted. Inputs are session-stable so the tool list does not change between turns: the
+    /// owner must be wakeable, which is a root or a wake-mode spawned child.
+    pub(crate) fn automatic_completion_active(&self) -> bool {
+        self.config
+            .features
+            .enabled(Feature::AsyncProcessCompletion)
+            && self.config.async_completion_polling_tools == codex_features::PollingToolsMode::Omit
+            && (!self.session_source.is_non_root_agent()
+                || (self.wake_mode_active
+                    && matches!(
+                        self.session_source,
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                    )))
+    }
+
+    /// Whether Code Mode replaces `wait` with `exec_terminate`: automatic completion is active
+    /// and the session's provider reports cell readiness.
+    pub(crate) fn code_mode_automatic_completion(&self) -> bool {
+        self.automatic_completion_active()
+            && self.code_mode_terminal_ready == codex_code_mode::TerminalReadySupport::Supported
+    }
+
     /// Returns the resolved causal root for this admitted turn.
     pub(crate) fn root_turn_id(&self) -> String {
         self.turn_metadata_state
@@ -435,6 +461,7 @@ impl TurnContext {
             trace_id: current_span_trace_id(),
             realtime_active: self.realtime_active,
             code_mode_available: self.code_mode_available,
+            code_mode_terminal_ready: self.code_mode_terminal_ready,
             configured_token_budget: config.token_budget.clone(),
             use_model_token_budget_defaults: config.features.enabled(Feature::TokenBudget)
                 && !has_explicit_settings(&config),
@@ -858,6 +885,7 @@ impl TurnContext {
             trace_id: self.trace_id.clone(),
             realtime_active: self.realtime_active,
             code_mode_available: self.code_mode_available,
+            code_mode_terminal_ready: self.code_mode_terminal_ready,
             config: Arc::new(config),
             configured_token_budget: self.configured_token_budget.clone(),
             use_model_token_budget_defaults: self.use_model_token_budget_defaults,
@@ -1149,6 +1177,7 @@ impl Session {
             trace_id: current_span_trace_id(),
             realtime_active: false,
             code_mode_available: true,
+            code_mode_terminal_ready: codex_code_mode::TerminalReadySupport::Unsupported,
             config: per_turn_config,
             configured_token_budget,
             use_model_token_budget_defaults,
@@ -1428,6 +1457,8 @@ impl Session {
         );
         turn_context.wake_mode_active = self.services.local_agent_runtime.wake_mode_enabled();
         turn_context.code_mode_available = self.services.code_mode_service.is_available();
+        turn_context.code_mode_terminal_ready =
+            self.services.code_mode_service.terminal_ready_capability();
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.active_host_plugin_identities = Some(
             plugin_outcome

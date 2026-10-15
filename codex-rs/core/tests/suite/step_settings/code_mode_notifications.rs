@@ -8,6 +8,7 @@ async fn yielded_notifications_keep_originating_budgets_after_model_switch() -> 
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let test = step_settings_test()
+        .keep_polling_tools()
         .with_config(|config| {
             config.features.enable(Feature::CodeMode).unwrap();
             for model in &mut config.model_catalog.as_mut().expect("models").models {

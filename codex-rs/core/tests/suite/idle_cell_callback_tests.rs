@@ -204,6 +204,7 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
 
     let server = responses::start_mock_server().await;
     let test = test_codex()
+        .keep_polling_tools()
         .with_thread_manager(move |manager| {
             manager.with_code_mode_session_provider(Arc::new(Provider(session)))
         })

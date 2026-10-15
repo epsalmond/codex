@@ -2565,40 +2565,43 @@ async fn owner_network_policy_follows_the_selected_remote_command() -> Result<()
         ("USER_UNSET", true, None),
         ("USER_DENIED", true, Some(false)),
     ] {
-        let mut builder = test_codex().with_config(move |config| {
-            config
-                .features
-                .disable(Feature::NetworkProxy)
-                .expect("test config should allow feature update");
-            for feature in [Feature::UnifiedExec, Feature::ExecPermissionApprovals] {
+        let mut builder = test_codex()
+            .keep_polling_tools()
+            .with_config(move |config| {
                 config
                     .features
-                    .enable(feature)
+                    .disable(Feature::NetworkProxy)
                     .expect("test config should allow feature update");
-            }
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::workspace_write_with(
-                    &[],
-                    NetworkSandboxPolicy::Enabled,
-                    /*exclude_tmpdir_env_var*/ false,
-                    /*exclude_slash_tmp*/ false,
-                ))
-                .expect("set permission profile");
-            config.permissions.network = configured_controller.then(|| {
-                NetworkProxySpec::from_config_and_constraints(
-                    NetworkProxyConfig {
-                        enabled: true,
-                        allow_local_binding,
-                        ..NetworkProxyConfig::default()
-                    },
-                    /*requirements*/ None,
-                    config.permissions.permission_profile(),
-                )
-                .expect("build user-configured controller proxy")
+                for feature in [Feature::UnifiedExec, Feature::ExecPermissionApprovals] {
+                    config
+                        .features
+                        .enable(feature)
+                        .expect("test config should allow feature update");
+                }
+                config.permissions.approval_policy =
+                    Constrained::allow_any(AskForApproval::OnRequest);
+                config
+                    .permissions
+                    .set_permission_profile(PermissionProfile::workspace_write_with(
+                        &[],
+                        NetworkSandboxPolicy::Enabled,
+                        /*exclude_tmpdir_env_var*/ false,
+                        /*exclude_slash_tmp*/ false,
+                    ))
+                    .expect("set permission profile");
+                config.permissions.network = configured_controller.then(|| {
+                    NetworkProxySpec::from_config_and_constraints(
+                        NetworkProxyConfig {
+                            enabled: true,
+                            allow_local_binding,
+                            ..NetworkProxyConfig::default()
+                        },
+                        /*requirements*/ None,
+                        config.permissions.permission_profile(),
+                    )
+                    .expect("build user-configured controller proxy")
+                });
             });
-        });
         let test = builder.build_with_remote_and_local_env(&server).await?;
         assert!(!test.config.managed_network_requirements_enabled());
         assert!(!test.config.features.enabled(Feature::NetworkProxy));
@@ -2922,6 +2925,7 @@ async fn escalated_owner_network_terminal_requires_stdin_approval(
     let profile =
         PermissionProfile::from_runtime_permissions(&filesystem, NetworkSandboxPolicy::Enabled);
     let test = test_codex()
+        .keep_polling_tools()
         .with_config(move |config| {
             for feature in [Feature::UnifiedExec, Feature::WriteStdinApproval] {
                 config
@@ -3223,6 +3227,7 @@ allow_local_binding = true
     let permission_profile_for_config = permission_profile;
     let features = features.to_vec();
     Ok(test_codex()
+        .keep_polling_tools()
         .with_home(home)
         .with_cloud_config_bundle(managed_network_requirements_loader())
         .with_config(move |config| {

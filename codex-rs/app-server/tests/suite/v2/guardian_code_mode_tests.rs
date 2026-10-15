@@ -143,7 +143,7 @@ async fn model_guardian_policy_scores_code_mode_cells(
     };
     let analytics_server = responses::start_mock_server().await;
     mount_analytics_capture(&analytics_server, codex_home.path()).await?;
-    MockResponsesConfig::new(&responses_url)
+    MockResponsesConfig::new(&responses_url).keep_polling_tools()
         .with_model(MODEL)
         .with_provider_config("supports_websockets = false")
         .with_approval_policy("on-request")

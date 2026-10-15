@@ -10,6 +10,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
+use crate::tools::registry::ToolExposure;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use futures::future::BoxFuture;
@@ -18,15 +19,38 @@ use serde_json::json;
 
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
+use super::TERMINATE_TOOL_NAME;
 use super::WAIT_TOOL_NAME;
 use super::handle_runtime_response;
 use super::observation::code_mode_hook_tool_name;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
+use super::wait_spec::create_terminate_tool;
 use super::wait_spec::create_wait_tool;
+
+/// Refusal for `wait` calls in sessions where cell results are delivered automatically.
+pub(crate) const RETIRED_WAIT_MESSAGE: &str =
+    "results are delivered automatically; use `exec_terminate` to stop a cell";
 
 pub struct CodeModeWaitHandler {
     spec: ToolSpec,
+    mode: Mode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mode {
+    /// Model-visible `wait`, which polls or terminates a cell.
+    Wait,
+    /// Model-visible `exec_terminate`; cell results are otherwise delivered automatically.
+    TerminateOnly,
+    /// Hidden `wait` that explains the replacement to models trained on it.
+    Retired,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminateArgs {
+    cell_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,11 +79,18 @@ where
 
 impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain(WAIT_TOOL_NAME)
+        ToolName::plain(self.name())
     }
 
     fn spec(&self) -> ToolSpec {
         self.spec.clone()
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        match self.mode {
+            Mode::Wait | Mode::TerminateOnly => ToolExposure::Direct,
+            Mode::Retired => ToolExposure::Hidden,
+        }
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -77,6 +108,60 @@ impl CodeModeWaitHandler {
     ) -> Self {
         Self {
             spec: create_wait_tool(description_override, parameters_override),
+            mode: Mode::Wait,
+        }
+    }
+
+    /// `exec_terminate`, registered instead of `wait` when cell results are delivered
+    /// automatically.
+    pub(crate) fn terminate_only() -> Self {
+        Self {
+            spec: create_terminate_tool(),
+            mode: Mode::TerminateOnly,
+        }
+    }
+
+    /// Hidden `wait` that refuses with a pointer to automatic delivery and `exec_terminate`.
+    pub(crate) fn retired() -> Self {
+        Self {
+            spec: create_wait_tool(
+                /*description_override*/ None, /*parameters_override*/ None,
+            ),
+            mode: Mode::Retired,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self.mode {
+            Mode::Wait | Mode::Retired => WAIT_TOOL_NAME,
+            Mode::TerminateOnly => TERMINATE_TOOL_NAME,
+        }
+    }
+
+    /// Parses `(cell_id, terminate, yield_time_ms, max_tokens)` for the handler's mode.
+    fn parse_call(
+        &self,
+        arguments: &str,
+    ) -> Result<(String, bool, u64, Option<usize>), FunctionCallError> {
+        match self.mode {
+            Mode::Wait | Mode::Retired => {
+                let args: ExecWaitArgs = parse_arguments(arguments)?;
+                Ok((
+                    args.cell_id,
+                    args.terminate,
+                    args.yield_time_ms,
+                    args.max_tokens,
+                ))
+            }
+            Mode::TerminateOnly => {
+                let args: TerminateArgs = parse_arguments(arguments)?;
+                Ok((
+                    args.cell_id,
+                    /*terminate*/ true,
+                    DEFAULT_WAIT_YIELD_TIME_MS,
+                    /*max_tokens*/ None,
+                ))
+            }
         }
     }
 
@@ -114,22 +199,26 @@ impl CodeModeWaitHandler {
             turn.sub_id.clone(),
             turn.turn_metadata_state.clone(),
             call_id.clone(),
-            WAIT_TOOL_NAME,
+            self.name(),
             handler_span,
         );
         let result = match payload {
+            ToolPayload::Function { .. } if self.mode == Mode::Retired => Err(
+                FunctionCallError::RespondToModel(RETIRED_WAIT_MESSAGE.to_string()),
+            ),
             ToolPayload::Function { arguments }
-                if tool_name.is_default_namespace()
-                    && tool_name.name.as_str() == WAIT_TOOL_NAME =>
+                if tool_name.is_default_namespace() && tool_name.name.as_str() == self.name() =>
             {
-                let args: ExecWaitArgs = parse_arguments(&arguments).inspect_err(|_error| {
-                    telemetry.finish(/*success*/ false);
-                })?;
+                let (cell_id, terminate, yield_time_ms, max_tokens) =
+                    self.parse_call(&arguments).inspect_err(|_error| {
+                        telemetry.finish(/*success*/ false);
+                    })?;
                 let exec = ExecContext { session, turn };
                 let started_at = std::time::Instant::now();
-                telemetry.cell_id = Some(args.cell_id.clone());
-                let cell_id = codex_code_mode::CellId::new(args.cell_id);
-                let wait_response = if args.terminate {
+                telemetry.cell_id = Some(cell_id.clone());
+                let cell_id_text = cell_id.clone();
+                let cell_id = codex_code_mode::CellId::new(cell_id);
+                let wait_response = if terminate {
                     exec.session
                         .services
                         .code_mode_service
@@ -142,7 +231,7 @@ impl CodeModeWaitHandler {
                         .wait(
                             codex_code_mode::WaitRequest {
                                 cell_id,
-                                yield_time_ms: args.yield_time_ms,
+                                yield_time_ms,
                             },
                             step_context.preempt.clone(),
                         )
@@ -152,6 +241,15 @@ impl CodeModeWaitHandler {
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
+                if self.mode == Mode::TerminateOnly
+                    && let codex_code_mode::WaitOutcome::MissingCell(_) = &wait_response
+                {
+                    // The cell finished on its own; automatic delivery reports its result.
+                    telemetry.finish(/*success*/ false);
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "cell {cell_id_text} already finished; its result was delivered automatically"
+                    )));
+                }
                 if let codex_code_mode::WaitOutcome::LiveCell(response) = &wait_response {
                     let runtime_cell_id = match response {
                         codex_code_mode::RuntimeResponse::Yielded { cell_id, .. }
@@ -199,13 +297,15 @@ impl CodeModeWaitHandler {
                 Ok(boxed_tool_output(handle_runtime_response(
                     &step_context.settings.model_info,
                     wait_response.into(),
-                    args.max_tokens,
+                    max_tokens,
                     wall_time,
                     exec.turn.config.code_mode.experimental_show_cell_overhead,
+                    exec.turn.code_mode_automatic_completion(),
                 )))
             }
             _ => Err(FunctionCallError::RespondToModel(format!(
-                "{WAIT_TOOL_NAME} expects JSON arguments"
+                "{} expects JSON arguments",
+                self.name()
             ))),
         };
         telemetry.finish(
@@ -252,8 +352,16 @@ impl CoreToolRuntime for CodeModeWaitHandler {
             let ToolPayload::Function { arguments } = &invocation.payload else {
                 return None;
             };
-            let args: ExecWaitArgs = parse_arguments(arguments).ok()?;
-            Some(wait_observation_input(&args))
+            match self.mode {
+                Mode::Wait | Mode::Retired => {
+                    let args: ExecWaitArgs = parse_arguments(arguments).ok()?;
+                    Some(wait_observation_input(&args))
+                }
+                Mode::TerminateOnly => {
+                    let args: TerminateArgs = parse_arguments(arguments).ok()?;
+                    Some(json!({ "cell_id": args.cell_id }))
+                }
+            }
         })
     }
 

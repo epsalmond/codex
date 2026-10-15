@@ -50,6 +50,7 @@ async fn cancelling_tool_aborts_its_guardian_review(cancellation: Cancellation) 
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);

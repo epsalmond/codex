@@ -131,6 +131,10 @@ push build.
   `codex-shake exec` roots, and MultiAgentV2 child agents at every depth; exec
   stays open until the whole agent tree is idle. See
   [wake mode](#wake-mode-for-multi-agent-orchestrators).
+- **Automatic process and cell completion** delivers the result of a
+  background command or a running Code Mode script once it finishes, so the
+  model never polls for it. See
+  [automatic process and cell completion](#automatic-process-and-cell-completion).
 
 For prompts that put these to work, see
 [Getting the most out of codex-shake](RELEASE_NOTES.md#getting-the-most-out-of-codex-shake).
@@ -219,8 +223,11 @@ When an automatic turn fails to start, its accepted messages stay queued and no
 turn starts automatically, durable sleep included, until an explicit follow-up
 or user turn.
 
-Wake-mode agents keep `clock.curr_time` and Code Mode's `wait` tool, while
-`clock.sleep` and `collaboration.wait_agent` are omitted. Set
+Wake-mode agents keep `clock.curr_time`, while `clock.sleep` and
+`collaboration.wait_agent` are omitted. Code Mode's `wait` is replaced by
+`exec_terminate`, because a running script's result is delivered
+automatically; see
+[automatic process and cell completion](#automatic-process-and-cell-completion). Set
 `agent_polling = "enabled"` to keep polling tools throughout the tree.
 Pending reports are retried when capacity frees, and evicted agents can reload
 while the Codex process stays running; delivery across a process restart is
@@ -231,6 +238,56 @@ context reduction](codex-rs/docs/shake.md#subagents). See the [nested wake
 release notes](releases/2026-10-02-nested-wake-mode.md) for behavior and
 boundaries, and the [original root wake rollout](releases/2026-09-26-wake-mode.md)
 for its measurements.
+
+### Automatic process and cell completion
+
+When a background command started with `exec_command` or a Code Mode `exec`
+script is still running at the end of its tool call, its result is delivered
+to the agent automatically once it finishes. An idle agent wakes with a new
+turn; a busy one receives the result with its next model request. The model
+does not poll:
+
+- Code Mode exposes `exec_terminate({cell_id})` instead of `wait`. Call it to
+  stop a script you no longer need; it returns the output so far, and no
+  automatic result follows. If the script already finished, it reports that
+  the result was delivered automatically.
+- An empty `write_stdin` from the model to a running non-TTY session returns
+  "session N is running; its exit status and output tail will be delivered
+  automatically." Writing input still works, and so do empty polls of
+  interactive TTY sessions, which get no automatic delivery. A Code Mode script
+  can still poll its own sessions with `tools.write_stdin`.
+
+Each result is a single bounded message: a header with the call, the
+`kind=process` or `kind=cell` producer, its status (`exited(N)`, `completed`,
+`error`, `cancelled`, `timedOut`), and `truncated=<bytes>`, followed by at most
+4096 bytes of the output's tail; `truncated` counts the bytes omitted before
+it. Write large results to a file or `store()` them for a later `exec`. A
+script's images and audio are not delivered; the message notes how many were
+omitted.
+
+Esc pauses automatic delivery at the root: results that arrive afterwards are
+held for your next message, like child reports in
+[wake mode](#wake-mode-for-multi-agent-orchestrators). Interrupting a turn
+reports its running scripts as `cancelled`.
+
+The root agent and wake-mode subagents get automatic delivery without polling
+tools. Subagents with `agent_polling = "enabled"` keep `wait` and empty polls.
+Code Mode keeps `wait` when its host cannot report that a script finished.
+
+To keep `wait` and empty `write_stdin` polls while still delivering results
+automatically, add this to `~/.codex/config.toml`:
+
+```toml
+[features.async_process_completion]
+polling_tools = "keep"
+```
+
+To turn automatic delivery off entirely and restore polling:
+
+```toml
+[features]
+async_process_completion = false
+```
 
 ### Monitoring subagents
 
@@ -346,8 +403,9 @@ profile in live execution and replay rather than assuming general accuracy.
 
 ### Hooks observe control-tool waits
 
-`PreToolUse` hooks also receive Code Mode `exec` cells, Code Mode `wait`, and
-unified exec `write_stdin`, including empty polls. These events carry
+`PreToolUse` hooks also receive Code Mode `exec` cells, Code Mode
+`exec_terminate` and `wait`, and unified exec `write_stdin`, including empty
+polls. These events carry
 `"observational": true`: hooks run and their `additionalContext` reaches the
 model, but deny, exit code 2, and `updatedInput` are ignored, so the call runs
 with its original input and result. Observational hooks run only when a hook
@@ -358,7 +416,8 @@ metadata:
 | `tool_name` | `tool_input` |
 |---|---|
 | `write_stdin` | `session_id`, `stdin_empty`, `stdin_bytes`, `yield_time_ms`, optional `max_output_tokens`, `exec_call_id` (the originating `exec_command` call), and `"chars": ""` only for empty polls. Stdin text is never sent. |
-| `wait` | `cell_id`, `yield_time_ms`, `terminate`, optional `max_tokens`. |
+| `exec_terminate` | `cell_id`. |
+| `wait` | `cell_id`, `yield_time_ms`, `terminate`, optional `max_tokens`. Only with `polling_tools = "keep"`, `async_process_completion = false`, or a polling subagent. |
 | `exec` | `source_bytes`, `source_sha1`, and optional pragma `yield_time_ms`/`max_output_tokens`. Source text is never sent. |
 
 The command a `write_stdin` call continues keeps its single `Bash`

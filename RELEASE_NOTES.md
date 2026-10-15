@@ -1,3 +1,7 @@
+## Automatic process and cell completion
+
+A background command or running Code Mode script now reports its result to the agent once it finishes, so the model stops spending requests on checks. Code Mode's `wait` is replaced by `exec_terminate`, and empty `write_stdin` polls of non-TTY sessions are refused. See [automatic process and cell completion](README.md#automatic-process-and-cell-completion) and the [release notes](releases/2026-10-14-automatic-cell-completion.md) ([#79](https://github.com/epsalmond/codex/issues/79)).
+
 ## Recorded child reports after compaction
 
 Wake-mode parents now get a fresh delivery when compaction drops a recorded trigger report, preventing repeated automatic turns on a report the model can no longer see. [Details](releases/2026-10-14-recorded-report-compaction.md) ([#175](https://github.com/epsalmond/codex/issues/175)).
@@ -66,7 +70,7 @@ Ask for delegation, hand off long waits, and turn repeated work into scripts:
 
 - "Delegate the flaky-test investigation to a subagent and keep going." Its result arrives as a new turn, in an interactive session or a `codex-shake exec` run.
 - "Give each failing package to its own subagent and summarize their reports as they arrive."
-- For CI or a long build, ask for one waiting script in place of repeated status checks: "Run a script that waits for CI to finish, with the longest yield." Each check on the running script is still a model request, spaced up to 300 seconds apart by default, so one long wait keeps requests to a minimum.
+- For CI or a long build, ask for one waiting script and then end the turn: "Run a script that waits for CI to finish, then stop until it reports." The script's result arrives on its own when it finishes, so the wait costs no model requests.
 - "Hand the CI wait to a subagent, then end your turn." The subagent's report starts your next turn. In a `codex-shake exec` run the root can end its turn too: exec drains the agent tree and wakes the root with the reports. With `agent_polling = "enabled"`, exec restores the old polling behaviour and exits after one root turn, so keep the wait in the root there.
 - When a sequence of commands repeats, ask for a script: "Turn these steps into a script and use it from now on."
 - Give each subagent one self-contained task and ask for a short report; it shakes and compacts within its own context budget.

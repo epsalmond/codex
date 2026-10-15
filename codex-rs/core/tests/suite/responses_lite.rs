@@ -107,6 +107,7 @@ async fn base_instructions_use_input_items(responses_lite: bool) -> Result<()> {
 
     let builder = || {
         test_codex()
+            .keep_polling_tools()
             .with_model_info_override("gpt-5.4", move |model_info| {
                 model_info.use_responses_lite = responses_lite;
                 model_info.tool_mode = Some(ToolMode::CodeMode);

@@ -92,6 +92,11 @@ impl MockResponsesConfig {
         self
     }
 
+    /// Keeps Code Mode `wait` and empty `write_stdin` polls alongside automatic completion.
+    pub fn keep_polling_tools(self) -> Self {
+        self.with_extra_config("[features.async_process_completion]\npolling_tools = \"keep\"")
+    }
+
     pub fn with_extra_config(mut self, config: &str) -> Self {
         self.extra_config.push(config.to_string());
         self

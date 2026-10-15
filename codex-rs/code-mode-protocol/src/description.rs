@@ -260,7 +260,9 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
 }
 
 pub fn is_code_mode_nested_tool(tool_name: &str) -> bool {
-    tool_name != crate::PUBLIC_TOOL_NAME && tool_name != crate::WAIT_TOOL_NAME
+    tool_name != crate::PUBLIC_TOOL_NAME
+        && tool_name != crate::WAIT_TOOL_NAME
+        && tool_name != crate::TERMINATE_TOOL_NAME
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,8 +277,37 @@ pub enum DeferredToolDiscovery {
     RankedSearch,
 }
 
+/// Appended to the `exec` description when a running script's result is delivered automatically.
+pub const AUTOMATIC_DELIVERY_EXEC_GUIDANCE: &str = "When `exec` returns `Script running with cell ID ...`, the script's final result is delivered to you automatically once it finishes; continue with other work or end your turn instead of checking on it. Use `exec_terminate` only to stop a script you no longer need.";
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_exec_tool_description(
+    enabled_tools: &[ToolDefinition],
+    deferred_tools: &[ToolDefinition],
+    namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
+    default_exec_yield_time_ms: u64,
+    code_mode_only: bool,
+    image_detail_visibility: ImageDetailVisibility,
+    deferred_tool_discovery: DeferredToolDiscovery,
+    messages: Option<&CodeModeToolMessages>,
+) -> String {
+    build_exec_tool_description_with_delivery(
+        enabled_tools,
+        deferred_tools,
+        namespace_descriptions,
+        default_exec_yield_time_ms,
+        code_mode_only,
+        image_detail_visibility,
+        deferred_tool_discovery,
+        messages,
+        /*automatic_delivery*/ false,
+    )
+}
+
+/// Builds the `exec` description; with `automatic_delivery`, the delivery guidance follows the
+/// (possibly model-specific) description text.
+#[allow(clippy::too_many_arguments)]
+pub fn build_exec_tool_description_with_delivery(
     enabled_tools: &[ToolDefinition],
     _deferred_tools: &[ToolDefinition],
     namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
@@ -285,6 +316,7 @@ pub fn build_exec_tool_description(
     image_detail_visibility: ImageDetailVisibility,
     deferred_tool_discovery: DeferredToolDiscovery,
     messages: Option<&CodeModeToolMessages>,
+    automatic_delivery: bool,
 ) -> String {
     let mut sections = Vec::new();
     let image_helper = match image_detail_visibility {
@@ -302,6 +334,9 @@ pub fn build_exec_tool_description(
         .replace("{{ image_helper }}", image_helper);
     if !description.is_empty() {
         sections.push(description);
+    }
+    if automatic_delivery {
+        sections.push(AUTOMATIC_DELIVERY_EXEC_GUIDANCE.to_string());
     }
     let default_guidance = match deferred_tool_discovery {
         // In Code Mode Only, the enabled search tool's description is rendered below.

@@ -28,6 +28,7 @@ async fn mxc_replaces_store_powershell_before_launch() -> Result<()> {
         ),
     };
     let builder = test_codex()
+        .keep_polling_tools()
         .with_user_shell(shell.into())
         .with_pre_build_hook(|home| {
             std::fs::write(home.join("config.toml"), "[windows]\nsandbox = \"mxc\"\n")

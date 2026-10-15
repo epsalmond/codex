@@ -187,7 +187,10 @@ async fn remote_tool_mode_selector_overrides_feature_flags() -> Result<()> {
     let mut code_mode_only_model = remote_model("test-tool-mode-code-mode-only");
     code_mode_only_model.tool_mode = Some(ToolMode::CodeModeOnly);
     code_mode_only_model.input_modalities = vec![InputModality::Text, InputModality::Image];
-    let code_mode_only_body = response_body_for_remote_model(code_mode_only_model, |_| {}).await?;
+    let code_mode_only_body = response_body_for_remote_model(code_mode_only_model, |config| {
+        config.async_completion_polling_tools = codex_features::PollingToolsMode::Keep;
+    })
+    .await?;
     assert_eq!(
         tool_names(&code_mode_only_body),
         vec![

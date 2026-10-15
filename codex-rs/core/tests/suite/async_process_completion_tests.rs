@@ -9,6 +9,8 @@ use pretty_assertions::assert_eq;
 
 #[path = "async_process_completion/idle_tests.rs"]
 mod idle_tests;
+#[path = "async_process_completion/polling_tools_tests.rs"]
+mod polling_tools_tests;
 
 fn finite_command(delay_seconds: u32, exit_code: i32) -> String {
     match test_target_os() {

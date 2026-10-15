@@ -63,6 +63,7 @@ pub(crate) use wait_handler::CodeModeWaitHandler;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
 pub(crate) const WAIT_TOOL_NAME: &str = codex_code_mode::WAIT_TOOL_NAME;
+pub(crate) const TERMINATE_TOOL_NAME: &str = codex_code_mode::TERMINATE_TOOL_NAME;
 pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = codex_code_mode::DEFAULT_WAIT_YIELD_TIME_MS;
 
 /// Returns true for the code-mode `exec` tool in the default namespace.
@@ -114,6 +115,15 @@ impl CodeModeService {
 
     pub(crate) fn is_available(&self) -> bool {
         self.availability.is_ok()
+    }
+
+    /// Session-stable readiness support of the configured provider.
+    pub(crate) fn terminal_ready_capability(&self) -> codex_code_mode::TerminalReadySupport {
+        if self.is_available() {
+            self.session_provider.terminal_ready_capability()
+        } else {
+            codex_code_mode::TerminalReadySupport::Unsupported
+        }
     }
 
     pub(crate) fn take_unavailable_warning(&self, tool_mode: ToolMode) -> Option<String> {
@@ -204,6 +214,10 @@ impl CodeModeService {
         cause: TerminateCause,
     ) -> Result<codex_code_mode::WaitOutcome, String> {
         let completion = self.dispatch_broker.completion(&cell_id);
+        if let (Some(completion), TerminateCause::Model) = (&completion, cause) {
+            // A fallback watcher holds the observation lock while it polls; stop it first.
+            completion.cancel_watcher();
+        }
         // An interrupt must not queue behind a long model `wait`; the completion's own state
         // still decides whether the interrupt or a concurrent read owns the terminal result.
         let _permit = match (&completion, cause) {
@@ -342,8 +356,9 @@ fn handle_runtime_response(
     max_output_tokens: Option<usize>,
     wall_time: Duration,
     experimental_show_cell_overhead: bool,
+    automatic_delivery: bool,
 ) -> CodeModeToolOutput {
-    let script_status = format_script_status(&response);
+    let script_status = format_script_status(&response, automatic_delivery);
     let supports_original = can_request_original_image_detail(model_info);
     let host_duration = response
         .code_mode_host_duration()
@@ -375,8 +390,15 @@ fn handle_runtime_response(
     )
 }
 
-fn format_script_status(response: &RuntimeResponse) -> String {
+/// Status line for a running cell whose final result reaches the model without `wait`.
+pub(crate) const AUTOMATIC_DELIVERY_STATUS: &str =
+    "Its final result will be delivered automatically; continue with other work or end your turn.";
+
+fn format_script_status(response: &RuntimeResponse, automatic_delivery: bool) -> String {
     match response {
+        RuntimeResponse::Yielded { cell_id, .. } if automatic_delivery => {
+            format!("Script running with cell ID {cell_id}\n{AUTOMATIC_DELIVERY_STATUS}")
+        }
         RuntimeResponse::Yielded { cell_id, .. } => {
             format!("Script running with cell ID {cell_id}")
         }

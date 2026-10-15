@@ -93,7 +93,7 @@ fn exec_command_tool_matches_expected_spec() {
 
 #[test]
 fn write_stdin_tool_matches_expected_spec() {
-    let tool = create_write_stdin_tool();
+    let tool = create_write_stdin_tool(/*automatic_completion*/ false);
 
     let properties = BTreeMap::from([
         (

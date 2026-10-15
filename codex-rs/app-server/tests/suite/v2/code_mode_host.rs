@@ -111,8 +111,9 @@ async fn code_mode_model_output_uses_structured_host_timing(
     )
     .await;
     let codex_home = TempDir::new()?;
-    let mut config =
-        MockResponsesConfig::new(&model_server.uri()).enable_feature(Feature::CodeModeOnly);
+    let mut config = MockResponsesConfig::new(&model_server.uri())
+        .enable_feature(Feature::CodeModeOnly)
+        .keep_polling_tools();
     if experimental_show_cell_overhead {
         config = config
             .with_extra_config("[features.code_mode]\nexperimental_show_cell_overhead = true");

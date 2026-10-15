@@ -75,7 +75,7 @@ async fn stdin_reviews_retained_grants_after_turn_permissions_expire() -> Result
     skip_if_target_windows!(Ok(()), "uses a POSIX interactive shell");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
-    let harness = harness(test_codex()).await?;
+    let harness = harness(test_codex().keep_polling_tools()).await?;
     let test = harness.test();
     harness.create_dir_all("allowed").await?;
     let directory = test
@@ -202,30 +202,32 @@ async fn stdin_reviews_escalated_terminal_with_denied_reads_before_delivering_in
     skip_if_target_windows!(Ok(()), "uses a POSIX interactive shell");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
-    let harness = TestCodexHarness::with_auto_env_builder(test_codex().with_config(|config| {
-        config.features.enable(Feature::WriteStdinApproval).unwrap();
-        config
-            .features
-            .enable(Feature::ExecPermissionApprovals)
-            .unwrap();
-        config.features.enable(Feature::UnifiedExec).unwrap();
-        config.features.disable(Feature::ShellZshFork).unwrap();
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        let mut file_system = PermissionProfile::read_only().file_system_sandbox_policy();
-        file_system.entries.push(FileSystemSandboxEntry::new(
-            FileSystemPath::GlobPattern {
-                pattern: "**/secret.env".into(),
-            },
-            FileSystemAccessMode::Deny,
-        ));
-        config
-            .permissions
-            .set_permission_profile(PermissionProfile::from_runtime_permissions(
-                &file_system,
-                NetworkSandboxPolicy::Restricted,
-            ))
-            .unwrap();
-    }))
+    let harness = TestCodexHarness::with_auto_env_builder(
+        test_codex().keep_polling_tools().with_config(|config| {
+            config.features.enable(Feature::WriteStdinApproval).unwrap();
+            config
+                .features
+                .enable(Feature::ExecPermissionApprovals)
+                .unwrap();
+            config.features.enable(Feature::UnifiedExec).unwrap();
+            config.features.disable(Feature::ShellZshFork).unwrap();
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            let mut file_system = PermissionProfile::read_only().file_system_sandbox_policy();
+            file_system.entries.push(FileSystemSandboxEntry::new(
+                FileSystemPath::GlobPattern {
+                    pattern: "**/secret.env".into(),
+                },
+                FileSystemAccessMode::Deny,
+            ));
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::from_runtime_permissions(
+                    &file_system,
+                    NetworkSandboxPolicy::Restricted,
+                ))
+                .unwrap();
+        }),
+    )
     .await?;
     let codex = &harness.test().codex;
     harness.write_file("secret.env", "secret").await?;
@@ -338,7 +340,12 @@ async fn strict_stdin_review_reaches_guardian_with_sandbox_prompts_disabled() ->
     let calls = Arc::new(ReviewedCalls::default());
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.approval_review_contributor(calls.clone());
-    let harness = harness(test_codex().with_extensions(Arc::new(extensions.build()))).await?;
+    let harness = harness(
+        test_codex()
+            .keep_polling_tools()
+            .with_extensions(Arc::new(extensions.build())),
+    )
+    .await?;
     let test = harness.test();
     let opened = mount_sse_sequence(
         harness.server(),

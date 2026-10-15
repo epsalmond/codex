@@ -6,6 +6,7 @@ mod response;
 mod runtime;
 mod session;
 
+pub use description::AUTOMATIC_DELIVERY_EXEC_GUIDANCE;
 pub use description::CODE_MODE_PRAGMA_PREFIX;
 pub use description::CodeModeToolKind;
 pub use description::DeferredToolDiscovery;
@@ -16,6 +17,7 @@ pub use description::ToolDefinition;
 pub use description::ToolNamespaceDescription;
 pub use description::augment_tool_definition;
 pub use description::build_exec_tool_description;
+pub use description::build_exec_tool_description_with_delivery;
 pub use description::build_wait_tool_description;
 pub use description::enabled_tool_metadata;
 pub use description::is_code_mode_nested_tool;
@@ -57,3 +59,5 @@ pub use session::ToolInvocationFuture;
 
 pub const PUBLIC_TOOL_NAME: &str = "exec";
 pub const WAIT_TOOL_NAME: &str = "wait";
+/// Stops a running cell when its result is delivered automatically and `wait` is hidden.
+pub const TERMINATE_TOOL_NAME: &str = "exec_terminate";
