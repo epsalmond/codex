@@ -1429,11 +1429,14 @@ async fn code_mode_catalog_messages(ranked_search: bool) -> Result<()> {
     let server = start_mock_server().await;
     let apps =
         core_test_support::apps_test_server::AppsTestServer::mount_searchable(&server).await?;
-    let test = test_codex().keep_polling_tools()
+    let test = test_codex()
         .with_model("gpt-6-astra")
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             configure_scenario_catalog(config);
+            // Legacy polling: the scripted `wait` reads the finished cell, which automatic
+            // completion would otherwise consume first.
+            let _ = config.features.disable(Feature::AsyncProcessCompletion);
             config.chatgpt_base_url = apps.chatgpt_base_url;
             config.features.enable(Feature::Apps).expect("enable apps");
             config.features.set_enabled(Feature::CodeModeToolSearch, ranked_search)
@@ -1771,6 +1774,8 @@ async fn subagent_waits_for_its_inherited_environment_configuration() -> Result<
             .features
             .enable(Feature::StableEnvironmentTools)
             .expect("enable stable environment tools");
+        // The fork wakes roots on child reports by default; this scenario scripts `wait_agent`.
+        config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
     })
     .await?;
     let labels = [
