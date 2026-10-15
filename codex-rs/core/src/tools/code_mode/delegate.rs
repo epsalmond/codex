@@ -9,29 +9,27 @@ use codex_code_mode::CodeModeNestedToolCall;
 use codex_code_mode::CodeModeSessionDelegate;
 use codex_code_mode::NotificationFuture;
 use codex_code_mode::ToolInvocationFuture;
-use codex_history::CodexHarnessMetadata;
-use codex_history::ResponseItemEnvelope;
 use codex_protocol::ThreadId;
-use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::with_serialization_allowance;
 use serde_json::Value as JsonValue;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
+use tokio_util::task::TaskTracker;
 
 use super::PUBLIC_TOOL_NAME;
-use super::submit_nested_tool;
 use super::telemetry::DispatchInterruption;
 use super::telemetry::NestedToolDispatchTrace;
 use super::telemetry::trace_id;
-use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::tools::ExecutedToolCalls;
 use crate::tools::call_trace;
 use crate::tools::context::SharedTurnDiffTracker;
-use crate::tools::parallel::ToolCallRuntime;
+
+#[path = "dispatch_worker.rs"]
+mod worker;
+pub(crate) use worker::CodeModeDispatchWorker;
+use worker::WorkerLease;
 
 pub(super) struct CodeModeDispatchBroker {
     thread_id: ThreadId,
@@ -39,12 +37,23 @@ pub(super) struct CodeModeDispatchBroker {
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
     dispatch_gates: Arc<Mutex<HashMap<CellId, CellDispatchGate>>>,
     executed_tool_calls: ExecutedToolCalls,
+    // One receiver serves sampling and every live cell; it stops when the last lease drops.
+    worker: Mutex<Weak<WorkerLease>>,
+    receiver_permit: Arc<tokio::sync::Mutex<()>>,
+    tasks: TaskTracker,
+    shutdown: CancellationToken,
 }
 
 /// Retains the step advertised to one execution, including callbacks after it yields.
+///
+/// Nested calls keep running with this exact step, router and diff tracker even after
+/// the turn that started the cell has ended. The step's sandbox and approval policy
+/// are therefore frozen at `exec` time: later `/approvals` or permission changes
+/// apply to new cells, not to a cell that is already running.
 pub(super) struct CodeModeCellDelegate {
     pub(super) broker: Arc<CodeModeDispatchBroker>,
     pub(super) step_context: Arc<StepContext>,
+    pub(super) tracker: SharedTurnDiffTracker,
 }
 
 struct CellDispatchGate {
@@ -53,6 +62,8 @@ struct CellDispatchGate {
     // no origin is attached; Some retains the original item and window across
     // waits, even if the best-effort item lookup found no ID.
     originating_call: Option<ToolCallOrigin>,
+    // A live cell keeps the shared receiver alive until it closes.
+    worker: Option<CodeModeDispatchWorker>,
 }
 
 impl CodeModeDispatchBroker {
@@ -64,6 +75,10 @@ impl CodeModeDispatchBroker {
             dispatch_rx,
             dispatch_gates: Arc::new(Mutex::new(HashMap::new())),
             executed_tool_calls,
+            worker: Mutex::new(Weak::new()),
+            receiver_permit: Arc::new(tokio::sync::Mutex::new(())),
+            tasks: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -82,11 +97,26 @@ impl CodeModeDispatchBroker {
                 .or_insert_with(|| CellDispatchGate {
                     ready: watch::channel(false).0,
                     originating_call: None,
+                    worker: None,
                 });
             gate.originating_call = originating_call;
             gate.ready.clone()
         };
         ready.send_replace(true);
+    }
+
+    /// Keeps the dispatch worker alive for a live cell until the cell closes.
+    ///
+    /// A cell that already closed keeps no lease.
+    pub(super) fn retain_worker_for_cell(&self, cell_id: &CellId, worker: CodeModeDispatchWorker) {
+        if let Some(gate) = self
+            .dispatch_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(cell_id)
+        {
+            gate.worker = Some(worker);
+        }
     }
 
     pub(super) fn cell_originating_call(&self, cell_id: &CellId) -> Option<ToolCallOrigin> {
@@ -102,6 +132,7 @@ impl CodeModeDispatchBroker {
             .dispatch_gates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Dropping the gate releases the cell's worker lease.
         dispatch_gates.remove(cell_id);
         self.executed_tool_calls.finish_cell_recording(cell_id);
     }
@@ -114,137 +145,12 @@ impl CodeModeDispatchBroker {
             .cloned()
             .collect()
     }
+}
 
-    pub(super) fn start_turn_worker(
-        &self,
-        session: Arc<Session>,
-        step_context: Arc<StepContext>,
-        tracker: SharedTurnDiffTracker,
-    ) -> CodeModeDispatchWorker {
-        let tool_runtime = ToolCallRuntime::new(Arc::clone(&session), step_context, tracker);
-        let host = Arc::new(CoreTurnHost {
-            session,
-            tool_runtime,
-        });
-        let dispatch_rx = self.dispatch_rx.clone();
-        let dispatch_gates = Arc::clone(&self.dispatch_gates);
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            loop {
-                let message = tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    message = dispatch_rx.recv() => message.ok(),
-                };
-                let Some(message) = message else {
-                    break;
-                };
-                match message {
-                    DispatchMessage::Notify {
-                        call_id,
-                        cell_id,
-                        text,
-                        output_token_limit,
-                        cancellation_token,
-                        response_tx,
-                    } => {
-                        let response = if wait_until_cell_ready_for_dispatch(
-                            &dispatch_gates,
-                            &cell_id,
-                            &cancellation_token,
-                        )
-                        .await
-                        {
-                            host.notify(call_id, cell_id, text, output_token_limit)
-                                .await
-                        } else {
-                            remove_dispatch_gate(&dispatch_gates, &cell_id);
-                            Err("code mode notification cancelled".to_string())
-                        };
-                        let _ = response_tx.send(response);
-                    }
-                    DispatchMessage::InvokeTool {
-                        invocation,
-                        step_context,
-                        mut dispatch_trace,
-                        cancellation_token,
-                        response_tx,
-                    } => {
-                        let cell_id = invocation.cell_id.clone();
-                        if !wait_until_cell_ready_for_dispatch(
-                            &dispatch_gates,
-                            &cell_id,
-                            &cancellation_token,
-                        )
-                        .await
-                        {
-                            let outcome = if cancellation_token.is_cancelled() {
-                                DispatchInterruption::Cancelled
-                            } else {
-                                DispatchInterruption::CellClosed
-                            };
-                            dispatch_trace.interruption = Some(outcome);
-                            remove_dispatch_gate(&dispatch_gates, &cell_id);
-                            continue;
-                        }
-                        let Some(step_context) = step_context
-                            .upgrade()
-                            .filter(|_| !cancellation_token.is_cancelled())
-                        else {
-                            let _ = response_tx
-                                .send(Err("code mode nested tool call cancelled".to_string()));
-                            continue;
-                        };
-                        let track_completeness =
-                            ExecutedToolCalls::is_enabled(&step_context.turn.config.features);
-                        let host = Arc::clone(&host);
-                        let dispatch_gates = Arc::clone(&dispatch_gates);
-                        let span = dispatch_trace.span.clone();
-                        tokio::spawn(async move {
-                            let invocation = {
-                                let dispatch_gate = track_completeness.then(|| {
-                                    dispatch_gates
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                });
-                                if dispatch_gate.as_ref().is_some_and(|gates| {
-                                    cancellation_token.is_cancelled()
-                                        || !gates.contains_key(&cell_id)
-                                }) {
-                                    let outcome = if cancellation_token.is_cancelled() {
-                                        DispatchInterruption::Cancelled
-                                    } else {
-                                        DispatchInterruption::CellClosed
-                                    };
-                                    dispatch_trace.interruption = Some(outcome);
-                                    return;
-                                }
-                                // Submission and cell closure share this gate.
-                                span.in_scope(|| {
-                                    dispatch_trace.interruption = None;
-                                    host.submit_tool(
-                                        invocation,
-                                        step_context,
-                                        dispatch_trace.call_id.clone(),
-                                        cancellation_token.clone(),
-                                    )
-                                })
-                                .instrument(span)
-                            };
-                            tokio::pin!(invocation);
-                            let response = tokio::select! {
-                                biased;
-                                _ = cancellation_token.cancelled() => invocation.await,
-                                response = &mut invocation => response,
-                            };
-                            let _ = response_tx.send(response);
-                        });
-                    }
-                }
-            }
-        });
-        CodeModeDispatchWorker {
-            shutdown_tx: Some(shutdown_tx),
-        }
+impl Drop for CodeModeDispatchBroker {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.tasks.close();
     }
 }
 
@@ -261,6 +167,7 @@ fn dispatch_gate(
         .or_insert_with(|| CellDispatchGate {
             ready: watch::channel(false).0,
             originating_call: None,
+            worker: None,
         })
         .ready
         .clone()
@@ -281,6 +188,7 @@ async fn wait_until_cell_ready_for_dispatch(
     dispatch_gates: &Mutex<HashMap<CellId, CellDispatchGate>>,
     cell_id: &CellId,
     cancellation_token: &CancellationToken,
+    stop: &CancellationToken,
 ) -> bool {
     if cancellation_token.is_cancelled() {
         return false;
@@ -297,6 +205,7 @@ async fn wait_until_cell_ready_for_dispatch(
                 }
             }
             _ = cancellation_token.cancelled() => return false,
+            _ = stop.cancelled() => return false,
         }
     }
 }
@@ -343,6 +252,7 @@ impl CodeModeSessionDelegate for CodeModeCellDelegate {
                 .send(DispatchMessage::InvokeTool {
                     invocation,
                     step_context: Arc::downgrade(&self.step_context),
+                    tracker: Arc::clone(&self.tracker),
                     dispatch_trace,
                     cancellation_token: cancellation_token.clone(),
                     response_tx,
@@ -377,6 +287,7 @@ impl CodeModeSessionDelegate for CodeModeCellDelegate {
                     call_id,
                     cell_id,
                     text,
+                    step_context: Arc::downgrade(&self.step_context),
                     output_token_limit: with_serialization_allowance(
                         self.step_context
                             .settings
@@ -410,6 +321,7 @@ enum DispatchMessage {
         invocation: CodeModeNestedToolCall,
         // The delegate owns the step while the callback is live; stale queued work must not.
         step_context: Weak<StepContext>,
+        tracker: SharedTurnDiffTracker,
         dispatch_trace: Box<NestedToolDispatchTrace>,
         cancellation_token: CancellationToken,
         response_tx: oneshot::Sender<Result<JsonValue, String>>,
@@ -418,78 +330,11 @@ enum DispatchMessage {
         call_id: String,
         cell_id: CellId,
         text: String,
+        step_context: Weak<StepContext>,
         output_token_limit: usize,
         cancellation_token: CancellationToken,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
-}
-
-pub(crate) struct CodeModeDispatchWorker {
-    shutdown_tx: Option<oneshot::Sender<()>>,
-}
-
-impl Drop for CodeModeDispatchWorker {
-    fn drop(&mut self) {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-    }
-}
-
-struct CoreTurnHost {
-    session: Arc<Session>,
-    tool_runtime: ToolCallRuntime,
-}
-
-impl CoreTurnHost {
-    fn submit_tool(
-        &self,
-        invocation: CodeModeNestedToolCall,
-        step_context: Arc<StepContext>,
-        call_id: String,
-        cancellation_token: CancellationToken,
-    ) -> impl std::future::Future<Output = Result<JsonValue, String>> + Send + 'static {
-        let invocation = submit_nested_tool(
-            Arc::clone(&self.session),
-            step_context,
-            self.tool_runtime.clone(),
-            invocation,
-            call_id,
-            cancellation_token,
-        )
-        .map_err(|error| error.to_string());
-        async move { invocation?.await.map_err(|error| error.to_string()) }
-    }
-
-    async fn notify(
-        &self,
-        call_id: String,
-        cell_id: CellId,
-        text: String,
-        output_token_limit: usize,
-    ) -> Result<(), String> {
-        if text.trim().is_empty() {
-            return Ok(());
-        }
-        self.session
-            .inject_if_running(vec![ResponseItemEnvelope {
-                item: ResponseItem::CustomToolCallOutput {
-                    id: None,
-                    call_id,
-                    name: Some(PUBLIC_TOOL_NAME.to_string()),
-                    output: FunctionCallOutputPayload::from_text(text),
-                    internal_chat_message_metadata_passthrough: None,
-                },
-                metadata: Some(CodexHarnessMetadata {
-                    history_truncation_token_limit: Some(output_token_limit),
-                    ..Default::default()
-                }),
-            }])
-            .await
-            .map_err(|_| {
-                format!("failed to inject exec notify message for cell {cell_id}: no active turn")
-            })
-    }
 }
 
 #[cfg(test)]

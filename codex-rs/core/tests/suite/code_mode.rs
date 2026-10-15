@@ -9366,3 +9366,6 @@ await new Promise(() => {});
     server.shutdown().await;
     Ok(())
 }
+
+#[path = "idle_cell_callback_tests.rs"]
+mod idle_callbacks;
