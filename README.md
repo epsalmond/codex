@@ -259,9 +259,9 @@ does not poll:
 
 Each result is a single bounded message: a header with the call, the
 `kind=process` or `kind=cell` producer, its status (`exited(N)`, `completed`,
-`error`, `cancelled`, `timedOut`), and `truncated=<bytes>`, followed by at most
-3072 bytes of the output's tail; `truncated` counts the bytes omitted before
-it. Write large results to a file or `store()` them for a later `exec`. A
+`error`, `cancelled`, `timedOut`), and `truncated=<bytes>`, followed by the
+output's tail. The whole message, including the tail and its metadata, is at
+most 3072 bytes; `truncated` counts the tail bytes omitted. Write large results to a file or `store()` them for a later `exec`. A
 script's images and audio are not delivered; the message notes how many were
 omitted.
 

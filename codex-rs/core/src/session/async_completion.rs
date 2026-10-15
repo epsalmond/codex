@@ -22,9 +22,10 @@ use codex_protocol::user_input::UserInput;
 
 const MAX_RESERVATIONS: usize = 64;
 /// Bounds each rendered completion message by its encoded UTF-8 bytes, including IDs, metadata
-/// and escapes. 3072 bytes keeps a token-dense fragment (JSON, code, non-ASCII) within the
-/// 768-token per-fragment budget; 64 reservations at this size bound each owner's stored
-/// payloads to 192 KiB.
+/// and escapes. 3072 bytes is about 768 tokens at a typical ~4 bytes per token. It is not a hard
+/// token bound: token-dense output (hex, base64, CJK, minified JSON) can exceed 768 tokens; see
+/// epsalmond/codex#192 for a token-count cap. 64 reservations at this size bound each owner's
+/// stored payloads to 192 KiB.
 pub(crate) const MAX_FRAGMENT_BYTES: usize = 3072;
 /// Correlation identifiers are preserved exactly, never truncated.
 const MAX_IDENTIFIER_BYTES: usize = 128;
