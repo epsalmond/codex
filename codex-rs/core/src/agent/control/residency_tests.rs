@@ -190,11 +190,12 @@ async fn paused_durable_sleep_wake_with_only_held_reports_starts_no_turn() {
         .expect("enqueue controller mail");
 
     let started = session.maybe_start_turn_for_pending_work().await;
+    let no_active_turn = session.active_turn.lock().await.is_none();
 
     assert_eq!(
         (
             started,
-            session.active_turn.lock().await.is_none(),
+            no_active_turn,
             session.input_queue.wakeups_paused(),
             session.input_queue.trigger_turn_mailbox_count().await,
         ),

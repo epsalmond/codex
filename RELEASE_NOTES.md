@@ -1,3 +1,7 @@
+## Recorded child reports after compaction
+
+Wake-mode parents now get a fresh delivery when compaction drops a recorded trigger report, preventing repeated automatic turns on a report the model can no longer see. [Details](releases/2026-10-14-recorded-report-compaction.md) ([#175](https://github.com/epsalmond/codex/issues/175)).
+
 ## Automatic and manual Shake
 
 `/shake` removes older tool output without asking a model to summarize it, and saves removed text in local artifact files. Auto-shake is on by default and runs before compaction would; see the [Shake documentation](codex-rs/docs/shake.md).

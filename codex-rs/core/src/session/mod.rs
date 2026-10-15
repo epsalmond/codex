@@ -4385,6 +4385,25 @@ impl Session {
             }
         };
 
+        let replacement_history_ids = compacted_item
+            .replacement_history
+            .iter()
+            .flatten()
+            .filter_map(|envelope| envelope.item.id().cloned())
+            .collect::<HashSet<_>>();
+        if let Some(assignment) = self
+            .services
+            .local_agent_runtime
+            .current_wake_assignment(self.thread_id)
+        {
+            self.services
+                .local_agent_runtime
+                .requeue_recorded_wake_reports_missing_from_history(
+                    &assignment,
+                    &replacement_history_ids,
+                );
+        }
+
         let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
         // Persist the baseline after the replacement history that established it.
         if let Some(world_state_item) = world_state_item {
