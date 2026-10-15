@@ -466,7 +466,7 @@ async fn mcp_tool_hook_interpolates_prompt_and_runs_without_tool_approval() -> R
         ]),
     )
     .await;
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(|home| {
             write_mcp_tool_hook(
@@ -521,7 +521,7 @@ async fn mcp_tool_hook_passes_thread_metadata_to_model_hidden_tools() -> Result<
         ]),
     )
     .await;
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(|home| {
             let hooks = json!({
@@ -588,7 +588,7 @@ async fn mcp_tool_hook_marks_thread_memory_mode_polluted_when_configured() -> Re
         ]),
     )
     .await;
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(|home| {
             write_mcp_tool_hook(
@@ -657,7 +657,7 @@ async fn mcp_tool_hook_blocks_model_tool_without_recursive_hooks_or_approval() -
         ],
     )
     .await;
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(|home| {
             write_mcp_tool_hook(
@@ -788,7 +788,7 @@ async fn pre_tool_use_blocks_mcp_tool_before_execution(
     .await;
 
     let block_reason = "blocked mcp pre hook";
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(move |home| {
             write_pre_tool_use_hook(home, block_reason)
@@ -886,7 +886,7 @@ async fn pre_tool_use_rewrites_mcp_tool_before_execution() -> Result<()> {
     )
     .await;
 
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(move |home| {
             write_updating_pre_tool_use_hook(home, rewritten_message)
@@ -983,7 +983,7 @@ async fn post_tool_use_records_mcp_tool_payload_and_context(
     .await;
 
     let post_context = "Remember the MCP post-tool note.";
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_pre_build_hook(move |home| {
             write_post_tool_use_hook(home, post_context)

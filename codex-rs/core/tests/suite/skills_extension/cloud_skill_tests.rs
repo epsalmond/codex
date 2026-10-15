@@ -183,7 +183,7 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
                 .enable(Feature::CodeModeHost)
                 .expect("code mode host should be configurable in tests");
         })
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?);
+        .with_code_mode_host_program(core_test_support::code_mode_host_bin());
     let test = builder.build_with_auto_env(&server).await?;
 
     test.submit_turn("Use $demo:explicit-only.").await?;

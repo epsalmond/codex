@@ -395,7 +395,7 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
     .await;
 
     // Compile the rmcp stdio test server and configure it.
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
 
     let mut builder = test_codex().with_config(move |config| {
         let mut servers = config.mcp_servers.get().clone();
@@ -494,7 +494,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
     .await;
 
     // Build the stdio rmcp server and pass a tiny PNG via data URL so it can construct ImageContent.
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
 
     // 1x1 PNG data URL
     let openai_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";

@@ -186,7 +186,7 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
     skip_if_no_network!(Ok(()));
 
     let inner = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?,
+        core_test_support::code_mode_host_bin(),
     )
     .create_session()
     .await

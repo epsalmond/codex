@@ -749,7 +749,7 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let test = test_codex()
         .with_config(move |config| {
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);

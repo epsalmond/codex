@@ -177,7 +177,7 @@ pub(super) async fn connector_exposure_requests(
         case.server_omissions
     ))?)));
     let mut builder = search_capable_apps_builder(server.uri())
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_code_mode_host_program(core_test_support::code_mode_host_bin())
         .with_pre_build_hook(move |home| {
             std::fs::write(
                 home.join("config.toml"),

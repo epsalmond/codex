@@ -1617,7 +1617,7 @@ async fn thread_start_with_managed_read_only_does_not_trust_or_load_project_mcp(
 command = {}
 required = true
 "#,
-            toml::Value::String(stdio_server_bin()?),
+            toml::Value::String(stdio_server_bin()),
         ),
     )?;
 

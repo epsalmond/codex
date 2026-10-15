@@ -1000,7 +1000,7 @@ async fn astra_settings_release_check_with_direct_and_code_mode_tools() -> Resul
     skip_if_wine_exec!(Ok(()), "the fixture uses a Unix shell command");
 
     let server = start_mock_server().await;
-    let rmcp_server_bin = stdio_server_bin()?;
+    let rmcp_server_bin = stdio_server_bin();
     let home = Arc::new(TempDir::new()?);
     let mut builder = test_codex()
         .with_model("gpt-6-astra")
@@ -1636,7 +1636,7 @@ async fn astra_refreshes_plugin_tools_and_skills_in_an_existing_thread() -> Resu
     )?;
     fs::write(
         plugin_root.join(".mcp.json"),
-        json!({ "mcpServers": { "notes": { "command": stdio_server_bin()?, "cwd": "." } } })
+        json!({ "mcpServers": { "notes": { "command": stdio_server_bin(), "cwd": "." } } })
             .to_string(),
     )?;
     let skill = write_skill(

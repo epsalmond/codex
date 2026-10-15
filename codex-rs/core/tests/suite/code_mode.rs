@@ -715,7 +715,7 @@ async fn run_code_mode_turn_with_rmcp_config(
     code_mode_only: bool,
     non_prefixed_mcp_tool_names: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = stdio_server_bin();
     let mut builder = test_codex()
         .keep_polling_tools()
         .with_model(model)
@@ -3031,7 +3031,7 @@ async fn code_mode_late_truncated_result_metadata_survives_waits() -> Result<()>
     extensions.tool_lifecycle_contributor(control);
     let builder = result_metadata_apps_builder(apps_server.chatgpt_base_url, "user@example.com")
         .with_extensions(Arc::new(extensions.build()))
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_code_mode_host_program(core_test_support::code_mode_host_bin())
         .with_config(|config| {
             config.features.enable(Feature::CodeModeHost).unwrap();
             config.code_mode.disable_in_process_fallback = true;

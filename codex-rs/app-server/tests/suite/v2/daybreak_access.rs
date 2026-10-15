@@ -60,7 +60,7 @@ async fn daybreak_access_respects_plugin_provenance(case: AccessCall) -> Result<
         r#"{"name":"sample"}"#,
     )?;
     let mut mcp_config = json!({
-        "command":stdio_server_bin()?, "cwd":plugin_root, "environment_id":"local",
+        "command":stdio_server_bin(), "cwd":plugin_root, "environment_id":"local",
         "default_tools_approval_mode":"approve", "env":{"MCP_TEST_DAYBREAK_READ_ONLY":"true"}
     });
     if matches!(case, AccessCall::Unlisted) {

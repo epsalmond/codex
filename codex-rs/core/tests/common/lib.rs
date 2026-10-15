@@ -426,8 +426,16 @@ pub fn format_with_current_shell_display_non_login(command: &str) -> String {
         .expect("serialize current shell command without login")
 }
 
-pub fn stdio_server_bin() -> Result<String, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("test_stdio_server").map(|p| p.to_string_lossy().to_string())
+/// Path to `test_stdio_server`; panics with the build command when it is missing or stale.
+pub fn stdio_server_bin() -> String {
+    codex_utils_cargo_bin::workspace_bin("test_stdio_server", "codex-rmcp-client")
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Path to `codex-code-mode-host`; panics with the build command when it is missing or stale.
+pub fn code_mode_host_bin() -> PathBuf {
+    codex_utils_cargo_bin::workspace_bin("codex-code-mode-host", "codex-code-mode-host")
 }
 
 pub mod fs_wait {

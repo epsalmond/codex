@@ -49,7 +49,7 @@ startup_timeout_sec = 120
 MCP_TEST_INITIALIZE_BARRIER_FILE = {}
 MCP_TEST_PID_FILE = {}
 "#,
-            toml::Value::String(stdio_server_bin()?),
+            toml::Value::String(stdio_server_bin()),
             toml::Value::String(barrier_file.to_string_lossy().into_owned()),
             toml::Value::String(pid_file.to_string_lossy().into_owned()),
         ))

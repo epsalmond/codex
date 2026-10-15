@@ -860,10 +860,21 @@ impl TestCodexBuilder {
             .models_manager
             .clone()
             .unwrap_or_else(|| codex_core::build_models_manager(&config, auth_manager.clone()));
-        let code_mode_host_program = self
-            .code_mode_host_program
-            .take()
-            .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
+        // Tests that turn Code Mode on must run this checkout's host, so a missing or stale
+        // binary panics. Other tests (including crates whose Bazel targets do not ship the
+        // host) keep the best-effort lookup, which only matters if a model enables Code Mode.
+        let code_mode_host_program = self.code_mode_host_program.take().or_else(|| {
+            if !config.features.enabled(Feature::CodeModeHost) {
+                None
+            } else if config.features.enabled(Feature::CodeMode)
+                || config.features.enabled(Feature::CodeModeOnly)
+                || config.code_mode.disable_in_process_fallback
+            {
+                Some(crate::code_mode_host_bin())
+            } else {
+                codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok()
+            }
+        });
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
             codex_core::install_agent_message_board(&mut extensions, manager.clone());

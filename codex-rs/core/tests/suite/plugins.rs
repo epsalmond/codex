@@ -912,7 +912,7 @@ async fn thread_disabled_plugins_filter_skills_and_tools_without_changing_shared
         &skill_path,
         "---\ndescription: inspect sample data\n---\nTHREAD_PLUGIN_SKILL_BODY\n",
     )?;
-    write_plugin_mcp_plugin(home.as_ref(), &stdio_server_bin()?);
+    write_plugin_mcp_plugin(home.as_ref(), &stdio_server_bin());
     write_plugin_app_plugin_with_name(home.as_ref(), "sample_app");
     let mut builder = test_codex()
         .with_home(home)
@@ -1407,13 +1407,7 @@ async fn agent_plugin_root_mcp_stdio_tool_round_trip_expands_reserved_paths_and_
     let plugin_root = codex_home
         .path()
         .join("plugins/cache/test/acme.tools/local");
-    let stdio_server = match stdio_server_bin() {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("test_stdio_server binary not available, skipping test: {err}");
-            return Ok(());
-        }
-    };
+    let stdio_server = stdio_server_bin();
     let stdio_server_name = format!("test_stdio_server{}", std::env::consts::EXE_SUFFIX);
     codex_utils_cargo_bin::copy_executable(
         std::path::Path::new(&stdio_server),
@@ -1775,13 +1769,7 @@ async fn explicit_plugin_mentions_use_apps_for_chatgpt_dual_surface_plugins(
     let mock = mount_plugin_tool_search_turn(&server).await;
 
     let codex_home = Arc::new(TempDir::new()?);
-    let rmcp_test_server_bin = match stdio_server_bin() {
-        Ok(bin) => bin,
-        Err(err) => {
-            eprintln!("test_stdio_server binary not available, skipping test: {err}");
-            return Ok(());
-        }
-    };
+    let rmcp_test_server_bin = stdio_server_bin();
     write_plugin_skill_plugin(codex_home.as_ref());
     write_plugin_mcp_plugin(codex_home.as_ref(), &rmcp_test_server_bin);
     write_plugin_app_plugin(codex_home.as_ref());
@@ -1868,13 +1856,7 @@ async fn explicit_plugin_mentions_keep_non_conflicting_mcp_for_chatgpt_auth() ->
     let mock = mount_plugin_tool_search_turn(&server).await;
 
     let codex_home = Arc::new(TempDir::new()?);
-    let rmcp_test_server_bin = match stdio_server_bin() {
-        Ok(bin) => bin,
-        Err(err) => {
-            eprintln!("test_stdio_server binary not available, skipping test: {err}");
-            return Ok(());
-        }
-    };
+    let rmcp_test_server_bin = stdio_server_bin();
     write_plugin_skill_plugin(codex_home.as_ref());
     write_plugin_mcp_plugin(codex_home.as_ref(), &rmcp_test_server_bin);
     write_plugin_app_plugin_with_name(codex_home.as_ref(), "sample_app");
@@ -1940,7 +1922,7 @@ async fn system_marketplace_plugin_honors_layered_activation_and_mcp_policy(
     let mock = mount_plugin_tool_search_turn(&server).await;
     let codex_home = Arc::new(TempDir::new()?);
     let project = TempDir::new()?;
-    write_plugin_mcp_plugin(codex_home.as_ref(), &stdio_server_bin()?);
+    write_plugin_mcp_plugin(codex_home.as_ref(), &stdio_server_bin());
     let user_config_path = codex_home.path().join("config.toml");
     let user_config = std::fs::read_to_string(&user_config_path)?;
     std::fs::write(
@@ -2055,13 +2037,7 @@ async fn explicitly_requested_mcp_waits_for_startup(request: ExplicitMcpRequest)
     let mock = mount_plugin_tool_search_turn(&server).await;
 
     let codex_home = Arc::new(TempDir::new()?);
-    let rmcp_test_server_bin = match stdio_server_bin() {
-        Ok(bin) => bin,
-        Err(err) => {
-            eprintln!("test_stdio_server binary not available, skipping test: {err}");
-            return Ok(());
-        }
-    };
+    let rmcp_test_server_bin = stdio_server_bin();
     let skill_path = dunce::canonicalize(write_plugin_skill_plugin(codex_home.as_ref()))?;
     write_plugin_mcp_plugin(codex_home.as_ref(), &rmcp_test_server_bin);
     write_plugin_app_plugin(codex_home.as_ref());

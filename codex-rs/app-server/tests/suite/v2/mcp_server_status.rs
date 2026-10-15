@@ -853,7 +853,7 @@ MCP_TEST_DYNAMIC_SERVER_METADATA = "1"
 MCP_TEST_INITIALIZE_BARRIER_FILE = {}
 MCP_TEST_PID_FILE = {}
 "#,
-            toml::Value::String(stdio_server_bin()?),
+            toml::Value::String(stdio_server_bin()),
             toml::Value::String(barrier_file.to_string_lossy().into_owned()),
             toml::Value::String(pid_file.to_string_lossy().into_owned()),
         ))
@@ -1106,7 +1106,7 @@ async fn mcp_server_status_list_reports_disconnected_stdio_transport() -> Result
         .with_extra_config(&format!(
             "[mcp_servers.stdio]\ncommand = {}\nstartup_timeout_sec = 2\n\
              [mcp_servers.stdio.env]\nMCP_TEST_EXIT_FILE = {}\n",
-            toml::Value::String(stdio_server_bin()?),
+            toml::Value::String(stdio_server_bin()),
             toml::Value::String(exit_file.to_string_lossy().into_owned()),
         ))
         .write(codex_home.path())?;

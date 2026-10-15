@@ -8,7 +8,6 @@ use codex_core::config::ConfigOverrides;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SandboxPolicy;
-use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::responses;
 use core_test_support::skip_if_remote;
 use core_test_support::test_codex::test_codex;
@@ -43,7 +42,7 @@ async fn forged_worktree_project_config_cannot_start_host_mcp() -> Result<()> {
         }))?,
     )?;
 
-    let server_bin = cargo_bin("test_stdio_server")?;
+    let server_bin = std::path::PathBuf::from(core_test_support::stdio_server_bin());
     let server = responses::start_mock_server().await;
     for scenario in ["missing", "other-checkout", "symlink", "registered"] {
         let checkout = if scenario == "registered" {

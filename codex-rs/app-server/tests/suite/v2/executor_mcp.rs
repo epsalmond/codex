@@ -1118,7 +1118,7 @@ url = "{executor_url}"
         serde_json::to_vec_pretty(&json!({
             "mcpServers": {
                 (MCP_SERVER_NAME): {
-                    "command": stdio_server_bin()?,
+                    "command": stdio_server_bin(),
                     "env_vars": [EXECUTOR_ENV_NAME],
                     "startup_timeout_sec": 10,
                 },
@@ -1179,7 +1179,7 @@ url = "{executor_url}"
 command = {}
 startup_timeout_sec = 10
 "#,
-        toml::Value::String(stdio_server_bin()?)
+        toml::Value::String(stdio_server_bin())
     ));
     std::fs::write(config_path, config)?;
     let request_id = app_server
