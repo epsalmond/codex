@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 use codex_code_mode_protocol::CellId;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
+use codex_code_mode_protocol::TerminalReadySupport;
 use codex_code_mode_protocol::host::EncodedFrame;
 use codex_code_mode_protocol::host::HostToClient;
 use codex_code_mode_protocol::host::RequestId;
@@ -15,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 pub(in crate::remote_session) use self::cleanup::SessionCleanup;
 use self::delegate_runtime::DelegateRuntime;
 use self::request_tracker::RequestTracker;
+use self::session_registry::ReadyCell;
 use self::session_registry::SessionRegistry;
 pub(super) use self::types::DriverCommand;
 pub(super) use self::types::DriverEvent;
@@ -36,6 +38,7 @@ pub(super) struct DriverLifecycle {
 }
 
 pub(super) struct ConnectionDriver {
+    terminal_ready_support: TerminalReadySupport,
     command_rx: mpsc::Receiver<DriverCommand>,
     event_rx: mpsc::Receiver<DriverEvent>,
     event_tx: mpsc::Sender<DriverEvent>,
@@ -58,10 +61,12 @@ impl ConnectionDriver {
         event_tx: mpsc::Sender<DriverEvent>,
         outgoing_tx: mpsc::Sender<EncodedFrame>,
         lifecycle: DriverLifecycle,
+        terminal_ready_support: TerminalReadySupport,
     ) -> (Self, mpsc::UnboundedSender<RequestId>) {
         let (execute_claim_tx, execute_claim_rx) = mpsc::unbounded_channel();
         (
             Self {
+                terminal_ready_support,
                 command_rx,
                 event_rx,
                 event_tx: event_tx.clone(),
@@ -172,6 +177,12 @@ impl ConnectionDriver {
 impl Drop for ConnectionDriver {
     fn drop(&mut self) {
         self.fail("code-mode connection driver stopped unexpectedly".to_string());
+    }
+}
+
+fn notify_terminal_ready(ready: Option<ReadyCell>) {
+    if let Some((ready, delegate)) = ready {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| delegate.cell_terminal_ready(ready)));
     }
 }
 

@@ -225,6 +225,15 @@ pub trait CodeModeSessionProvider: Send + Sync {
 
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_>;
 
+    /// Reports whether sessions from this provider request terminal readiness.
+    ///
+    /// The value is fixed for the provider so callers can derive session-stable
+    /// behavior from it. A connected host may still negotiate readiness away;
+    /// `StartedCell::terminal_ready_support` reports the per-execution result.
+    fn terminal_ready_capability(&self) -> TerminalReadySupport {
+        TerminalReadySupport::Unsupported
+    }
+
     /// Creates a session whose cells share the supplied execution limits.
     ///
     /// Existing providers remain compatible with unlimited sessions, but must

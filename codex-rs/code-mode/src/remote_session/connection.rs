@@ -14,8 +14,10 @@ use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminalReadySupport;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::host::CELL_TERMINAL_READY_CAPABILITY;
 use codex_code_mode_protocol::host::Capability;
 use codex_code_mode_protocol::host::CapabilitySet;
 use codex_code_mode_protocol::host::ClientHello;
@@ -209,9 +211,14 @@ impl Connection {
                 .map_err(|error| error.to_string())?;
             let yield_capability =
                 Capability::new(YIELD_OBSERVATION_CAPABILITY).map_err(|error| error.to_string())?;
-            let optional_capabilities =
-                CapabilitySet::try_new([session_limits_capability, yield_capability])
-                    .map_err(|error| error.to_string())?;
+            let terminal_ready_capability = Capability::new(CELL_TERMINAL_READY_CAPABILITY)
+                .map_err(|error| error.to_string())?;
+            let optional_capabilities = CapabilitySet::try_new([
+                session_limits_capability,
+                yield_capability,
+                terminal_ready_capability,
+            ])
+            .map_err(|error| error.to_string())?;
             let hello = ClientHello::new(
                 SupportedProtocolVersions::try_new([ProtocolVersion::V1])
                     .map_err(|err| err.to_string())?,
@@ -279,6 +286,15 @@ impl Connection {
                 async move { drive_reader(reader, reader_events, reader_cancellation).await },
             );
 
+        // Older hosts omit the capability; their cells keep compatibility observation.
+        let terminal_ready_support = if capabilities
+            .iter()
+            .any(|capability| capability.as_str() == CELL_TERMINAL_READY_CAPABILITY)
+        {
+            TerminalReadySupport::Supported
+        } else {
+            TerminalReadySupport::Unsupported
+        };
         let (driver, execute_claim_tx) = ConnectionDriver::new(
             command_rx,
             event_rx,
@@ -289,6 +305,7 @@ impl Connection {
                 failure: Arc::clone(&failure),
                 cancellation: cancellation.clone(),
             },
+            terminal_ready_support,
         );
         let driver_task = tokio::spawn(driver.run());
         tokio::spawn(

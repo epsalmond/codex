@@ -6,7 +6,14 @@ use tokio::io::AsyncWriteExt;
 use super::EncodedFrame;
 use super::FramedReader;
 use super::FramedWriter;
+use super::HostToClient;
 use super::MAX_FRAME_BYTES;
+use super::SessionId;
+use super::WireCellId;
+use super::WireCellOutputKind;
+use super::WireCellTerminalStatus;
+use crate::CellOutputKind;
+use crate::CellTerminalStatus;
 
 #[test]
 fn complete_frame_round_trips_without_a_byte_stream() {
@@ -134,4 +141,55 @@ async fn oversized_and_malformed_frames_are_rejected() {
         .await
         .expect_err("malformed frame");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn host_to_client_cell_terminal_ready_round_trips() {
+    for (status, output_kind, wire_status, wire_kind) in [
+        (
+            WireCellTerminalStatus::Completed,
+            WireCellOutputKind::Text,
+            "completed",
+            "text",
+        ),
+        (
+            WireCellTerminalStatus::Error,
+            WireCellOutputKind::Media,
+            "error",
+            "media",
+        ),
+    ] {
+        let message = HostToClient::CellTerminalReady {
+            session_id: SessionId::new("session-1").expect("session ID"),
+            cell_id: WireCellId::new("cell-1"),
+            status,
+            output_kind,
+        };
+        let bytes = EncodedFrame::encode(&message)
+            .expect("encode frame")
+            .into_framed_bytes();
+
+        assert_eq!(
+            EncodedFrame::decode_framed::<serde_json::Value>(&bytes).expect("decode JSON"),
+            json!({
+                "type": "cell/terminalReady",
+                "sessionId": "session-1",
+                "cellId": "cell-1",
+                "status": wire_status,
+                "outputKind": wire_kind,
+            })
+        );
+        assert_eq!(
+            EncodedFrame::decode_framed::<HostToClient>(&bytes).expect("decode message"),
+            message
+        );
+        assert_eq!(
+            WireCellTerminalStatus::from(CellTerminalStatus::from(status)),
+            status
+        );
+        assert_eq!(
+            WireCellOutputKind::from(CellOutputKind::from(output_kind)),
+            output_kind
+        );
+    }
 }

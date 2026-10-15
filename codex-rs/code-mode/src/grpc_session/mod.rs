@@ -202,6 +202,11 @@ impl CodeModeSessionProvider for GrpcCodeModeSessionProvider {
         self.create_session_with_limits(CodeModeSessionCellExecutionLimits::default())
     }
 
+    /// Every session requests readiness; older hosts can still decline it per cell.
+    fn terminal_ready_capability(&self) -> codex_code_mode_protocol::TerminalReadySupport {
+        codex_code_mode_protocol::TerminalReadySupport::Supported
+    }
+
     fn create_session_with_limits<'a>(
         &'a self,
         limits: CodeModeSessionCellExecutionLimits,

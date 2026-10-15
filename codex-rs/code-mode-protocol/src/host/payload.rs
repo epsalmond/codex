@@ -7,6 +7,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use crate::CellId;
+use crate::CellOutputKind;
+use crate::CellTerminalStatus;
 use crate::CodeModeNestedToolCall;
 use crate::CodeModeSessionCellExecutionLimits;
 use crate::CodeModeToolKind;
@@ -81,6 +83,58 @@ impl From<&CellId> for WireCellId {
 impl From<WireCellId> for CellId {
     fn from(value: WireCellId) -> Self {
         Self::new(value.0)
+    }
+}
+
+/// The terminal status carried by a V1 `cell/terminalReady` notification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireCellTerminalStatus {
+    Completed,
+    Error,
+}
+
+impl From<CellTerminalStatus> for WireCellTerminalStatus {
+    fn from(value: CellTerminalStatus) -> Self {
+        match value {
+            CellTerminalStatus::Completed => Self::Completed,
+            CellTerminalStatus::Error => Self::Error,
+        }
+    }
+}
+
+impl From<WireCellTerminalStatus> for CellTerminalStatus {
+    fn from(value: WireCellTerminalStatus) -> Self {
+        match value {
+            WireCellTerminalStatus::Completed => Self::Completed,
+            WireCellTerminalStatus::Error => Self::Error,
+        }
+    }
+}
+
+/// The buffered output kind carried by a V1 `cell/terminalReady` notification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireCellOutputKind {
+    Text,
+    Media,
+}
+
+impl From<CellOutputKind> for WireCellOutputKind {
+    fn from(value: CellOutputKind) -> Self {
+        match value {
+            CellOutputKind::Text => Self::Text,
+            CellOutputKind::Media => Self::Media,
+        }
+    }
+}
+
+impl From<WireCellOutputKind> for CellOutputKind {
+    fn from(value: WireCellOutputKind) -> Self {
+        match value {
+            WireCellOutputKind::Text => Self::Text,
+            WireCellOutputKind::Media => Self::Media,
+        }
     }
 }
 

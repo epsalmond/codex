@@ -15,6 +15,7 @@ use codex_code_mode_protocol::CodeModeSessionProviderFuture;
 use codex_code_mode_protocol::CodeModeSessionResultFuture;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminalReadySupport;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::host::SessionId;
@@ -77,6 +78,11 @@ impl CodeModeSessionProvider for ProcessOwnedCodeModeSessionProvider {
         self.create_session_with_limits(CodeModeSessionCellExecutionLimits::default())
     }
 
+    /// Every connection requests readiness; older hosts can still decline it per cell.
+    fn terminal_ready_capability(&self) -> TerminalReadySupport {
+        TerminalReadySupport::Supported
+    }
+
     fn create_session_with_limits<'a>(
         &'a self,
         limits: CodeModeSessionCellExecutionLimits,
@@ -92,6 +98,10 @@ impl CodeModeSessionProvider for DisabledCodeModeSessionProvider {
 
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_> {
         Box::pin(async { Err("code-mode host is disabled".to_string()) })
+    }
+
+    fn terminal_ready_capability(&self) -> TerminalReadySupport {
+        TerminalReadySupport::Unsupported
     }
 
     fn create_session_with_limits<'a>(
