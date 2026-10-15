@@ -1,6 +1,8 @@
 use crate::function_tool::FunctionCallError;
 use codex_features::Feature;
 
+use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -38,7 +40,20 @@ struct WriteStdinArgs {
     max_output_tokens: Option<usize>,
 }
 
-pub struct WriteStdinHandler;
+#[derive(Default)]
+pub struct WriteStdinHandler {
+    /// The session's results are delivered automatically, so the model-facing spec omits empty
+    /// polling. Nested Code Mode calls use the default spec.
+    automatic_completion: bool,
+}
+
+impl WriteStdinHandler {
+    pub(crate) fn new(automatic_completion: bool) -> Self {
+        Self {
+            automatic_completion,
+        }
+    }
+}
 
 impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
     fn tool_name(&self) -> ToolName {
@@ -46,7 +61,7 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_write_stdin_tool()
+        create_write_stdin_tool(/*automatic_completion*/ false)
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -72,6 +87,7 @@ impl WriteStdinHandler {
             step_context,
             cancellation_token,
             call_id,
+            source,
             payload,
             ..
         } = invocation;
@@ -86,6 +102,22 @@ impl WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
+        // Only model polls are refused; a Code Mode cell polling its own process is the cheap
+        // pattern, since the whole loop costs one model request.
+        if args.chars.is_empty()
+            && !matches!(source, ToolCallSource::CodeMode { .. })
+            && turn.automatic_completion_active()
+            && session
+                .services
+                .unified_exec_manager
+                .has_automatic_completion(args.session_id)
+                .await
+        {
+            return Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                automatic_completion_poll_refusal(args.session_id),
+                Some(true),
+            )));
+        }
         if turn
             .config
             .features
@@ -140,9 +172,20 @@ impl WriteStdinHandler {
     }
 }
 
+fn automatic_completion_poll_refusal(session_id: i32) -> String {
+    format!(
+        "session {session_id} is running; its exit status and output tail will be delivered automatically."
+    )
+}
+
 impl CoreToolRuntime for WriteStdinHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn model_visible_spec(&self) -> Option<ToolSpec> {
+        self.automatic_completion
+            .then(|| create_write_stdin_tool(/*automatic_completion*/ true))
     }
 
     fn pre_tool_use_payload(&self, _invocation: &ToolInvocation) -> Option<PreToolUsePayload> {

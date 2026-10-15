@@ -591,6 +591,14 @@ impl TestCodexBuilder {
         self
     }
 
+    /// Keeps Code Mode `wait` and empty `write_stdin` polls visible alongside automatic
+    /// completion, for tests that exercise the polling tools.
+    pub fn keep_polling_tools(self) -> Self {
+        self.with_config(|config| {
+            config.async_completion_polling_tools = codex_features::PollingToolsMode::Keep;
+        })
+    }
+
     pub fn with_code_mode_host_program(mut self, host_program: PathBuf) -> Self {
         self.code_mode_host_program = Some(host_program);
         self

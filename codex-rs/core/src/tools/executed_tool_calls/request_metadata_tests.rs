@@ -60,6 +60,14 @@ fn wait_input(call_id: &str, cell: &CellId) -> ResponseItem {
     .expect("wait input must deserialize")
 }
 
+fn terminate_input(call_id: &str, cell: &CellId) -> ResponseItem {
+    serde_json::from_value(json!({
+        "type": "function_call", "call_id": call_id, "name": "exec_terminate",
+        "arguments": json!({"cell_id": cell.as_str()}).to_string(),
+    }))
+    .expect("exec_terminate input must deserialize")
+}
+
 fn record_nested_call(
     recorder: &ExecutedToolCalls,
     cell: &CellId,
@@ -1026,6 +1034,54 @@ fn forked_wait_keeps_calls_without_completion() {
     let mut compacted = [output("wait")];
     recorder.attach_to_prompt(&mut compacted, &mut HashMap::new());
     assert_eq!(compacted[0], expected);
+}
+
+#[test]
+fn exec_terminate_output_attributes_the_cell_like_wait() {
+    let attributed = |tool_name: &str| {
+        let recorder = new_recorder(InitialHistory::New);
+        let cell = CellId::new("1".to_string());
+        recorder.start_cell(&cell, "exec");
+        recorder.record_call(
+            &ToolCall {
+                tool_name: codex_tools::ToolName::plain(tool_name),
+                call_id: "control".to_string(),
+                payload: ToolPayload::Function {
+                    arguments: json!({"cell_id": cell.as_str()}).to_string(),
+                },
+                encrypted_function_args: None,
+            },
+            &ToolCallSource::Direct,
+            ToolMode::CodeMode,
+        );
+        record_nested_call(&recorder, &cell, "nested");
+        recorder.register_cell(&cell, "control");
+        recorder.finish_cell_recording(&cell);
+        let control_input = if tool_name == crate::tools::code_mode::WAIT_TOOL_NAME {
+            wait_input("control", &cell)
+        } else {
+            terminate_input("control", &cell)
+        };
+        let mut prompt = vec![
+            exec_input("exec"),
+            exec_output("exec"),
+            control_input,
+            output("control"),
+        ];
+        recorder.attach_to_prompt(&mut prompt, &mut HashMap::new());
+        prompt.pop().expect("control output")
+    };
+
+    let wait_output = attributed(crate::tools::code_mode::WAIT_TOOL_NAME);
+    let terminate_output = attributed(crate::tools::code_mode::TERMINATE_TOOL_NAME);
+    let metadata = serde_json::to_value(wait_output.executed_tool_call_metadata()).unwrap();
+    assert_eq!(metadata["cell_id"], json!("exec"));
+    assert_eq!(
+        metadata["executed_tool_calls"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(tool_calls_complete(&wait_output), Some(true));
+    assert_eq!(terminate_output, wait_output);
 }
 
 #[test]

@@ -580,7 +580,7 @@ async fn code_mode_wait_does_not_expose_default_hook_payloads() {
 async fn write_stdin_does_not_expose_default_pre_tool_use_payload() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
 
-    let write_stdin = crate::tools::handlers::WriteStdinHandler;
+    let write_stdin = crate::tools::handlers::WriteStdinHandler::default();
     let invocation = test_invocation(
         Arc::new(session),
         Arc::new(turn),

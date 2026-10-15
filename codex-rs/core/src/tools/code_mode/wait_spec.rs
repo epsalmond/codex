@@ -68,6 +68,31 @@ pub(crate) fn create_wait_tool(
     })
 }
 
+pub(crate) const TERMINATE_TOOL_DESCRIPTION: &str = concat!(
+    "Stops a running `exec` cell and returns its output so far. A running cell's final result ",
+    "is delivered automatically, so call this only to stop work you no longer need.",
+);
+
+/// Spec for `exec_terminate`, which replaces `wait` when cell results are delivered
+/// automatically.
+pub(crate) fn create_terminate_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: codex_code_mode::TERMINATE_TOOL_NAME.to_string(),
+        description: TERMINATE_TOOL_DESCRIPTION.to_string(),
+        strict: false,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "cell_id".to_string(),
+                JsonSchema::string(Some("Identifier of the running exec cell.".to_string())),
+            )]),
+            Some(vec!["cell_id".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+        defer_loading: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +141,34 @@ mod tests {
                             )),
                         ),
                     ]),
+                    Some(vec!["cell_id".to_string()]),
+                    Some(false.into()),
+                ),
+                output_schema: None,
+            })
+        );
+    }
+
+    #[test]
+    fn create_terminate_tool_matches_expected_spec() {
+        assert_eq!(
+            create_terminate_tool(),
+            ToolSpec::Function(ResponsesApiTool {
+                name: "exec_terminate".to_string(),
+                description:
+                    "Stops a running `exec` cell and returns its output so far. A running \
+                     cell's final result is delivered automatically, so call this only to stop \
+                     work you no longer need."
+                        .to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::from([(
+                        "cell_id".to_string(),
+                        JsonSchema::string(Some(
+                            "Identifier of the running exec cell.".to_string()
+                        )),
+                    )]),
                     Some(vec!["cell_id".to_string()]),
                     Some(false.into()),
                 ),

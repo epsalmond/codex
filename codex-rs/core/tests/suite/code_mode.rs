@@ -263,11 +263,14 @@ async fn run_code_mode_turn_with_model_and_config(
     model: &'static str,
     configure: impl FnOnce(&mut Config) + Send + 'static,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let builder = test_codex().with_model(model).with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-        let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
-        configure(config);
-    });
+    let builder = test_codex()
+        .keep_polling_tools()
+        .with_model(model)
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
+            configure(config);
+        });
     run_code_mode_turn_with_builder(server, prompt, code, builder).await
 }
 
@@ -341,6 +344,7 @@ async fn missing_process_host_falls_back_to_direct_tools_and_warns_once() -> Res
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_code_mode_host_program("codex-code-mode-host-does-not-exist".into())
         .with_config(|config| {
@@ -383,6 +387,7 @@ async fn missing_process_host_keeps_code_mode_only_and_fails_closed() -> Result<
 
     let server = responses::start_mock_server().await;
     let builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_code_mode_host_program("codex-code-mode-host-does-not-exist".into())
         .with_config(|config| {
@@ -425,6 +430,7 @@ async fn missing_process_host_fails_closed_when_direct_fallback_is_disabled() ->
 
     let server = responses::start_mock_server().await;
     let builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_code_mode_host_program("codex-code-mode-host-does-not-exist".into())
         .with_config(|config| {
@@ -462,6 +468,7 @@ async fn disabled_process_host_with_fallback_disabled_attempts_the_host() -> Res
 
     let server = responses::start_mock_server().await;
     let builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(|config| {
             config
@@ -590,6 +597,7 @@ text(result);
     let mut extension_builder = ExtensionRegistryBuilder::<Config>::new();
     install_web_search_extension(&mut extension_builder, auth_manager);
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_auth(auth)
         .with_extensions(Arc::new(extension_builder.build()))
         .with_model("test-gpt-5.1-codex")
@@ -708,55 +716,58 @@ async fn run_code_mode_turn_with_rmcp_config(
     non_prefixed_mcp_tool_names: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
-    let mut builder = test_codex().with_model(model).with_config(move |config| {
-        let _ = if code_mode_only {
-            config.features.enable(Feature::CodeModeOnly)
-        } else {
-            config.features.enable(Feature::CodeMode)
-        };
-        if non_prefixed_mcp_tool_names {
-            let _ = config.features.enable(Feature::NonPrefixedMcpToolNames);
-        }
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_model(model)
+        .with_config(move |config| {
+            let _ = if code_mode_only {
+                config.features.enable(Feature::CodeModeOnly)
+            } else {
+                config.features.enable(Feature::CodeMode)
+            };
+            if non_prefixed_mcp_tool_names {
+                let _ = config.features.enable(Feature::NonPrefixedMcpToolNames);
+            }
 
-        let mut servers = config.mcp_servers.get().clone();
-        servers.insert(
-            "rmcp".to_string(),
-            McpServerConfig {
-                auth: Default::default(),
-                transport: McpServerTransportConfig::Stdio {
-                    command: rmcp_test_server_bin,
-                    args: Vec::new(),
-                    env: Some(HashMap::from([(
-                        "MCP_TEST_VALUE".to_string(),
-                        "propagated-env".to_string(),
-                    )])),
-                    env_vars: Vec::new(),
-                    cwd: None,
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                "rmcp".to_string(),
+                McpServerConfig {
+                    auth: Default::default(),
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: Some(HashMap::from([(
+                            "MCP_TEST_VALUE".to_string(),
+                            "propagated-env".to_string(),
+                        )])),
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    environment_id: "local".to_string(),
+                    enabled: true,
+                    required: false,
+                    startup_readiness: Default::default(),
+                    supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
+                    omit_tools_from: None,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    default_tools_approval_mode: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                    oauth: None,
+                    oauth_resource: None,
+                    tools: HashMap::new(),
                 },
-                environment_id: "local".to_string(),
-                enabled: true,
-                required: false,
-                startup_readiness: Default::default(),
-                supports_parallel_tool_calls: false,
-                tool_input_schema_max_bytes: None,
-                omit_tools_from: None,
-                disabled_reason: None,
-                startup_timeout_sec: Some(Duration::from_secs(10)),
-                tool_timeout_sec: None,
-                default_tools_approval_mode: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                scopes: None,
-                oauth: None,
-                oauth_resource: None,
-                tools: HashMap::new(),
-            },
-        );
-        config
-            .mcp_servers
-            .set(servers)
-            .expect("test mcp servers should accept any configuration");
-    });
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+        });
     let test = builder.build(server).await?;
     wait_for_mcp_server(&test.codex, "rmcp").await?;
 
@@ -829,6 +840,7 @@ text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marke
 async fn code_mode_exec_holds_captured_result_during_elicitation() -> Result<()> {
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(|config| {
             let _ = config.features.enable(Feature::CodeMode);
@@ -910,7 +922,7 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
     )
     .await;
 
-    let mut builder = test_codex().with_config(|config| {
+    let mut builder = test_codex().keep_polling_tools().with_config(|config| {
         let _ = config.features.enable(Feature::CodeModeOnly);
     });
     let test = builder.build(&server).await?;
@@ -983,6 +995,7 @@ pub(super) async fn mcp_schema_max_bytes_scenario() -> Result<Vec<ResponsesReque
 
     let url = format!("{}/api/codex/ps/mcp", server.uri());
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config
@@ -1115,6 +1128,7 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
             let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
             let environment_id = remote_aware_environment_id();
             let mut builder = test_codex()
+                .keep_polling_tools()
                 .with_model_info_override("gpt-5.4", move |model| {
                     model.supports_search_tool = supports_search_tool;
                 })
@@ -1348,6 +1362,7 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
             let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
             let environment_id = remote_aware_environment_id();
             let mut builder = test_codex()
+                .keep_polling_tools()
                 .with_model_info_override("gpt-5.4", move |model| {
                     model.supports_search_tool = supports_search_tool;
                 })
@@ -1677,6 +1692,7 @@ async fn code_mode_compaction_request_preserves_tool_inventory(
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
             config.features.enable(Feature::CodeMode).unwrap();
@@ -1756,6 +1772,7 @@ async fn code_mode_wait_id_stays_known_after_compaction(
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(|config| {
             let _ = config.features.enable(Feature::CodeMode);
@@ -3164,6 +3181,7 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
         config.code_mode.disable_in_process_fallback = true;
     };
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(configure);
@@ -3195,6 +3213,7 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
 
     // Restart loads the old running-cell output, but starts a new host whose IDs reset.
     let resumed = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(configure)
         .restart(&server, &initial)
@@ -3392,6 +3411,7 @@ async fn code_mode_recovers_complete_inventory_after_orphaned_mapping_pressure()
     let base_url = format!("{}/v1", server.uri());
     let config_server = responses::start_mock_server().await;
     let test = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
@@ -3498,6 +3518,7 @@ text("pressure ready");"#,
     let base_url = format!("{}/v1", server.uri());
     let config_server = responses::start_mock_server().await;
     let test = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
@@ -3733,6 +3754,7 @@ if (!tool) {
 
     let apps_base_url = apps_server.chatgpt_base_url.clone();
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             config
@@ -3982,7 +4004,7 @@ text(output.output);
     )
     .await;
 
-    let mut builder = test_codex().with_config(|config| {
+    let mut builder = test_codex().keep_polling_tools().with_config(|config| {
         let _ = config.features.enable(Feature::CodeModeOnly);
     });
     let test = builder.build(&server).await?;
@@ -4162,6 +4184,7 @@ async fn code_mode_nested_tool_calls_can_run_in_parallel() -> Result<()> {
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
@@ -4667,6 +4690,7 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(|config| {
             config
@@ -4830,6 +4854,7 @@ async fn code_mode_can_yield_and_resume_with_wait() -> Result<()> {
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(observer.clone());
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
@@ -5018,9 +5043,11 @@ async fn code_mode_yield_and_termination_are_not_starved_by_runtime_output() -> 
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
     let termination_gate = test.workspace_path("code-mode-output-termination.ready");
     let termination_wait = wait_for_file_source(&termination_gate)?;
@@ -5326,9 +5353,11 @@ async fn code_mode_concurrent_cells_merge_only_the_stored_values_they_write() ->
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
     let first_gate = test.workspace_path("code-mode-first-store.ready");
     let first_wait = wait_for_file_source(&first_gate)?;
@@ -5479,9 +5508,11 @@ async fn code_mode_wait_can_terminate_and_continue() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
     let termination_gate = test.workspace_path("code-mode-terminate.ready");
     let termination_wait = wait_for_file_source(&termination_gate)?;
@@ -5617,14 +5648,214 @@ text("after terminate");
     Ok(())
 }
 
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_wait_returns_error_for_unknown_session() -> Result<()> {
+async fn code_mode_terminate_tool_can_terminate_and_continue() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
     });
+    let test = builder.build(&server).await?;
+    let termination_gate = test.workspace_path("code-mode-terminate.ready");
+    let termination_wait = wait_for_file_source(&termination_gate)?;
+
+    let code = format!(
+        r#"
+text("phase 1");
+yield_control();
+{termination_wait}
+text("phase 2");
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", &code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the long exec").await?;
+
+    let first_request = first_completion.single_request();
+    let tools = tool_names(&first_request.body_json());
+    assert!(
+        tools
+            .iter()
+            .any(|name| name == codex_code_mode::TERMINATE_TOOL_NAME),
+        "{tools:?}"
+    );
+    assert!(
+        !tools
+            .iter()
+            .any(|name| name == codex_code_mode::WAIT_TOOL_NAME),
+        "{tools:?}"
+    );
+    let first_items = custom_tool_output_items(&first_request, "call-1");
+    assert_eq!(first_items.len(), 2);
+    let header = text_item(&first_items, /*index*/ 0);
+    let cell_id = extract_running_cell_id(header);
+    assert!(
+        header.contains("Its final result will be delivered automatically"),
+        "{header}"
+    );
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                codex_code_mode::TERMINATE_TOOL_NAME,
+                &serde_json::to_string(&serde_json::json!({ "cell_id": cell_id.clone() }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "terminated"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("terminate it").await?;
+
+    let second_request = second_completion.single_request();
+    let second_items = function_tool_output_items(&second_request, "call-2");
+    assert_eq!(second_items.len(), 1);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&second_items, /*index*/ 0),
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-5"),
+            ev_custom_tool_call(
+                "call-3",
+                "exec",
+                r#"
+text("after terminate");
+"#,
+            ),
+            ev_completed("resp-5"),
+        ]),
+    )
+    .await;
+    let third_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-3", "done"),
+            ev_completed("resp-6"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("run another exec").await?;
+
+    let third_request = third_completion.single_request();
+    let third_items = custom_tool_output_items(&third_request, "call-3");
+    assert_eq!(third_items.len(), 2);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&third_items, /*index*/ 0),
+    );
+    assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
+    // The model read the terminated cell's result inline, so no automatic completion follows.
+    for request in [&second_request, &third_request] {
+        assert!(
+            !request
+                .body_json()
+                .to_string()
+                .contains("async_tool_completion")
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_hidden_wait_explains_automatic_delivery() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            responses::ev_function_call(
+                "call-1",
+                codex_code_mode::WAIT_TOOL_NAME,
+                &serde_json::to_string(&serde_json::json!({ "cell_id": "1" }))?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait on a cell").await?;
+
+    let request = completion.single_request();
+    let (content, success) = request
+        .function_call_output_content_and_success("call-1")
+        .expect("wait output should be present");
+    assert_eq!(
+        content.as_deref(),
+        Some("results are delivered automatically; use `exec_terminate` to stop a cell")
+    );
+    assert_ne!(success, Some(true));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_wait_returns_error_for_unknown_session() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
 
     responses::mount_sse_once(
@@ -5882,9 +6113,11 @@ async fn code_mode_background_keeps_running_on_later_turn_without_wait() -> Resu
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
     let resumed_file = test.workspace_path("code-mode-yield-resumed.txt");
     let resumed_file_quoted = shlex::try_join([resumed_file.to_string_lossy().as_ref()])?;
@@ -6040,6 +6273,7 @@ async fn code_mode_interrupt_terminates_active_cells_and_nested_tools(
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
@@ -6449,6 +6683,7 @@ text("after");
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.4", |model| {
             model.input_modalities.push(InputModality::Audio);
         })
@@ -6657,6 +6892,7 @@ async fn code_mode_unified_image_budget_preserves_legacy_contract_for_unsupporte
 
     let server = responses::start_mock_server().await;
     let builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("image-budget-unsupported-model", |model| {
             model.tool_mode = Some(ToolMode::CodeMode);
             model.supports_image_detail_original = false;
@@ -6699,6 +6935,7 @@ async fn code_mode_view_image_rejects_invalid_file_without_exposing_contents() -
 
     let server = responses::start_mock_server().await;
     let builder = test_codex()
+        .keep_polling_tools()
         .with_model("gpt-5.5")
         .with_config(|config| {
             let _ = config.features.enable(Feature::CodeMode);
@@ -6748,6 +6985,7 @@ async fn code_mode_can_use_view_image_result_with_image_helper(
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("gpt-5.5")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
@@ -7051,24 +7289,26 @@ async fn code_mode_node_repl_screenshots_can_be_captured_without_guardian_transc
     const SCREENSHOT: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
     let server = responses::start_mock_server().await;
     let mcp_server_bin = remote_aware_stdio_server_bin()?;
-    let mut builder = test_codex().with_config(move |config| {
-        config
-            .features
-            .enable(Feature::CodeMode)
-            .expect("enable Code Mode");
-        let mcp = serde_json::from_value(serde_json::json!({
-            "command": mcp_server_bin,
-            "environment_id": remote_aware_environment_id(),
-            "cwd": config.cwd,
-            "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" },
-            "omit_tools_from": ["deferred"],
-        }))
-        .expect("valid REPL MCP server config");
-        config
-            .mcp_servers
-            .set(HashMap::from([(repl_server.to_owned(), mcp)]))
-            .expect("configure REPL MCP server");
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::CodeMode)
+                .expect("enable Code Mode");
+            let mcp = serde_json::from_value(serde_json::json!({
+                "command": mcp_server_bin,
+                "environment_id": remote_aware_environment_id(),
+                "cwd": config.cwd,
+                "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" },
+                "omit_tools_from": ["deferred"],
+            }))
+            .expect("valid REPL MCP server config");
+            config
+                .mcp_servers
+                .set(HashMap::from([(repl_server.to_owned(), mcp)]))
+                .expect("configure REPL MCP server");
+        });
     let test = builder.build_with_auto_env(&server).await?;
     core_test_support::wait_for_mcp_server(&test.codex, repl_server).await?;
     let evidence = test
@@ -7131,6 +7371,7 @@ async fn code_mode_node_repl_image_flag_without_enhanced_stays_disabled(
     let server = responses::start_mock_server().await;
     let mcp_server_bin = remote_aware_stdio_server_bin()?;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.5", |model| {
             model.node_repl_auto_review_required = false;
         })
@@ -7262,7 +7503,7 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
         DynamicImage::new_rgba8(/*w*/ 2049, /*h*/ 32)
             .write_to(&mut large_image, ImageFormat::Png)?;
     }
-    let mut builder = test_codex()
+    let mut builder = test_codex().keep_polling_tools()
         .with_session_source(if reviewer_compaction {
             SessionSource::SubAgent(SubAgentSource::Other("saved-reviewer-parent".to_owned()))
         } else {
@@ -7762,6 +8003,7 @@ async fn yielded_code_mode_tool_callbacks_keep_their_originating_step() -> Resul
         generations: Arc::new(AtomicUsize::new(0)),
     }));
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_extensions(Arc::new(extensions.build()))
         .with_model_info_override("gpt-5.4", |model| {
             model.tool_mode = Some(ToolMode::CodeMode);
@@ -7852,6 +8094,7 @@ async fn code_mode_exposes_and_dispatches_namespaced_custom_tools() -> Result<()
         generations: Arc::new(AtomicUsize::new(0)),
     }));
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
@@ -8125,6 +8368,7 @@ async fn code_mode_uses_the_first_dynamic_tool_for_a_normalized_name() -> Result
     for use_responses_lite in [false, true] {
         let server = responses::start_mock_server().await;
         let mut builder = test_codex()
+            .keep_polling_tools()
             .with_model_info_override("gpt-5.5", move |model_info| {
                 model_info.use_responses_lite = use_responses_lite;
                 model_info.tool_mode = Some(ToolMode::CodeMode);
@@ -8373,7 +8617,7 @@ async fn code_mode_renders_local_refs_in_outbound_exec_description() -> Result<(
         ]),
     )
     .await;
-    let mut builder = test_codex().with_config(|config| {
+    let mut builder = test_codex().keep_polling_tools().with_config(|config| {
         config
             .features
             .enable(Feature::CodeModeOnly)
@@ -8449,6 +8693,7 @@ async fn code_mode_search_normalizes_and_calls_deferred_dynamic_tools() -> Resul
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.5", |model_info| {
             model_info.supports_search_tool = true;
             model_info.tool_mode = Some(ToolMode::CodeMode);
@@ -8643,7 +8888,7 @@ async fn code_mode_excludes_configured_nested_tool_namespaces() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(|config| {
+    let mut builder = test_codex().keep_polling_tools().with_config(|config| {
         config.update_plan_enabled = true;
         let _ = config.features.enable(Feature::CodeMode);
         config.code_mode.excluded_tool_namespaces = vec!["excluded".to_string()];
@@ -8743,6 +8988,7 @@ async fn code_mode_omits_configured_mcp_server_tools() -> Result<()> {
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
     let environment_id = remote_aware_environment_id();
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.4", |model| {
             model.supports_search_tool = false;
         })
@@ -8836,6 +9082,7 @@ async fn code_mode_only_keeps_mcp_tools_direct_when_nested_exposure_is_omitted()
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
     let environment_id = remote_aware_environment_id();
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.4", |model| {
             model.supports_search_tool = true;
         })
@@ -8930,6 +9177,7 @@ async fn code_mode_only_can_call_mcp_tools_hidden_from_direct_and_deferred_expos
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
     let environment_id = remote_aware_environment_id();
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model_info_override("gpt-5.4", |model| {
             model.supports_search_tool = true;
         })
@@ -9105,9 +9353,11 @@ async fn code_mode_can_store_and_load_values_across_turns() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .keep_polling_tools()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
 
     responses::mount_sse_once(
@@ -9294,6 +9544,7 @@ async fn code_mode_oversized_websocket_yield_keeps_later_wait_incomplete() -> Re
     ]])
     .await;
     let mut probe_builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(extensions(String::new()))
         .with_config(configure);
@@ -9330,6 +9581,7 @@ await new Promise(() => {});
     ]])
     .await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(extensions(padding))
         .with_config(configure);

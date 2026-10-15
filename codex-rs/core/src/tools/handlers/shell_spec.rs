@@ -114,7 +114,14 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
     })
 }
 
-pub fn create_write_stdin_tool() -> ToolSpec {
+/// `automatic_completion` drops the empty-poll wording for sessions whose exit status and output
+/// tail are delivered automatically. Nested Code Mode calls keep polling, so their spec does not.
+pub fn create_write_stdin_tool(automatic_completion: bool) -> ToolSpec {
+    let chars_description = if automatic_completion {
+        "Bytes to write to stdin. Do not send empty input to check on a running non-TTY session: its exit status and output tail are delivered automatically."
+    } else {
+        "Bytes to write to stdin. Defaults to empty, which retrieves session output without writing input."
+    };
     let properties = BTreeMap::from([
         (
             "session_id".to_string(),
@@ -124,9 +131,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         ),
         (
             "chars".to_string(),
-            JsonSchema::string(Some(
-                "Bytes to write to stdin. Defaults to empty, which retrieves session output without writing input.".to_string(),
-            )),
+            JsonSchema::string(Some(chars_description.to_string())),
         ),
         (
             "yield_time_ms".to_string(),

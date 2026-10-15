@@ -30,6 +30,38 @@ fn sleep_tool_config_rejects_unknown_mode() {
 }
 
 #[test]
+fn async_process_completion_polling_tools_parses_and_defaults_to_omit() {
+    use crate::AsyncProcessCompletionConfigToml;
+    use crate::PollingToolsMode;
+
+    assert_eq!(PollingToolsMode::default(), PollingToolsMode::Omit);
+
+    let bare: FeaturesToml =
+        toml::from_str("async_process_completion = true").expect("bare toggle should parse");
+    assert_eq!(
+        bare.async_process_completion,
+        Some(FeatureToml::Enabled(true))
+    );
+    assert_eq!(bare.entries().get("async_process_completion"), Some(&true));
+
+    let keep: FeaturesToml = toml::from_str("[async_process_completion]\npolling_tools = 'keep'")
+        .expect("polling_tools should parse");
+    assert_eq!(
+        keep.async_process_completion,
+        Some(FeatureToml::Config(AsyncProcessCompletionConfigToml {
+            enabled: None,
+            polling_tools: Some(PollingToolsMode::Keep),
+        }))
+    );
+    assert_eq!(keep.entries().get("async_process_completion"), None);
+
+    assert!(
+        toml::from_str::<FeaturesToml>("[async_process_completion]\npolling_tools = 'off'")
+            .is_err()
+    );
+}
+
+#[test]
 fn under_development_features_are_disabled_by_default() {
     for spec in crate::FEATURES {
         // Instant interrupts are enabled by default while retaining their development stage.

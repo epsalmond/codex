@@ -199,6 +199,8 @@ struct ProcessEntry {
     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
     hook_command: String,
     tty: bool,
+    /// The exit watcher delivers this process's exit status and output tail automatically.
+    completion_registered: bool,
     environment_id: String,
     permissions: TerminalPermissions,
     network_approval: Option<DeferredNetworkApproval>,

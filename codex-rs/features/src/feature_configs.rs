@@ -502,6 +502,33 @@ impl FeatureConfig for SleepToolConfigToml {
     }
 }
 
+/// Whether polling tools stay visible when async completion delivers results automatically.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PollingToolsMode {
+    /// Replace Code Mode `wait` with `exec_terminate` and refuse empty `write_stdin` polls of
+    /// processes whose results are delivered automatically.
+    #[default]
+    Omit,
+    /// Keep Code Mode `wait` and empty `write_stdin` polls alongside automatic delivery.
+    Keep,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AsyncProcessCompletionConfigToml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polling_tools: Option<PollingToolsMode>,
+}
+
+impl FeatureConfig for AsyncProcessCompletionConfigToml {
+    fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemovedAppsMcpPathOverrideConfigToml {

@@ -1,7 +1,8 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wake_mode_code_mode_child_request_keeps_wait_and_clock_but_hides_polling() -> Result<()> {
+async fn wake_mode_code_mode_child_request_gets_exec_terminate_and_clock_but_hides_polling()
+-> Result<()> {
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": "code mode child task marker",
@@ -110,7 +111,28 @@ async fn wake_mode_code_mode_child_request_keeps_wait_and_clock_but_hides_pollin
             .expect("child thread ID"),
     )?;
     let child_tools = child_request.body_json()["tools"].to_string();
-    assert!(child_tools.contains(codex_code_mode::WAIT_TOOL_NAME));
+    let child_tool_names = child_request.body_json()["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // A wake-mode child receives cell results automatically, so `wait` is replaced.
+    assert!(
+        child_tool_names
+            .iter()
+            .any(|name| name == codex_code_mode::TERMINATE_TOOL_NAME),
+        "{child_tool_names:?}"
+    );
+    assert!(
+        !child_tool_names
+            .iter()
+            .any(|name| name == codex_code_mode::WAIT_TOOL_NAME),
+        "{child_tool_names:?}"
+    );
     assert!(child_tools.contains("curr_time"));
     assert!(!child_tools.contains("sleep"));
     assert!(!child_tools.contains("wait_agent"));

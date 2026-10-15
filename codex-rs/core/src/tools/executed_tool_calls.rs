@@ -731,7 +731,8 @@ fn is_code_mode_wrapper(call: &ToolCall, source: &ToolCallSource, tool_mode: Too
                 crate::tools::code_mode::PUBLIC_TOOL_NAME,
                 ToolPayload::Custom { .. }
             ) | (
-                crate::tools::code_mode::WAIT_TOOL_NAME,
+                crate::tools::code_mode::WAIT_TOOL_NAME
+                    | crate::tools::code_mode::TERMINATE_TOOL_NAME,
                 ToolPayload::Function { .. }
             )
         )

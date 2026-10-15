@@ -76,6 +76,7 @@ use codex_features::Features;
 use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
+use codex_features::PollingToolsMode;
 use codex_features::SleepToolMode;
 use codex_features::TokenBudgetConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
@@ -1156,6 +1157,8 @@ pub struct Config {
     pub current_time_reminder: Option<CurrentTimeReminderConfig>,
     /// How the sleep tool is selected when its feature gate is enabled.
     pub sleep_tool_mode: SleepToolMode,
+    /// Whether polling tools stay visible when async completion delivers results automatically.
+    pub async_completion_polling_tools: PollingToolsMode,
 
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
@@ -3951,6 +3954,15 @@ impl Config {
                 FeatureToml::Config(config) => config.mode,
             })
             .unwrap_or_default();
+        let async_completion_polling_tools = cfg
+            .features
+            .as_ref()
+            .and_then(|features| features.async_process_completion.as_ref())
+            .and_then(|feature| match feature {
+                FeatureToml::Enabled(_) => None,
+                FeatureToml::Config(config) => config.polling_tools,
+            })
+            .unwrap_or_default();
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
 
         let agent_roles =
@@ -4662,6 +4674,7 @@ impl Config {
             rollout_budget,
             current_time_reminder,
             sleep_tool_mode,
+            async_completion_polling_tools,
             features,
             runtime_feature_defaults: BTreeMap::new(),
             suppress_unstable_features_warning: cfg

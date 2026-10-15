@@ -62,6 +62,11 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         false
     }
 
+    /// Returns the direct model-facing spec when it differs from the nested Code Mode spec.
+    fn model_visible_spec(&self) -> Option<ToolSpec> {
+        None
+    }
+
     /// Returns a shared spec when both the spec and search metadata are immutable.
     fn immutable_spec(&self) -> Option<&Arc<ToolSpec>> {
         None

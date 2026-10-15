@@ -1505,6 +1505,7 @@ async fn steers_yield_exec_and_wait_without_stopping_the_cell(instant_interrupt:
     const WAIT_TWO_ID: &str = "wait-two";
     let server = responses::start_mock_server().await;
     let test = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
             if instant_interrupt {

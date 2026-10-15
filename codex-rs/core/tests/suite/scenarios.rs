@@ -1112,6 +1112,7 @@ async fn astra_reads_code_mode_call_timing() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let test = test_codex()
+        .keep_polling_tools()
         .with_model("gpt-6-astra")
         .with_config(|config| {
             configure_scenario_catalog(config);
@@ -1296,6 +1297,7 @@ async fn astra_continues_after_input_yields_a_code_mode_cell() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let test = test_codex()
+        .keep_polling_tools()
         .with_model("gpt-6-astra")
         .with_config(|config| {
             configure_scenario_catalog(config);
@@ -1427,7 +1429,7 @@ async fn code_mode_catalog_messages(ranked_search: bool) -> Result<()> {
     let server = start_mock_server().await;
     let apps =
         core_test_support::apps_test_server::AppsTestServer::mount_searchable(&server).await?;
-    let test = test_codex()
+    let test = test_codex().keep_polling_tools()
         .with_model("gpt-6-astra")
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {

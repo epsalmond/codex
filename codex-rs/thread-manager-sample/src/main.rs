@@ -397,6 +397,7 @@ async fn new_config(
         rollout_budget: None,
         current_time_reminder: None,
         sleep_tool_mode: Default::default(),
+        async_completion_polling_tools: Default::default(),
         features: Default::default(),
         prefer_mxc: false,
 

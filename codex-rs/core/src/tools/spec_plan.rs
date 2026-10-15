@@ -386,6 +386,7 @@ pub(crate) fn finalize_tool_router(
         for tool_name in [
             ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME),
             ToolName::plain(codex_code_mode::WAIT_TOOL_NAME),
+            ToolName::plain(codex_code_mode::TERMINATE_TOOL_NAME),
         ] {
             if registry.remove(&tool_name).is_some() {
                 registry.record_collision(tool_name);
@@ -633,7 +634,10 @@ fn build_model_visible_specs(
             continue;
         }
 
-        let spec = tool.runtime.spec();
+        let spec = tool
+            .runtime
+            .model_visible_spec()
+            .unwrap_or_else(|| tool.runtime.spec());
         specs.push(spec_for_model_request(
             turn_context,
             model_info,
@@ -1001,7 +1005,7 @@ fn register_code_mode_executors(
     }
     enabled_tools
         .sort_by(|left, right| compare_code_mode_tools(left, right, &namespace_descriptions));
-    let exec_description = codex_code_mode::build_exec_tool_description(
+    let exec_description = codex_code_mode::build_exec_tool_description_with_delivery(
         &enabled_tools,
         &deferred_tools,
         &namespace_descriptions,
@@ -1014,16 +1018,23 @@ fn register_code_mode_executors(
         },
         deferred_tool_discovery,
         model_messages.code_mode(),
+        turn_context.code_mode_automatic_completion(),
     );
     let execute_handler = CodeModeExecuteHandler::new(
         create_code_mode_tool(exec_description),
         code_mode_nested_tool_specs,
     );
 
-    registry.prepend_trusted(Arc::new(CodeModeWaitHandler::new(
-        model_messages.code_mode_wait_description_override(),
-        model_messages.code_mode_wait_parameters_override(),
-    )));
+    if turn_context.code_mode_automatic_completion() {
+        // Results arrive automatically; `wait` stays dispatchable only to explain that.
+        registry.prepend_trusted(Arc::new(CodeModeWaitHandler::retired()));
+        registry.prepend_trusted(Arc::new(CodeModeWaitHandler::terminate_only()));
+    } else {
+        registry.prepend_trusted(Arc::new(CodeModeWaitHandler::new(
+            model_messages.code_mode_wait_description_override(),
+            model_messages.code_mode_wait_parameters_override(),
+        )));
+    }
     registry.prepend_trusted(Arc::new(execute_handler));
 
     code_mode_tool_names
@@ -1214,7 +1225,9 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     };
     if features.enabled(Feature::UnifiedExec) {
         registry.add(ExecCommandHandler::new(options));
-        registry.add(WriteStdinHandler);
+        registry.add(WriteStdinHandler::new(
+            context.turn_context.automatic_completion_active(),
+        ));
     } else {
         // Managed requirements are the only configuration path that can keep
         // unified exec disabled. Preserve command execution without exposing a

@@ -317,6 +317,31 @@ fn code_mode_overrides_preserve_enabled_state_and_cell_overhead() {
 }
 
 #[test]
+fn async_process_completion_polling_tools_merges_over_packaged_boolean() {
+    let mut base = parse_toml("[features]\nasync_process_completion = true\n");
+    let overlay = parse_toml("[features.async_process_completion]\npolling_tools = \"keep\"\n");
+    merge_toml_values(&mut base, &overlay);
+    assert_eq!(
+        base,
+        parse_toml(
+            "[features.async_process_completion]\nenabled = true\npolling_tools = \"keep\"\n"
+        )
+    );
+
+    let mut base = parse_toml("[features.async_process_completion]\npolling_tools = \"keep\"\n");
+    merge_toml_values(
+        &mut base,
+        &parse_toml("[features]\nasync_process_completion = false\n"),
+    );
+    assert_eq!(
+        base,
+        parse_toml(
+            "[features.async_process_completion]\npolling_tools = \"keep\"\nenabled = false\n"
+        )
+    );
+}
+
+#[test]
 fn sleep_tool_overrides_preserve_disabled_state_and_mode() {
     for feature_path in ["features", "profiles.work.features"] {
         let disabled = (

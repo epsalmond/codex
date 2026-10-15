@@ -17,6 +17,7 @@ use toml::Table;
 mod feature_configs;
 mod legacy;
 pub use feature_configs::AgentPolling;
+pub use feature_configs::AsyncProcessCompletionConfigToml;
 pub use feature_configs::CodeModeConfigToml;
 pub use feature_configs::CodeModeHostConfigToml;
 pub use feature_configs::ContextManagementConfigToml;
@@ -33,6 +34,7 @@ pub use feature_configs::NetworkProxyDomainPermissionToml;
 pub use feature_configs::NetworkProxyModeToml;
 pub use feature_configs::NetworkProxyUnixSocketPermissionToml;
 pub use feature_configs::NonPrefixedMcpToolNamesConfigToml;
+pub use feature_configs::PollingToolsMode;
 pub use feature_configs::RemoteMessageBoardConfigToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
@@ -868,6 +870,8 @@ pub struct FeaturesToml {
     pub current_time_reminder: Option<FeatureToml<CurrentTimeReminderConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep_tool: Option<FeatureToml<SleepToolConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub async_process_completion: Option<FeatureToml<AsyncProcessCompletionConfigToml>>,
     #[serde(default, rename = "apps_mcp_path_override", skip_serializing)]
     #[schemars(skip)]
     removed_apps_mcp_path_override: Option<FeatureToml<RemovedAppsMcpPathOverrideConfigToml>>,
@@ -936,6 +940,13 @@ impl FeaturesToml {
         }
         if let Some(enabled) = self.sleep_tool.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::SleepTool.key().to_string(), enabled);
+        }
+        if let Some(enabled) = self
+            .async_process_completion
+            .as_ref()
+            .and_then(FeatureToml::enabled)
+        {
+            entries.insert(Feature::AsyncProcessCompletion.key().to_string(), enabled);
         }
         entries
     }

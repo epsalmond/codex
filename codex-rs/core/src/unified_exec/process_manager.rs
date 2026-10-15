@@ -1263,6 +1263,7 @@ impl UnifiedExecProcessManager {
             initial_exec_command_active,
             hook_command,
             tty,
+            completion_registered: reservation.is_some(),
             environment_id,
             permissions,
             network_approval,
@@ -1865,6 +1866,16 @@ impl UnifiedExecProcessManager {
             .processes
             .get(&process_id)
             .map(|entry| entry.environment_id.clone())
+    }
+
+    /// Whether a running `process_id` reports its exit status and output tail automatically.
+    pub(crate) async fn has_automatic_completion(&self, process_id: i32) -> bool {
+        self.process_store
+            .lock()
+            .await
+            .processes
+            .get(&process_id)
+            .is_some_and(|entry| entry.completion_registered && !entry.process.has_exited())
     }
 
     /// The `exec_command` call that started `process_id`, for hook correlation.

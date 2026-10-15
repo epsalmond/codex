@@ -2308,6 +2308,7 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
     )
     .await;
     let test = step_settings_test()
+        .keep_polling_tools()
         .with_config(move |config| {
             config
                 .features

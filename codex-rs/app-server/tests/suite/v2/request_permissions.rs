@@ -257,6 +257,7 @@ async fn steps_capture_permission_grants_and_preserve_their_scope(
     let codex_home = tempfile::TempDir::new()?;
     let server = responses::start_mock_server().await;
     MockResponsesConfig::new(&server.uri())
+        .keep_polling_tools()
         .with_model("gpt-5.4")
         .with_approval_policy("on-request")
         .with_sandbox_mode("read-only")
@@ -506,6 +507,7 @@ async fn background_cell_uses_permissions_requested_after_next_turn_starts(
     let codex_home = tempfile::TempDir::new()?;
     let server = responses::start_mock_server().await;
     MockResponsesConfig::new(&server.uri())
+        .keep_polling_tools()
         .with_model("gpt-5.4")
         .with_approval_policy("on-request")
         .with_sandbox_mode("read-only")

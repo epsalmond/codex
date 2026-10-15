@@ -145,6 +145,7 @@ async fn exec_command_with_tty(
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hook_command: cmd.to_string(),
             tty,
+            completion_registered: false,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
                 turn.initial_environments
@@ -697,6 +698,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hook_command: "sleep 60".to_string(),
             tty: true,
+            completion_registered: false,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
                 turn.initial_environments
@@ -783,6 +785,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hook_command: "sleep 60".to_string(),
             tty: true,
+            completion_registered: false,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
                 turn.initial_environments

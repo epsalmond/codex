@@ -5850,6 +5850,7 @@ async fn post_tool_use_blocks_when_exec_session_completes_via_write_stdin() -> R
     .await;
 
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_pre_build_hook(|home| {
             write_logging_pre_and_blocking_post_tool_use_hooks(home, feedback)
                 .expect("failed to write tool use hook test fixture");
@@ -5954,6 +5955,7 @@ async fn pre_tool_use_observes_write_stdin_poll_without_gating_it() -> Result<()
     .await;
     let advisory = "observer advisory: repeated empty polls";
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_pre_build_hook(move |home| {
             write_observing_pre_and_logging_post_tool_use_hooks(
                 home,
@@ -6028,6 +6030,7 @@ async fn control_tool_hook_observation_can_be_disabled() -> Result<()> {
     )
     .await;
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_pre_build_hook(|home| {
             write_observing_pre_and_logging_post_tool_use_hooks(
                 home,
@@ -6064,6 +6067,7 @@ async fn pre_tool_use_observes_code_mode_exec_and_wait_without_gating_them() -> 
     let server = start_mock_server().await;
     let advisory = "observer advisory: waiting on a cell";
     let mut builder = test_codex()
+        .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
         .with_pre_build_hook(move |home| {
             write_observing_pre_and_logging_post_tool_use_hooks(

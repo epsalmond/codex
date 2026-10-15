@@ -3682,3 +3682,161 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
 
 #[path = "spec_plan_strict_third_party_tests.rs"]
 mod strict_third_party;
+
+/// Configures a Code Mode root whose provider reports cell readiness, with automatic completion
+/// on; `adjust` then changes one gate input.
+async fn automatic_completion_probe(adjust: impl FnOnce(&mut TurnContext)) -> ToolPlanProbe {
+    probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::CodeMode,
+                Feature::AsyncProcessCompletion,
+                Feature::UnifiedExec,
+            ],
+        );
+        update_config(turn, |config| {
+            config.async_completion_polling_tools = codex_features::PollingToolsMode::Omit;
+        });
+        turn.session_source = SessionSource::Cli;
+        turn.code_mode_available = true;
+        turn.code_mode_terminal_ready = codex_code_mode::TerminalReadySupport::Supported;
+        update_turn_settings_for_test(turn, |settings| {
+            Arc::make_mut(&mut settings.model_info).tool_mode = Some(ToolMode::CodeMode);
+        });
+        adjust(turn);
+    })
+    .await
+}
+
+fn assert_wait_kept(plan: &ToolPlanProbe) {
+    plan.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+    plan.assert_visible_lacks(&[codex_code_mode::TERMINATE_TOOL_NAME]);
+    plan.assert_registered_lacks(&[codex_code_mode::TERMINATE_TOOL_NAME]);
+    assert_eq!(
+        plan.exposures.get(codex_code_mode::WAIT_TOOL_NAME),
+        Some(&ToolExposure::Direct)
+    );
+}
+
+fn write_stdin_chars_description(plan: &ToolPlanProbe) -> String {
+    let ToolSpec::Function(tool) = plan.visible_spec("write_stdin") else {
+        panic!("write_stdin should be a function tool");
+    };
+    let schema = serde_json::to_value(&tool.parameters).expect("serialize write_stdin schema");
+    schema["properties"]["chars"]["description"]
+        .as_str()
+        .expect("chars description")
+        .to_string()
+}
+
+#[tokio::test]
+async fn automatic_completion_replaces_wait_with_exec_terminate() {
+    let plan = automatic_completion_probe(|_| {}).await;
+
+    plan.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::TERMINATE_TOOL_NAME,
+    ]);
+    plan.assert_visible_lacks(&[codex_code_mode::WAIT_TOOL_NAME]);
+    // `wait` stays dispatchable, hidden, to explain the replacement.
+    assert_eq!(
+        plan.exposures.get(codex_code_mode::WAIT_TOOL_NAME),
+        Some(&ToolExposure::Hidden)
+    );
+    assert_eq!(
+        plan.visible_spec(codex_code_mode::TERMINATE_TOOL_NAME),
+        &crate::tools::code_mode::wait_spec::create_terminate_tool()
+    );
+    let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+        panic!("exec should be a freeform tool");
+    };
+    assert!(
+        exec.description
+            .contains(codex_code_mode::AUTOMATIC_DELIVERY_EXEC_GUIDANCE),
+        "exec description should explain automatic delivery: {}",
+        exec.description
+    );
+    assert!(
+        !plan
+            .code_mode_tool_names
+            .contains_key(codex_code_mode::TERMINATE_TOOL_NAME),
+        "cells must not call exec_terminate"
+    );
+    // The model-facing write_stdin drops empty polling; the nested spec keeps it.
+    assert!(!write_stdin_chars_description(&plan).contains("retrieves session output"));
+    assert_eq!(
+        plan.code_mode_tool_names.get("write_stdin"),
+        Some(&ToolName::plain("write_stdin"))
+    );
+}
+
+#[tokio::test]
+async fn wait_kept_when_async_completion_off() {
+    let plan = automatic_completion_probe(|turn| {
+        set_feature(
+            turn,
+            Feature::AsyncProcessCompletion,
+            /*enabled*/ false,
+        );
+    })
+    .await;
+
+    assert_wait_kept(&plan);
+    assert!(write_stdin_chars_description(&plan).contains("retrieves session output"));
+}
+
+#[tokio::test]
+async fn wait_kept_when_polling_tools_keep() {
+    let plan = automatic_completion_probe(|turn| {
+        update_config(turn, |config| {
+            config.async_completion_polling_tools = codex_features::PollingToolsMode::Keep;
+        });
+    })
+    .await;
+
+    assert_wait_kept(&plan);
+    assert!(write_stdin_chars_description(&plan).contains("retrieves session output"));
+}
+
+#[tokio::test]
+async fn wait_kept_for_polling_child() {
+    let child = || {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/worker").expect("valid path")),
+            agent_nickname: None,
+            agent_role: None,
+        })
+    };
+    let polling = automatic_completion_probe(|turn| {
+        turn.session_source = child();
+        turn.wake_mode_active = false;
+    })
+    .await;
+    assert_wait_kept(&polling);
+
+    let wake = automatic_completion_probe(|turn| {
+        turn.session_source = child();
+        turn.wake_mode_active = true;
+    })
+    .await;
+    wake.assert_visible_contains(&[codex_code_mode::TERMINATE_TOOL_NAME]);
+    wake.assert_visible_lacks(&[codex_code_mode::WAIT_TOOL_NAME]);
+}
+
+#[tokio::test]
+async fn wait_kept_when_provider_lacks_readiness() {
+    let plan = automatic_completion_probe(|turn| {
+        turn.code_mode_terminal_ready = codex_code_mode::TerminalReadySupport::Unsupported;
+    })
+    .await;
+
+    assert_wait_kept(&plan);
+    // Process completion does not depend on the Code Mode provider.
+    assert!(!write_stdin_chars_description(&plan).contains("retrieves session output"));
+}
