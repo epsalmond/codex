@@ -40,6 +40,7 @@ impl CodeModeExecuteHandler {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     async fn execute(
         &self,
         session: std::sync::Arc<crate::session::session::Session>,
