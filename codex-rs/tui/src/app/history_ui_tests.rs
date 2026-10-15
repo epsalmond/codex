@@ -1,4 +1,4 @@
-//! Desktop handoff output and clear-screen history reset behavior.
+//! Browser and desktop handoff output and clear-screen history reset behavior.
 
 use super::*;
 use crate::app::tests::make_test_app_with_channels;
@@ -6,6 +6,52 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn open_url_in_browser_success_shows_full_url_in_history() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let url = "https://example.com/review/123?tab=files&line=42#discussion";
+    let mut opened_url = None;
+
+    app.open_url_in_browser_with(url.to_string(), |url| {
+        opened_url = Some(url.to_string());
+        Ok(())
+    });
+
+    assert_eq!(opened_url.as_deref(), Some(url));
+    let cell = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    assert_eq!(
+        render_cell(cell.as_ref()),
+        format!("• Browser launch requested for {url}."),
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn open_url_in_browser_failure_shows_only_error_with_full_url() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let url = "https://example.com/review/123?tab=files&line=42#discussion";
+    let mut opened_url = None;
+
+    app.open_url_in_browser_with(url.to_string(), |url| {
+        opened_url = Some(url.to_string());
+        Err(std::io::Error::other("launch failed"))
+    });
+
+    assert_eq!(opened_url.as_deref(), Some(url));
+    let cell = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    assert_eq!(
+        render_cell(cell.as_ref()),
+        format!("■ Failed to open browser for {url}: launch failed"),
+    );
+    assert!(rx.try_recv().is_err());
+}
 
 #[test]
 fn desktop_thread_opened_history_snapshot() {
@@ -24,7 +70,7 @@ fn desktop_thread_open_error_history_snapshot() {
     insta::assert_snapshot!("desktop_thread_open_error_history", render_cell(&cell));
 }
 
-fn render_cell(cell: &impl HistoryCell) -> String {
+fn render_cell(cell: &(impl HistoryCell + ?Sized)) -> String {
     let lines = cell.display_lines(/*width*/ 80);
     lines
         .iter()
