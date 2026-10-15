@@ -407,10 +407,12 @@ impl InputQueue {
 
     /// Clear any pending waiters and input buffered for the current turn.
     ///
-    /// In wake mode, unconsumed agent mail returns to the mailbox, where the next turn delivers it
-    /// or a pause holds it. An unpaused interrupt drops it instead, so an interrupted
-    /// `followup_task` does not restart a subagent. Outside wake mode it is dropped, as upstream
-    /// does. Returns whether any mail was returned.
+    /// Unconsumed agent mail returns to the front of the mailbox in order; other input is dropped.
+    /// In wake mode the next turn delivers it or a pause holds it, and an unpaused interrupt drops
+    /// it instead, so an interrupted `followup_task` does not restart a subagent. In polling mode
+    /// it is always kept for the next explicit turn: unless a replacing turn takes it, returned
+    /// trigger-turn mail pauses wakeups so it cannot start a turn on its own. Returns whether any
+    /// mail was returned.
     pub(crate) async fn clear_pending(
         &self,
         active_turn: &ActiveTurn,
@@ -422,10 +424,21 @@ impl InputQueue {
             turn_state.clear_pending_waiters();
             std::mem::take(&mut turn_state.pending_input.items)
         };
-        if mode != ChildReportMode::WakeOnReport
-            || (!self.wakeups_paused() && *reason == TurnAbortReason::Interrupted)
-        {
-            return false;
+        match mode {
+            ChildReportMode::WakeOnReport => {
+                if !self.wakeups_paused() && *reason == TurnAbortReason::Interrupted {
+                    return false;
+                }
+            }
+            ChildReportMode::WaitAgent => {
+                if *reason != TurnAbortReason::Replaced
+                    && items.iter().any(|item| {
+                        matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn)
+                    })
+                {
+                    self.pause_wakeups();
+                }
+            }
         }
         self.return_to_mailbox(&mut items).await
     }
@@ -1027,7 +1040,7 @@ mod tests {
 
     /// In wake mode, unconsumed child mail survives a paused or replaced turn, in order and exactly
     /// once. An unpaused interrupt drops it, so an interrupted `followup_task` does not restart a
-    /// subagent.
+    /// subagent. Polling mode always keeps it.
     #[tokio::test]
     async fn clear_pending_returns_unconsumed_mail_unless_interrupted_unpaused() {
         let worker = AgentPath::try_from("/root/worker").expect("agent path");
@@ -1063,12 +1076,18 @@ mod tests {
                 wake,
                 vec![later.clone()],
             ),
-            // Outside wake mode a replaced turn drops its unread mail, as upstream does.
+            // Polling mode keeps unread mail for the next explicit turn.
             (
                 false,
                 TurnAbortReason::Replaced,
                 ChildReportMode::WaitAgent,
-                vec![later.clone()],
+                returned.clone(),
+            ),
+            (
+                false,
+                TurnAbortReason::Interrupted,
+                ChildReportMode::WaitAgent,
+                returned.clone(),
             ),
         ] {
             let input_queue = InputQueue::new();
@@ -1137,6 +1156,72 @@ mod tests {
                 true,
                 false,
             )
+        );
+    }
+
+    /// Polling mode keeps accepted mail across an interrupt, but returned trigger-turn mail (an
+    /// interrupted `followup_task`) pauses wakeups so it waits for an explicit turn. Queue-only
+    /// mail needs no pause, and a replacing turn takes the mail itself. Steers are dropped.
+    #[tokio::test]
+    async fn polling_clear_pending_holds_returned_trigger_mail_until_explicit_turn() {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let worker = AgentPath::try_from("/root/worker/helper").expect("agent path");
+        let mail = |content, trigger_turn| {
+            TurnInput::InterAgentCommunication(make_mail(
+                parent.clone(),
+                worker.clone(),
+                content,
+                trigger_turn,
+            ))
+        };
+        let followup = mail("followup", /*trigger_turn*/ true);
+        let progress = mail("progress", /*trigger_turn*/ false);
+        let steer = TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+            metadata: Default::default(),
+        };
+        let mut outcomes = Vec::new();
+        for (reason, accepted) in [
+            (
+                TurnAbortReason::Interrupted,
+                vec![followup.clone(), steer.clone(), progress.clone()],
+            ),
+            (
+                TurnAbortReason::Interrupted,
+                vec![progress.clone(), steer.clone()],
+            ),
+            (
+                TurnAbortReason::Replaced,
+                vec![followup.clone(), steer.clone()],
+            ),
+        ] {
+            let input_queue = InputQueue::new();
+            let active_turn = ActiveTurn::default();
+            input_queue
+                .extend_pending_input_for_turn_state(active_turn.turn_state.as_ref(), accepted)
+                .await;
+
+            let returned = input_queue
+                .clear_pending(&active_turn, &reason, ChildReportMode::WaitAgent)
+                .await;
+            let paused = input_queue.wakeups_paused();
+            let while_paused = input_queue.drain_mailbox_input_items().await.0;
+            input_queue.resume_wakeups();
+            let after_resume = input_queue.drain_mailbox_input_items().await.0;
+            outcomes.push((returned, paused, while_paused, after_resume));
+        }
+
+        assert_eq!(
+            outcomes,
+            vec![
+                (true, true, vec![progress.clone()], vec![followup.clone()]),
+                (true, false, vec![progress], Vec::new()),
+                (true, false, vec![followup], Vec::new()),
+            ]
         );
     }
 

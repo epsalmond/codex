@@ -202,7 +202,10 @@ and exec exits after one root turn. With polling enabled, `wait_agent` without
 (interactive sessions keep 30 seconds), returns as soon as an agent reports, and
 returns at once when no child is running; a configured `default_wait_timeout_ms`
 applies everywhere. In the default wake mode agents have no `wait_agent`, so this
-default does not apply.
+default does not apply. Polling agents keep reports and messages across Esc: the
+next turn takes them, and an interrupted `followup_task` waits for the next
+explicit follow-up rather than restarting on its own. A report to an evicted
+parent reloads that parent while the Codex process runs.
 
 Esc pauses automatic wakeups and holds child results arriving at the root; the TUI
 shows "N child results queued — delivered with your next message". A child
