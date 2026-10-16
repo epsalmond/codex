@@ -319,7 +319,29 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
     tokio::join!(ThreadIdle::wait(&grandchild_thread), async {
         let _ = grandchild_release_tx.send(());
     });
-    if !matches!(
+    if scenario == DeliveryScenario::NoCapacity {
+        // The valid parent cannot be reloaded, so its report waits in the retained mailbox
+        // instead of being dropped. Free a slot, then resume the parent explicitly.
+        assert!(
+            test.thread_manager
+                .get_thread(child_thread_id)
+                .await
+                .is_err()
+        );
+        let _ = pressure_release_tx.take().expect("pressure gate").send(());
+        wait_for_event(&pressure_child, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        ThreadIdle::wait(&pressure_child).await;
+        pressure_child.shutdown_and_wait().await?;
+        test.thread_manager
+            .remove_thread(&pressure_child_thread_id)
+            .await;
+        test.thread_manager
+            .ensure_multi_agent_v2_child_loaded(child_thread_id)
+            .await?;
+    } else if !matches!(
         scenario,
         DeliveryScenario::Recover
             | DeliveryScenario::ExplicitResumeRace

@@ -138,7 +138,10 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
     ThreadIdle::wait(&test.codex).await;
     assert_eq!(
         delivery.function_call_output_text("queued-mail"),
-        Some(String::new()),
+        Some(
+            "Follow-up accepted for turn processing; this does not confirm startup or completion."
+                .to_string()
+        ),
     );
     assert_eq!(queued_message_count(), 0);
 

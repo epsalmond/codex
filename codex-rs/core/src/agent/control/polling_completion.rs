@@ -25,18 +25,23 @@ impl LocalAgentControl {
         }
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, sender_thread_id);
-        match self
-            .send_inter_agent_communication(
-                parent_thread_id,
-                communication.clone(),
-                context.clone(),
-                TurnStartOptions::default(),
-            )
-            .await
-        {
-            Ok(_) => return Ok(()),
-            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
-            Err(err) => return Err(err),
+        // A queue-only send to an unloaded recipient lands in its retained mailbox and succeeds,
+        // which would skip the validation below and accept reports for closed, archived or
+        // deleted parents. Send directly only to a loaded parent; recover an unloaded one.
+        if state.get_thread(parent_thread_id).await.is_ok() {
+            match self
+                .send_inter_agent_communication(
+                    parent_thread_id,
+                    communication.clone(),
+                    context.clone(),
+                    TurnStartOptions::default(),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
+                Err(err) => return Err(err),
+            }
         }
 
         // Only current members of this tree may be automatically recovered. A caller's source
@@ -126,7 +131,24 @@ impl LocalAgentControl {
                 // winner before delivery, preserving the loader error if no valid runtime exists.
                 let parent = match state.get_thread(parent_thread_id).await {
                     Ok(parent) => parent,
-                    Err(err) => return Err(reload_error.unwrap_or(err)),
+                    Err(_) => {
+                        // A valid parent that cannot be reloaded now (for example, no capacity)
+                        // keeps the report in its retained mailbox until it next loads.
+                        if let Some(err) = reload_error {
+                            tracing::debug!(
+                                "retaining completion for unloaded parent {parent_thread_id}: {err}"
+                            );
+                        }
+                        return self
+                            .send_inter_agent_communication(
+                                parent_thread_id,
+                                communication,
+                                context,
+                                TurnStartOptions::default(),
+                            )
+                            .await
+                            .map(|_| ());
+                    }
                 };
                 (parent, reload_error)
             }

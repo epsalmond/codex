@@ -37,6 +37,25 @@ async fn wake_mode_code_mode_child_request_gets_exec_terminate_and_clock_but_hid
         ]),
     )
     .await;
+    // The root samples once more after spawning. Without a response its turn errors, and the
+    // child can be torn down before its first request.
+    let _root_yield = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "code-mode-wake-spawn")
+                && !request_has_input_type_with_text(
+                    request,
+                    "agent_message",
+                    "code-mode result marker",
+                )
+        },
+        sse(vec![
+            ev_response_created("code-mode-wake-root-yield"),
+            ev_assistant_message("code-mode-wake-root-yield-message", "waiting for the child"),
+            ev_completed("code-mode-wake-root-yield"),
+        ]),
+    )
+    .await;
     let _root_resume = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
