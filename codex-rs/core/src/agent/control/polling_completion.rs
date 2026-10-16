@@ -25,18 +25,23 @@ impl LocalAgentControl {
         }
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, sender_thread_id);
-        match self
-            .send_inter_agent_communication(
-                parent_thread_id,
-                communication.clone(),
-                context.clone(),
-                TurnStartOptions::default(),
-            )
-            .await
-        {
-            Ok(_) => return Ok(()),
-            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
-            Err(err) => return Err(err),
+        // A queue-only send to an unloaded recipient lands in its retained mailbox and succeeds,
+        // which would skip the validation below and accept reports for closed, archived or
+        // deleted parents. Send directly only to a loaded parent; recover an unloaded one.
+        if state.get_thread(parent_thread_id).await.is_ok() {
+            match self
+                .send_inter_agent_communication(
+                    parent_thread_id,
+                    communication.clone(),
+                    context.clone(),
+                    TurnStartOptions::default(),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
+                Err(err) => return Err(err),
+            }
         }
 
         // Only current members of this tree may be automatically recovered. A caller's source
