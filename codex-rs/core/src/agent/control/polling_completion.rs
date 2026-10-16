@@ -114,15 +114,23 @@ impl LocalAgentControl {
                 "completion target has no open parent edge".into(),
             ));
         }
+        let mut _residency_pin = None;
         let (parent, reload_error) = match state.get_thread(parent_thread_id).await {
             Ok(parent) => (parent, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
                 let reload_error =
                     if let Some(config) = self.runtime.registry.evicted_config(parent_thread_id) {
                         // An owner-driven resume replaces target settings. Restore this target's own snapshot.
-                        self.ensure_v2_agent_loaded(config, parent_thread_id, /*parent*/ None)
+                        match self
+                            .ensure_v2_agent_loaded(config, parent_thread_id, /*parent*/ None)
                             .await
-                            .err()
+                        {
+                            Ok(pin) => {
+                                _residency_pin = pin;
+                                None
+                            }
+                            Err(err) => Some(err),
+                        }
                     } else {
                         None
                     };

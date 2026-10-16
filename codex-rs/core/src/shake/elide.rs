@@ -66,7 +66,8 @@ pub(crate) fn shake_elide_watermarked(
             ResponseItem::Message { role, content, .. } => {
                 let mut block_regions: Vec<BlockRegion> = Vec::new();
                 for (content_index, part) in content.iter().enumerate() {
-                    if let ContentItem::InputText { text } | ContentItem::OutputText { text } = part
+                    if let ContentItem::InputText { text } | ContentItem::OutputText { text, .. } =
+                        part
                     {
                         push_block_regions(index, content_index, text, role, &mut block_regions);
                     }
@@ -79,8 +80,9 @@ pub(crate) fn shake_elide_watermarked(
                     ))
                 });
                 for region in &block_regions {
-                    let Some(ContentItem::InputText { text } | ContentItem::OutputText { text }) =
-                        content.get_mut(region.content_index)
+                    let Some(
+                        ContentItem::InputText { text } | ContentItem::OutputText { text, .. },
+                    ) = content.get_mut(region.content_index)
                     else {
                         continue;
                     };

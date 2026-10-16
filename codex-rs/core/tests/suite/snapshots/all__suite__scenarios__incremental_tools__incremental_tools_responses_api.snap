@@ -1,0 +1,108 @@
+---
+source: core/tests/suite/scenarios_incremental_tools.rs
+expression: "context_snapshot::format_request_history_snapshot(if use_responses_lite\n{\n    \"Tool definitions enter history in one batch; a catalog change appends one developer notice before only the changed exec definition, without modifying namespace descriptions. The next unchanged turn appends only user input.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+---
+Scenario: Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.
+
+## Window 1
+Settings:
+  include: ["reasoning.encrypted_content"]
+  model: "gpt-5.4"
+  parallel_tool_calls: true
+  prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
+  reasoning: {"effort":"medium"}
+  store: false
+  stream: true
+  text: {"verbosity":"low"}
+  tool_choice: "auto"
+  tools (9; hash=3df59de9a94a67cf):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=e13dfbecca1d6486
+    - function/exec_terminate: Stops a running `exec` cell and returns its output so far. A running cell's final result is deliv...; args=[cell_id]; hash=4ded6e8fceba1e98
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs ar...; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=d877b94ce502385f
+    - function/write_stdin: Writes characters to an existing unified exec session owned by this agent and returns recent outp...; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=b14caa6c491c20fb
+    - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+    - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=11c5b5ed4fb972e8
+    - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=1b87dd8874f6fa10
+    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+      - function/followup_task
+      - function/interrupt_agent
+      - function/list_agents
+      - function/send_message
+      - function/spawn_agent
+    - web_search; hash=e214d4db1bc49e89
+-- request 1 (turn) --
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+03:message/developer:
+    <MULTI_AGENT_MODE>
+04:message/user:
+    <ENVIRONMENT_CONTEXT>
+05:message/user:
+    Begin work.
+-- request 2 (turn) --
+06:message/user:
+    Continue with the same tools.
+
+## Window 2 (after request 2)
+Settings: relative to window 1
+  model: "updated-tools-model"
+  tools (9; hash=8ba184a23e6c8d06):
+    ~ custom/exec: Updated execution instructions.  When `exec` returns `Script running with cell ID ...`, the scrip...; hash=bb58cb48fc181b39
+-- request 3 (turn) --
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+03:message/developer:
+    <MULTI_AGENT_MODE>
+04:message/user:
+    <ENVIRONMENT_CONTEXT>
+05:message/user:
+    Begin work.
+06:message/user:
+    Continue with the same tools.
+07:message/developer:
+    <MODEL_SWITCH>
+08:message/user:
+    Continue with the updated execution instructions.
+-- request 4 (turn) --
+09:message/user:
+    Continue with the same updated tools.

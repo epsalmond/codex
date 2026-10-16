@@ -192,7 +192,7 @@ fn item_model_visible_bytes(item: &ResponseItem) -> usize {
             bytes += role.len();
             for part in content {
                 bytes += match part {
-                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                         text.len()
                     }
                     ContentItem::InputImage { image, .. } => match image {
@@ -548,6 +548,8 @@ mod tests {
 
     fn text_item(role: &str, text: &str) -> ResponseItemEnvelope {
         ResponseItemEnvelope::new(ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
             id: None,
             role: role.to_string(),
             content: vec![ContentItem::InputText {
@@ -580,6 +582,8 @@ mod tests {
     ) -> Vec<ResponseItemEnvelope> {
         vec![
             ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                encrypted_content: None,
+                status: None,
                 id: None,
                 name: name.to_string(),
                 namespace: namespace.map(str::to_string),
@@ -864,6 +868,8 @@ mod tests {
                 internal_chat_message_metadata_passthrough: None,
             }),
             ResponseItemEnvelope::new(ResponseItem::Message {
+                encrypted_content: None,
+                status: None,
                 id: None,
                 role: "user".to_string(),
                 content: vec![

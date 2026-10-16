@@ -774,7 +774,7 @@ async fn prompt_only_tools_cross_the_independent_child_cap(
                 .iter()
                 .map(|part| match part {
                     codex_protocol::models::ContentItem::InputText { text }
-                    | codex_protocol::models::ContentItem::OutputText { text } => text.len(),
+                    | codex_protocol::models::ContentItem::OutputText { text, .. } => text.len(),
                     _ => 0,
                 })
                 .sum(),
@@ -790,6 +790,8 @@ async fn prompt_only_tools_cross_the_independent_child_cap(
         .start_turn_if_idle(codex_protocol::turn_input::TurnInputRequest::new(
             codex_protocol::turn_input::TurnInput::ResponseItem(
                 codex_protocol::models::ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
                     id: None,
                     role: "developer".to_string(),
                     content: vec![codex_protocol::models::ContentItem::InputText {

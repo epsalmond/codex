@@ -470,6 +470,8 @@ impl Session {
                 .await;
         };
         debug_assert!(turn.task.is_none());
+        // Installing a task reopens input admission on this slot.
+        turn.finishing = None;
         let done_clone = Arc::clone(&done);
         let session = Arc::clone(self);
         let ctx = Arc::clone(&turn_context);
@@ -1016,6 +1018,8 @@ impl Session {
             .cancel_git_enrichment_task();
 
         let failed = abort_reason.is_none() && turn_context.terminal_error.lock().await.is_some();
+        let finishing = CancellationToken::new();
+        let finish_recording = finishing.clone().drop_guard();
         let finished_task = {
             let mut active = self.active_turn.lock().await;
             active.as_mut().and_then(|active_turn| {
@@ -1048,7 +1052,7 @@ impl Session {
                     })
                     .flatten();
                 let task = active_turn.task.take()?;
-                active_turn.finishing = true;
+                active_turn.finishing = Some(finishing);
                 if failed {
                     if self.services.async_completions.has_owned_work() {
                         self.input_queue.pause_wakeups();
@@ -1118,6 +1122,7 @@ impl Session {
             PersistContext::Standard,
         )
         .await;
+        drop(finish_recording);
         let turn_telemetry = &turn_context.session_telemetry;
         // Emit token usage metrics.
         {

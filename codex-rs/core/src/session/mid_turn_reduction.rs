@@ -23,6 +23,7 @@ use crate::agent::types::ContextReductionOutcome;
 use crate::agent::types::ContextReductionRecord;
 use crate::client::ModelClientSession;
 use crate::compact_invocation::CompactionInvocation;
+use crate::compact_remote_v2::BackgroundCompactionCandidate;
 
 /// Why the sampling loop is rolling over to a reduced context.
 pub(super) enum RollOverTrigger {
@@ -30,6 +31,8 @@ pub(super) enum RollOverTrigger {
     NewContextWindowRequested,
     /// Post-sampling usage reached the auto-compact or full-window limit.
     TokenLimitReached,
+    /// A background compaction finished below the limit; adopt it if still valid.
+    BackgroundCandidateReady,
 }
 
 /// How the mid-turn roll-over reduced the context.
@@ -38,6 +41,8 @@ pub(super) enum MidTurnReduction {
     Shaken,
     /// Compaction ran and sampling continues (a root session may still be over the limit).
     Compacted,
+    /// A prepared background compaction was declined and no compaction was required.
+    Skipped,
 }
 
 /// Error text for a subagent turn that ended over its context limit. The parent reads it
@@ -68,10 +73,13 @@ pub(super) async fn reduce_mid_turn(
     client_session: &mut ModelClientSession,
     trigger: RollOverTrigger,
     tokens_before: i64,
+    candidate: Option<Box<BackgroundCompactionCandidate>>,
 ) -> CodexResult<MidTurnReduction> {
     let subagent = matches!(turn_context.session_source, SessionSource::SubAgent(_));
     let shake_first = match trigger {
-        RollOverTrigger::NewContextWindowRequested => false,
+        RollOverTrigger::NewContextWindowRequested | RollOverTrigger::BackgroundCandidateReady => {
+            false
+        }
         RollOverTrigger::TokenLimitReached => subagent,
     };
     if shake_first {
@@ -97,11 +105,16 @@ pub(super) async fn reduce_mid_turn(
         Arc::clone(step_context),
         client_session,
         CompactionInvocation::automatic(CompactionReason::ContextLimit, CompactionPhase::MidTurn),
+        candidate,
     )
     .await;
-    if let Err(err) = compact {
-        record_reduction_error(sess, tokens_before, &err).await;
-        return Err(err);
+    match compact {
+        Ok(true) => {}
+        Ok(false) => return Ok(MidTurnReduction::Skipped),
+        Err(err) => {
+            record_reduction_error(sess, tokens_before, &err).await;
+            return Err(err);
+        }
     }
     if subagent {
         sess.state.lock().await.pending_child_reduction =

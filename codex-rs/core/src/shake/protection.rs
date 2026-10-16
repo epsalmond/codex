@@ -136,6 +136,8 @@ mod tests {
     fn output_flags_pair_with_the_originating_call() {
         let items = vec![
             ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                encrypted_content: None,
+                status: None,
                 id: None,
                 name: "read".to_string(),
                 namespace: Some("skills".to_string()),
@@ -155,6 +157,8 @@ mod tests {
                 internal_chat_message_metadata_passthrough: None,
             }),
             ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                encrypted_content: None,
+                status: None,
                 id: None,
                 name: "exec_command".to_string(),
                 namespace: None,

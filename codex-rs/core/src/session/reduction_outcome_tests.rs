@@ -205,6 +205,7 @@ async fn inline_compaction_forwards_trigger_and_reason(remote: bool, trigger: Co
             reason,
             phase: CompactionPhase::MidTurn,
         },
+        /*candidate*/ None,
     )
     .await
     .unwrap();
@@ -287,6 +288,7 @@ async fn inline_token_budget_compaction_forwards_hook_trigger(trigger: Compactio
             },
             phase: CompactionPhase::MidTurn,
         },
+        /*candidate*/ None,
     )
     .await
     .unwrap();

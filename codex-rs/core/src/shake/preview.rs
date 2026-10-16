@@ -164,6 +164,8 @@ mod tests {
 
     fn text_item(role: &str, text: &str) -> ResponseItemEnvelope {
         ResponseItemEnvelope::new(ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
             id: None,
             role: role.to_string(),
             content: vec![ContentItem::InputText {
@@ -180,6 +182,8 @@ mod tests {
         let big = "protected tool output line with padding words\n".repeat(/*n*/ 1_200);
         let mut items = vec![
             ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                encrypted_content: None,
+                status: None,
                 id: None,
                 name: name.to_string(),
                 namespace: namespace.map(str::to_string),

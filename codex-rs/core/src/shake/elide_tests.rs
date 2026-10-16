@@ -8,6 +8,8 @@ use pretty_assertions::assert_eq;
 fn failed_output_save_stops_before_its_call() {
     let items = vec![
         ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
             id: None,
             name: "shell".to_string(),
             namespace: None,

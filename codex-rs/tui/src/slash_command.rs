@@ -39,6 +39,7 @@ pub enum SlashCommand {
     Init,
     Compact,
     Shake,
+    Config,
     Recap,
     Plan,
     Voice,
@@ -91,6 +92,7 @@ impl SlashCommand {
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
+            SlashCommand::Config => "configure Codex preferences",
             SlashCommand::Feedback => "send logs to maintainers",
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
@@ -306,7 +308,7 @@ impl SlashCommand {
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Agents | SlashCommand::MultiAgents => true,
-            SlashCommand::Theme | SlashCommand::Pets => false,
+            SlashCommand::Config | SlashCommand::Theme | SlashCommand::Pets => false,
         }
     }
 

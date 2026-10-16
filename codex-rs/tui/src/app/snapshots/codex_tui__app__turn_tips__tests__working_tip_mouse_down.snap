@@ -1,7 +1,6 @@
 ---
 source: tui/src/app/turn_tips_tests.rs
-assertion_line: 422
-expression: screen
+expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(screen)"
 ---
 Response row 0
 Response row 1
@@ -25,5 +24,5 @@ Response row 9
 
 › Ask Codex to do anything
 
-  gpt-test default · /tmp/project
+  gpt-test · /tmp/project
   ? for shortcuts

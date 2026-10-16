@@ -20,7 +20,7 @@ impl Session {
         input: Vec<T>,
     ) -> Result<(), Vec<T>> {
         let mut active = self.active_turn.lock().await;
-        match active.as_mut() {
+        match active.as_mut().filter(|turn| turn.finishing.is_none()) {
             Some(active_turn) => {
                 if active_turn.task.is_none() {
                     return Err(input);
@@ -97,8 +97,12 @@ impl Session {
         let mut active = self.active_turn.lock().await;
         // A reservation without a task is an idle thread whose turn has not started yet. Record
         // directly so the items are in history when callers observe the injection, and so the
-        // turn that is starting sees them ahead of its own input.
-        if let Some(active_turn) = active.as_mut().filter(|turn| turn.task.is_some()) {
+        // turn that is starting sees them ahead of its own input. A finishing turn has closed
+        // input admission; wait below for its final batch before recording.
+        if let Some(active_turn) = active
+            .as_mut()
+            .filter(|turn| turn.task.is_some() && turn.finishing.is_none())
+        {
             self.input_queue
                 .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                     active_turn.turn_state.as_ref(),
@@ -110,7 +114,11 @@ impl Session {
                 .await;
             return;
         }
+        let finishing = active.as_ref().and_then(|turn| turn.finishing.clone());
         drop(active);
+        if let Some(finishing) = finishing {
+            finishing.cancelled().await;
+        }
         self.record_annotated_conversation_items(turn_context, turn_context.model_info(), items)
             .await;
     }
@@ -192,6 +200,15 @@ impl Session {
         let Err(items) = self.inject_if_running(items).await else {
             return;
         };
+        let finishing = self
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|turn| turn.finishing.clone());
+        if let Some(finishing) = finishing {
+            finishing.cancelled().await;
+        }
         let default_turn_context;
         let turn_context = match current_turn_context {
             Some(turn_context) => turn_context,

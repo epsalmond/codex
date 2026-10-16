@@ -30,13 +30,15 @@ use codex_protocol::protocol::TokenUsage;
 /// Metadata about the currently running turn.
 pub(crate) struct ActiveTurn {
     pub(crate) task: Option<RunningTask>,
+    /// Present once the task has finished and the turn holds the slot only for end-of-turn work
+    /// (stop hooks, `TurnComplete`, rollout flush): input admission is closed, and the token is
+    /// cancelled when the final batch is recorded. Explicit input replaces such a turn instead
+    /// of waiting. Reservations that have not started still accept inputs.
+    pub(crate) finishing: Option<CancellationToken>,
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
     /// Signals once when `task` is installed. Dropping the turn closes it, so input that found
     /// this turn reserved but not yet running can wait for it to start or release the slot.
     pub(crate) task_installed: watch::Sender<()>,
-    /// Set once the task has finished and the turn holds the slot only for end-of-turn work
-    /// (stop hooks, `TurnComplete`, rollout flush). Input replaces such a turn instead of waiting.
-    pub(crate) finishing: bool,
     /// Turn id of the start that reserved this slot. A reserving start binds its assignment only
     /// while it still holds the slot, under the active-turn lock, so input that replaces the
     /// reservation under that lock takes over any binding the start already made.
@@ -68,9 +70,9 @@ impl Default for ActiveTurn {
     fn default() -> Self {
         Self {
             task: None,
+            finishing: None,
             turn_state: Arc::new(Mutex::new(TurnState::default())),
             task_installed: watch::Sender::new(()),
-            finishing: false,
             reserved_turn_id: None,
         }
     }

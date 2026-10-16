@@ -81,7 +81,7 @@ async fn ensure_conversation_listener_inner(
     };
     let (thread_state, result) = {
         let pending_thread_unloads = listener_task_context.pending_thread_unloads.lock().await;
-        if pending_thread_unloads.contains(&conversation_id) {
+        if pending_thread_unloads.contains_key(&conversation_id) {
             return Err(invalid_request(format!(
                 "thread {conversation_id} is closing; retry after the thread is closed"
             )));

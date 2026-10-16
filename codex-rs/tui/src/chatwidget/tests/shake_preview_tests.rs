@@ -181,6 +181,7 @@ async fn shake_preview_withholds_unknown_billing_and_body_budget() {
         address: "wss://remote.example.com".to_string(),
         version: "v1.0.0".to_string(),
         is_local_daemon: false,
+        is_managed_daemon: false,
     });
     chat.show_shake_preview(thread_id, ShakeMode::Elide, preview());
     assert_chatwidget_snapshot!(

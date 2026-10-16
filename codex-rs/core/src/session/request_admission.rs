@@ -225,6 +225,7 @@ impl ChildRequestAdmission {
                 CompactionReason::ContextLimit,
                 CompactionPhase::MidTurn,
             ),
+            /*candidate*/ None,
         )
         .or_cancel(cancellation)
         .await

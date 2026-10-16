@@ -9,7 +9,9 @@ pub(crate) const OVERLOADED_ERROR_CODE: i64 = -32001;
 pub const INPUT_TOO_LARGE_ERROR_CODE: &str = "input_too_large";
 
 pub(crate) fn server_draining_error() -> JSONRPCErrorError {
-    invalid_request("Server is draining; retry after reconnecting")
+    let mut error = invalid_request("Server is draining; retry after reconnecting");
+    error.data = Some(serde_json::json!({ "reason": "serverShuttingDown" }));
+    error
 }
 
 /// The retryable error for a turn start Core declined only because the host cannot admit new

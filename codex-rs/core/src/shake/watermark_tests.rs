@@ -6,6 +6,8 @@ use pretty_assertions::assert_eq;
 
 fn function_call(call_id: &str) -> ResponseItemEnvelope {
     ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
         id: None,
         name: "shell".to_string(),
         namespace: None,
@@ -29,6 +31,8 @@ fn function_output(call_id: &str) -> ResponseItemEnvelope {
 
 fn image_message(image_url: &str) -> ResponseItemEnvelope {
     ResponseItemEnvelope::new(ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
         id: None,
         role: "user".to_string(),
         content: vec![
@@ -84,6 +88,8 @@ fn media_preparation_migration_starts_a_new_epoch_but_corrupt_seals_stay_invalid
     let valid_state = state_for_epoch("legacy-epoch".to_string(), 1, &legacy_history)
         .expect("legacy history has a valid seal");
     let prepared_history = vec![ResponseItemEnvelope::new(ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
         id: None,
         role: "user".to_string(),
         content: vec![

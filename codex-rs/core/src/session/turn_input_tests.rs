@@ -64,6 +64,8 @@ impl SessionTask for NeverEndingTask {
 
 fn user_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -1156,7 +1158,7 @@ async fn explicit_input_replaces_a_finishing_turn_without_waiting() {
     let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
     // The finished task's end-of-turn work (stop hooks, TurnComplete, flush) still holds the slot.
     let finishing = ActiveTurn {
-        finishing: true,
+        finishing: Some(CancellationToken::new()),
         ..Default::default()
     };
     let finishing_state = Arc::clone(&finishing.turn_state);

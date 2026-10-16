@@ -1,15 +1,9 @@
 use super::*;
-use crate::agent::api::AgentInput;
-use crate::agent::api::SpawnRequest;
-use crate::agent::child_config::SpawnConfigOptions;
-use crate::agent::child_config::SpawnConfigVersion;
-use crate::agent::child_config::prepare_agent_spawn_config;
-use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
-use crate::agent::types::SpawnAgentOptions;
 use crate::codex_thread::ThreadConfigSnapshot;
+use crate::thread_spawn::ThreadSpawnError;
+use crate::thread_spawn::ThreadSpawnRequest;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
@@ -127,67 +121,23 @@ async fn handle_spawn_agent(
         .map(str::trim)
         .filter(|role| !role.is_empty());
 
-    let session_source = turn.session_source.clone();
-    let child_depth = next_thread_spawn_depth(&session_source);
-    let prepared = prepare_agent_spawn_config(
+    let spawned = crate::thread_spawn::spawn(
         &session,
-        step_context.as_ref(),
-        SpawnConfigOptions {
-            version: SpawnConfigVersion::V2,
-            full_history_fork: matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)),
-            role_name,
-            model: args.model.as_deref(),
-            reasoning_effort: args.reasoning_effort.clone(),
+        &step_context,
+        &call_id,
+        ThreadSpawnRequest {
+            task_name: args.task_name,
+            message: agent_message_from_tool(message, &source),
+            fork_mode: fork_mode.clone(),
+            agent_type: args.agent_type.clone(),
+            model: args.model,
+            reasoning_effort: args.reasoning_effort,
         },
     )
     .await
-    .map_err(FunctionCallError::RespondToModel)?;
-    let config = prepared.config;
-    // Forked history carries the parent provider's encrypted reasoning, which another provider
-    // cannot read.
-    if fork_mode.is_some() && config.model_provider_id != turn.config.model_provider_id {
-        let role_name = prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME);
-        let provider_id = &config.model_provider_id;
-        return Err(FunctionCallError::RespondToModel(format!(
-            "agent_type '{role_name}' switches model_provider to `{provider_id}` and cannot be used with a forked history; spawn it with fork_turns set to \"none\""
-        )));
-    }
-    let spawn_source = thread_spawn_source(
-        session.thread_id,
-        &turn.session_source,
-        child_depth,
-        prepared.role_name.as_deref(),
-        Some(args.task_name.clone()),
-    )?;
-    let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
-        FunctionCallError::RespondToModel(
-            "spawned agent is missing a canonical task name".to_string(),
-        )
-    })?;
-    let (spawned_agent, agent_snapshot) = session
-        .services
-        .agent_control
-        .spawn(SpawnRequest {
-            caller: session.thread_id,
-            config,
-            input: AgentInput::Message {
-                message: agent_message_from_tool(message, &source),
-                mode: MessageDeliveryMode::TriggerTurn,
-            },
-            source: spawn_source,
-            options: SpawnAgentOptions {
-                fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
-                fork_mode: fork_mode.clone(),
-                parent_thread_id: Some(session.thread_id),
-                parent_turn_id: Some(turn.sub_id.clone()),
-                root_turn_id: turn.turn_metadata_state.root_turn_id(),
-                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-                environments: Some(step_context.environments.clone()),
-                cyber_access_program: turn.cyber_access_program,
-            },
-        })
-        .await
-        .map_err(|err| {
+    .map_err(|err| match err {
+        ThreadSpawnError::Preparation(message) => FunctionCallError::RespondToModel(message),
+        ThreadSpawnError::Backend(err) => {
             record_collab_spawn_failure(
                 &turn.session_telemetry,
                 turn.config.apps_mcp_product_sku.as_deref(),
@@ -198,7 +148,11 @@ async fn handle_spawn_agent(
                 MultiAgentVersion::V2,
             );
             collab_spawn_error(err)
-        })?;
+        }
+    })?;
+    let spawned_agent = spawned.agent;
+    let agent_snapshot = spawned.config;
+    let new_agent_path = spawned.task_name;
     let new_thread_id = spawned_agent.thread_id;
     let agent_status = spawned_agent.status;
     let nickname = agent_snapshot

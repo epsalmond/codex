@@ -20,6 +20,8 @@ async fn inject_no_new_turn_preserves_history_when_a_reserved_turn_is_aborted() 
     let (session, turn_context, _rx_event) = make_session_and_context_with_rx().await;
     *session.active_turn.lock().await = Some(ActiveTurn::default());
     let item = ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {

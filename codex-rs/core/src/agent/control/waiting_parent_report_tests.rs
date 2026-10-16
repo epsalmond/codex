@@ -120,26 +120,21 @@ impl Harness {
         let agent_path = AgentPath::try_from(path).expect("agent path");
         let child = self
             .state
-            .spawn_new_thread_with_source(
-                self.config.clone(),
+            .spawn_child_thread(
+                crate::thread_manager::StartThreadOptions {
+                    session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth,
+                        agent_path: Some(agent_path.clone()),
+                        agent_nickname: None,
+                        agent_role: None,
+                    })),
+                    thread_source: Some(ThreadSource::Subagent),
+                    ..crate::thread_manager::StartThreadOptions::new(self.config.clone())
+                },
                 self.control.clone(),
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id,
-                    depth,
-                    agent_path: Some(agent_path.clone()),
-                    agent_nickname: None,
-                    agent_role: None,
-                }),
-                /*history_mode*/ None,
-                /*dynamic_tools*/ Vec::new(),
                 Some(parent_thread_id),
-                /*forked_from_thread_id*/ None,
-                Some(ThreadSource::Subagent),
-                /*metrics_service_name*/ None,
-                /*inherited_environments*/ None,
                 /*inherited_exec_policy*/ None,
-                /*environments*/ None,
-                /*reserved_thread_id*/ None,
             )
             .await
             .expect("spawn child thread");

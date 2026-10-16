@@ -563,9 +563,14 @@ async fn closing_interrupted_parent_cancels_and_releases_evicted_grandchild() {
         });
     mark_thread_completed(child.thread.as_ref()).await;
     mark_thread_completed(grandchild.thread.as_ref()).await;
-    control
-        .touch_loaded_v2_residency(&state, child.thread_id)
-        .await;
+    // Touch the child's residency, then release the pin so it stays evictable.
+    drop(
+        control
+            .runtime
+            .pin_v2_residency(&state, &child.thread)
+            .await
+            .expect("pin child residency"),
+    );
 
     let eviction_slot = control
         .reserve_v2_residency_slot(
@@ -813,20 +818,15 @@ async fn spawn_v2_thread_spawn_agent(
     source: SessionSource,
 ) -> crate::thread_manager::NewThread {
     state
-        .spawn_new_thread_with_source(
-            config,
+        .spawn_child_thread(
+            crate::thread_manager::StartThreadOptions {
+                session_source: Some(source),
+                thread_source: Some(ThreadSource::Subagent),
+                ..crate::thread_manager::StartThreadOptions::new(config)
+            },
             control.clone(),
-            source,
-            /*history_mode*/ None,
-            /*dynamic_tools*/ Vec::new(),
             Some(parent_thread_id),
-            /*forked_from_thread_id*/ None,
-            Some(ThreadSource::Subagent),
-            /*metrics_service_name*/ None,
-            /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
-            /*environments*/ None,
-            /*reserved_thread_id*/ None,
         )
         .await
         .expect("spawn v2 thread-spawn agent")
@@ -840,20 +840,17 @@ async fn spawn_v2_subagent(
     label: &str,
 ) -> crate::thread_manager::NewThread {
     state
-        .spawn_new_thread_with_source(
-            config,
+        .spawn_child_thread(
+            crate::thread_manager::StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::Other(
+                    label.to_string(),
+                ))),
+                thread_source: Some(ThreadSource::Subagent),
+                ..crate::thread_manager::StartThreadOptions::new(config)
+            },
             control.clone(),
-            SessionSource::SubAgent(SubAgentSource::Other(label.to_string())),
-            /*history_mode*/ None,
-            /*dynamic_tools*/ Vec::new(),
             Some(parent_thread_id),
-            /*forked_from_thread_id*/ None,
-            Some(ThreadSource::Subagent),
-            /*metrics_service_name*/ None,
-            /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
-            /*environments*/ None,
-            /*reserved_thread_id*/ None,
         )
         .await
         .expect("spawn v2 subagent")

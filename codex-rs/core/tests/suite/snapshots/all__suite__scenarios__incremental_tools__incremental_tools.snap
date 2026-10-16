@@ -1,8 +1,8 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
-expression: "context_snapshot::format_request_history_snapshot(\"Tool definitions enter history in one batch; a catalog change appends only the changed exec definition with an incremental namespace hint. The next unchanged turn appends no tool definitions.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+expression: "context_snapshot::format_request_history_snapshot(if use_responses_lite\n{\n    \"Tool definitions enter history in one batch; a catalog change appends one developer notice before only the changed exec definition, without modifying namespace descriptions. The next unchanged turn appends only user input.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
-Scenario: Tool definitions enter history in one batch; a catalog change appends only the changed exec definition with an incremental namespace hint. The next unchanged turn appends no tool definitions.
+Scenario: Tool definitions enter history in one batch; a catalog change appends one developer notice before only the changed exec definition, without modifying namespace descriptions. The next unchanged turn appends only user input.
 
 ## Window 1
 Settings:
@@ -16,59 +16,111 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=49f981f03ae5c5ce):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=eb6c84e1524faba9):
+        - namespace/functions; hash=d15025608e9d110c
           - custom/exec
-          - function/wait
+          - function/exec_terminate
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
+          - function/spawn_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
+03:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+04:message/developer:
+    <MULTI_AGENT_MODE>
+05:message/user:
     <ENVIRONMENT_CONTEXT>
-04:message/user:
+06:message/user:
     Begin work.
 -- request 2 (turn) --
-05:message/user:
+07:message/user:
     Continue with the same tools.
 
 ## Window 2 (after request 2)
 Settings: relative to window 1
   model: "updated-tools-model"
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=49f981f03ae5c5ce):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=eb6c84e1524faba9):
+        - namespace/functions; hash=d15025608e9d110c
           - custom/exec
-          - function/wait
+          - function/exec_terminate
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
+          - function/spawn_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-03:message/user:
-    <ENVIRONMENT_CONTEXT>
-04:message/user:
-    Begin work.
+03:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 16 LINES; ~230 TOKENS; hash=5a2b220d1071248c>
+    - All agents use the same current working directory.
+    - As a result, edits made by one agent are immediately visible to all other agents.
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+04:message/developer:
+    <MULTI_AGENT_MODE>
 05:message/user:
+    <ENVIRONMENT_CONTEXT>
+06:message/user:
+    Begin work.
+07:message/user:
     Continue with the same tools.
-06:additional_tools/developer (1; hash=fd00dfa0a0c11da2):
-        - namespace/functions: This is an incremental namespace update. Previously declared tools remain available for direct ca...; hash=dd09638a0d29d0ca
+08:message/developer:
+    This is an incremental tools update. Previously declared tools remain available for direct calls unless ...here, its latest definition replaces the earlier one. [hash=bceb65fad1afdf9c]
+09:additional_tools/developer (1; hash=61e0d593f169939f):
+        - namespace/functions; hash=96a698d8b00f518b
           - custom/exec
-07:message/developer:
+10:message/developer:
     <MODEL_SWITCH>
-08:message/user:
+11:message/user:
     Continue with the updated execution instructions.
 -- request 4 (turn) --
-09:message/user:
+12:message/user:
     Continue with the same updated tools.

@@ -1,8 +1,8 @@
 ---
 source: core/tests/suite/scenarios_indirect_namespace_prefixes.rs
-expression: "context_snapshot::format_request_history_snapshot(\"Catalog namespace and raw MCP server prefixes annotate embedded docs and ALL_TOOLS; a model switch clears them without changing nested dispatch.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+expression: "context_snapshot::format_request_history_snapshot(\"Function prefixes annotate direct and indirect tools; namespace prefixes annotate embedded namespace docs, loaded namespaces, and flat indirect entries. A model switch clears both without changing dispatch.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
-Scenario: Catalog namespace and raw MCP server prefixes annotate embedded docs and ALL_TOOLS; a model switch clears them without changing nested dispatch.
+Scenario: Function prefixes annotate direct and indirect tools; namespace prefixes annotate embedded namespace docs, loaded namespaces, and flat indirect entries. A model switch clears both without changing dispatch.
 
 ## Window 1
 Settings:
@@ -15,8 +15,8 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (4; hash=011854d7eb0af5c4):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=a7ad2e1c4ac06c96
+  tools (4; hash=a55ee59b4d570dda):
+    - custom/exec: Exec guidance.  Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided Ja...; hash=43da48dd2486a23e
     - function/exec_terminate: Stops a running `exec` cell and returns its output so far. A running cell's final result is deliv...; args=[cell_id]; hash=4ded6e8fceba1e98
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - web_search; hash=e214d4db1bc49e89
@@ -46,7 +46,7 @@ Settings:
 07:custom_tool_call_output:Script completed
     Wall time <DURATION> seconds
     Output:
-     | {"descriptions":["Functions context.\\n\\nView a local image file from the filesystem when visual inspecti...>>; };\\n```"],"echo":"ECHOING: ping","agent":"/root"} [hash=6a80a9ef47aade0e]
+     | {"descriptions":["Functions context.\\n\\nImage guidance.\\n\\nView a local image file from the filesystem w...>>; };\\n```"],"echo":"ECHOING: ping","agent":"/root"} [hash=433e3e94415f2c37]
 
 ## Window 2 (after request 2)
 Settings: relative to window 1
@@ -78,7 +78,7 @@ Settings: relative to window 1
 07:custom_tool_call_output:Script completed
     Wall time <DURATION> seconds
     Output:
-     | {"descriptions":["Functions context.\\n\\nView a local image file from the filesystem when visual inspecti...>>; };\\n```"],"echo":"ECHOING: ping","agent":"/root"} [hash=6a80a9ef47aade0e]
+     | {"descriptions":["Functions context.\\n\\nImage guidance.\\n\\nView a local image file from the filesystem w...>>; };\\n```"],"echo":"ECHOING: ping","agent":"/root"} [hash=433e3e94415f2c37]
 08:message/assistant:
     Done.
 09:message/developer:

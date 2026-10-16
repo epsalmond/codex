@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -162,7 +163,7 @@ pub(crate) struct MessageProcessor {
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
     project_processor: ProjectRequestProcessor,
-    remote_control_processor: RemoteControlRequestProcessor,
+    pub(super) remote_control_processor: RemoteControlRequestProcessor,
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
     thread_queue_processor: ThreadQueueRequestProcessor,
@@ -393,7 +394,7 @@ impl MessageProcessor {
             outgoing.clone(),
         );
 
-        let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
+        let pending_thread_unloads = Arc::new(Mutex::new(HashMap::new()));
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
@@ -464,11 +465,8 @@ impl MessageProcessor {
             rpc_transport,
             Arc::clone(&user_verification),
         );
-        let marketplace_processor = MarketplaceRequestProcessor::new(
-            Arc::clone(&config),
-            config_manager.clone(),
-            Arc::clone(&thread_manager),
-        );
+        let marketplace_processor =
+            MarketplaceRequestProcessor::new(config_manager.clone(), Arc::clone(&thread_manager));
         let mcp_processor = McpRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -1537,11 +1535,17 @@ impl MessageProcessor {
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(&request_id, params).await
             }
+            ClientRequest::ThreadReadStateUpdate { params, .. } => {
+                self.thread_processor.thread_read_state_update(params).await
+            }
             ClientRequest::ThreadTurnsList { params, .. } => {
                 self.thread_processor.thread_turns_list(params).await
             }
             ClientRequest::ThreadItemsList { params, .. } => {
                 self.thread_processor.thread_items_list(params).await
+            }
+            ClientRequest::ThreadItemsRead { params, .. } => {
+                self.thread_processor.thread_items_read(params).await
             }
             ClientRequest::ThreadShellCommand { params, .. } => {
                 self.thread_processor
@@ -1628,7 +1632,8 @@ impl MessageProcessor {
                 self.catalog_processor.skills_config_write(params).await
             }
             ClientRequest::PluginInstall { params, .. } => {
-                self.plugin_processor.plugin_install(params).await
+                // Keep installation and auth setup state off the shared request dispatcher stack.
+                Box::pin(self.plugin_processor.plugin_install(params)).await
             }
             ClientRequest::PluginUninstall { params, .. } => {
                 self.plugin_processor.plugin_uninstall(params).await
@@ -1932,3 +1937,7 @@ mod gateway_oauth_tests;
 #[cfg(test)]
 #[path = "message_processor_thread_lifecycle_tests.rs"]
 mod thread_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "message_processor_workspace_routing_tests.rs"]
+mod workspace_routing_tests;

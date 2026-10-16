@@ -351,13 +351,14 @@ impl LocalAgentControl {
                     "wake target has no root-owned reload configuration".to_string(),
                 )
             })?;
-        self.ensure_v2_agent_loaded_for_wake(
-            config,
-            assignment.thread_id,
-            /*parent*/ None,
-            Some(assignment),
-        )
-        .await?;
+        let _residency_pin = self
+            .ensure_v2_agent_loaded_for_wake(
+                config,
+                assignment.thread_id,
+                /*parent*/ None,
+                Some(assignment),
+            )
+            .await?;
         if !self
             .runtime
             .wake_coordinator
