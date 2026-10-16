@@ -907,7 +907,7 @@ async fn run_update_command(yes: bool) -> anyhow::Result<()> {
                 .build()
                 .await
                 .map_err(anyhow::Error::from);
-            let http_client_factory = updater_http_client_factory(config);
+            let http_client_factory = updater_http_client_factory(config)?;
 
             println!("Current release: {current_tag}");
             match codex_tui::check_fork_update_now(http_client_factory).await? {
