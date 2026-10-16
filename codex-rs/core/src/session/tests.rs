@@ -13024,10 +13024,13 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
 }
 
+/// Mail coalesced into a turn's start drain claims the delivering turn's lineage: a turn with
+/// no inherited root reports the first mail's requester lineage, and inherited roots keep
+/// winning over the drain because they were set first.
 #[test_case(None; "independent root")]
 #[test_case(Some("root-a"); "inherited root")]
 #[tokio::test]
-async fn active_turn_keeps_first_root_when_mail_coalesces(inherited_root: Option<&str>) {
+async fn turn_starting_with_coalesced_mail_reports_mail_lineage(inherited_root: Option<&str>) {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     if let Some(root) = inherited_root {
         tc.turn_metadata_state.set_root_turn_id(root.to_string());
@@ -13086,8 +13089,11 @@ async fn active_turn_keeps_first_root_when_mail_coalesces(inherited_root: Option
         ]
     );
     assert_eq!(
-        tc.turn_metadata_state.root_turn_id().as_deref(),
-        Some(inherited_root.unwrap_or(&tc.sub_id))
+        (
+            tc.turn_metadata_state.parent_turn_id().as_deref(),
+            tc.turn_metadata_state.root_turn_id().as_deref(),
+        ),
+        (Some("parent-a"), Some(inherited_root.unwrap_or("root-a"))),
     );
     assert!(!sess.input_queue.has_pending_mailbox_items().await);
 

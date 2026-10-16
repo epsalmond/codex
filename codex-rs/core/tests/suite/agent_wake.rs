@@ -31,6 +31,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::turn_input::TurnInputSubmission;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ev_assistant_message;
@@ -255,6 +256,28 @@ async fn deliver_child_mail(codex: &CodexThread, author: &str, text: &str, trigg
         matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
     })
     .await;
+}
+
+/// Queues child mail that carries turn start options, as an explicit `followup_task` does.
+async fn submit_child_mail_with_start_options(
+    codex: &CodexThread,
+    author: &str,
+    text: &str,
+    start_options: TurnStartOptions,
+) {
+    codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                AgentPath::try_from(author).expect("author path should parse"),
+                AgentPath::root(),
+                Vec::new(),
+                text.to_string(),
+                /*trigger_turn*/ true,
+            ),
+            start_options,
+        })
+        .await
+        .expect("submit child mail");
 }
 
 async fn wait_for_wakeups(codex: &CodexThread, paused: bool, queued_results: u32) {
@@ -1026,6 +1049,96 @@ async fn wake_mode_interrupt_at_wake_turn_start_keeps_report() {
         ),
         (true, 1)
     );
+    server.shutdown().await;
+}
+
+/// Esc (or a replaced turn) returns a `followup_task` that already entered the turn's pending
+/// input to the mailbox with the requester's turn lineage. The turn that finally delivers it
+/// reports that lineage in `client_metadata` (flat and canonical `-x-codex-turn-metadata`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_mode_interrupted_trigger_mail_keeps_its_turn_lineage() {
+    let (_hold_tx, hold_rx) = oneshot::channel();
+    // The first turn burns tokens so the wake turn runs pre-turn compaction; the wake turn
+    // parks there holding the report in pending input, before it drains (and records) it.
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![
+            chunk(ev_response_created("resp-1")),
+            chunk(final_answer_item("resp-1-msg", "worker is running")),
+            chunk(ev_completed_with_tokens(
+                "resp-1", /*total_tokens*/ 500_000,
+            )),
+        ],
+        // The wake turn's pre-turn compaction, held until the interrupt replaces the turn.
+        vec![gated_chunk(hold_rx, vec![ev_completed("resp-2")])],
+        // The recovery turn's pre-turn compaction...
+        vec![
+            chunk(json!({
+                "type": "response.output_item.done",
+                "item": {"type": "compaction", "encrypted_content": "COMPACTED"},
+            })),
+            chunk(ev_completed_with_tokens("resp-3", /*total_tokens*/ 50)),
+        ],
+        // ...then the recovery turn's actual sampling request with the returned mail.
+        final_answer_chunks("resp-4", "delivered"),
+    ])
+    .await;
+    let codex = build_compacting_wake_mode(&server).await;
+    let parent_turn_id = "requester-turn".to_string();
+    let root_turn_id = "requester-root".to_string();
+
+    submit_user_text(&codex, ROOT_PROMPT).await;
+    wait_for_turn_complete(&codex).await;
+    submit_child_mail_with_start_options(
+        &codex,
+        "/root/worker_a",
+        "report a",
+        TurnStartOptions {
+            parent_turn_id: Some(parent_turn_id.clone()),
+            root_turn_id: Some(root_turn_id.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
+    server.wait_for_request_count(2).await;
+    codex.submit(Op::Interrupt).await.expect("interrupt");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    // The returned report waits paused for the next user message instead of waking again.
+    wait_for_wakeups(&codex, /*paused*/ true, /*queued_results*/ 1).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    submit_user_text(&codex, "deliver the held report").await;
+    wait_for_turn_complete(&codex).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    let bodies = streaming_request_bodies(&server).await;
+    // 0: initial turn, 1: wake turn's pre-turn compaction, 2: the recovery turn's pre-turn
+    // compaction, 3: the recovery turn's actual sampling request with the returned mail.
+    assert_eq!(bodies.len(), 4);
+    assert_eq!(deliveries(&bodies[..3], "report a"), 0);
+    let last = bodies.last().expect("the recovery turn issues a request");
+    let metadata = &last["client_metadata"];
+    assert_eq!(
+        metadata["parent_turn_id"].as_str(),
+        Some(parent_turn_id.as_str())
+    );
+    assert_eq!(
+        metadata["root_turn_id"].as_str(),
+        Some(root_turn_id.as_str())
+    );
+    let canonical = serde_json::from_str::<Value>(
+        metadata["x-codex-turn-metadata"]
+            .as_str()
+            .expect("turn metadata"),
+    )
+    .expect("canonical metadata is JSON");
+    assert_eq!(
+        (
+            canonical["parent_turn_id"].as_str(),
+            canonical["root_turn_id"].as_str()
+        ),
+        (Some(parent_turn_id.as_str()), Some(root_turn_id.as_str()))
+    );
+    assert_eq!(deliveries(&bodies, "report a"), 1);
     server.shutdown().await;
 }
 

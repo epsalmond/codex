@@ -446,10 +446,15 @@ impl InputQueue {
         reason: &TurnAbortReason,
         mode: ChildReportMode,
     ) -> bool {
-        let mut items = {
+        let (mail_start_options, mut items) = {
             let mut turn_state = active_turn.turn_state.lock().await;
             turn_state.clear_pending_waiters();
-            std::mem::take(&mut turn_state.pending_input).items
+            (
+                // Mail in pending input stopped carrying its own options when the turn drained
+                // it, so return it with the options the turn was started with.
+                turn_state.mail_start_options.clone(),
+                std::mem::take(&mut turn_state.pending_input).items,
+            )
         };
         match mode {
             ChildReportMode::WakeOnReport => {
@@ -467,7 +472,8 @@ impl InputQueue {
                 }
             }
         }
-        self.return_to_mailbox(&mut items).await
+        self.return_to_mailbox_with_start_options(&mut items, mail_start_options)
+            .await
     }
 
     /// Takes the agent mail from the active turn's pending input, in order, and leaves the rest.
@@ -1309,6 +1315,71 @@ mod tests {
                 (true, true, vec![progress], Vec::new()),
                 (true, false, vec![followup], Vec::new()),
             ]
+        );
+    }
+
+    /// Mail returned by `clear_pending` keeps the turn's start options, so an interrupted
+    /// `followup_task` that starts a new turn still reports the requester's turn lineage. Mail
+    /// in the mailbox that the turn never drained is returned untouched.
+    #[tokio::test]
+    async fn clear_pending_returns_mail_with_the_turns_start_options() {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let report = TurnInput::InterAgentCommunication(make_mail(
+            parent,
+            AgentPath::root(),
+            "report",
+            /*trigger_turn*/ true,
+        ));
+        let steer = TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+            metadata: Default::default(),
+        };
+        let start_options = TurnStartOptions {
+            parent_turn_id: Some("requester-turn".to_string()),
+            root_turn_id: Some("root-turn".to_string()),
+            turn_trigger: Some("composer".to_string()),
+            ..Default::default()
+        };
+
+        let input_queue = InputQueue::new();
+        let active_turn = ActiveTurn::default();
+        input_queue
+            .extend_pending_input_for_turn_state(
+                active_turn.turn_state.as_ref(),
+                vec![report.clone(), steer.clone()],
+            )
+            .await;
+        active_turn.turn_state.lock().await.mail_start_options = start_options.clone();
+
+        assert!(
+            input_queue
+                .clear_pending(
+                    &active_turn,
+                    &TurnAbortReason::Replaced,
+                    ChildReportMode::WaitAgent
+                )
+                .await
+        );
+        let (delivered, delivered_options) = input_queue.drain_mailbox_input_items().await;
+        assert_eq!(delivered, vec![report]);
+        assert_eq!(
+            delivered_options.parent_turn_id.as_deref(),
+            Some("requester-turn")
+        );
+        assert_eq!(delivered_options.root_turn_id.as_deref(), Some("root-turn"));
+        assert_eq!(delivered_options.turn_trigger.as_deref(), Some("composer"));
+        assert!(
+            !input_queue
+                .clear_pending(
+                    &active_turn,
+                    &TurnAbortReason::Replaced,
+                    ChildReportMode::WaitAgent
+                )
+                .await
         );
     }
 
