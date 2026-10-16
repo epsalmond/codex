@@ -31,7 +31,14 @@ impl Session {
             }
         }
         if !reports.is_empty() {
-            self.input_queue.return_to_mailbox(&mut reports).await;
+            // Mirror every other recovery path: the turn's accepted-mail lineage, not defaults.
+            let mail_start_options = self
+                .input_queue
+                .turn_mail_start_options(&self.active_turn)
+                .await;
+            self.input_queue
+                .return_to_mailbox_with_start_options(&mut reports, mail_start_options)
+                .await;
         }
     }
 

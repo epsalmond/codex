@@ -227,6 +227,18 @@ async fn assert_no_turn_starts(codex: &CodexThread, window: Duration) {
     }
 }
 
+/// Waits until the parked-hook marker file appears, so the abort below lands mid-hook.
+async fn wait_for_hook_marker(marker_path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the UserPromptSubmit hook never parked"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Simulates a child report arriving at the root's mailbox.
 async fn submit_child_mail(codex: &CodexThread, author: &str, text: &str, trigger_turn: bool) {
     codex
@@ -866,6 +878,107 @@ async fn wake_mode_steered_message_clears_pause() {
             deliveries(&bodies, "report b"),
         ),
         (3, 0, true, 1, 1, 1)
+    );
+    server.shutdown().await;
+}
+
+/// A hard abort while a pre-sampling hook is still parked (Esc aborts the task's handle when the
+/// cancelled turn does not stop in time) cannot lose the drained mail: the mid-turn drain leaves
+/// unrecorded `InterAgentCommunication` in the turn's pending input, so the abort's
+/// `clear_pending` returns the report to the mailbox and the next user message delivers it
+/// exactly once. The steered prompt the abort interrupted never reaches the model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_mode_hard_abort_mid_hook_keeps_report() {
+    const STEER: &str = "hook-parked steer";
+    const NEXT_PROMPT: &str = "deliver the recovered report";
+    let (release_tx, release_rx) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![
+        // The automatic turn's request, held open while the steer parks the pre-sampling hook.
+        vec![
+            chunk(ev_response_created("resp-1")),
+            gated_chunk(release_rx, vec![ev_completed("resp-1")]),
+        ],
+        final_answer_chunks("resp-2", "delivered"),
+    ])
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_session_source(SessionSource::Cli)
+        .with_pre_build_hook(|home| {
+            let script_path = home.join("park_once_hook.py");
+            let marker_path = home.join("park-marker");
+            std::fs::write(
+                &script_path,
+                r#"import json, sys, os, time
+json.load(sys.stdin)
+marker = sys.argv[1]
+if not os.path.exists(marker):
+    open(marker, "w").write("parked\n")
+    time.sleep(120)
+print(json.dumps({}))
+"#,
+            )
+            .expect("write hook script");
+            let hooks = json!({"hooks": {"UserPromptSubmit": [{"hooks": [{
+                "type": "command",
+                "command": format!("python3 {} {}", script_path.display(), marker_path.display()),
+            }]}]}});
+            std::fs::write(home.join("hooks.json"), hooks.to_string()).expect("write hooks.json");
+        })
+        .with_config(|config| {
+            configure_multi_agent(config, Some(AgentPolling::Disabled));
+            trust_discovered_hooks(config);
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session");
+    let codex = test.codex.clone();
+    let marker_path = test.config.codex_home.join("park-marker");
+
+    pause_idle_root(&codex).await;
+    hold_child_report(
+        &codex,
+        "/root/worker_a",
+        "report a",
+        /*queued_results*/ 1,
+    )
+    .await;
+    let submission = codex
+        .start_turn_if_idle(TurnInputRequest::new(TurnInput::ResponseItem(
+            user_message_item("automatic input"),
+        )))
+        .await
+        .expect("start automatic turn");
+    assert!(matches!(submission, StartIfIdleSubmission::Started { .. }));
+    server.wait_for_request_count(1).await;
+
+    // Steer the running turn: its drain pulls the held report in, and the UserPromptSubmit hook
+    // parks the pre-sampling step before any part of the batch is recorded.
+    submit_user_text(&codex, STEER).await;
+    let _ = release_tx.send(());
+    wait_for_hook_marker(&marker_path).await;
+    codex.submit(Op::Interrupt).await.expect("interrupt");
+    // The abort's `clear_pending` returns the unread report to the mailbox, where the pause
+    // holds it for the next user message.
+    wait_for_wakeups(&codex, /*paused*/ true, /*queued_results*/ 1).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    submit_user_text(&codex, NEXT_PROMPT).await;
+    wait_for_turn_complete(&codex).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    let bodies = streaming_request_bodies(&server).await;
+    let steering_prompted = bodies
+        .iter()
+        .any(|body| user_texts(body).iter().any(|text| text == STEER));
+    assert_eq!(
+        (
+            bodies.len(),
+            deliveries(&bodies[..1], "report a"),
+            deliveries(&bodies, "report a"),
+            steering_prompted,
+        ),
+        (2, 0, 1, false)
     );
     server.shutdown().await;
 }
