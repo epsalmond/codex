@@ -360,6 +360,18 @@ fn read_hook_log(home: &Path, filename: &str) -> Result<Vec<serde_json::Value>> 
         .collect()
 }
 
+/// These tests drive the V1 tool surface, so they opt out of the fork's MultiAgentV2 default.
+fn enable_multi_agent_v1(config: &mut codex_core::config::Config) {
+    config
+        .features
+        .enable(Feature::Collab)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+}
+
 async fn wait_for_hook_log(
     home: &Path,
     filename: &str,
@@ -604,10 +616,7 @@ async fn setup_turn_one_with_custom_spawned_child(
 
     let configured_reasoning_effort = turn_reasoning_effort.clone();
     let mut builder = configure_test(test_codex().with_config(move |config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
+        enable_multi_agent_v1(config);
         config.model = Some(INHERITED_MODEL.to_string());
         config.model_reasoning_effort = Some(configured_reasoning_effort);
     }));
@@ -792,10 +801,7 @@ async fn subagent_start_replaces_session_start_and_injects_context(
         })
         .with_config(|config| {
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            enable_multi_agent_v1(config);
         })
         // Command hooks run on the host and require a host-native working directory.
         .build(&server)
@@ -947,10 +953,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         })
         .with_config(|config| {
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            enable_multi_agent_v1(config);
         })
         .build(&server)
         .await?;
@@ -1158,10 +1161,7 @@ async fn spawned_child_receives_forked_parent_context(
         .with_model_info_override(INHERITED_MODEL, |model| model.comp_hash = None)
         .with_history_mode(history_mode)
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            enable_multi_agent_v1(config);
             config.model = Some(INHERITED_MODEL.to_string());
             config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
             config.agent_default_subagent_model = Some(REQUESTED_MODEL.to_string());
@@ -3565,10 +3565,7 @@ async fn spawn_agent_rejects_reasoning_effort_unsupported_by_role_model() -> Res
 
     let test = test_codex()
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            enable_multi_agent_v1(config);
             let role_path = config.codex_home.join("model-only-role.toml");
             std::fs::write(&role_path, format!("model = \"{ROLE_MODEL}\"\n"))
                 .expect("write role config");
@@ -3631,10 +3628,7 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
     .await;
 
     let mut builder = test_codex().with_config(|config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
+        enable_multi_agent_v1(config);
         config.multi_agent_v2.hide_spawn_agent_metadata = false;
         let role_path = config.codex_home.join("custom-role.toml");
         std::fs::write(

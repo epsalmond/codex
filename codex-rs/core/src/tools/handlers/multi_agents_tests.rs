@@ -320,10 +320,13 @@ async fn spawn_agent_limit_failure_emits_bounded_metric() {
     let (mut session, mut turn) = make_session_and_context().await;
     turn.session_telemetry = turn.session_telemetry.clone().with_metrics(metrics.clone());
     let mut config = (*turn.config).clone();
+    // The V1 handler's registry limit is under test, not the fork's MultiAgentV2 default.
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
     config.agent_max_threads = Some(0);
-    config.multi_agent_v2.max_concurrent_threads_per_session = 1;
     config.apps_mcp_product_sku = Some("codex".to_string());
-    config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
     turn.config = Arc::new(config);
     let manager = thread_manager();
     set_agent_control(&mut session, manager.agent_control());

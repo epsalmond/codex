@@ -631,6 +631,10 @@ async fn ultra_on_multi_agent_v1_uses_highest_non_ultra_without_mode_instruction
     let test = test_codex()
         .with_model_info_override("gpt-5.4", add_ultra_reasoning)
         .with_config(|config| {
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
             config.model_reasoning_effort = Some(ReasoningEffort::Ultra);
         })
         .build(&server)

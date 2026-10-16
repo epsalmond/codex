@@ -451,6 +451,7 @@ async fn configured_agent_roles_control_spawn_agent_type(
 }
 
 /// Wait guidance belongs to overridable developer instructions, never the tool schema.
+/// Roots wake on child reports by default, so this covers the `agent_polling` opt-out.
 #[test_case(None, true; "default developer instructions include wait guidance")]
 #[test_case(Some("Custom root instructions."), false; "custom developer instructions replace wait guidance")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -471,6 +472,7 @@ async fn multi_agent_v2_wait_guidance_uses_overridable_developer_instructions(
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             if let Some(root_agent_usage_hint_text) = root_agent_usage_hint_text {
                 config.multi_agent_v2.root_agent_usage_hint_text = Some(root_agent_usage_hint_text);
             }
