@@ -131,7 +131,24 @@ impl LocalAgentControl {
                 // winner before delivery, preserving the loader error if no valid runtime exists.
                 let parent = match state.get_thread(parent_thread_id).await {
                     Ok(parent) => parent,
-                    Err(err) => return Err(reload_error.unwrap_or(err)),
+                    Err(_) => {
+                        // A valid parent that cannot be reloaded now (for example, no capacity)
+                        // keeps the report in its retained mailbox until it next loads.
+                        if let Some(err) = reload_error {
+                            tracing::debug!(
+                                "retaining completion for unloaded parent {parent_thread_id}: {err}"
+                            );
+                        }
+                        return self
+                            .send_inter_agent_communication(
+                                parent_thread_id,
+                                communication,
+                                context,
+                                TurnStartOptions::default(),
+                            )
+                            .await
+                            .map(|_| ());
+                    }
                 };
                 (parent, reload_error)
             }
