@@ -384,6 +384,9 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                     .expect("test config should allow feature update");
             }
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+            // Keep the root idle: a child report would wake it, and a reload during an active
+            // parent turn deliberately uses that turn's environments.
+            config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config
                 .permissions
                 .set_permission_profile(PermissionProfile::workspace_write())
