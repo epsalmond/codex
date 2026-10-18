@@ -2888,6 +2888,42 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
     }
 }
 
+/// `sibling_wake` restores the message tool descriptions that predate the ancestor-only rule.
+#[tokio::test]
+async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
+    for sibling_wake in [false, true] {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.sibling_wake = sibling_wake;
+            });
+        })
+        .await;
+        let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+            panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
+        };
+        for tool_name in ["send_message", "followup_task"] {
+            let Some(ResponsesApiNamespaceTool::Function(tool)) =
+                namespace.tools.iter().find(|tool| {
+                    matches!(
+                        tool,
+                        ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name
+                    )
+                })
+            else {
+                panic!("expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace");
+            };
+            assert_eq!(
+                !tool.description.contains("cannot start turns")
+                    && !tool.description.contains("Only an ancestor"),
+                sibling_wake,
+                "{tool_name} sibling_wake={sibling_wake}: {}",
+                tool.description
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn multi_agent_v2_can_disable_wait_agent() {
     let plan = probe(|turn| {

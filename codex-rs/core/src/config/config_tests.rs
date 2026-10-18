@@ -12670,6 +12670,26 @@ sibling_wake = true
     )
     .expect("multi-agent v2 config should parse");
     assert!(resolve_multi_agent_v2_config(&config_toml).sibling_wake);
+
+    // The bundled subagent text states the ancestor-only rule only while it applies.
+    for sibling_wake in [false, true] {
+        let mut config = resolve_multi_agent_v2_config(&ConfigToml::default());
+        config.sibling_wake = sibling_wake;
+        let subagent = resolve_usage_hints(
+            &config,
+            ResolvedModelMessages::bundled().multi_agent(),
+            /*omit_update_plan_instructions*/ false,
+            /*subagent_context_token_cap*/ None,
+        )
+        .subagent
+        .expect("bundled subagent hint")
+        .body();
+        assert_eq!(
+            subagent.contains("Only an ancestor can start a turn"),
+            !sibling_wake
+        );
+        assert!(subagent.contains("Child agents can also spawn their own sub-agents."));
+    }
 }
 
 #[test]

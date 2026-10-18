@@ -24,6 +24,9 @@ Payload:
 ```
 They may be addressed as to=/root
 "#;
+/// Line of the bundled subagent text that states the ancestor-only wake rule. Consumers strip it
+/// when `sibling_wake` restores wakes between any agents.
+pub const SUBAGENT_ANCESTOR_ONLY_WAKE_USAGE_HINT_LINE: &str = "Only an ancestor can start a turn in an agent: siblings and cousins reach each other with `send_message`, which the recipient reads at its next turn.\n";
 const DEFAULT_MULTI_AGENT_V2_SUBAGENT_USAGE_HINT_TEXT: &str = r#"You are an agent in a team of agents collaborating to complete a task.
 
 You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents. All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.

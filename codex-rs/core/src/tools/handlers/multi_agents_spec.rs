@@ -205,6 +205,11 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
+/// `send_message` description when `sibling_wake` lets any agent start a turn in another.
+pub(crate) const SIBLING_WAKE_SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.";
+/// `followup_task` description when `sibling_wake` lets any agent start a turn in another.
+pub(crate) const SIBLING_WAKE_FOLLOWUP_TASK_DESCRIPTION: &str = "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes.";
+
 pub fn create_send_message_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
