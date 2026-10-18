@@ -230,6 +230,8 @@ pub(crate) fn resolve_usage_hints_with_polling_modes(
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
             is_root,
             subagent_context_token_cap,
+            // Hosts that hide the native tools keep the earlier reporting behavior.
+            typed_reports: config.typed_reports && !config.disable_native_tools,
         })
     };
 

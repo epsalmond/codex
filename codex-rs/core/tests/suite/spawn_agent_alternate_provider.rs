@@ -77,6 +77,7 @@ fn configure_local_role(config: &mut Config, role_provider: &str, local_base_url
             description: Some("Runs on the local provider".to_string()),
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
+            lifetime: None,
         },
     );
 }

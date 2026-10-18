@@ -294,6 +294,36 @@ To turn automatic delivery off entirely and restore polling:
 async_process_completion = false
 ```
 
+### Typed subagent reports
+
+A MultiAgentV2 subagent reports to its parent and other ancestors only through
+its `report` tool, for one of three reasons:
+
+- `blocked`: it hit something unexpected and needs instructions. Its turn ends,
+  the parent receives a `BLOCKED` report, and a `followup_task` resumes it.
+- `answer`: it replies to a question an ancestor sent it with `send_message`.
+  Each such message allows one answer; without one the call is refused. The
+  answer reaches a running ancestor at its next step and wakes an idle one.
+- `final`: it is done. Its turn ends and the parent receives the result as a
+  `FINAL_ANSWER`, exactly as when a turn ends without `report`.
+
+A subagent's `send_message` or `followup_task` to an ancestor is refused;
+sibling, cousin, and descendant messaging is unchanged. `spawn_agent` takes
+`lifetime = "task" | "persistent"`; without it the agent type's `lifetime`
+applies (`[agents.<name>] lifetime = "persistent"` or `lifetime` in the role
+file), then `task`. A `task` agent is closed after its final report reaches the
+parent, so later messages to it are refused and new work goes to a fresh agent.
+A `persistent` agent stays idle and resumable. Lifetimes are kept in memory, so
+an agent restored from disk after a restart is never closed automatically. A
+subagent turn that reaches 150 model calls is told once to finish the current
+step and report.
+
+```toml
+[features.multi_agent_v2]
+typed_reports = false           # free-form reports, finished agents stay resumable
+wrap_up_after_model_calls = 0   # no wrap-up reminder (default 150)
+```
+
 ### Monitoring subagents
 
 Run `/subagents` to monitor child runs. Each row shows whether a child is mid-turn, idle, closed, or in error, along with its latest reported context tokens against the model window when available. Idle children also show a short preview of their latest final response.

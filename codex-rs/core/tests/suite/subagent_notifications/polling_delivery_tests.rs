@@ -192,6 +192,8 @@ async fn polling_completion_delivery_respects_lifecycle(scenario: DeliveryScenar
                 config.features.enable(feature).expect("enable feature");
             }
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
+            // Reuses finished agents: the typed-reports opt-out path.
+            config.multi_agent_v2.typed_reports = false;
             config.multi_agent_v2.max_concurrent_threads_per_session = 3;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);

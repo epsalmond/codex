@@ -158,6 +158,8 @@ fn configure_multi_agent_v2_with_role(config: &mut codex_core::config::Config) {
         Some(SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string());
     // Keep the root, worker, grandchild, and sibling resident until explicit shutdown.
     config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+    // Reuses finished agents: the typed-reports opt-out path.
+    config.multi_agent_v2.typed_reports = false;
     let role_path = config.codex_home.join("durable-worker-role.toml");
     std::fs::write(
         &role_path,
@@ -172,6 +174,7 @@ fn configure_multi_agent_v2_with_role(config: &mut codex_core::config::Config) {
             description: Some("Durable worker role".to_string()),
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
+            lifetime: None,
         },
     );
 }

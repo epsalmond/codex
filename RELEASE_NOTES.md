@@ -1,3 +1,7 @@
+## Typed subagent reports
+
+Subagents now message their parent and other ancestors only through a `report` tool: `blocked` (stops and waits for a follow-up), `answer` (replies to a question an ancestor sent with `send_message`), or `final` (done). Their `send_message` and `followup_task` to ancestors are refused, and a turn that ends without `report` still delivers its last message as the final report. `spawn_agent` gains `lifetime`: a `task` agent (the default) is closed after its final report, so new work goes to a fresh agent; a `persistent` agent stays resumable. A subagent turn that reaches 150 model calls is told once to wrap up. Set `typed_reports = false` under `[features.multi_agent_v2]` to restore free-form reports; `wrap_up_after_model_calls = 0` turns off the reminder. See [typed subagent reports](README.md#typed-subagent-reports).
+
 ## Closing subagents from `/subagents`
 
 Closing a subagent in `/subagents` (or archiving/deleting it from the agents overview) now closes it and its whole descendant subtree in the agent tree: it leaves the status-bar count, `list_agents`, and cannot be cold-restored. Later messages or follow-ups to it tell the model the agent is closed and to spawn a fresh one; `/subagents` context sizes now use compact counts like `272K`.

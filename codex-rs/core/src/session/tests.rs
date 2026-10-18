@@ -5872,6 +5872,7 @@ enabled = false
             description: None,
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
+            lifetime: None,
         },
     );
     crate::agent::role::apply_role_to_config(&mut child_config, Some("custom"))
@@ -12851,6 +12852,59 @@ async fn set_total_token_usage(sess: &Session, total_token_usage: TokenUsage) {
         last_token_usage: TokenUsage::default(),
         model_context_window: None,
     }));
+}
+
+/// A turn ended by `report(blocked|final)` does not sample again, so a follow-up that joined it
+/// returns to the mailbox to start the next turn instead of being recorded unread.
+#[test_case(true; "ended by typed report")]
+#[test_case(false; "ordinary turn end")]
+#[tokio::test]
+async fn typed_report_turn_end_returns_joined_follow_up_to_mailbox(ended_by_report: bool) {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    let turn_state = sess
+        .input_queue
+        .turn_state_for_sub_id(&sess.active_turn, &tc.sub_id)
+        .await
+        .expect("active turn state");
+    let follow_up = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::try_from("/root/worker").expect("worker path should parse"),
+        Vec::new(),
+        "follow-up joined the final step".to_string(),
+        /*trigger_turn*/ true,
+    );
+    sess.input_queue
+        .extend_pending_input_for_turn_state(
+            turn_state.as_ref(),
+            vec![TurnInput::InterAgentCommunication(follow_up)],
+        )
+        .await;
+    if ended_by_report {
+        tc.extension_data
+            .insert(crate::session::typed_reports::PendingTerminalReport {
+                kind: crate::session::typed_reports::TerminalReportKind::Final,
+                message: "done".to_string(),
+            });
+    }
+    // Hold the returned mail so the finished turn does not start another one.
+    sess.input_queue.pause_wakeups();
+
+    sess.on_task_finished(Arc::clone(&tc), /*task_result*/ Ok(None))
+        .await;
+
+    assert_eq!(
+        sess.input_queue.trigger_turn_mailbox_count().await,
+        usize::from(ended_by_report)
+    );
 }
 
 #[tokio::test]

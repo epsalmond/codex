@@ -6,6 +6,25 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AgentLifetime": {
+      "description": "How long a spawned MultiAgentV2 agent stays available after it reports.",
+      "oneOf": [
+        {
+          "description": "Closed after its final report; later messages tell the sender to spawn a fresh agent.",
+          "enum": [
+            "task"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Stays idle after its final report and resumes on a later follow-up.",
+          "enum": [
+            "persistent"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "AgentPolling": {
       "description": "Controls whether a MultiAgentV2 root polls `wait_agent` for child reports.",
       "oneOf": [
@@ -39,6 +58,14 @@
         "description": {
           "description": "Human-facing role documentation used in spawn tool guidance. Required unless supplied by the referenced agent role file.",
           "type": "string"
+        },
+        "lifetime": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentLifetime"
+            }
+          ],
+          "description": "Default MultiAgentV2 lifetime for agents spawned with this role. An explicit `spawn_agent` `lifetime` wins; without either, agents use `task`."
         },
         "nickname_candidates": {
           "description": "Candidate nicknames for agents spawned with this role.",
@@ -3241,12 +3268,22 @@
           "pattern": "^[a-zA-Z0-9_-]+$",
           "type": "string"
         },
+        "typed_reports": {
+          "description": "Typed subagent reports. Defaults to true: each subagent reports to its ancestors only through `report` (`blocked`, `answer`, or `final`), cannot `send_message` or `followup_task` its ancestors, and an agent spawned with `lifetime = \"task\"` (the default) is closed after its final report. Set false to restore free-form reports and keep finished agents resumable.",
+          "type": "boolean"
+        },
         "usage_hint_enabled": {
           "description": "Deprecated compatibility field. Its value is ignored.",
           "type": "boolean"
         },
         "usage_hint_text": {
           "type": "string"
+        },
+        "wrap_up_after_model_calls": {
+          "description": "Model calls in one subagent turn after which the subagent is told to finish and report. Defaults to 150; 0 disables the reminder. Applies only with `typed_reports`.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "type": "object"

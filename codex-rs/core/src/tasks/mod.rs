@@ -1091,6 +1091,8 @@ impl Session {
         if let Some(cells) = failed_cells {
             self.services.code_mode_service.interrupt_cells(cells).await;
         }
+        // Questions asked during this turn were covered by its report.
+        self.clear_answer_credits();
         let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -1098,11 +1100,17 @@ impl Session {
         // In wake mode, a task that never reads the mail `start_task` handed it returns all of
         // it, in order, so the wake below delivers it. A model turn records unread mail as
         // upstream does, so a turn that ended before reading it cannot restart on it; so does a
-        // failed task.
-        if !read_pending_input
+        // failed task. A turn ended by `report(blocked|final)` stops without sampling again, so
+        // mail that joined it, such as a follow-up, also returns and starts the next turn.
+        let ended_by_typed_report = turn_context
+            .extension_data
+            .get::<crate::session::typed_reports::PendingTerminalReport>()
+            .is_some();
+        if (!read_pending_input || ended_by_typed_report)
             && task_succeeded
             && turn_context.terminal_error.lock().await.is_none()
-            && self.child_report_mode().await == Some(ChildReportMode::WakeOnReport)
+            && (ended_by_typed_report
+                || self.child_report_mode().await == Some(ChildReportMode::WakeOnReport))
         {
             self.input_queue.return_to_mailbox(&mut pending_input).await;
         }
@@ -1334,10 +1342,30 @@ impl Session {
         if cleared_active_turn {
             if stopped {
                 self.maybe_start_turn_after_stop().await;
+            } else if turn_context
+                .extension_data
+                .get::<crate::session::typed_reports::CloseAfterFinalReport>()
+                .is_some()
+                && self.input_queue.trigger_turn_mailbox_count().await == 0
+            {
+                // A follow-up queued before the final report keeps the agent for one more turn.
+                self.close_after_final_report();
             } else {
                 self.maybe_start_turn_for_pending_work().await;
             }
         }
+    }
+
+    /// Closes this task agent after its final report reached the parent. Closing waits for this
+    /// session to stop, so it runs detached from the finishing task.
+    fn close_after_final_report(&self) {
+        let control = Arc::clone(&self.services.agent_control);
+        let thread_id = self.thread_id;
+        tokio::spawn(async move {
+            if let Err(err) = control.close_v2_agent(thread_id).await {
+                warn!("failed to close task agent {thread_id} after its final report: {err}");
+            }
+        });
     }
 
     async fn take_active_turn(&self, reason: &TurnAbortReason) -> Option<ActiveTurn> {

@@ -10,6 +10,8 @@ const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str = "When calling `w
 const ROOT_WAKE_ON_REPORT_USAGE_HINT_TEXT: &str = "Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.";
 pub const SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT: &str = "When delegated work remains and you have no independent task, end your turn. A child report resumes your assignment in a new turn.";
 const SUBAGENT_BLOCKED_USAGE_HINT_TEXT: &str = "If you are blocked, end your turn with your question; your parent will reply with a follow-up.";
+const SUBAGENT_TYPED_REPORTS_USAGE_HINT_TEXT: &str = "Message your parent and other ancestors only with `report`, and never send progress reports. Use `report(kind=\"blocked\")` when something unexpected stops you and you need instructions: your turn ends and you wait for a follow-up. Use `report(kind=\"answer\")` only to reply to a question an ancestor sent you. Use `report(kind=\"final\")` when your task is done: it means done, so include everything your parent needs. Ending your turn without `report` delivers your last message as your final report. Unless you were spawned as `persistent`, you are closed after your final report.";
+const TYPED_REPORTS_DELEGATION_USAGE_HINT_TEXT: &str = "Agents you spawn report to you only through `report`: `FINAL_ANSWER` when done, `BLOCKED` when they wait for your followup_task with instructions, and `ANSWER` when they reply to a question you sent with send_message. Agents with the default `task` lifetime are closed after their final report, so spawn a fresh agent with a self-contained brief for new work. Spawn with `lifetime: \"persistent\"` only an agent that genuinely needs to keep its context across tasks.";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
 All agents share the same directory. In detail:
@@ -35,6 +37,8 @@ pub enum MultiAgentRoleInstructions {
         is_root: bool,
         /// Token count at which a subagent's context compacts, stated in its role text.
         subagent_context_token_cap: Option<u64>,
+        /// Subagents report only through `report`, and task agents close after reporting.
+        typed_reports: bool,
     },
 }
 
@@ -69,6 +73,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 expose_model_overrides,
                 is_root,
                 subagent_context_token_cap,
+                typed_reports,
                 ..
             } => {
                 let base = if *omit_update_plan_instructions {
@@ -85,14 +90,24 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 };
                 let context_budget_guidance =
                     subagent_context_budget_guidance(*subagent_context_token_cap);
+                let (blocked_guidance, delegation_guidance) = if *typed_reports {
+                    (
+                        SUBAGENT_TYPED_REPORTS_USAGE_HINT_TEXT,
+                        format!("{TYPED_REPORTS_DELEGATION_USAGE_HINT_TEXT}\n\n"),
+                    )
+                } else {
+                    (SUBAGENT_BLOCKED_USAGE_HINT_TEXT, String::new())
+                };
                 let role_guidance = match (*is_root, *agent_polling_enabled) {
-                    (true, true) => wait_agent_guidance,
-                    (true, false) => format!("{ROOT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n"),
+                    (true, true) => format!("{wait_agent_guidance}{delegation_guidance}"),
+                    (true, false) => {
+                        format!("{ROOT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{delegation_guidance}")
+                    }
                     (false, true) => format!(
-                        "{wait_agent_guidance}{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\n{context_budget_guidance}"
+                        "{wait_agent_guidance}{blocked_guidance}\n\n{delegation_guidance}{context_budget_guidance}"
                     ),
                     (false, false) => format!(
-                        "{SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{SUBAGENT_BLOCKED_USAGE_HINT_TEXT}\n\n{context_budget_guidance}"
+                        "{SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{blocked_guidance}\n\n{delegation_guidance}{context_budget_guidance}"
                     ),
                 };
                 let mut text = format!(

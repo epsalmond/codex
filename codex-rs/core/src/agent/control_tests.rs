@@ -2079,8 +2079,14 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
         .send(crate::SendRequest {
             caller: sender_id,
             target: crate::AgentTarget::Id(target_id),
-            resume_config: crate::agent::child_config::build_agent_resume_config(&sender_turn)
-                .expect("capture resume config"),
+            resume_config: {
+                let mut config =
+                    crate::agent::child_config::build_agent_resume_config(&sender_turn)
+                        .expect("capture resume config");
+                // A child's free-form mail to the root is the typed-reports opt-out path.
+                config.multi_agent_v2.typed_reports = false;
+                config
+            },
             input: crate::AgentInput::Message {
                 message: AgentMessage::Plaintext("wake the unloaded target".to_string()),
                 mode: MessageDeliveryMode::QueueOnly,
@@ -3399,6 +3405,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         expose_model_overrides: false,
         is_root: true,
         subagent_context_token_cap: None,
+        typed_reports: false,
     };
     let parent_task = InterAgentCommunication::new(
         AgentPath::root(),
@@ -5012,6 +5019,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
             description: Some("Research role".to_string()),
             config_file: None,
             nickname_candidates: Some(vec!["Atlas".to_string()]),
+            lifetime: None,
         },
     );
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;

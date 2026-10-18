@@ -24,6 +24,7 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
             expose_model_overrides: true,
             is_root: true,
             subagent_context_token_cap: None,
+            typed_reports: false,
         };
         let expected_text = if marked {
             format!("<multi_agent_role>{expected_body}</multi_agent_role>")
@@ -69,6 +70,7 @@ fn subagent_guidance_reflects_its_polling_mode() {
             expose_model_overrides: false,
             is_root: false,
             subagent_context_token_cap: None,
+            typed_reports: false,
         };
 
         assert_eq!(instructions.body(), expected_body);
@@ -90,6 +92,7 @@ fn wake_mode_root_guidance_states_how_child_results_arrive() {
         expose_model_overrides: false,
         is_root: true,
         subagent_context_token_cap: Some(272_000),
+        typed_reports: false,
     };
 
     assert_eq!(instructions.body(), expected_body);
@@ -111,7 +114,47 @@ fn subagent_guidance_states_context_budget() {
         expose_model_overrides: false,
         is_root: false,
         subagent_context_token_cap: Some(272_000),
+        typed_reports: false,
     };
 
     assert_eq!(instructions.body(), expected_body);
+}
+
+#[test]
+fn typed_reports_guidance_replaces_free_form_blocked_hint() {
+    let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.replace("`wait_agent`, ", "");
+    let subagent = MultiAgentRoleInstructions::Composed {
+        base: "Role.".to_string(),
+        marked: false,
+        omit_update_plan_instructions: false,
+        max_concurrency: 2,
+        agent_polling_enabled: false,
+        expose_model_overrides: false,
+        is_root: false,
+        subagent_context_token_cap: None,
+        typed_reports: true,
+    };
+    assert_eq!(
+        subagent.body(),
+        format!(
+            "Role.\n{shared}\n{SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{SUBAGENT_TYPED_REPORTS_USAGE_HINT_TEXT}\n\n{TYPED_REPORTS_DELEGATION_USAGE_HINT_TEXT}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you."
+        )
+    );
+    let root = MultiAgentRoleInstructions::Composed {
+        base: "Role.".to_string(),
+        marked: false,
+        omit_update_plan_instructions: false,
+        max_concurrency: 2,
+        agent_polling_enabled: false,
+        expose_model_overrides: false,
+        is_root: true,
+        subagent_context_token_cap: None,
+        typed_reports: true,
+    };
+    assert_eq!(
+        root.body(),
+        format!(
+            "Role.\n{shared}\n{ROOT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{TYPED_REPORTS_DELEGATION_USAGE_HINT_TEXT}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you."
+        )
+    );
 }

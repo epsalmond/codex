@@ -1968,6 +1968,8 @@ async fn subagent_waits_for_its_inherited_environment_configuration() -> Result<
             .expect("enable stable environment tools");
         // The fork wakes roots on child reports by default; this scenario scripts `wait_agent`.
         config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
+        // Reuses finished agents: the typed-reports opt-out path.
+        config.multi_agent_v2.typed_reports = false;
     })
     .await?;
     let labels = [

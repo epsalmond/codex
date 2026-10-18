@@ -1025,6 +1025,11 @@ impl LocalAgentControl {
             cyber_access_program: options.cyber_access_program,
             ..Default::default()
         };
+        if let Some(lifetime) = options.lifetime {
+            self.runtime
+                .registry
+                .set_agent_lifetime(new_thread.thread_id, lifetime);
+        }
         let input_admission_started_at = Instant::now();
         let input_result = match initial_input {
             SpawnInitialInput::UserInput(input) => {

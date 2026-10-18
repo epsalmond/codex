@@ -68,6 +68,8 @@ pub(crate) use self::runtime::LocalAgentRuntime;
 pub(crate) use self::watch::StatusSubscription;
 
 mod api;
+#[cfg(test)]
+pub(crate) use api::ANCESTOR_MESSAGE_REJECTION;
 mod budget;
 mod close;
 mod completion;
@@ -80,6 +82,7 @@ mod interrupt;
 mod legacy;
 mod mailbox;
 mod polling_completion;
+mod report;
 mod residency;
 pub use residency::ThreadEvictionOutcome;
 mod resume;

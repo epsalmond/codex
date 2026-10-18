@@ -174,8 +174,8 @@ impl AgentControl for TestAgentControl {
         &'a self,
         _outcome: AgentTurnOutcome,
         _trace: &'a ThreadTraceContext,
-    ) -> BoxFuture<'a, ()> {
-        Box::pin(async {})
+    ) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
     }
 
     fn service_tier(&self) -> Option<String> {

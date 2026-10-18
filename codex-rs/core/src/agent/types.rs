@@ -38,6 +38,8 @@ pub struct SpawnAgentOptions {
     /// current choices; an explicit list, including an empty one, overrides them and history.
     pub disabled_plugin_ids: Option<Vec<String>>,
     pub cyber_access_program: Option<CyberAccessProgram>,
+    /// MultiAgentV2 lifetime resolved by the spawn tool, recorded before the child starts.
+    pub lifetime: Option<codex_config::config_toml::AgentLifetime>,
 }
 
 /// Identity and status observed from a loaded agent, without a handle to its runtime.

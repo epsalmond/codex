@@ -185,6 +185,7 @@ model_reasoning_effort = "minimal"
             description: Some("Role with model overrides".to_string()),
             config_file: Some(role_config_path),
             nickname_candidates: None,
+            lifetime: None,
         },
     );
     turn.config = Arc::new(config);
@@ -525,6 +526,7 @@ async fn multi_agent_v2_forked_spawn_rejects_provider_switching_role() {
                 description: Some("Runs on another provider".to_string()),
                 config_file: Some(role_config_path),
                 nickname_candidates: None,
+                lifetime: None,
             },
         );
         config
@@ -750,6 +752,7 @@ service_tier = "priority"
                 description: Some("Role with a child service tier".to_string()),
                 config_file: Some(role_config_path),
                 nickname_candidates: None,
+                lifetime: None,
             },
         );
         config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
@@ -821,6 +824,7 @@ service_tier = "turbo"
             description: Some("Role with an unsupported child tier".to_string()),
             config_file: Some(role_config_path),
             nickname_candidates: None,
+            lifetime: None,
         },
     );
     config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
@@ -1153,6 +1157,44 @@ async fn multi_agent_v2_spawn_rejects_legacy_items_field() {
     assert!(message.contains("unknown field `items`"));
 }
 
+/// `typed_reports = false` restores the earlier spawn schema, which has no `lifetime`.
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_lifetime_when_typed_reports_are_off() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.typed_reports = false;
+    set_turn_config(&mut turn, config);
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "lifetime": "persistent"
+        })),
+    );
+    let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
+        panic!("lifetime should be rejected without typed reports");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("lifetime should surface as a model-facing error");
+    };
+    assert!(message.contains("unknown field `lifetime`"));
+}
+
 #[tokio::test]
 async fn spawn_agent_errors_when_manager_dropped() {
     let (session, turn) = make_session_and_context().await;
@@ -1383,6 +1425,8 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    // Typed reports refuse a child's free-form mail to the root; this covers the opt-out path.
+    config.multi_agent_v2.typed_reports = false;
     set_turn_config(&mut turn, config);
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -1463,6 +1507,8 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    // Typed reports refuse every message to an ancestor first; this covers the root rule alone.
+    config.multi_agent_v2.typed_reports = false;
     set_turn_config(&mut turn, config);
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -4997,6 +5043,99 @@ fn wake_tree_source(parent_thread_id: ThreadId, path: &AgentPath) -> SessionSour
     })
 }
 
+/// A tree of `/root` plus [`WAKE_TREE_PATHS`], with `session` and `turn` acting as `sender`.
+struct WakeTree {
+    manager: ThreadManager,
+    session: crate::session::session::Session,
+    turn: TurnContext,
+    threads: HashMap<AgentPath, ThreadId>,
+}
+
+impl WakeTree {
+    async fn new(
+        sender: &str,
+        configure: impl FnOnce(&mut crate::config::MultiAgentV2Config),
+    ) -> Self {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        let mut config = (*turn.config).clone();
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.max_concurrent_threads_per_session = WAKE_TREE_PATHS.len() + 1;
+        configure(&mut config.multi_agent_v2);
+        set_turn_config(&mut turn, config);
+        let root = manager
+            .start_thread(StartThreadOptions::new((*turn.config).clone()))
+            .await
+            .expect("root thread should start");
+        set_agent_control(&mut session, manager.agent_control());
+        session.thread_id = root.thread_id;
+
+        let mut threads = HashMap::from([(AgentPath::root(), root.thread_id)]);
+        let mut parents = HashMap::new();
+        for path in WAKE_TREE_PATHS {
+            let path = AgentPath::try_from(path).expect("agent path");
+            let (parent, _) = path.as_str().rsplit_once('/').expect("child path");
+            let parent_thread_id = threads[&AgentPath::try_from(parent).expect("parent path")];
+            let thread_id = session
+                .services
+                .local_agent_runtime
+                .control(session.session_id())
+                .spawn_agent_with_metadata(
+                    (*turn.config).clone(),
+                    vec![UserInput::Text {
+                        text: format!("initial task for {path}"),
+                        text_elements: Vec::new(),
+                    }],
+                    wake_tree_source(parent_thread_id, &path),
+                    crate::agent::types::SpawnAgentOptions::default(),
+                )
+                .await
+                .expect("agent spawn should succeed")
+                .thread_id;
+            parents.insert(path.clone(), parent_thread_id);
+            threads.insert(path, thread_id);
+        }
+
+        let sender_path = AgentPath::try_from(sender).expect("sender path");
+        session.thread_id = threads[&sender_path];
+        if !sender_path.is_root() {
+            turn.session_source = wake_tree_source(parents[&sender_path], &sender_path);
+        }
+        Self {
+            manager,
+            session,
+            turn,
+            threads,
+        }
+    }
+}
+
+/// Mail `author` sent to the agent at `recipient` in a [`WakeTree`].
+fn delivered_mail(
+    manager: &ThreadManager,
+    threads: &HashMap<AgentPath, ThreadId>,
+    author: &str,
+    recipient: &str,
+) -> Vec<InterAgentCommunication> {
+    let author = AgentPath::try_from(author).expect("author path");
+    let recipient = threads[&AgentPath::try_from(recipient).expect("recipient path")];
+    manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| match op {
+            Op::InterAgentCommunication { communication, .. }
+                if thread_id == recipient && communication.author == author =>
+            {
+                Some(communication)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Runs one V2 message tool call from `sender` in a tree of `/root` plus [`WAKE_TREE_PATHS`].
 /// Returns the tool result and the mail the `target_path` agent received from `sender`.
 async fn call_message_tool_in_wake_tree(
@@ -5009,55 +5148,28 @@ async fn call_message_tool_in_wake_tree(
     Result<String, FunctionCallError>,
     Vec<InterAgentCommunication>,
 ) {
-    let (mut session, mut turn) = make_session_and_context().await;
-    let manager = thread_manager();
-    let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
-    config.multi_agent_v2.sibling_wake = sibling_wake;
-    config.multi_agent_v2.max_concurrent_threads_per_session = WAKE_TREE_PATHS.len() + 1;
-    set_turn_config(&mut turn, config);
-    let root = manager
-        .start_thread(StartThreadOptions::new((*turn.config).clone()))
-        .await
-        .expect("root thread should start");
-    set_agent_control(&mut session, manager.agent_control());
-    session.thread_id = root.thread_id;
+    call_message_tool_in_configured_wake_tree(tool, sender, target, target_path, |config| {
+        config.sibling_wake = sibling_wake;
+    })
+    .await
+}
 
-    let mut threads = HashMap::from([(AgentPath::root(), root.thread_id)]);
-    let mut parents = HashMap::new();
-    for path in WAKE_TREE_PATHS {
-        let path = AgentPath::try_from(path).expect("agent path");
-        let (parent, _) = path.as_str().rsplit_once('/').expect("child path");
-        let parent_thread_id = threads[&AgentPath::try_from(parent).expect("parent path")];
-        let thread_id = session
-            .services
-            .local_agent_runtime
-            .control(session.session_id())
-            .spawn_agent_with_metadata(
-                (*turn.config).clone(),
-                vec![UserInput::Text {
-                    text: format!("initial task for {path}"),
-                    text_elements: Vec::new(),
-                }],
-                wake_tree_source(parent_thread_id, &path),
-                crate::agent::types::SpawnAgentOptions::default(),
-            )
-            .await
-            .expect("agent spawn should succeed")
-            .thread_id;
-        parents.insert(path.clone(), parent_thread_id);
-        threads.insert(path, thread_id);
-    }
-
-    let sender_path = AgentPath::try_from(sender).expect("sender path");
-    session.thread_id = threads[&sender_path];
-    if !sender_path.is_root() {
-        turn.session_source = wake_tree_source(parents[&sender_path], &sender_path);
-    }
-    let target_thread_id = threads[&AgentPath::try_from(target_path).expect("target path")];
+async fn call_message_tool_in_configured_wake_tree(
+    tool: &str,
+    sender: &str,
+    target: &str,
+    target_path: &str,
+    configure: impl FnOnce(&mut crate::config::MultiAgentV2Config),
+) -> (
+    Result<String, FunctionCallError>,
+    Vec<InterAgentCommunication>,
+) {
+    let WakeTree {
+        manager,
+        session,
+        turn,
+        threads,
+    } = WakeTree::new(sender, configure).await;
     let payload = function_payload(json!({ "target": target, "message": "please look at this" }));
     let invocation = invocation(Arc::new(session), Arc::new(turn), tool, payload);
     let result = match tool {
@@ -5066,18 +5178,7 @@ async fn call_message_tool_in_wake_tree(
         _ => panic!("unexpected tool {tool}"),
     }
     .map(|output| expect_text_output(output).0);
-    let delivered = manager
-        .captured_ops()
-        .into_iter()
-        .filter_map(|(thread_id, op)| match op {
-            Op::InterAgentCommunication { communication, .. }
-                if thread_id == target_thread_id && communication.author == sender_path =>
-            {
-                Some(communication)
-            }
-            _ => None,
-        })
-        .collect();
+    let delivered = delivered_mail(&manager, &threads, sender, target_path);
     (result, delivered)
 }
 
@@ -5121,12 +5222,13 @@ async fn multi_agent_v2_followup_task_from_ancestor_starts_turn(
 #[test_case::test_case("/root/lead/worker/helper", "/root/lead"; "grandchild to grandparent")]
 #[tokio::test]
 async fn multi_agent_v2_followup_task_from_non_ancestor_is_rejected(sender: &str, target: &str) {
-    let (result, delivered) = call_message_tool_in_wake_tree(
+    // Typed reports reject messages to ancestors first; this covers the ancestor-wake rule alone.
+    let (result, delivered) = call_message_tool_in_configured_wake_tree(
         "followup_task",
         sender,
         target,
         target,
-        /*sibling_wake*/ false,
+        |config| config.typed_reports = false,
     )
     .await;
 
@@ -5188,5 +5290,208 @@ async fn multi_agent_v2_sibling_wake_restores_sibling_followup() {
             .map(|communication| communication.trigger_turn)
             .collect::<Vec<_>>(),
         vec![true]
+    );
+}
+
+#[test_case::test_case("send_message", "/root/lead/worker", "/root/lead"; "message to parent")]
+#[test_case::test_case("followup_task", "/root/lead/worker", "/root/lead"; "followup to parent")]
+#[test_case::test_case("send_message", "/root/lead/worker/helper", "/root"; "message to root")]
+#[test_case::test_case("followup_task", "/root/lead/worker/helper", "/root/lead"; "followup to grandparent")]
+#[tokio::test]
+async fn multi_agent_v2_typed_reports_reject_messages_to_ancestors(
+    tool: &str,
+    sender: &str,
+    target: &str,
+) {
+    let (result, delivered) =
+        call_message_tool_in_wake_tree(tool, sender, target, target, /*sibling_wake*/ false).await;
+
+    assert_eq!(
+        result,
+        Err(FunctionCallError::RespondToModel(
+            crate::agent::control::ANCESTOR_MESSAGE_REJECTION.to_string()
+        ))
+    );
+    assert_eq!(delivered, Vec::new());
+}
+
+#[tokio::test]
+async fn multi_agent_v2_typed_reports_opt_out_restores_messages_to_parent() {
+    let (result, delivered) = call_message_tool_in_configured_wake_tree(
+        "send_message",
+        "/root/lead/worker",
+        "/root/lead",
+        "/root/lead",
+        |config| config.typed_reports = false,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|communication| communication.trigger_turn)
+            .collect::<Vec<_>>(),
+        vec![false]
+    );
+}
+
+/// Calls `report` as `sender` after the given ancestors each sent it one queued message.
+async fn call_report_in_wake_tree(
+    sender: &str,
+    questions_from: &[&str],
+    reports: &[serde_json::Value],
+) -> (
+    Vec<Result<String, FunctionCallError>>,
+    Arc<TurnContext>,
+    ThreadManager,
+    HashMap<AgentPath, ThreadId>,
+) {
+    let WakeTree {
+        manager,
+        session,
+        turn,
+        threads,
+    } = WakeTree::new(sender, |_| {}).await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let sender_path = AgentPath::try_from(sender).expect("sender path");
+    for author in questions_from {
+        let mut question = InterAgentCommunication::new(
+            AgentPath::try_from(*author).expect("author path"),
+            sender_path.clone(),
+            Vec::new(),
+            "what did you find so far?".to_string(),
+            /*trigger_turn*/ false,
+        );
+        session
+            .record_inter_agent_communication(&turn, turn.model_info(), question.clone())
+            .await;
+        // Follow-up tasks are assignments, answered by the final report, not answer credits.
+        question.trigger_turn = true;
+        session
+            .record_inter_agent_communication(&turn, turn.model_info(), question)
+            .await;
+    }
+    let mut results = Vec::new();
+    for report in reports {
+        let invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "report",
+            function_payload(report.clone()),
+        );
+        results.push(
+            crate::tools::handlers::multi_agents_v2::ReportHandler
+                .handle(invocation)
+                .await
+                .map(|output| expect_text_output(output).0),
+        );
+    }
+    (results, turn, manager, threads)
+}
+
+#[tokio::test]
+async fn multi_agent_v2_report_answer_requires_an_ancestor_question() {
+    let answer = json!({ "kind": "answer", "message": "halfway there" });
+    let (results, _turn, manager, threads) =
+        call_report_in_wake_tree("/root/lead/worker", &[], &[answer]).await;
+
+    assert_eq!(
+        results,
+        vec![Err(FunctionCallError::RespondToModel(
+            "report(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report(kind=\"blocked\") if you need instructions to continue, or report(kind=\"final\") when your task is done.".to_string()
+        ))]
+    );
+    assert_eq!(
+        delivered_mail(&manager, &threads, "/root/lead/worker", "/root/lead"),
+        Vec::new()
+    );
+}
+
+#[test_case::test_case("/root/lead/worker", "/root/lead"; "child answers parent")]
+#[test_case::test_case("/root/lead/worker/helper", "/root/lead"; "grandchild answers grandparent")]
+#[test_case::test_case("/root/lead/worker/helper", "/root"; "grandchild answers root")]
+#[tokio::test]
+async fn multi_agent_v2_report_answer_spends_one_credit_per_ancestor_question(
+    sender: &str,
+    asker: &str,
+) {
+    let answer = json!({ "kind": "answer", "message": "found the config loader" });
+    let (results, _turn, manager, threads) =
+        call_report_in_wake_tree(sender, &[asker], &[answer.clone(), answer]).await;
+
+    assert_eq!(
+        results[0],
+        Ok(format!(
+            "Answer delivered to `{asker}`. Continue your task."
+        ))
+    );
+    assert!(
+        matches!(&results[1], Err(FunctionCallError::RespondToModel(message)) if message.contains("no ancestor message is waiting")),
+        "{:?}",
+        results[1]
+    );
+    let delivered = delivered_mail(&manager, &threads, sender, asker);
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].recipient.as_str(), asker);
+    // A non-root ancestor that asked and went idle is woken by the answer.
+    if asker != "/root" {
+        assert!(delivered[0].trigger_turn);
+    }
+}
+
+#[test_case::test_case("final", "Final report recorded. Your turn ends now."; "final report")]
+#[test_case::test_case("blocked", "Blocked report recorded. Your turn ends now; your parent will send instructions."; "blocked report")]
+#[tokio::test]
+async fn multi_agent_v2_report_records_one_terminal_report_per_turn(kind: &str, output: &str) {
+    let report = json!({ "kind": kind, "message": "the result" });
+    let (results, turn, manager, threads) =
+        call_report_in_wake_tree("/root/lead/worker/helper", &[], &[report.clone(), report]).await;
+
+    assert_eq!(results[0], Ok(output.to_string()));
+    assert_eq!(
+        results[1],
+        Err(FunctionCallError::RespondToModel(
+            "You already reported this turn; your turn ends after this step.".to_string()
+        ))
+    );
+    let pending = turn
+        .extension_data
+        .get::<crate::session::typed_reports::PendingTerminalReport>()
+        .expect("pending terminal report");
+    assert_eq!(pending.message, "the result");
+    assert_eq!(
+        pending.kind == crate::session::typed_reports::TerminalReportKind::Blocked,
+        kind == "blocked"
+    );
+    // Terminal reports travel with the turn's end, not as mail.
+    assert_eq!(
+        delivered_mail(
+            &manager,
+            &threads,
+            "/root/lead/worker/helper",
+            "/root/lead/worker"
+        ),
+        Vec::new()
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_report_is_rejected_for_the_root() {
+    let report = json!({ "kind": "final", "message": "done" });
+    let (results, turn, _manager, _threads) =
+        call_report_in_wake_tree("/root", &[], &[report]).await;
+
+    assert_eq!(
+        results,
+        vec![Err(FunctionCallError::RespondToModel(
+            "report is only available to subagents with typed reports enabled.".to_string()
+        ))]
+    );
+    assert!(
+        turn.extension_data
+            .get::<crate::session::typed_reports::PendingTerminalReport>()
+            .is_none()
     );
 }

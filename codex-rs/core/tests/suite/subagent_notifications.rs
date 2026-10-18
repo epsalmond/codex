@@ -1461,6 +1461,8 @@ async fn grandchild_full_fork_preserves_context_baseline(
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
+            // Reuses finished agents: the typed-reports opt-out path.
+            config.multi_agent_v2.typed_reports = false;
             if compact_parent {
                 config.update_plan_enabled = true;
                 // Use local compaction so the test controls the replacement history.
@@ -3000,6 +3002,8 @@ mod exec_nested_wake_tests;
 mod nested_wake_tests;
 #[path = "subagent_notifications/peer_wake_tests.rs"]
 mod peer_wake_tests;
+#[path = "subagent_notifications/typed_reports_tests.rs"]
+mod typed_reports_tests;
 
 #[test_case(false; "live")]
 #[test_case(true; "reloaded_sleep")]
@@ -3029,6 +3033,8 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn(
             }
             // Automation roots retain polling, including for their V2 descendants.
             config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
+            // Reuses finished agents: the typed-reports opt-out path.
+            config.multi_agent_v2.typed_reports = false;
             // Sibling followups are the opt-out path; the default rejects them.
             config.multi_agent_v2.sibling_wake = true;
             config.model_provider.request_max_retries = Some(0);
@@ -3478,6 +3484,7 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
                         description: Some("Custom role".to_string()),
                         config_file: Some(role_path.to_path_buf()),
                         nickname_candidates: None,
+                        lifetime: None,
                     },
                 );
             })
@@ -3513,6 +3520,7 @@ async fn spawn_agent_preserves_configured_defaults_through_unrelated_role() -> R
                         description: Some("Custom role".to_string()),
                         config_file: Some(role_path.to_path_buf()),
                         nickname_candidates: None,
+                        lifetime: None,
                     },
                 );
                 config.agent_default_subagent_model = Some(REQUESTED_MODEL.to_string());
@@ -3578,6 +3586,7 @@ async fn spawn_agent_rejects_reasoning_effort_unsupported_by_role_model() -> Res
                     description: Some("Custom role".to_string()),
                     config_file: Some(role_path.to_path_buf()),
                     nickname_candidates: None,
+                    lifetime: None,
                 },
             );
             config.agent_default_subagent_model = Some("gpt-5.6-sol".to_string());
@@ -3647,6 +3656,7 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
                 description: Some("Custom role".to_string()),
                 config_file: Some(role_path.to_path_buf()),
                 nickname_candidates: None,
+                lifetime: None,
             },
         );
     });

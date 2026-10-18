@@ -1,5 +1,6 @@
 use crate::agent::types::AgentMetadata;
 use crate::config::Config;
+use codex_config::config_toml::AgentLifetime;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::AgentErrorContext;
@@ -38,6 +39,8 @@ struct ActiveAgents {
     nickname_reset_count: usize,
     /// Explicitly closed agents, retained after release so later references explain why.
     closed_agents: HashMap<ThreadId, AgentPath>,
+    /// Lifetimes resolved when MultiAgentV2 agents were spawned in this process.
+    lifetimes: HashMap<ThreadId, AgentLifetime>,
 }
 
 struct RegisteredAgent {
@@ -262,6 +265,25 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closed_agents
             .extend(agents);
+    }
+
+    /// Records the lifetime a spawn resolved, before the child's first turn can end.
+    pub(crate) fn set_agent_lifetime(&self, thread_id: ThreadId, lifetime: AgentLifetime) {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifetimes
+            .insert(thread_id, lifetime);
+    }
+
+    /// Returns the lifetime recorded at spawn; agents restored from disk have none.
+    pub(crate) fn agent_lifetime(&self, thread_id: ThreadId) -> Option<AgentLifetime> {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifetimes
+            .get(&thread_id)
+            .copied()
     }
 
     pub(crate) fn closed_agent_path(&self, thread_id: ThreadId) -> Option<AgentPath> {

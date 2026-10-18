@@ -1,3 +1,4 @@
+use codex_config::config_toml::AgentLifetime;
 use codex_config::config_toml::ConfigToml;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use serde::Deserialize;
@@ -15,6 +16,8 @@ pub struct AgentRoleConfig {
     pub config_file: Option<PathBuf>,
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
+    /// Default MultiAgentV2 lifetime for agents spawned with this role.
+    pub lifetime: Option<AgentLifetime>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
@@ -23,6 +26,7 @@ struct RawAgentRoleFileToml {
     name: Option<String>,
     description: Option<String>,
     nickname_candidates: Option<Vec<String>>,
+    lifetime: Option<AgentLifetime>,
     #[serde(flatten)]
     config: ConfigToml,
 }
@@ -32,6 +36,7 @@ pub struct ResolvedAgentRoleFile {
     pub role_name: String,
     pub description: Option<String>,
     pub nickname_candidates: Option<Vec<String>>,
+    pub lifetime: Option<AgentLifetime>,
     pub config: TomlValue,
 }
 
@@ -108,11 +113,13 @@ pub fn parse_agent_role_file_contents(
     config_table.remove("name");
     config_table.remove("description");
     config_table.remove("nickname_candidates");
+    config_table.remove("lifetime");
 
     Ok(ResolvedAgentRoleFile {
         role_name,
         description,
         nickname_candidates,
+        lifetime: parsed.lifetime,
         config,
     })
 }

@@ -62,6 +62,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
+            typed_reports: false,
         },
         /*description_override*/ None,
     );
@@ -209,6 +210,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
         model_catalog_in_context: false,
         usage_hint_text: None,
         child_report_mode: ChildReportMode::WaitAgent,
+        typed_reports: false,
     });
 
     let ToolSpec::Namespace(namespace) = tool else {
@@ -272,6 +274,7 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
             model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
+            typed_reports: false,
         },
         /*description_override*/ None,
     );
@@ -323,6 +326,7 @@ fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
             model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
+            typed_reports: false,
         },
         /*description_override*/ None,
     );
@@ -361,6 +365,7 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
             model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
+            typed_reports: false,
         },
         Some(""),
     );
@@ -441,7 +446,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
     assert_eq!(name, "followup_task");
     assert_eq!(
         description,
-        "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling, cousin, or ancestor. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
+        "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling or cousin. Use it to resume a child that reported BLOCKED or a `persistent` child; a `task` child is closed after its final report, so spawn a fresh agent for new work. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
     );
     assert_eq!(
         parameters.schema_type,

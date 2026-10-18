@@ -802,6 +802,8 @@ agent_polling = "disabled"
 disable_native_tools = true
 disable_direct_message = true
 sibling_wake = true
+typed_reports = false
+wrap_up_after_model_calls = 40
 message_board_in_memory = true
 non_code_mode_only = true
 "#,
@@ -834,6 +836,8 @@ non_code_mode_only = true
             disable_native_tools: Some(true),
             disable_direct_message: Some(true),
             sibling_wake: Some(true),
+            typed_reports: Some(false),
+            wrap_up_after_model_calls: Some(40),
             message_board_in_memory: Some(true),
             message_board_remote: None,
             non_code_mode_only: Some(true),

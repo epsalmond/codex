@@ -114,6 +114,12 @@ async fn handle_spawn_agent(
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
+    // `typed_reports = false` restores the earlier schema, which has no `lifetime`.
+    if args.lifetime.is_some() && !turn.config.multi_agent_v2.typed_reports {
+        return Err(FunctionCallError::RespondToModel(
+            "failed to parse function arguments: unknown field `lifetime`".to_string(),
+        ));
+    }
     let message = message_content(args.message)?;
     let role_name = args
         .agent_type
@@ -132,6 +138,7 @@ async fn handle_spawn_agent(
             agent_type: args.agent_type.clone(),
             model: args.model,
             reasoning_effort: args.reasoning_effort,
+            lifetime: args.lifetime,
         },
     )
     .await
@@ -208,6 +215,8 @@ struct SpawnAgentArgs {
     reasoning_effort: Option<ReasoningEffort>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
+    /// `task` (closed after its final report) or `persistent`; see `typed_reports`.
+    lifetime: Option<codex_config::config_toml::AgentLifetime>,
 }
 
 impl SpawnAgentArgs {
