@@ -651,14 +651,8 @@ pub(crate) async fn run_turn(
                     .extension_data
                     .get::<super::typed_reports::PendingTerminalReport>()
                 {
-                    if model_needs_follow_up {
-                        sess.input_queue
-                            .accept_mailbox_delivery_for_current_turn(
-                                &sess.active_turn,
-                                &turn_context.sub_id,
-                            )
-                            .await;
-                    }
+                    // The turn ends here, so mail is not accepted into it: task completion returns
+                    // mail that already joined it to the mailbox for the next turn.
                     // Stop hooks still observe the turn; a blocking hook withdraws the report.
                     let stop_outcome = run_turn_stop_hooks(
                         &sess,

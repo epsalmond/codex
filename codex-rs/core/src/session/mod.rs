@@ -2808,7 +2808,7 @@ impl Session {
             && typed_reports
             && completed
             && !blocked
-            && self.agent_lifetime(turn_context) == AgentLifetime::Task
+            && self.agent_lifetime() == AgentLifetime::Task
         {
             turn_context
                 .extension_data
@@ -2816,27 +2816,14 @@ impl Session {
         }
     }
 
-    /// Lifetime recorded at spawn, else the role's lifetime (agents restored from disk), else
-    /// `task`.
-    fn agent_lifetime(&self, turn_context: &TurnContext) -> AgentLifetime {
+    /// Lifetime recorded when this process spawned the agent. An agent restored from disk has
+    /// no record, and its spawn may have chosen `persistent` explicitly, so it is never closed
+    /// automatically: closing is permanent, while a wrongly kept agent only stays idle.
+    fn agent_lifetime(&self) -> AgentLifetime {
         self.services
             .local_agent_runtime
             .agent_lifetime(self.thread_id)
-            .or_else(|| {
-                let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) =
-                    &turn_context.session_source
-                else {
-                    return None;
-                };
-                crate::agent::role::resolve_role_config(
-                    &turn_context.config,
-                    agent_role
-                        .as_deref()
-                        .unwrap_or(crate::agent::role::DEFAULT_ROLE_NAME),
-                )
-                .and_then(|role| role.lifetime)
-            })
-            .unwrap_or_default()
+            .unwrap_or(AgentLifetime::Persistent)
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {

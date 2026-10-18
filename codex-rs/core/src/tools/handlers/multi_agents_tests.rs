@@ -1157,6 +1157,44 @@ async fn multi_agent_v2_spawn_rejects_legacy_items_field() {
     assert!(message.contains("unknown field `items`"));
 }
 
+/// `typed_reports = false` restores the earlier spawn schema, which has no `lifetime`.
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_lifetime_when_typed_reports_are_off() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.typed_reports = false;
+    set_turn_config(&mut turn, config);
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "lifetime": "persistent"
+        })),
+    );
+    let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
+        panic!("lifetime should be rejected without typed reports");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("lifetime should surface as a model-facing error");
+    };
+    assert!(message.contains("unknown field `lifetime`"));
+}
+
 #[tokio::test]
 async fn spawn_agent_errors_when_manager_dropped() {
     let (session, turn) = make_session_and_context().await;

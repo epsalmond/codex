@@ -12713,10 +12713,13 @@ wrap_up_after_model_calls = 0
     assert!(!config.typed_reports);
     assert_eq!(config.wrap_up_after_model_calls, 0);
 
-    // The opt-out restores the earlier subagent and orchestrator guidance.
-    for typed_reports in [true, false] {
+    // The opt-out restores the earlier subagent and orchestrator guidance, as do hosts that hide
+    // the native tools, which have no `report`.
+    for (typed_reports, disable_native_tools) in [(true, false), (false, false), (true, true)] {
         let mut config = defaults.clone();
         config.typed_reports = typed_reports;
+        config.disable_native_tools = disable_native_tools;
+        let typed_reports = typed_reports && !disable_native_tools;
         let hints = resolve_usage_hints(
             &config,
             ResolvedModelMessages::bundled().multi_agent(),

@@ -313,8 +313,10 @@ sibling, cousin, and descendant messaging is unchanged. `spawn_agent` takes
 applies (`[agents.<name>] lifetime = "persistent"` or `lifetime` in the role
 file), then `task`. A `task` agent is closed after its final report reaches the
 parent, so later messages to it are refused and new work goes to a fresh agent.
-A `persistent` agent stays idle and resumable. A subagent turn that reaches 150
-model calls is told once to finish the current step and report.
+A `persistent` agent stays idle and resumable. Lifetimes are kept in memory, so
+an agent restored from disk after a restart is never closed automatically. A
+subagent turn that reaches 150 model calls is told once to finish the current
+step and report.
 
 ```toml
 [features.multi_agent_v2]
