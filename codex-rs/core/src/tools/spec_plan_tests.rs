@@ -2830,7 +2830,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     let spawn_agent_description = spawn_agent.description.as_str();
     assert!(!spawn_agent_description.contains("max_concurrent_threads_per_session"));
     assert!(spawn_agent_description.contains(
-        "Note that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent"
+        "Note that `fork_turns=\"none\"` (the default) will not pass any surrounding context to the spawned subagent"
     ));
 
     let direct_model_only = probe(|turn| {
@@ -2885,6 +2885,42 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
                 .and_then(|schema| schema.encrypted),
             Some(true)
         );
+    }
+}
+
+/// `sibling_wake` restores the message tool descriptions that predate the ancestor-only rule.
+#[tokio::test]
+async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
+    for sibling_wake in [false, true] {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.sibling_wake = sibling_wake;
+            });
+        })
+        .await;
+        let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+            panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
+        };
+        for tool_name in ["send_message", "followup_task"] {
+            let Some(ResponsesApiNamespaceTool::Function(tool)) =
+                namespace.tools.iter().find(|tool| {
+                    matches!(
+                        tool,
+                        ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name
+                    )
+                })
+            else {
+                panic!("expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace");
+            };
+            assert_eq!(
+                !tool.description.contains("cannot start turns")
+                    && !tool.description.contains("Only an ancestor"),
+                sibling_wake,
+                "{tool_name} sibling_wake={sibling_wake}: {}",
+                tool.description
+            );
+        }
     }
 }
 

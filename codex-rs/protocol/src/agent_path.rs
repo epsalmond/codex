@@ -51,6 +51,17 @@ impl AgentPath {
             .unwrap_or(Self::ROOT_SEGMENT)
     }
 
+    /// Returns whether `self` is a strict ancestor of `other` (parent, grandparent, ..., root).
+    ///
+    /// Both paths are canonical absolute paths, so this compares whole segments: `/root/a` is an
+    /// ancestor of `/root/a/b` but not of `/root/ab`, and no path is its own ancestor.
+    pub fn is_ancestor_of(&self, other: &AgentPath) -> bool {
+        other
+            .as_str()
+            .strip_prefix(self.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+    }
+
     pub fn join(&self, agent_name: &str) -> Result<Self, String> {
         validate_agent_name(agent_name)?;
         Self::from_string(format!("{self}/{agent_name}"))
@@ -220,6 +231,28 @@ mod tests {
             current.resolve("/root/other").expect("absolute path"),
             AgentPath::try_from("/root/other").expect("path")
         );
+    }
+
+    #[test]
+    fn is_ancestor_of_compares_whole_segments() {
+        let path = |value: &str| AgentPath::try_from(value).expect("path");
+        let root = AgentPath::root();
+        let parent = path("/root/lead");
+        let child = path("/root/lead/worker");
+        let grandchild = path("/root/lead/worker/helper");
+        let sibling = path("/root/other");
+        let prefix_lookalike = path("/root/leader");
+
+        assert!(root.is_ancestor_of(&parent));
+        assert!(root.is_ancestor_of(&grandchild));
+        assert!(parent.is_ancestor_of(&child));
+        assert!(parent.is_ancestor_of(&grandchild));
+        assert!(!parent.is_ancestor_of(&parent));
+        assert!(!child.is_ancestor_of(&parent));
+        assert!(!sibling.is_ancestor_of(&child));
+        assert!(!parent.is_ancestor_of(&prefix_lookalike));
+        assert!(!root.is_ancestor_of(&AgentPath::morpheus()));
+        assert!(!AgentPath::morpheus().is_ancestor_of(&parent));
     }
 
     #[test]

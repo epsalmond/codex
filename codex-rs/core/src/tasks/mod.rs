@@ -666,7 +666,13 @@ impl Session {
         }
         let cause = if self.input_queue.has_pending_mailbox_items().await
             && (self.input_queue.has_trigger_turn_mailbox_items().await
-                || self.has_outstanding_durable_sleep())
+                || (self.has_outstanding_durable_sleep()
+                    && self
+                        .input_queue
+                        .has_durable_sleep_wake_mailbox_items(
+                            self.get_config().await.multi_agent_v2.sibling_wake,
+                        )
+                        .await))
         {
             PendingWorkCause::Mailbox
         } else if !self.input_queue.wakeups_paused()

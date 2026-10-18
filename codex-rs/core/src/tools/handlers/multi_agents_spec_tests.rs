@@ -441,7 +441,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
     assert_eq!(name, "followup_task");
     assert_eq!(
         description,
-        "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
+        "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling, cousin, or ancestor. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
     );
     assert_eq!(
         parameters.schema_type,

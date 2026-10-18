@@ -21,6 +21,7 @@ pub use model_messages::ResolvedIncrementalToolMessages;
 pub use model_messages::ResolvedMessage;
 pub use model_messages::ResolvedModelMessages;
 pub use model_messages::ResolvedMultiAgentMessages;
+pub use model_messages::SUBAGENT_ANCESTOR_ONLY_WAKE_USAGE_HINT_LINE;
 pub use multi_agent_instructions::MultiAgentRoleInstructions;
 pub use multi_agent_instructions::SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT;
 pub use permissions_instructions::ApprovalPromptContext;

@@ -413,7 +413,8 @@ pub(super) async fn code_mode_guardian_request_history() -> Result<Vec<Responses
                     SPAWN_CALL_ID,
                     "collaboration",
                     "spawn_agent",
-                    &json!({"message": INITIAL_TASK, "task_name": "worker"}).to_string(),
+                    &json!({"message": INITIAL_TASK, "task_name": "worker", "fork_turns": "all"})
+                        .to_string(),
                 ),
                 ev_completed("root-spawn"),
             ],
@@ -836,7 +837,8 @@ async fn run_guardian_subagent_review(
                 SPAWN_CALL_ID,
                 "collaboration",
                 "spawn_agent",
-                &json!({ "message": INITIAL_TASK, "task_name": "worker" }).to_string(),
+                &json!({ "message": INITIAL_TASK, "task_name": "worker", "fork_turns": "all" })
+                    .to_string(),
             ),
             ev_completed("root-spawn-response"),
         ]),

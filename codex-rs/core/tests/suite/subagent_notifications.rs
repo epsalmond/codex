@@ -1563,7 +1563,7 @@ enum FullHistoryV2ModelSelection {
     MultiAgentModeTransitions,
 }
 
-#[test_case(FullHistoryV2ModelSelection::ConfiguredDefault; "configured default with omitted fork_turns")]
+#[test_case(FullHistoryV2ModelSelection::ConfiguredDefault; "configured default with fork_turns all")]
 #[test_case(FullHistoryV2ModelSelection::ExplicitOverride("all"); "explicit override with fork_turns all")]
 #[test_case(FullHistoryV2ModelSelection::ExplicitOverride("1"); "legacy one turn forks full history with explicit override")]
 #[test_case(FullHistoryV2ModelSelection::ExplicitOverride("3"); "legacy three turns forks full history with explicit override")]
@@ -1597,6 +1597,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             json!({
                 "message": CHILD_PROMPT,
                 "task_name": "worker",
+                "fork_turns": "all",
             }),
             V2_DEFAULT_MODEL,
             V2_DEFAULT_REASONING_EFFORT,
@@ -3028,6 +3029,8 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn(
             }
             // Automation roots retain polling, including for their V2 descendants.
             config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
+            // Sibling followups are the opt-out path; the default rejects them.
+            config.multi_agent_v2.sibling_wake = true;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
