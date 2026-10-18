@@ -131,6 +131,10 @@ push build.
   `codex-shake exec` roots, and MultiAgentV2 child agents at every depth; exec
   stays open until the whole agent tree is idle. See
   [wake mode](#wake-mode-for-multi-agent-orchestrators).
+- **Typed subagent reports** let a subagent message its ancestors only to say
+  it is blocked, to answer a question, or to deliver its final result; a task
+  agent closes after its final report. See
+  [typed subagent reports](#typed-subagent-reports).
 - **Automatic process and cell completion** delivers the result of a
   background command or a running Code Mode script once it finishes, so the
   model never polls for it. See
@@ -163,18 +167,35 @@ number of working descendants of the displayed thread. Add optional items via
 
 Run `codex-shake --version` to see both the upstream
 Codex version and the Shake feature version and exact fork release tag. `-V`
-continues to show only the upstream Codex version. Binaries reporting Shake
-feature version `0.3.0` include event-driven wakeups for interactive CLI and
-app-server MultiAgentV2 roots by default. This change extends wakeups to
-eligible MultiAgentV2 child agents at every depth; check the exact release tag
-to confirm whether a binary includes the extension. In those binaries Exec
-roots still poll for their direct children; later fork releases wake and drain
-Exec roots by default too (see wake mode below). The unpublished `0.2`
-milestone covered subagent shaking and compaction plus intra-turn shaking. Version `0.3.0` is the
-honorary bump that recognizes both milestones.
+continues to show only the upstream Codex version. The release tag is the
+exact feature identity; the Shake version marks milestones:
 
-The release tag is the reliable feature identity. Older binaries do not
-recognize the `agent_polling` string setting.
+- `0.4.0` (2026-10-18) adds, on top of `0.3.0`:
+  - [Typed subagent reports](#typed-subagent-reports): subagents report only
+    `blocked`, `answer`, or `final`; `task` agents close after their final
+    report; long subagent turns get a wrap-up reminder.
+  - Ancestor-only wakes: only a parent, grandparent, or root starts a
+    subagent's turn, and `spawn_agent` starts children without parent history
+    by default (see [wake mode](#wake-mode-for-multi-agent-orchestrators)).
+  - Wake mode at every depth and for `codex-shake exec` roots, which drain the
+    whole agent tree before exiting.
+  - [Automatic process and cell completion](#automatic-process-and-cell-completion)
+    for background commands and Code Mode scripts, replacing polling.
+  - [`/subagents`](#monitoring-subagents) status, previews, context sizes, and a
+    close that really ends the agent and its descendants.
+  - Enforced subagent context caps, subagents on a
+    [different model provider](#subagents-on-a-different-model-provider), and
+    [automatic goal continuation](#automatic-goal-continuation) guards.
+  - [Statusline items](#statusline-items) for weekly reset and last response,
+    [hooks for control-tool waits](#hooks-observe-control-tool-waits), local
+    [builds from a commit](#building-codex-shake-from-a-commit), and Windows
+    development packages.
+- `0.3.0` (2026-09-26) introduced event-driven wakeups for interactive CLI and
+  app-server MultiAgentV2 roots. It is the honorary bump that recognizes the
+  unpublished `0.2` milestone: subagent shaking and compaction plus
+  intra-turn shaking.
+
+Older binaries do not recognize the `agent_polling` string setting.
 
 ### Wake mode for multi-agent orchestrators
 
@@ -328,7 +349,7 @@ wrap_up_after_model_calls = 0   # no wrap-up reminder (default 150)
 
 Run `/subagents` to monitor child runs. Each row shows whether a child is mid-turn, idle, closed, or in error, along with its latest reported context tokens against the model window when available. Idle children also show a short preview of their latest final response.
 
-Press `1`–`9` to select a numbered row (`1` is Main), or use arrows and Enter. Press `/` to search names, paths, or IDs; Esc clears search before closing the picker. Ctrl+U clears the query while keeping search active (Cmd+Delete in Ghostty on macOS). Press `X` to archive the selected child and its descendants; the picker keeps the same row selected, clamped to the last remaining row.
+Press `1`–`9` to select a numbered row (`1` is Main), or use arrows and Enter. Press `/` to search names, paths, or IDs; Esc clears search before closing the picker. Ctrl+U clears the query while keeping search active (Cmd+Delete in Ghostty on macOS). Press `X` to close the selected child and its descendants: they leave the status-bar count and `list_agents`, and later messages to them are refused; the picker keeps the same row selected, clamped to the last remaining row.
 
 With an empty prompt and no popup or overlay, Option/Alt+Left and Option/Alt+Right switch to the previous or next visible agent, including Main. Terminals that send Alt+b/f for these keys are supported, including macOS terminals connected over SSH; with text in the prompt, the keys retain word editing.
 

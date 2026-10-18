@@ -22,7 +22,7 @@ fn fork_version_output_identifies_features() -> anyhow::Result<()> {
             .replace(env!("CARGO_PKG_VERSION"), "<codex-version>");
         insta::assert_snapshot!(&normalized_long_version, @r"
 codex-cli <codex-version>
-Shake feature version: 0.3.0
+Shake feature version: 0.4.0
 Release tag: <release-tag>
 ");
     } else {
