@@ -801,6 +801,7 @@ expose_spawn_agent_model_overrides = true
 agent_polling = "disabled"
 disable_native_tools = true
 disable_direct_message = true
+sibling_wake = true
 message_board_in_memory = true
 non_code_mode_only = true
 "#,
@@ -832,6 +833,7 @@ non_code_mode_only = true
             agent_polling: Some(crate::AgentPolling::Disabled),
             disable_native_tools: Some(true),
             disable_direct_message: Some(true),
+            sibling_wake: Some(true),
             message_board_in_memory: Some(true),
             message_board_remote: None,
             non_code_mode_only: Some(true),

@@ -349,6 +349,8 @@ async fn peer_followup_wakes_completed_worker_and_reports_to_root(
                     .expect("enable test feature");
             }
             config.multi_agent_v2.agent_polling = AgentPolling::Disabled;
+            // Sibling followups are the opt-out path; the default rejects them.
+            config.multi_agent_v2.sibling_wake = true;
             config.multi_agent_v2.max_concurrent_threads_per_session = 3;
             config.model_provider.base_url = Some(base_url);
             config.model_provider.request_max_retries = Some(0);

@@ -3224,6 +3224,10 @@
         "root_agent_usage_hint_text": {
           "type": "string"
         },
+        "sibling_wake": {
+          "description": "Let any agent start a turn in another agent. Defaults to false: only an ancestor (parent, grandparent, root) can `followup_task` an agent, and mail from a sibling, cousin, or descendant only queues for the recipient's next turn. Set true to restore sibling wakes.",
+          "type": "boolean"
+        },
         "subagent_developer_instructions": {
           "description": "Overrides inherited developer instructions for subagents without role-specific instructions.",
           "type": "string"

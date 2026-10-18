@@ -224,7 +224,7 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
+        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn: an idle target reads it at its next turn. Use this to share notes with sibling or cousin agents, which cannot start turns in each other."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -257,7 +257,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "followup_task".to_string(),
-        description: "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
+        description: "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling, cousin, or ancestor. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -681,7 +681,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Parent history to inherit. Defaults to `all`; use `none` to start without parent history. Only `all` and `none` are supported.".to_string(),
+                "Parent history to inherit. Defaults to `none`: the new agent starts without parent history, so put the context it needs in `message`. Use `all` to copy your full history. Only `all` and `none` are supported.".to_string(),
             )),
         ),
         (
@@ -825,7 +825,7 @@ The spawned agent will have the same tools as you and the ability to spawn its o
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
 
-Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context.{child_report_guidance}"#
+Note that `fork_turns="none"` (the default) will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context.{child_report_guidance}"#
         )
     };
 

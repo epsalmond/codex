@@ -145,6 +145,14 @@ impl AgentControl for LocalAgentControl {
                             "target agent is missing an agent_path".to_string(),
                         )
                     })?;
+                    if mode == MessageDeliveryMode::TriggerTurn
+                        && !resume_config.multi_agent_v2.sibling_wake
+                        && !author.is_ancestor_of(&receiver_path)
+                    {
+                        return Err(CodexErr::UnsupportedOperation(
+                            non_ancestor_followup_message(&receiver_path),
+                        ));
+                    }
                     // Cold-restored children still reload lazily on any message. Only
                     // locally evicted recipients can retain mail without reloading.
                     // Loaded recipients go straight to delivery, which rejects sends
@@ -336,4 +344,12 @@ impl AgentControl for LocalAgentControl {
             LocalAgentControl::mark_budget_reminder_delivered(self, agent, window, reminder);
         })
     }
+}
+
+/// Model-visible rejection for a `followup_task` from an agent that is not the target's ancestor.
+pub(crate) fn non_ancestor_followup_message(target: &AgentPath) -> String {
+    format!(
+        "Only an ancestor (parent, grandparent, or root) can start a turn in `{target}`. Use \
+         send_message to queue a note it will see at its next turn."
+    )
 }

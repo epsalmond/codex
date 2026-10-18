@@ -274,6 +274,28 @@ impl InputQueue {
                 .is_some_and(|(_, _, updates)| *updates.borrow())
     }
 
+    /// Returns whether ready mail can wake an outstanding durable sleep.
+    ///
+    /// Unless `sibling_wake` is set, only mail between agents in one lineage (an ancestor or a
+    /// descendant of the recipient) wakes the sleeper. Sibling and cousin mail stays queued for
+    /// the recipient's next turn.
+    pub(crate) async fn has_durable_sleep_wake_mailbox_items(&self, sibling_wake: bool) -> bool {
+        let paused = self.wakeups_paused();
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        self.read_mailbox(&mut pending);
+        pending.iter().any(|mail| {
+            let communication = &mail.communication;
+            !(paused && communication.trigger_turn)
+                && (sibling_wake
+                    || communication
+                        .author
+                        .is_ancestor_of(&communication.recipient)
+                    || communication
+                        .recipient
+                        .is_ancestor_of(&communication.author))
+        })
+    }
+
     /// Returns whether pending mail should start a turn. Paused wakeups hold it.
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
         !self.wakeups_paused() && self.trigger_turn_mailbox_count().await > 0
@@ -1036,6 +1058,41 @@ mod tests {
             .enqueue_mailbox_communication(trigger_mail, Default::default())
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    /// Durable sleep wakes on mail from the recipient's lineage only, unless `sibling_wake` is set.
+    #[tokio::test]
+    async fn durable_sleep_wakes_only_on_lineage_mail() {
+        let path = |value: &str| AgentPath::try_from(value).expect("agent path");
+        let lead = path("/root/lead");
+        for (author, sibling_wake, expected) in [
+            (path("/root/peer"), false, false),
+            (path("/root/peer/helper"), false, false),
+            (path("/root/peer"), true, true),
+            (AgentPath::root(), false, true),
+            (path("/root/lead/worker"), false, true),
+        ] {
+            let input_queue = InputQueue::new();
+            input_queue
+                .enqueue_mailbox_communication(
+                    make_mail(
+                        author.clone(),
+                        lead.clone(),
+                        "note",
+                        /*trigger_turn*/ false,
+                    ),
+                    Default::default(),
+                )
+                .await;
+            assert_eq!(
+                input_queue
+                    .has_durable_sleep_wake_mailbox_items(sibling_wake)
+                    .await,
+                expected,
+                "author={author} sibling_wake={sibling_wake}"
+            );
+            assert!(input_queue.has_pending_mailbox_items().await);
+        }
     }
 
     /// In wake mode, unconsumed child mail survives a paused or replaced turn, in order and exactly

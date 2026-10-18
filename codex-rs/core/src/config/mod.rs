@@ -1490,6 +1490,8 @@ pub struct MultiAgentV2Config {
     pub exec_root_wakes_on_report: bool,
     pub disable_native_tools: bool,
     pub disable_direct_message: bool,
+    /// Lets non-ancestor agents start turns in each other. See `sibling_wake` in the TOML config.
+    pub sibling_wake: bool,
     pub message_board_in_memory: bool,
     pub message_board_remote: Option<codex_features::RemoteMessageBoardConfigToml>,
     pub non_code_mode_only: bool,
@@ -1533,6 +1535,7 @@ impl MultiAgentV2Config {
             exec_root_wakes_on_report: true,
             disable_native_tools: false,
             disable_direct_message: false,
+            sibling_wake: false,
             message_board_in_memory: false,
             message_board_remote: None,
             non_code_mode_only: true,
@@ -2992,6 +2995,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let disable_direct_message = base
         .and_then(|config| config.disable_direct_message)
         .unwrap_or(default.disable_direct_message);
+    let sibling_wake = base
+        .and_then(|config| config.sibling_wake)
+        .unwrap_or(default.sibling_wake);
     let message_board_in_memory = base
         .and_then(|config| config.message_board_in_memory)
         .unwrap_or(default.message_board_in_memory);
@@ -3032,6 +3038,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         exec_root_wakes_on_report,
         disable_native_tools,
         disable_direct_message,
+        sibling_wake,
         message_board_in_memory,
         message_board_remote: base.and_then(|config| config.message_board_remote.clone()),
         non_code_mode_only,

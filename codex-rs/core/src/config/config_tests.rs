@@ -12661,6 +12661,18 @@ subagent_developer_instructions = "  \t  "
 }
 
 #[test]
+fn multi_agent_v2_sibling_wake_defaults_off_and_can_be_enabled() {
+    assert!(!resolve_multi_agent_v2_config(&ConfigToml::default()).sibling_wake);
+    let config_toml: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+sibling_wake = true
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    assert!(resolve_multi_agent_v2_config(&config_toml).sibling_wake);
+}
+
+#[test]
 fn multi_agent_v2_exec_root_wake_follows_agent_polling() {
     let config_toml: ConfigToml = toml::from_str(
         r#"[features.multi_agent_v2]
