@@ -231,6 +231,7 @@ use crate::context_manager::HistoryReplacement;
 use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
+use codex_config::config_toml::AgentLifetime;
 use codex_config::types::McpServerConfig;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
@@ -295,6 +296,7 @@ pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
 mod turn_suspension;
+pub(crate) mod typed_reports;
 mod wake_assignments;
 mod wake_reports;
 mod wakeups;
@@ -2773,7 +2775,16 @@ impl Session {
             return;
         }
 
-        self.services
+        let typed_reports = typed_reports::typed_report_agent_path(turn_context).is_some();
+        let completed = matches!(status, AgentStatus::Completed(_));
+        let blocked = typed_reports
+            && completed
+            && turn_context
+                .extension_data
+                .get::<typed_reports::PendingTerminalReport>()
+                .is_some_and(|report| report.kind == typed_reports::TerminalReportKind::Blocked);
+        let delivered = self
+            .services
             .agent_control
             .turn_finished(
                 AgentTurnOutcome {
@@ -2787,10 +2798,45 @@ impl Session {
                         .cloned(),
                     status,
                     error_info,
+                    blocked,
                 },
                 &self.services.rollout_thread_trace,
             )
             .await;
+        // A task agent closes once its final report, explicit or implicit, reached the parent.
+        if delivered
+            && typed_reports
+            && completed
+            && !blocked
+            && self.agent_lifetime(turn_context) == AgentLifetime::Task
+        {
+            turn_context
+                .extension_data
+                .insert(typed_reports::CloseAfterFinalReport);
+        }
+    }
+
+    /// Lifetime recorded at spawn, else the role's lifetime (agents restored from disk), else
+    /// `task`.
+    fn agent_lifetime(&self, turn_context: &TurnContext) -> AgentLifetime {
+        self.services
+            .local_agent_runtime
+            .agent_lifetime(self.thread_id)
+            .or_else(|| {
+                let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) =
+                    &turn_context.session_source
+                else {
+                    return None;
+                };
+                crate::agent::role::resolve_role_config(
+                    &turn_context.config,
+                    agent_role
+                        .as_deref()
+                        .unwrap_or(crate::agent::role::DEFAULT_ROLE_NAME),
+                )
+                .and_then(|role| role.lifetime)
+            })
+            .unwrap_or_default()
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
@@ -4282,6 +4328,7 @@ impl Session {
         model_info: &ModelInfo,
         communication: InterAgentCommunication,
     ) {
+        self.grant_answer_credit(turn_context, &communication);
         let response_item = communication.to_model_input_item();
         let (items, _) = self
             .prepare_conversation_items_for_history(

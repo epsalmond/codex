@@ -10,6 +10,7 @@ use super::coordinator::InterruptedChild;
 use super::coordinator::TerminalReportPublication;
 use crate::agent::api::AgentTurnOutcome;
 use crate::session_prefix::format_guardian_interruption_message;
+use crate::session_prefix::format_inter_agent_blocked_message;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_inter_agent_interruption_message;
 use codex_protocol::AgentPath;
@@ -123,14 +124,14 @@ impl LocalAgentControl {
         &self,
         outcome: AgentTurnOutcome,
         trace: &ThreadTraceContext,
-    ) {
+    ) -> bool {
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             agent_path: Some(child_agent_path),
             ..
         }) = &outcome.source
         else {
-            return;
+            return false;
         };
         let parent_thread_id = *parent_thread_id;
         let status = outcome.status;
@@ -139,7 +140,7 @@ impl LocalAgentControl {
             .rsplit_once('/')
             .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
         else {
-            return;
+            return false;
         };
 
         if matches!(status, AgentStatus::Completed(_))
@@ -192,6 +193,13 @@ impl LocalAgentControl {
                     error,
                 ))
             }
+            (AgentStatus::Completed(message), _) if outcome.blocked => {
+                Some(format_inter_agent_blocked_message(
+                    parent_agent_path.clone(),
+                    child_agent_path.clone(),
+                    message.as_deref().unwrap_or_default(),
+                ))
+            }
             _ => format_inter_agent_completion_message(
                 parent_agent_path.clone(),
                 child_agent_path.clone(),
@@ -199,7 +207,7 @@ impl LocalAgentControl {
             ),
         };
         let Some(message) = message else {
-            return;
+            return false;
         };
         if self.runtime.wake_mode_enabled() {
             let Some(assignment) = self
@@ -210,7 +218,7 @@ impl LocalAgentControl {
                     "terminal turn {} has no current wake assignment",
                     outcome.turn_id
                 );
-                return;
+                return false;
             };
             let trace_message = trace.is_enabled().then(|| message.clone());
             let trigger_turn =
@@ -239,7 +247,7 @@ impl LocalAgentControl {
                         "failed to publish terminal result for agent {} turn {}",
                         outcome.thread_id, outcome.turn_id
                     );
-                    return;
+                    return false;
                 }
             }
             if let Some(message) = trace_message {
@@ -253,7 +261,7 @@ impl LocalAgentControl {
                     },
                 );
             }
-            return;
+            return true;
         }
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
@@ -296,7 +304,7 @@ impl LocalAgentControl {
                     }),
                 }).await;
             }
-            return;
+            return false;
         }
         if let Some(message) = trace_message {
             trace.record_agent_result_interaction(
@@ -309,5 +317,6 @@ impl LocalAgentControl {
                 },
             );
         }
+        true
     }
 }

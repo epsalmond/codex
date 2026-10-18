@@ -1091,6 +1091,8 @@ impl Session {
         if let Some(cells) = failed_cells {
             self.services.code_mode_service.interrupt_cells(cells).await;
         }
+        // Questions asked during this turn were covered by its report.
+        self.clear_answer_credits();
         let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -1334,10 +1336,30 @@ impl Session {
         if cleared_active_turn {
             if stopped {
                 self.maybe_start_turn_after_stop().await;
+            } else if turn_context
+                .extension_data
+                .get::<crate::session::typed_reports::CloseAfterFinalReport>()
+                .is_some()
+                && self.input_queue.trigger_turn_mailbox_count().await == 0
+            {
+                // A follow-up queued before the final report keeps the agent for one more turn.
+                self.close_after_final_report();
             } else {
                 self.maybe_start_turn_for_pending_work().await;
             }
         }
+    }
+
+    /// Closes this task agent after its final report reached the parent. Closing waits for this
+    /// session to stop, so it runs detached from the finishing task.
+    fn close_after_final_report(&self) {
+        let control = Arc::clone(&self.services.agent_control);
+        let thread_id = self.thread_id;
+        tokio::spawn(async move {
+            if let Err(err) = control.close_v2_agent(thread_id).await {
+                warn!("failed to close task agent {thread_id} after its final report: {err}");
+            }
+        });
     }
 
     async fn take_active_turn(&self, reason: &TurnAbortReason) -> Option<ActiveTurn> {

@@ -406,6 +406,14 @@ impl LocalAgentRuntime {
         self.root_waits_for_children.store(wait, Ordering::Release);
     }
 
+    /// Returns the lifetime recorded when `thread_id` was spawned in this process.
+    pub(crate) fn agent_lifetime(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<codex_config::config_toml::AgentLifetime> {
+        self.registry.agent_lifetime(thread_id)
+    }
+
     pub(crate) fn root_waits_for_children(&self) -> bool {
         self.root_waits_for_children.load(Ordering::Acquire)
     }

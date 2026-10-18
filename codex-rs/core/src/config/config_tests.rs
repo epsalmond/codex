@@ -8710,6 +8710,7 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
                     description: Some("Research role".to_string()),
                     config_file: Some(missing_path.abs()),
                     nickname_candidates: None,
+                    lifetime: None,
                 },
             )]),
         }),
@@ -9728,6 +9729,7 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
                         "  Hypatia  ".to_string(),
                         "Noether".to_string(),
                     ]),
+                    lifetime: None,
                 },
             )]),
         }),
@@ -9771,6 +9773,7 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
                     description: Some("Research role".to_string()),
                     config_file: None,
                     nickname_candidates: Some(Vec::new()),
+                    lifetime: None,
                 },
             )]),
         }),
@@ -9811,6 +9814,7 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
                     description: Some("Research role".to_string()),
                     config_file: None,
                     nickname_candidates: Some(vec!["Hypatia".to_string(), " Hypatia ".to_string()]),
+                    lifetime: None,
                 },
             )]),
         }),
@@ -9851,6 +9855,7 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
                     description: Some("Research role".to_string()),
                     config_file: None,
                     nickname_candidates: Some(vec!["Agent <One>".to_string()]),
+                    lifetime: None,
                 },
             )]),
         }),
@@ -12493,7 +12498,7 @@ max_concurrent_threads_per_session = 17
             (
                 root.contains("wait_agent"),
                 subagent.contains("When calling `wait_agent`, use long timeouts"),
-                subagent.contains("If you are blocked, end your turn with your question"),
+                subagent.contains("Use `report(kind=\"blocked\")` when something unexpected"),
             ),
             (agent_polling == AgentPolling::Enabled, true, true,)
         );
@@ -12689,6 +12694,51 @@ sibling_wake = true
             !sibling_wake
         );
         assert!(subagent.contains("Child agents can also spawn their own sub-agents."));
+    }
+}
+
+#[test]
+fn multi_agent_v2_typed_reports_default_on_with_documented_opt_outs() {
+    let defaults = resolve_multi_agent_v2_config(&ConfigToml::default());
+    assert!(defaults.typed_reports);
+    assert_eq!(defaults.wrap_up_after_model_calls, 150);
+    let config_toml: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+typed_reports = false
+wrap_up_after_model_calls = 0
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    let config = resolve_multi_agent_v2_config(&config_toml);
+    assert!(!config.typed_reports);
+    assert_eq!(config.wrap_up_after_model_calls, 0);
+
+    // The opt-out restores the earlier subagent and orchestrator guidance.
+    for typed_reports in [true, false] {
+        let mut config = defaults.clone();
+        config.typed_reports = typed_reports;
+        let hints = resolve_usage_hints(
+            &config,
+            ResolvedModelMessages::bundled().multi_agent(),
+            /*omit_update_plan_instructions*/ false,
+            /*subagent_context_token_cap*/ None,
+        );
+        let [root, subagent] =
+            [hints.root, hints.subagent].map(|hint| hint.expect("bundled usage hint").body());
+        assert_eq!(
+            subagent.contains("If you are blocked, end your turn with your question"),
+            !typed_reports
+        );
+        assert_eq!(
+            subagent.contains("never send progress reports"),
+            typed_reports
+        );
+        for hint in [&root, &subagent] {
+            assert_eq!(
+                hint.contains("spawn a fresh agent with a self-contained brief"),
+                typed_reports
+            );
+        }
     }
 }
 

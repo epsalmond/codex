@@ -484,6 +484,8 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
     let root = test_codex()
         .with_config(move |config| {
             configure(config);
+            // Reuses finished agents: the typed-reports opt-out path.
+            config.multi_agent_v2.typed_reports = false;
             config.model_provider.base_url = Some(base_url);
             config
                 .features

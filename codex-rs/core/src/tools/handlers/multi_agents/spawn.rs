@@ -134,6 +134,7 @@ async fn handle_spawn_agent(
                 environments: Some(step_context.environments.clone()),
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 cyber_access_program: turn.cyber_access_program,
+                lifetime: None,
             },
         })
         .await

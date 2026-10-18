@@ -14,12 +14,14 @@ use crate::agent::api::DeliveryReceipt;
 use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
 use crate::agent::types::AgentExecutionGuard;
+use crate::agent::types::AgentMessage;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::GuardianRootSnapshot;
 use crate::codex_thread::ThreadConfigSnapshot;
+use crate::config::Config;
 use crate::rollout_budget::RolloutBudgetReminder;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
@@ -29,6 +31,7 @@ use codex_protocol::error::Result;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_rollout_trace::ThreadTraceContext;
 use futures::future::BoxFuture;
 use std::collections::HashSet;
@@ -134,6 +137,18 @@ impl AgentControl for LocalAgentControl {
                         .ensure_agent_known(caller)?
                         .agent_path
                         .unwrap_or_else(AgentPath::root);
+                    // Host-provided tools replace `report` when native tools are hidden.
+                    if resume_config.multi_agent_v2.typed_reports
+                        && !resume_config.multi_agent_v2.disable_native_tools
+                        && receiver
+                            .agent_path
+                            .as_ref()
+                            .is_some_and(|receiver| receiver.is_ancestor_of(&author))
+                    {
+                        return Err(CodexErr::UnsupportedOperation(
+                            ANCESTOR_MESSAGE_REJECTION.to_string(),
+                        ));
+                    }
                     if mode == MessageDeliveryMode::TriggerTurn
                         && receiver.agent_path.as_ref().is_some_and(AgentPath::is_root)
                     {
@@ -217,6 +232,24 @@ impl AgentControl for LocalAgentControl {
 
     fn close_v2_agent(&self, agent: ThreadId) -> BoxFuture<'_, Result<()>> {
         Box::pin(LocalAgentControl::close_v2_agent(self, agent))
+    }
+
+    fn send_report_answer(
+        &self,
+        caller: ThreadId,
+        ancestor: ThreadId,
+        resume_config: Config,
+        message: AgentMessage,
+        start_options: TurnStartOptions,
+    ) -> BoxFuture<'_, Result<DeliveryReceipt>> {
+        Box::pin(LocalAgentControl::send_report_answer(
+            self,
+            caller,
+            ancestor,
+            resume_config,
+            message,
+            start_options,
+        ))
     }
 
     fn interrupt(
@@ -313,7 +346,7 @@ impl AgentControl for LocalAgentControl {
         &'a self,
         outcome: AgentTurnOutcome,
         trace: &'a ThreadTraceContext,
-    ) -> BoxFuture<'a, ()> {
+    ) -> BoxFuture<'a, bool> {
         Box::pin(self.notify_parent_of_terminal_turn(outcome, trace))
     }
 
@@ -350,6 +383,9 @@ impl AgentControl for LocalAgentControl {
         })
     }
 }
+
+/// Model-visible rejection for a subagent's `send_message` or `followup_task` to an ancestor.
+pub(crate) const ANCESTOR_MESSAGE_REJECTION: &str = "Subagents cannot send free-form messages to their parent or other ancestors. Use report(kind=\"blocked\") when you need instructions to continue, report(kind=\"answer\") to reply to a question an ancestor sent you, or report(kind=\"final\") when your task is done.";
 
 /// Model-visible rejection for a `followup_task` from an agent that is not the target's ancestor.
 pub(crate) fn non_ancestor_followup_message(target: &AgentPath) -> String {

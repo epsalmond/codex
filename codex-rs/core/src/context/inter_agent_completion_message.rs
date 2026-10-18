@@ -5,6 +5,7 @@ use codex_protocol::models::ContentItemKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InterAgentCompletionMessage {
+    message_type: &'static str,
     task_name: AgentPath,
     sender: AgentPath,
     payload: String,
@@ -13,9 +14,22 @@ pub(crate) struct InterAgentCompletionMessage {
 impl InterAgentCompletionMessage {
     pub(crate) fn new(task_name: AgentPath, sender: AgentPath, payload: impl Into<String>) -> Self {
         Self {
+            message_type: "FINAL_ANSWER",
             task_name,
             sender,
             payload: payload.into(),
+        }
+    }
+
+    /// A subagent's `report(blocked)`: it stopped and waits for instructions.
+    pub(crate) fn blocked(
+        task_name: AgentPath,
+        sender: AgentPath,
+        payload: impl Into<String>,
+    ) -> Self {
+        Self {
+            message_type: "BLOCKED",
+            ..Self::new(task_name, sender, payload)
         }
     }
 }
@@ -39,8 +53,8 @@ impl ContextualUserFragment for InterAgentCompletionMessage {
 
     fn body(&self) -> String {
         format!(
-            "Message Type: FINAL_ANSWER\nTask name: {}\nSender: {}\nPayload:\n{}",
-            self.task_name, self.sender, self.payload,
+            "Message Type: {}\nTask name: {}\nSender: {}\nPayload:\n{}",
+            self.message_type, self.task_name, self.sender, self.payload,
         )
     }
 }

@@ -265,6 +265,7 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 /// `wait_agent` default for `codex exec` and subagent sessions, which have no user watching for
 /// interim status. The wait still returns as soon as an agent reports.
 pub(crate) const DEFAULT_MULTI_AGENT_V2_NONINTERACTIVE_DEFAULT_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const DEFAULT_MULTI_AGENT_V2_WRAP_UP_AFTER_MODEL_CALLS: u32 = 150;
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
 
 pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
@@ -1492,6 +1493,11 @@ pub struct MultiAgentV2Config {
     pub disable_direct_message: bool,
     /// Lets non-ancestor agents start turns in each other. See `sibling_wake` in the TOML config.
     pub sibling_wake: bool,
+    /// Subagents report only through `report`, and task agents close after their final report.
+    /// See `typed_reports` in the TOML config.
+    pub typed_reports: bool,
+    /// Subagent model calls per turn before the wrap-up reminder; 0 disables it.
+    pub wrap_up_after_model_calls: u32,
     pub message_board_in_memory: bool,
     pub message_board_remote: Option<codex_features::RemoteMessageBoardConfigToml>,
     pub non_code_mode_only: bool,
@@ -1536,6 +1542,8 @@ impl MultiAgentV2Config {
             disable_native_tools: false,
             disable_direct_message: false,
             sibling_wake: false,
+            typed_reports: true,
+            wrap_up_after_model_calls: DEFAULT_MULTI_AGENT_V2_WRAP_UP_AFTER_MODEL_CALLS,
             message_board_in_memory: false,
             message_board_remote: None,
             non_code_mode_only: true,
@@ -2998,6 +3006,12 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let sibling_wake = base
         .and_then(|config| config.sibling_wake)
         .unwrap_or(default.sibling_wake);
+    let typed_reports = base
+        .and_then(|config| config.typed_reports)
+        .unwrap_or(default.typed_reports);
+    let wrap_up_after_model_calls = base
+        .and_then(|config| config.wrap_up_after_model_calls)
+        .unwrap_or(default.wrap_up_after_model_calls);
     let message_board_in_memory = base
         .and_then(|config| config.message_board_in_memory)
         .unwrap_or(default.message_board_in_memory);
@@ -3039,6 +3053,8 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         disable_native_tools,
         disable_direct_message,
         sibling_wake,
+        typed_reports,
+        wrap_up_after_model_calls,
         message_board_in_memory,
         message_board_remote: base.and_then(|config| config.message_board_remote.clone()),
         non_code_mode_only,

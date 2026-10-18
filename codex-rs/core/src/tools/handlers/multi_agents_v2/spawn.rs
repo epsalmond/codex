@@ -132,6 +132,12 @@ async fn handle_spawn_agent(
             agent_type: args.agent_type.clone(),
             model: args.model,
             reasoning_effort: args.reasoning_effort,
+            lifetime: turn
+                .config
+                .multi_agent_v2
+                .typed_reports
+                .then_some(args.lifetime)
+                .flatten(),
         },
     )
     .await
@@ -208,6 +214,8 @@ struct SpawnAgentArgs {
     reasoning_effort: Option<ReasoningEffort>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
+    /// `task` (closed after its final report) or `persistent`; see `typed_reports`.
+    lifetime: Option<codex_config::config_toml::AgentLifetime>,
 }
 
 impl SpawnAgentArgs {

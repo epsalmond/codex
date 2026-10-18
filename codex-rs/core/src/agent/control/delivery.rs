@@ -40,4 +40,32 @@ impl AgentMessage {
             }
         }
     }
+
+    /// Builds a subagent's `report(answer)` reply to `recipient`, one of its ancestors.
+    pub(crate) fn into_answer_communication(
+        self,
+        author: AgentPath,
+        recipient: AgentPath,
+        trigger_turn: bool,
+    ) -> InterAgentCommunication {
+        match self {
+            Self::Encrypted(message) => InterAgentCommunication::new_encrypted(
+                author,
+                recipient,
+                Vec::new(),
+                message,
+                trigger_turn,
+            ),
+            Self::Plaintext(message) => {
+                let content = InterAgentMessage::new(
+                    InterAgentMessageType::Answer,
+                    recipient.clone(),
+                    author.clone(),
+                    message,
+                )
+                .render();
+                InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
+            }
+        }
+    }
 }

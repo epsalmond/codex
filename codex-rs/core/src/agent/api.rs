@@ -105,6 +105,25 @@ pub trait AgentControl: Send + Sync {
         })
     }
 
+    /// Deliver a subagent's `report(answer)` to `ancestor`, the ancestor whose question it
+    /// answers. A running ancestor reads it at its next boundary; an idle non-root ancestor starts
+    /// a turn, and the root follows its child-report wake mode.
+    fn send_report_answer(
+        &self,
+        caller: ThreadId,
+        ancestor: ThreadId,
+        resume_config: Config,
+        message: AgentMessage,
+        start_options: TurnStartOptions,
+    ) -> BoxFuture<'_, Result<DeliveryReceipt>> {
+        let _ = (caller, ancestor, resume_config, message, start_options);
+        Box::pin(async {
+            Err(CodexErr::UnsupportedOperation(
+                "this agent backend cannot deliver report answers".to_string(),
+            ))
+        })
+    }
+
     /// Stop current work and return the pre-interrupt snapshot. V2 rejects root/self
     /// targets and tolerates known unloaded agents; other modes retain direct-ID interruption.
     fn interrupt(
@@ -152,11 +171,12 @@ pub trait AgentControl: Send + Sync {
     /// Report the terminal result to the parent and completion activity to the task
     /// initiator. Local delivery remains best effort and uses the reporting runtime's
     /// diagnostic trace; it is not deduplicated.
+    /// Returns whether the report was published or delivered to the parent.
     fn turn_finished<'a>(
         &'a self,
         outcome: AgentTurnOutcome,
         trace: &'a ThreadTraceContext,
-    ) -> BoxFuture<'a, ()>;
+    ) -> BoxFuture<'a, bool>;
 
     /// Read the latest shared service tier for use at normal runtime config update points.
     fn service_tier(&self) -> Option<String>;
@@ -264,6 +284,8 @@ pub struct AgentTurnOutcome {
     pub status: AgentStatus,
     /// Typed reason used to choose guidance in the parent notification.
     pub error_info: Option<CodexErrorInfo>,
+    /// The completed turn ended with `report(blocked)`: it needs instructions, not a result.
+    pub blocked: bool,
 }
 
 /// Settings shared by the tree. A service tier of `None` restores the default tier.

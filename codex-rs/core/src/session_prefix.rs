@@ -48,6 +48,24 @@ pub(crate) fn format_inter_agent_completion_message(
     }
 }
 
+const BLOCKED_NEXT_ACTION: &str =
+    "This agent stopped and is waiting for instructions. Reply with followup_task to resume it.";
+
+/// Renders a subagent's `report(blocked)` for its parent.
+pub(crate) fn format_inter_agent_blocked_message(
+    task_name: AgentPath,
+    sender: AgentPath,
+    message: &str,
+) -> String {
+    let message = truncate_text(message, TruncationPolicy::Tokens(ERROR_MAX_TOKENS));
+    InterAgentCompletionMessage::blocked(
+        task_name,
+        sender,
+        format!("{message}\n\n{BLOCKED_NEXT_ACTION}"),
+    )
+    .render()
+}
+
 /// Explains why a child that was interrupted for its waiting parent has no result.
 pub(crate) const UNSTARTED_CHILD_NOTE: &str = "Its turn did not start, so it did no work.";
 pub(crate) const CLOSED_CHILD_NOTE: &str = "It was closed before it reported a result.";

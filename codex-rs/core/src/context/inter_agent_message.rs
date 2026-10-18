@@ -7,6 +7,8 @@ use codex_protocol::models::ContentItemKind;
 pub(crate) enum InterAgentMessageType {
     Message,
     NewTask,
+    /// A subagent's `report(answer)` reply to an ancestor's question.
+    Answer,
 }
 
 impl InterAgentMessageType {
@@ -14,6 +16,7 @@ impl InterAgentMessageType {
         match self {
             Self::Message => "MESSAGE",
             Self::NewTask => "NEW_TASK",
+            Self::Answer => "ANSWER",
         }
     }
 }

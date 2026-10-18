@@ -626,6 +626,7 @@ pub(crate) fn is_real_user_or_agent_message(item: &ResponseItem) -> bool {
             content.first(),
             Some(AgentMessageInputContent::InputText { text })
                 if text.starts_with("Message Type: FINAL_ANSWER\n")
+                    || text.starts_with("Message Type: BLOCKED\n")
         );
     }
     matches!(item, ResponseItem::Message { role, .. } if role == "user")

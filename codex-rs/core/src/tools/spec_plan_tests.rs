@@ -2924,6 +2924,86 @@ async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
     }
 }
 
+/// Typed reports give subagents `report` and `spawn_agent` its `lifetime`; the opt-out restores the
+/// earlier tools and descriptions. The root never gets `report`.
+#[tokio::test]
+async fn multi_agent_v2_typed_reports_tools_follow_config() {
+    for (typed_reports, subagent) in [(true, true), (false, true), (true, false)] {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.typed_reports = typed_reports;
+            });
+            if subagent {
+                turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: ThreadId::new(),
+                    depth: 1,
+                    agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+                    agent_nickname: None,
+                    agent_role: None,
+                });
+                turn.wake_mode_active = true;
+            }
+        })
+        .await;
+        let case = format!("typed_reports={typed_reports} subagent={subagent}");
+        let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+            panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
+        };
+        let tool = |tool_name: &str| {
+            namespace.tools.iter().find_map(|tool| match tool {
+                ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name => Some(tool),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            tool("report").is_some(),
+            typed_reports && subagent,
+            "{case}"
+        );
+        let spawn_agent = tool("spawn_agent").expect("spawn_agent");
+        assert_eq!(
+            spawn_agent
+                .parameters
+                .properties
+                .as_ref()
+                .is_some_and(|properties| properties.contains_key("lifetime")),
+            typed_reports,
+            "{case}"
+        );
+        assert_eq!(
+            spawn_agent
+                .description
+                .contains("It reports to you only through its `report` tool"),
+            typed_reports,
+            "{case}"
+        );
+        assert_eq!(
+            spawn_agent
+                .description
+                .contains("send you and other running agents messages"),
+            !typed_reports,
+            "{case}"
+        );
+        for tool_name in ["send_message", "followup_task"] {
+            let description = &tool(tool_name).expect(tool_name).description;
+            assert_eq!(
+                description.contains("report"),
+                typed_reports,
+                "{tool_name} {case}: {description}"
+            );
+        }
+        assert_eq!(
+            tool("followup_task")
+                .expect("followup_task")
+                .description
+                .contains("use send_message to reach a sibling, cousin, or ancestor"),
+            !typed_reports,
+            "{case}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn multi_agent_v2_can_disable_wait_agent() {
     let plan = probe(|turn| {

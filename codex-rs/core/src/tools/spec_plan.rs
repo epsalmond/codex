@@ -42,13 +42,14 @@ use crate::tools::handlers::multi_agents_common::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
-use crate::tools::handlers::multi_agents_spec::SIBLING_WAKE_FOLLOWUP_TASK_DESCRIPTION;
-use crate::tools::handlers::multi_agents_spec::SIBLING_WAKE_SEND_MESSAGE_DESCRIPTION;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::multi_agents_spec::followup_task_description;
+use crate::tools::handlers::multi_agents_spec::send_message_description;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
+use crate::tools::handlers::multi_agents_v2::ReportHandler as ReportHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
@@ -869,8 +870,19 @@ fn agent_type_description(
 ) -> String {
     let agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&turn_context.config.agent_roles);
-    if agent_type_description.is_empty() {
+    let agent_type_description = if agent_type_description.is_empty() {
         default_agent_type_description.to_string()
+    } else {
+        agent_type_description
+    };
+    // Finished task agents close under typed reports, so the bundled reuse advice no longer fits.
+    if turn_context.multi_agent_version == MultiAgentVersion::V2
+        && turn_context.config.multi_agent_v2.typed_reports
+    {
+        agent_type_description.replace(
+            crate::agent::role::EXPLORER_REUSE_RULE,
+            crate::agent::role::EXPLORER_TYPED_REPORTS_RULE,
+        )
     } else {
         agent_type_description
     }
@@ -1518,6 +1530,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             let hide_spawn_agent_metadata =
                 turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
             let child_report_mode = child_report_mode(turn_context);
+            let typed_reports = turn_context.config.multi_agent_v2.typed_reports;
             registry.register_trusted_with_exposure(
                 multi_agent_v2_handler(
                     SpawnAgentHandlerV2::new(
@@ -1541,6 +1554,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                                 .usage_hint_text
                                 .clone(),
                             child_report_mode,
+                            typed_reports,
                         },
                         spawn_agent_description.map(str::to_owned),
                     ),
@@ -1553,15 +1567,21 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 exposure,
             );
             if !turn_context.config.multi_agent_v2.disable_direct_message {
-                // The bundled descriptions state the ancestor-only wake rule `sibling_wake` lifts.
+                // The bundled descriptions state the ancestor-only wake rule `sibling_wake` lifts
+                // and the typed-report rules `typed_reports = false` lifts.
                 let sibling_wake = turn_context.config.multi_agent_v2.sibling_wake;
+                let bundled_descriptions = sibling_wake || !typed_reports;
+                let send_message_description = bundled_descriptions
+                    .then(|| send_message_description(sibling_wake, typed_reports));
+                let followup_task_description = bundled_descriptions
+                    .then(|| followup_task_description(sibling_wake, typed_reports));
                 registry.register_trusted_with_exposure(
                     multi_agent_v2_handler(
                         SendMessageHandlerV2,
                         tool_namespace,
                         model_messages
                             .multi_agent_tool_description_override("send_message")
-                            .or(sibling_wake.then_some(SIBLING_WAKE_SEND_MESSAGE_DESCRIPTION)),
+                            .or(send_message_description.as_deref()),
                         model_messages.multi_agent_tool_parameters_override("send_message"),
                     ),
                     exposure,
@@ -1572,8 +1592,19 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                         tool_namespace,
                         model_messages
                             .multi_agent_tool_description_override("followup_task")
-                            .or(sibling_wake.then_some(SIBLING_WAKE_FOLLOWUP_TASK_DESCRIPTION)),
+                            .or(followup_task_description.as_deref()),
                         model_messages.multi_agent_tool_parameters_override("followup_task"),
+                    ),
+                    exposure,
+                );
+            }
+            if crate::session::typed_reports::typed_report_agent_path(turn_context).is_some() {
+                registry.register_trusted_with_exposure(
+                    multi_agent_v2_handler(
+                        ReportHandlerV2,
+                        tool_namespace,
+                        model_messages.multi_agent_tool_description_override("report"),
+                        model_messages.multi_agent_tool_parameters_override("report"),
                     ),
                     exposure,
                 );
@@ -1629,6 +1660,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     expose_spawn_agent_model_overrides: true,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
                     child_report_mode: ChildReportMode::WaitAgent,
+                    typed_reports: false,
                 }),
                 exposure,
             );

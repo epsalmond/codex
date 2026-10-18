@@ -355,6 +355,17 @@ pub struct MultiAgentV2ConfigToml {
     /// descendant only queues for the recipient's next turn. Set true to restore sibling wakes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sibling_wake: Option<bool>,
+    /// Typed subagent reports. Defaults to true: each subagent reports to its ancestors only
+    /// through `report` (`blocked`, `answer`, or `final`), cannot `send_message` or
+    /// `followup_task` its ancestors, and an agent spawned with `lifetime = "task"` (the default)
+    /// is closed after its final report. Set false to restore free-form reports and keep
+    /// finished agents resumable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_reports: Option<bool>,
+    /// Model calls in one subagent turn after which the subagent is told to finish and report.
+    /// Defaults to 150; 0 disables the reminder. Applies only with `typed_reports`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wrap_up_after_model_calls: Option<u32>,
     /// Keep the message board in memory for a training session, including ephemeral sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_board_in_memory: Option<bool>,

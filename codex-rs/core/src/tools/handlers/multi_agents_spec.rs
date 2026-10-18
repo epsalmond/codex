@@ -35,6 +35,8 @@ pub struct SpawnAgentToolOptions {
     pub model_catalog_in_context: bool,
     pub usage_hint_text: Option<String>,
     pub child_report_mode: ChildReportMode,
+    /// Subagents report through `report`; adds `lifetime` and the matching guidance.
+    pub typed_reports: bool,
 }
 
 impl Default for SpawnAgentToolOptions {
@@ -49,6 +51,7 @@ impl Default for SpawnAgentToolOptions {
             model_catalog_in_context: false,
             usage_hint_text: None,
             child_report_mode: ChildReportMode::WaitAgent,
+            typed_reports: false,
         }
     }
 }
@@ -140,6 +143,15 @@ pub fn create_spawn_agent_tool_v2(
                 .to_string(),
         )),
     );
+    if options.typed_reports {
+        properties.insert(
+            "lifetime".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("task"), json!("persistent")],
+                Some(SPAWN_AGENT_LIFETIME_DESCRIPTION.to_string()),
+            ),
+        );
+    }
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
@@ -151,6 +163,7 @@ pub fn create_spawn_agent_tool_v2(
                 .then_some(SPAWN_AGENT_MODEL_CATALOG_GUIDANCE),
             inherited_model_guidance,
             options.child_report_mode.spawn_agent_guidance(),
+            options.typed_reports,
             options.usage_hint_text,
             description_override,
         ),
@@ -205,6 +218,79 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
+const SPAWN_AGENT_LIFETIME_DESCRIPTION: &str = "`task` (default unless the agent type sets one): the agent is closed after its final report, and later messages to it fail. `persistent`: the agent stays idle after its final report and resumes on a later followup_task. Use `persistent` only for an agent that must keep its context across several tasks.";
+const SPAWN_AGENT_TYPED_REPORTS_GUIDANCE: &str = "Agents spawned with the default `task` lifetime are closed after their final report. For new work, spawn a fresh agent with a self-contained brief instead of following up with a finished one. A child that reports `BLOCKED` waits for your followup_task with instructions. To ask a running child a question, use send_message; it replies with an `ANSWER` message.";
+
+/// `send_message` text for sibling and descendant messaging under the ancestor-only wake rule.
+const SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn: an idle target reads it at its next turn. Use this to share notes with sibling or cousin agents, which cannot start turns in each other.";
+/// Added to `send_message` and `followup_task` under typed reports.
+const TYPED_REPORTS_MESSAGE_DESCRIPTION_SUFFIX: &str = " A subagent cannot send its parent or other ancestors free-form messages; it uses `report` instead. To ask a running descendant a question, use send_message; it replies with report(kind=\"answer\").";
+/// `followup_task` text under the ancestor-only wake rule.
+const FOLLOWUP_TASK_DESCRIPTION: &str = "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling, cousin, or ancestor. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes.";
+/// `followup_task` text under the ancestor-only wake rule with typed reports.
+const TYPED_REPORTS_FOLLOWUP_TASK_DESCRIPTION: &str = "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling or cousin. Use it to resume a child that reported BLOCKED or a `persistent` child; a `task` child is closed after its final report, so spawn a fresh agent for new work. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes.";
+
+/// `send_message` description for the configured wake and report rules.
+pub(crate) fn send_message_description(sibling_wake: bool, typed_reports: bool) -> String {
+    let base = if sibling_wake {
+        SIBLING_WAKE_SEND_MESSAGE_DESCRIPTION
+    } else {
+        SEND_MESSAGE_DESCRIPTION
+    };
+    if typed_reports {
+        format!("{base}{TYPED_REPORTS_MESSAGE_DESCRIPTION_SUFFIX}")
+    } else {
+        base.to_string()
+    }
+}
+
+/// `followup_task` description for the configured wake and report rules.
+pub(crate) fn followup_task_description(sibling_wake: bool, typed_reports: bool) -> String {
+    match (sibling_wake, typed_reports) {
+        (false, false) => FOLLOWUP_TASK_DESCRIPTION.to_string(),
+        (false, true) => TYPED_REPORTS_FOLLOWUP_TASK_DESCRIPTION.to_string(),
+        (true, false) => SIBLING_WAKE_FOLLOWUP_TASK_DESCRIPTION.to_string(),
+        (true, true) => format!(
+            "{SIBLING_WAKE_FOLLOWUP_TASK_DESCRIPTION}{TYPED_REPORTS_MESSAGE_DESCRIPTION_SUFFIX}"
+        ),
+    }
+}
+
+/// `report` description; the tool exists only for subagents under typed reports.
+const REPORT_DESCRIPTION: &str = "Report to your parent. This is the only way to message your parent or other ancestors. Use it only for these three reasons, and never for progress updates:\n- `blocked`: you hit something unexpected and need instructions to continue. Your turn ends and you wait; your parent replies with a follow-up.\n- `answer`: reply to a question an ancestor sent you while you work. Allowed only when an ancestor message is waiting for an answer; your turn continues.\n- `final`: your task is done. Include everything your parent needs: what you did, results, and anything useful. Your turn ends, and unless you were spawned as `persistent` you are closed.\nEnding your turn without calling report delivers your last message as your final report.";
+
+pub fn create_report_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "kind".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("blocked"), json!("answer"), json!("final")],
+                Some("Why you are reporting: `blocked`, `answer`, or `final`.".to_string()),
+            ),
+        ),
+        (
+            "message".to_string(),
+            JsonSchema::string(Some(
+                "The report: your question or blocker, your answer, or your final result."
+                    .to_string(),
+            ))
+            .with_encrypted(),
+        ),
+    ]);
+    ToolSpec::Function(ResponsesApiTool {
+        name: "report".to_string(),
+        description: REPORT_DESCRIPTION.to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["kind".to_string(), "message".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
 /// `send_message` description when `sibling_wake` lets any agent start a turn in another.
 pub(crate) const SIBLING_WAKE_SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.";
 /// `followup_task` description when `sibling_wake` lets any agent start a turn in another.
@@ -229,8 +315,9 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn: an idle target reads it at its next turn. Use this to share notes with sibling or cousin agents, which cannot start turns in each other."
-            .to_string(),
+        description: send_message_description(
+            /*sibling_wake*/ false, /*typed_reports*/ true,
+        ),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
@@ -262,11 +349,16 @@ pub fn create_followup_task_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "followup_task".to_string(),
-        description: "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling, cousin, or ancestor. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
-            .to_string(),
+        description: followup_task_description(
+            /*sibling_wake*/ false, /*typed_reports*/ true,
+        ),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["target".to_string(), "message".to_string()]),
+            Some(false.into()),
+        ),
         output_schema: None,
     })
 }
@@ -790,20 +882,29 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_agent_tool_description_v2(
     available_models_description: Option<&str>,
     model_catalog_in_context: bool,
     model_catalog_guidance: Option<&str>,
     inherited_model_guidance: Option<&str>,
     child_report_guidance: Option<&str>,
+    typed_reports: bool,
     usage_hint_text: Option<String>,
     description: Option<&str>,
 ) -> String {
     let model_catalog_guidance = model_catalog_guidance.unwrap_or_default();
     let inherited_model_guidance = inherited_model_guidance.unwrap_or_default();
     let child_report_guidance = child_report_guidance
+        .into_iter()
+        .chain(typed_reports.then_some(SPAWN_AGENT_TYPED_REPORTS_GUIDANCE))
         .map(|guidance| format!("\n\n{guidance}"))
-        .unwrap_or_default();
+        .collect::<String>();
+    let child_messages = if typed_reports {
+        "It reports to you only through its `report` tool: a final report when it finishes, a blocked report when it needs instructions, or an answer to a question you sent it."
+    } else {
+        "It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes."
+    };
 
     let (catalog_prefix, catalog_suffix) = if model_catalog_in_context {
         (String::new(), format!("\n{model_catalog_guidance}"))
@@ -827,7 +928,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}{catalog_suffix}
-It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
+{child_messages}
 The new agent's canonical task name will be provided to it along with the message.
 
 Note that `fork_turns="none"` (the default) will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context.{child_report_guidance}"#

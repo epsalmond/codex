@@ -433,6 +433,11 @@ pub(crate) mod spawn_tool_spec {
     }
 }
 
+/// Last rule of the bundled `explorer` description.
+pub(crate) const EXPLORER_REUSE_RULE: &str = "- Reuse existing explorers for related questions.";
+/// Replaces [`EXPLORER_REUSE_RULE`] when typed reports close finished task agents.
+pub(crate) const EXPLORER_TYPED_REPORTS_RULE: &str = "- An explorer is closed after its final report; spawn a fresh explorer with a self-contained question for new work.";
+
 mod built_in {
     use super::*;
 
@@ -446,6 +451,7 @@ mod built_in {
                         description: Some("Default agent.".to_string()),
                         config_file: None,
                         nickname_candidates: None,
+                        lifetime: None,
                     }
                 ),
                 (
@@ -460,6 +466,7 @@ Rules:
 - Reuse existing explorers for related questions."#.to_string()),
                         config_file: Some("explorer.toml".to_string().parse().unwrap_or_default()),
                         nickname_candidates: None,
+                        lifetime: None,
                     }
                 ),
                 (
@@ -475,6 +482,7 @@ Rules:
 - Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of each other's work to avoid conflicts and ensure a cohesive final product."#.to_string()),
                         config_file: None,
                         nickname_candidates: None,
+                        lifetime: None,
                     }
                 ),
                 // Awaiter is temp removed

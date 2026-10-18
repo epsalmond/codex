@@ -498,6 +498,8 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     let mut guardian_budget_compacted = false;
+    // Model calls this turn, for the subagent wrap-up reminder.
+    let mut model_calls: u32 = 0;
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -548,6 +550,12 @@ pub(crate) async fn run_turn(
             sess.as_ref(),
             turn_context.as_ref(),
             &window_id,
+        )
+        .await;
+        super::typed_reports::maybe_record_wrap_up_reminder(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            model_calls,
         )
         .await;
 
@@ -637,6 +645,48 @@ pub(crate) async fn run_turn(
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
+                model_calls = model_calls.saturating_add(1);
+                // `report(blocked|final)` ends the turn after the step that recorded it.
+                if let Some(report) = turn_context
+                    .extension_data
+                    .get::<super::typed_reports::PendingTerminalReport>()
+                {
+                    if model_needs_follow_up {
+                        sess.input_queue
+                            .accept_mailbox_delivery_for_current_turn(
+                                &sess.active_turn,
+                                &turn_context.sub_id,
+                            )
+                            .await;
+                    }
+                    // Stop hooks still observe the turn; a blocking hook withdraws the report.
+                    let stop_outcome = run_turn_stop_hooks(
+                        &sess,
+                        &step_context,
+                        stop_hook_active,
+                        Some(report.message.clone()),
+                    )
+                    .await;
+                    if stop_outcome.should_block
+                        && let Some(hook_prompt_message) =
+                            build_hook_prompt_message(&stop_outcome.continuation_fragments)
+                    {
+                        turn_context
+                            .extension_data
+                            .remove::<super::typed_reports::PendingTerminalReport>();
+                        sess.record_response_item_and_emit_turn_item(
+                            &turn_context,
+                            &step_context.settings.model_info,
+                            hook_prompt_message,
+                        )
+                        .await;
+                        stop_hook_active = true;
+                        can_drain_pending_input = true;
+                        continue;
+                    }
+                    last_agent_message = Some(report.message.clone());
+                    break;
+                }
                 if model_needs_follow_up {
                     sess.input_queue
                         .accept_mailbox_delivery_for_current_turn(

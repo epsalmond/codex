@@ -1120,6 +1120,7 @@ pub struct AgentsToml {
     /// description = "Research-focused role."
     /// config_file = "./agents/researcher.toml"
     /// nickname_candidates = ["Herodotus", "Ibn Battuta"]
+    /// lifetime = "persistent"
     /// ```
     #[serde(default, flatten)]
     pub roles: BTreeMap<String, AgentRoleToml>,
@@ -1138,6 +1139,21 @@ pub struct AgentRoleToml {
 
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
+
+    /// Default MultiAgentV2 lifetime for agents spawned with this role. An explicit
+    /// `spawn_agent` `lifetime` wins; without either, agents use `task`.
+    pub lifetime: Option<AgentLifetime>,
+}
+
+/// How long a spawned MultiAgentV2 agent stays available after it reports.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentLifetime {
+    /// Closed after its final report; later messages tell the sender to spawn a fresh agent.
+    #[default]
+    Task,
+    /// Stays idle after its final report and resumes on a later follow-up.
+    Persistent,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
