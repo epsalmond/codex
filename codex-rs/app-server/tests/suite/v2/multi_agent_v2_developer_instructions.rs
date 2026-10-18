@@ -67,7 +67,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
 ) -> Result<()> {
     let fork_turns = match case {
         "no history" | "explicit configured role" | "implicit configured default" => Some("none"),
-        _ => None,
+        _ => Some("all"),
     };
     let agent_type = match case {
         "configured role without instructions"
@@ -330,6 +330,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
                 &serde_json::to_string(&json!({
                     "message": CHILD_PROMPT,
                     "task_name": "compacted_worker",
+                    "fork_turns": "all",
                 }))?,
             ),
             responses::ev_completed("parent-spawn-after-compaction"),

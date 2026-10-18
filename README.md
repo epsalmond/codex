@@ -215,10 +215,15 @@ Esc pauses automatic wakeups and holds child results arriving at the root; the T
 shows "N child results queued — delivered with your next message". A child
 with unfinished delegated work waits without reporting completion, then
 resumes when a descendant reports. `send_message` only queues a message;
-`followup_task` resumes a waiting child. An interrupted child attempt reports
-its interruption to the parent; automatic wakeups stay paused until an
-explicit follow-up. While paused, a `send_message` still wakes an agent in a
-durable sleep, and that turn leaves held child results for the next message.
+`followup_task` resumes a waiting child. Only an ancestor (parent, grandparent,
+or root) can start a turn in an agent: `followup_task` from a sibling, cousin,
+or descendant is refused, and their `send_message` mail waits for the
+recipient's next turn, even in a durable sleep. Set `sibling_wake = true` under
+`[features.multi_agent_v2]` to let any agent wake another. An interrupted child
+attempt reports its interruption to the parent; automatic wakeups stay paused
+until an explicit follow-up. While paused, a `send_message` from an ancestor or
+descendant still wakes an agent in a durable sleep, and that turn leaves held
+child results for the next message.
 When an automatic turn fails to start, its accepted messages stay queued and no
 turn starts automatically, durable sleep included, until an explicit follow-up
 or user turn.

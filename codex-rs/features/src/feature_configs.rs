@@ -350,6 +350,11 @@ pub struct MultiAgentV2ConfigToml {
     /// Disable the model's direct-message tools; spawning and automatic child results remain available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disable_direct_message: Option<bool>,
+    /// Let any agent start a turn in another agent. Defaults to false: only an ancestor (parent,
+    /// grandparent, root) can `followup_task` an agent, and mail from a sibling, cousin, or
+    /// descendant only queues for the recipient's next turn. Set true to restore sibling wakes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sibling_wake: Option<bool>,
     /// Keep the message board in memory for a training session, including ephemeral sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_board_in_memory: Option<bool>,

@@ -23,6 +23,7 @@ pub use collaboration::ResolvedCollaborationModeMessages;
 pub use guardian::ResolvedAutoReviewMessages;
 pub use incremental_tools::ResolvedIncrementalToolMessages;
 pub use multi_agent::ResolvedMultiAgentMessages;
+pub use multi_agent::SUBAGENT_ANCESTOR_ONLY_WAKE_USAGE_HINT_LINE;
 
 /// Text together with whether it was supplied by the catalog, even when it equals the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

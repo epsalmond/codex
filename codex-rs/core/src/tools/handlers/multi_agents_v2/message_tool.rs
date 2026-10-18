@@ -12,6 +12,7 @@ use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_protocol::AgentPath;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,9 +84,18 @@ pub(super) async fn handle_message_string_tool(
     let receiver_agent_path = receipt.metadata.agent_path.ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    let sender_can_wake = turn.config.multi_agent_v2.sibling_wake
+        || turn
+            .session_source
+            .get_agent_path()
+            .unwrap_or_else(AgentPath::root)
+            .is_ancestor_of(&receiver_agent_path);
     let acceptance = match mode {
         MessageDeliveryMode::QueueOnly if receiver_agent_path.is_root() => {
             "Message accepted into the root agent's queue. This acceptance does not confirm a new turn started; the root reads queued mail while active or on its next turn."
+        }
+        MessageDeliveryMode::QueueOnly if !sender_can_wake => {
+            "Message accepted into the agent's queue. Only its ancestors can start a turn in it, so it reads this while active or on its next turn."
         }
         MessageDeliveryMode::QueueOnly => {
             "Message accepted into the agent's queue. This acceptance does not confirm a new turn started; use followup_task to request work from an idle agent."

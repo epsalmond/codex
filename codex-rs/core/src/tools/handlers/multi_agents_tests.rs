@@ -4977,3 +4977,216 @@ async fn build_agent_resume_config_clears_base_instructions() {
         .expect("approval policy set");
     assert_eq!(config, expected);
 }
+
+/// Agent paths spawned under the root for the ancestor-wake tests, parents first.
+const WAKE_TREE_PATHS: [&str; 4] = [
+    "/root/lead",
+    "/root/lead/worker",
+    "/root/lead/worker/helper",
+    "/root/peer",
+];
+
+fn wake_tree_source(parent_thread_id: ThreadId, path: &AgentPath) -> SessionSource {
+    let depth = i32::try_from(path.as_str().matches('/').count() - 1).expect("depth fits i32");
+    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth,
+        agent_path: Some(path.clone()),
+        agent_nickname: None,
+        agent_role: None,
+    })
+}
+
+/// Runs one V2 message tool call from `sender` in a tree of `/root` plus [`WAKE_TREE_PATHS`].
+/// Returns the tool result and the mail the `target_path` agent received from `sender`.
+async fn call_message_tool_in_wake_tree(
+    tool: &str,
+    sender: &str,
+    target: &str,
+    target_path: &str,
+    sibling_wake: bool,
+) -> (
+    Result<String, FunctionCallError>,
+    Vec<InterAgentCommunication>,
+) {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.sibling_wake = sibling_wake;
+    config.multi_agent_v2.max_concurrent_threads_per_session = WAKE_TREE_PATHS.len() + 1;
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+
+    let mut threads = HashMap::from([(AgentPath::root(), root.thread_id)]);
+    let mut parents = HashMap::new();
+    for path in WAKE_TREE_PATHS {
+        let path = AgentPath::try_from(path).expect("agent path");
+        let (parent, _) = path.as_str().rsplit_once('/').expect("child path");
+        let parent_thread_id = threads[&AgentPath::try_from(parent).expect("parent path")];
+        let thread_id = session
+            .services
+            .local_agent_runtime
+            .control(session.session_id())
+            .spawn_agent_with_metadata(
+                (*turn.config).clone(),
+                vec![UserInput::Text {
+                    text: format!("initial task for {path}"),
+                    text_elements: Vec::new(),
+                }],
+                wake_tree_source(parent_thread_id, &path),
+                crate::agent::types::SpawnAgentOptions::default(),
+            )
+            .await
+            .expect("agent spawn should succeed")
+            .thread_id;
+        parents.insert(path.clone(), parent_thread_id);
+        threads.insert(path, thread_id);
+    }
+
+    let sender_path = AgentPath::try_from(sender).expect("sender path");
+    session.thread_id = threads[&sender_path];
+    if !sender_path.is_root() {
+        turn.session_source = wake_tree_source(parents[&sender_path], &sender_path);
+    }
+    let target_thread_id = threads[&AgentPath::try_from(target_path).expect("target path")];
+    let payload = function_payload(json!({ "target": target, "message": "please look at this" }));
+    let invocation = invocation(Arc::new(session), Arc::new(turn), tool, payload);
+    let result = match tool {
+        "followup_task" => FollowupTaskHandlerV2.handle(invocation).await,
+        "send_message" => SendMessageHandlerV2.handle(invocation).await,
+        _ => panic!("unexpected tool {tool}"),
+    }
+    .map(|output| expect_text_output(output).0);
+    let delivered = manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| match op {
+            Op::InterAgentCommunication { communication, .. }
+                if thread_id == target_thread_id && communication.author == sender_path =>
+            {
+                Some(communication)
+            }
+            _ => None,
+        })
+        .collect();
+    (result, delivered)
+}
+
+#[test_case::test_case("/root", "/root/lead/worker/helper", "/root/lead/worker/helper"; "root to grandchild")]
+#[test_case::test_case("/root/lead", "worker", "/root/lead/worker"; "parent to child by relative path")]
+#[test_case::test_case("/root/lead", "/root/lead/worker/helper", "/root/lead/worker/helper"; "grandparent to grandchild")]
+#[tokio::test]
+async fn multi_agent_v2_followup_task_from_ancestor_starts_turn(
+    sender: &str,
+    target: &str,
+    target_path: &str,
+) {
+    let (result, delivered) = call_message_tool_in_wake_tree(
+        "followup_task",
+        sender,
+        target,
+        target_path,
+        /*sibling_wake*/ false,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        Ok(
+            "Follow-up accepted for turn processing; this does not confirm startup or completion."
+                .to_string()
+        )
+    );
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|communication| communication.trigger_turn)
+            .collect::<Vec<_>>(),
+        vec![true]
+    );
+}
+
+#[test_case::test_case("/root/peer", "/root/lead"; "sibling")]
+#[test_case::test_case("/root/peer", "/root/lead/worker"; "cousin")]
+#[test_case::test_case("/root/lead/worker/helper", "/root/lead/worker"; "child to parent")]
+#[test_case::test_case("/root/lead/worker/helper", "/root/lead"; "grandchild to grandparent")]
+#[tokio::test]
+async fn multi_agent_v2_followup_task_from_non_ancestor_is_rejected(sender: &str, target: &str) {
+    let (result, delivered) = call_message_tool_in_wake_tree(
+        "followup_task",
+        sender,
+        target,
+        target,
+        /*sibling_wake*/ false,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        Err(FunctionCallError::RespondToModel(format!(
+            "Only an ancestor (parent, grandparent, or root) can start a turn in `{target}`. Use \
+             send_message to queue a note it will see at its next turn."
+        )))
+    );
+    assert_eq!(delivered, Vec::new());
+}
+
+#[tokio::test]
+async fn multi_agent_v2_sibling_send_message_queues_without_turn() {
+    let (result, delivered) = call_message_tool_in_wake_tree(
+        "send_message",
+        "/root/peer",
+        "/root/lead",
+        "/root/lead",
+        /*sibling_wake*/ false,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        Ok("Message accepted into the agent's queue. Only its ancestors can start a turn in it, so it reads this while active or on its next turn.".to_string())
+    );
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|communication| communication.trigger_turn)
+            .collect::<Vec<_>>(),
+        vec![false]
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_sibling_wake_restores_sibling_followup() {
+    let (result, delivered) = call_message_tool_in_wake_tree(
+        "followup_task",
+        "/root/peer",
+        "/root/lead",
+        "/root/lead",
+        /*sibling_wake*/ true,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        Ok(
+            "Follow-up accepted for turn processing; this does not confirm startup or completion."
+                .to_string()
+        )
+    );
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|communication| communication.trigger_turn)
+            .collect::<Vec<_>>(),
+        vec![true]
+    );
+}

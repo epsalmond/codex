@@ -212,8 +212,17 @@ pub(crate) fn resolve_usage_hints_with_polling_modes(
         if base.is_empty() {
             return None;
         }
+        // `sibling_wake` lifts the ancestor-only wake rule the bundled subagent text states.
+        let base = if config.sibling_wake && !is_root {
+            base.replace(
+                codex_prompts::SUBAGENT_ANCESTOR_ONLY_WAKE_USAGE_HINT_LINE,
+                "",
+            )
+        } else {
+            base.to_owned()
+        };
         Some(MultiAgentRoleInstructions::Composed {
-            base: base.to_owned(),
+            base,
             marked: message.catalog_override().is_some(),
             omit_update_plan_instructions,
             max_concurrency: config.max_concurrent_threads_per_session,
