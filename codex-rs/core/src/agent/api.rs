@@ -18,6 +18,7 @@ use crate::rollout_budget::RolloutBudgetReminder;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -90,6 +91,19 @@ pub trait AgentControl: Send + Sync {
     /// Implementations validate ownership and restore the child under the parent's current
     /// authority. Success makes the child available for attachment through its thread manager.
     fn ensure_child_loaded(&self, parent: ThreadId, child: ThreadId) -> BoxFuture<'_, Result<()>>;
+
+    /// Close a V2 agent and its whole descendant subtree: cancel pending wakes, stop loaded
+    /// runtimes, mark spawn edges closed and release membership, mail and residency. Later
+    /// messages, follow-ups and reloads aimed at a closed agent are rejected. The root and
+    /// unknown agents are errors.
+    fn close_v2_agent(&self, agent: ThreadId) -> BoxFuture<'_, Result<()>> {
+        let _ = agent;
+        Box::pin(async {
+            Err(CodexErr::UnsupportedOperation(
+                "this agent backend cannot close agents".to_string(),
+            ))
+        })
+    }
 
     /// Stop current work and return the pre-interrupt snapshot. V2 rejects root/self
     /// targets and tolerates known unloaded agents; other modes retain direct-ID interruption.

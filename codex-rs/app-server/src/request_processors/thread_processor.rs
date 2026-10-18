@@ -1091,6 +1091,19 @@ impl ThreadRequestProcessor {
         self.prepare_thread_for_removal(thread_id, "archive").await
     }
 
+    /// Closes a V2 subagent and its descendants in the owning agent tree, so removal does not
+    /// leave them counted, addressable or reloadable. Removal proceeds if closing fails;
+    /// reloads independently refuse archived agents.
+    pub(super) async fn close_multi_agent_v2_subtree(&self, thread_id: ThreadId, operation: &str) {
+        if let Err(err) = self
+            .thread_manager
+            .close_multi_agent_v2_agent(thread_id)
+            .await
+        {
+            warn!("failed to close multi-agent v2 agent {thread_id} before {operation}: {err}");
+        }
+    }
+
     pub(super) async fn prepare_thread_for_removal(
         &self,
         thread_id: ThreadId,
@@ -1812,7 +1825,9 @@ impl ThreadRequestProcessor {
             .thread_manager
             .inhibit_automatic_agent_completions(&subtree_thread_ids)
             .await;
-        // Collaboration may resume an archived descendant without unarchiving it.
+        self.close_multi_agent_v2_subtree(thread_id, "archive")
+            .await;
+        // Legacy collaboration may resume an archived descendant without unarchiving it.
         self.prepare_thread_for_archive(thread_id).await?;
         for &descendant_thread_id in subtree_thread_ids.iter().skip(1).rev() {
             self.prepare_thread_for_archive(descendant_thread_id)

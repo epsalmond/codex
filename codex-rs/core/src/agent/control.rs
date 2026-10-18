@@ -69,6 +69,7 @@ pub(crate) use self::watch::StatusSubscription;
 
 mod api;
 mod budget;
+mod close;
 mod completion;
 mod coordinator;
 mod delivery;

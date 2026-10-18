@@ -114,6 +114,7 @@ impl AgentControl for LocalAgentControl {
                 mut start_options,
             } = request;
             let target = self.resolve_target(caller, &target)?;
+            self.runtime.ensure_agent_not_closed(target)?;
             let (metadata, submission_id) = match input {
                 AgentInput::UserInput(input) => {
                     let receiver = self.get_agent_metadata(target);
@@ -204,6 +205,10 @@ impl AgentControl for LocalAgentControl {
                 .await
                 .map(drop)
         })
+    }
+
+    fn close_v2_agent(&self, agent: ThreadId) -> BoxFuture<'_, Result<()>> {
+        Box::pin(LocalAgentControl::close_v2_agent(self, agent))
     }
 
     fn interrupt(

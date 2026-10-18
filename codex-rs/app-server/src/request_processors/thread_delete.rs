@@ -40,6 +40,7 @@ impl ThreadRequestProcessor {
 
         self.validate_root_thread_delete(thread_id, thread_ids.len() > 1)
             .await?;
+        self.close_multi_agent_v2_subtree(thread_id, "delete").await;
         for thread_id_to_delete in thread_ids.iter().copied() {
             self.prepare_thread_for_delete(thread_id_to_delete).await?;
         }

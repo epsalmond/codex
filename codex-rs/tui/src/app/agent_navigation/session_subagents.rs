@@ -12,7 +12,7 @@ impl AgentNavigationState {
     }
 
     /// Counts open descendants of the root session, including idle/error threads.
-    /// Local dismissal affects navigation only; backend archives leave the counts.
+    /// Local dismissal affects navigation only; backend archives close agents and drop them.
     pub(crate) fn subagent_counts(&self, root: Option<ThreadId>) -> SubagentCounts {
         let Some(root) = root else {
             return SubagentCounts::default();

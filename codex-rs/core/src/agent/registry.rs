@@ -36,6 +36,8 @@ struct ActiveAgents {
     thread_paths: HashMap<ThreadId, RegisteredAgent>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
+    /// Explicitly closed agents, retained after release so later references explain why.
+    closed_agents: HashMap<ThreadId, AgentPath>,
 }
 
 struct RegisteredAgent {
@@ -247,6 +249,37 @@ impl AgentRegistry {
             .thread_paths
             .get(&thread_id)
             .is_some_and(|agent| agent.completion_closed)
+    }
+
+    /// Remember explicitly closed agents. Tombstones outlive registry release so messages
+    /// and reloads can explain the closure; a later spawn may reuse the path.
+    pub(crate) fn record_closed_agents(
+        &self,
+        agents: impl IntoIterator<Item = (ThreadId, AgentPath)>,
+    ) {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed_agents
+            .extend(agents);
+    }
+
+    pub(crate) fn closed_agent_path(&self, thread_id: ThreadId) -> Option<AgentPath> {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed_agents
+            .get(&thread_id)
+            .cloned()
+    }
+
+    pub(crate) fn is_closed_agent_path(&self, agent_path: &AgentPath) -> bool {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed_agents
+            .values()
+            .any(|closed_path| closed_path == agent_path)
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {

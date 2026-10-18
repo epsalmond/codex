@@ -1,6 +1,7 @@
 //! Rendering of captured child context, without refreshing or inferring measurements.
 
 use crate::render::renderable::Renderable;
+use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::ThreadContextReductionOutcome;
 use codex_app_server_protocol::ThreadContextTokenBasis;
@@ -79,11 +80,12 @@ pub(super) fn snapshot_description(snapshot: &ThreadContextUsage, now: i64) -> S
     description
 }
 
+/// Matches the status bar's compact token counts, e.g. `272K`.
 fn count(tokens: i64) -> String {
     if tokens < 0 {
         "?".to_string()
     } else {
-        tokens.to_string()
+        format_tokens_compact(tokens)
     }
 }
 
