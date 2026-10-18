@@ -167,3 +167,53 @@ async fn close_v2_agent_rejects_the_root() {
     );
     assert!(harness.manager.get_thread(root_id).await.is_ok());
 }
+
+/// Archiving a root archives its subtree; after the root is unarchived, its still-open
+/// descendants must rejoin the tree even though their own rollouts stay archived.
+#[tokio::test]
+async fn archived_descendant_with_open_edge_is_restored_and_reloadable() {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (root_id, root) = harness.start_thread().await;
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let worker =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &root, "worker").await;
+    let worker_thread = harness.manager.get_thread(worker.thread_id).await.unwrap();
+    persist_thread_for_tree_resume(&worker_thread, "worker persisted").await;
+    drop(worker_thread);
+    // Unload without closing the spawn edge, then archive the rollout as a root archive would.
+    let _ = control.shutdown_live_agent(worker.thread_id).await;
+    LocalThreadStore::new(
+        LocalThreadStoreConfig::from_config(&harness.config),
+        harness.state_db.clone(),
+    )
+    .archive_thread(ArchiveThreadParams {
+        thread_id: worker.thread_id,
+    })
+    .await
+    .expect("archive worker rollout");
+    assert!(control.get_agent_metadata(worker.thread_id).is_none());
+
+    control
+        .restore_v2_agent_metadata(&harness.config, root_id)
+        .await;
+    assert!(
+        control.get_agent_metadata(worker.thread_id).is_some(),
+        "an archived descendant with an open spawn edge must be restored"
+    );
+    control
+        .ensure_v2_agent_loaded(
+            harness.config.clone(),
+            worker.thread_id,
+            /*parent*/ None,
+        )
+        .await
+        .expect("an archived descendant with an open spawn edge must reload");
+}

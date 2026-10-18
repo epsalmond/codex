@@ -247,10 +247,6 @@ impl LocalAgentControl {
                 continue;
             }
             let restore_result = stored_thread.and_then(|stored_thread| {
-                // Archived agents were closed by the user and must not rejoin the tree.
-                if stored_thread.archived_at.is_some() {
-                    return Ok(());
-                }
                 let stored_agent_path = stored_thread
                     .agent_path
                     .as_deref()
@@ -299,8 +295,10 @@ impl LocalAgentControl {
         Ok(spawned_agent.thread_id)
     }
 
-    /// Archived agents and agents whose spawn edge was closed stay closed; collaboration
-    /// must not cold-restore them.
+    /// Agents whose spawn edge was closed stay closed; collaboration must not cold-restore
+    /// them. Archive alone is not closure: archiving a root archives its whole subtree, and
+    /// after the root is unarchived its collaboration may resume archived descendants.
+    /// Closing a subagent through archive closes its spawn edges first.
     async fn ensure_v2_agent_reloadable(
         &self,
         state: &ThreadManagerState,
@@ -319,9 +317,6 @@ impl LocalAgentControl {
                 .unwrap_or_else(|| thread_id.to_string());
             closed_agent_error(&reference)
         };
-        if stored_thread.archived_at.is_some() {
-            return Err(closed_error());
-        }
         if let Some(parent_thread_id) = stored_thread.parent_thread_id
             && let Some(agent_graph_store) = state.agent_graph_store()
             && agent_graph_store

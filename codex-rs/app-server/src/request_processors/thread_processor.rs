@@ -1092,8 +1092,7 @@ impl ThreadRequestProcessor {
     }
 
     /// Closes a V2 subagent and its descendants in the owning agent tree, so removal does not
-    /// leave them counted, addressable or reloadable. Removal proceeds if closing fails;
-    /// reloads independently refuse archived agents.
+    /// leave them counted, addressable or reloadable. Removal proceeds if closing fails.
     pub(super) async fn close_multi_agent_v2_subtree(&self, thread_id: ThreadId, operation: &str) {
         if let Err(err) = self
             .thread_manager
