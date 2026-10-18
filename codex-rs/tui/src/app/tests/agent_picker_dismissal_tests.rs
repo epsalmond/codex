@@ -227,3 +227,84 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
         }
     );
 }
+
+#[tokio::test]
+async fn archived_subagents_leave_status_counts_durably() -> Result<()> {
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let root = ThreadId::from_u128(/*value*/ 300);
+    let worker = ThreadId::from_u128(/*value*/ 301);
+    let helper = ThreadId::from_u128(/*value*/ 302);
+    let sibling = ThreadId::from_u128(/*value*/ 303);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    for (id, path) in [
+        (root, "/root"),
+        (worker, "/root/worker"),
+        (helper, "/root/worker/helper"),
+        (sibling, "/root/sibling"),
+    ] {
+        app.upsert_agent_picker_thread(
+            id, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+        app.agent_navigation
+            .set_agent_path(id, Some(path.to_string()));
+    }
+    for id in [worker, helper, sibling] {
+        app.agent_navigation.mark_running(id);
+    }
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)),
+        SubagentCounts {
+            running: 3,
+            total: 3
+        }
+    );
+
+    // The backend archives the closed subtree and notifies each member.
+    for id in [worker, helper] {
+        app.handle_agent_picker_visibility_notification(
+            &app_server,
+            &ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: id.to_string(),
+                },
+            ),
+        );
+    }
+    let remaining = SubagentCounts {
+        running: 1,
+        total: 1,
+    };
+    assert_eq!(app.agent_navigation.subagent_counts(Some(root)), remaining);
+    assert_eq!(
+        app.agent_navigation
+            .get(&worker)
+            .map(|entry| entry.is_closed),
+        Some(true)
+    );
+
+    // Late status events and an empty refresh cannot bring the closed agents back.
+    app.agent_navigation.mark_running(worker);
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: helper,
+            agent_path: "/root/worker/helper".into(),
+            is_running_hint: true,
+        });
+    app.set_agent_picker_thread_visibility(worker, AgentPickerThreadVisibility::Visible);
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Ok(crate::app_event::AgentPickerThreadRefresh {
+            threads: vec![],
+            archived_thread_ids: HashSet::new(),
+        }),
+    );
+    assert_eq!(app.agent_navigation.subagent_counts(Some(root)), remaining);
+    Ok(())
+}

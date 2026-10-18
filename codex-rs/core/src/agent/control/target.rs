@@ -29,7 +29,21 @@ impl LocalAgentControl {
     }
 }
 
+/// Model-visible rejection for input aimed at an explicitly closed agent.
+pub(crate) fn closed_agent_error(reference: &str) -> CodexErr {
+    CodexErr::UnsupportedOperation(format!(
+        "agent `{reference}` is closed; spawn a fresh agent with a self-contained brief"
+    ))
+}
+
 impl LocalAgentRuntime {
+    pub(crate) fn ensure_agent_not_closed(&self, thread_id: ThreadId) -> CodexResult<()> {
+        match self.registry.closed_agent_path(thread_id) {
+            Some(agent_path) => Err(closed_agent_error(agent_path.as_str())),
+            None => Ok(()),
+        }
+    }
+
     pub(crate) async fn resolve_agent_reference(
         &self,
         _current_thread_id: ThreadId,
@@ -52,6 +66,9 @@ impl LocalAgentRuntime {
             .map_err(CodexErr::UnsupportedOperation)?;
         if let Some(thread_id) = self.registry.agent_id_for_path(&agent_path) {
             return Ok(thread_id);
+        }
+        if self.registry.is_closed_agent_path(&agent_path) {
+            return Err(closed_agent_error(agent_path.as_str()));
         }
         Err(CodexErr::UnsupportedOperation(format!(
             "live agent path `{}` not found",

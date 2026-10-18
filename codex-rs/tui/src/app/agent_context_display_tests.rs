@@ -77,8 +77,23 @@ fn model_text_is_bounded_and_invalid_counts_remain_unknown() {
     assert_eq!(
         snapshot_description(&context, /*now*/ 1_000_000),
         format!(
-            "context 80000 · cap ? · window ? · {} · usage + estimate · snapshot 10s ago · provider 20s ago",
+            "context 80K · cap ? · window ? · {} · usage + estimate · snapshot 10s ago · provider 20s ago",
             truncate_text(&"界".repeat(/*n*/ 1000), /*max_graphemes*/ 64)
         )
+    );
+}
+
+#[test]
+fn token_counts_match_status_bar_compact_format() {
+    let mut context = snapshot();
+    context.active_tokens = 1_234_567;
+    assert_eq!(
+        snapshot_summary(&context),
+        "context 1.23M · cap 100K · window 272K"
+    );
+    context.active_tokens = 999;
+    assert_eq!(
+        snapshot_summary(&context),
+        "context 999 · cap 100K · window 272K"
     );
 }

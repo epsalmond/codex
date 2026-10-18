@@ -1,4 +1,5 @@
 //! Archive visibility follows backend lifecycle notifications and descendant discovery.
+//! Archived subagents are closed by the backend, so the TUI also records them as closed.
 use super::agent_navigation::AgentPickerThreadVisibility;
 use super::agent_picker::AGENT_PICKER_VIEW_ID;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
@@ -47,6 +48,8 @@ impl App {
                 .add_error_message(format!("Failed to close agent: {error:#}"));
             return Ok(());
         }
+        // The backend closed the agent subtree; descendants follow their archive notifications.
+        self.mark_agent_picker_thread_closed(thread_id);
         self.set_agent_picker_thread_visibility(thread_id, AgentPickerThreadVisibility::Hidden);
         if !self.agent_navigation.queue_picker_refresh(root) {
             self.refresh_agent_picker_threads(app_server, root);
@@ -69,6 +72,7 @@ impl App {
     ) {
         self.update_agent_picker_thread_visibility(thread_id, visibility);
         self.update_agent_picker_rows_if_present();
+        self.sync_active_subagents();
     }
 
     pub(super) fn update_agent_picker_thread_visibility(
@@ -103,6 +107,13 @@ impl App {
         };
         let refresh_uncached_thread = matches!(visibility, AgentPickerThreadVisibility::Visible)
             && self.agent_navigation.get(&thread_id).is_none();
+        // Archiving closes subagents in the backend, so they leave the session counts for good.
+        if matches!(notification, ServerNotification::ThreadArchived(_))
+            && self.primary_thread_id != Some(thread_id)
+            && self.agent_navigation.get(&thread_id).is_some()
+        {
+            self.mark_agent_picker_thread_closed(thread_id);
+        }
         self.set_agent_picker_thread_visibility(thread_id, visibility);
         if refresh_uncached_thread
             && let Some(primary_thread_id) = self.primary_thread_id

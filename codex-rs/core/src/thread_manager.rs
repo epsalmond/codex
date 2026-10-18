@@ -1351,6 +1351,87 @@ impl ThreadManager {
             .await
     }
 
+    /// Closes a Multi-Agent V2 subagent and its descendants before a client archives or
+    /// deletes it, so the owning agent tree stops counting, messaging and reloading them.
+    ///
+    /// Returns `true` when a loaded agent tree owned the subagent. Otherwise only the spawn
+    /// edges recorded for a stored V2 subagent subtree are closed, and `false` is returned.
+    /// Root threads and threads outside multi-agent V2 are left untouched.
+    pub async fn close_multi_agent_v2_agent(&self, thread_id: ThreadId) -> CodexResult<bool> {
+        let owner_control = {
+            let threads = self.state.threads.read().await;
+            threads
+                .get(&thread_id)
+                .into_iter()
+                .chain(threads.values())
+                .find(|thread| {
+                    thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+                        && thread
+                            .session
+                            .services
+                            .local_agent_runtime
+                            .has_spawned_agent(thread_id)
+                })
+                .map(|thread| Arc::clone(&thread.session.services.agent_control))
+        };
+        if let Some(agent_control) = owner_control {
+            agent_control.close_v2_agent(thread_id).await?;
+            return Ok(true);
+        }
+
+        let Some(agent_graph_store) = self.state.agent_graph_store() else {
+            return Ok(false);
+        };
+        let Ok(stored_thread) = self
+            .state
+            .read_stored_thread(ReadThreadParams {
+                thread_id,
+                include_archived: true,
+                include_history: false,
+            })
+            .await
+        else {
+            return Ok(false);
+        };
+        let is_v2_subagent = stored_thread.parent_thread_id.is_some()
+            && matches!(
+                stored_thread.source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    agent_path: Some(_),
+                    ..
+                })
+            );
+        if !is_v2_subagent {
+            return Ok(false);
+        }
+        let mut closed_thread_ids = vec![thread_id];
+        closed_thread_ids.extend(
+            agent_graph_store
+                .list_thread_spawn_descendants(
+                    thread_id,
+                    Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!("failed to load thread-spawn descendants: {err}"))
+                })?,
+        );
+        for closed_thread_id in closed_thread_ids {
+            agent_graph_store
+                .set_thread_spawn_edge_status(
+                    closed_thread_id,
+                    codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to close thread-spawn edge for {closed_thread_id}: {err}"
+                    ))
+                })?;
+        }
+        Ok(false)
+    }
+
     #[instrument(level = "trace", skip_all)]
     pub async fn resume_thread_with_history(
         &self,

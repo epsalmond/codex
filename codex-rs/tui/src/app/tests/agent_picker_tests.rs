@@ -639,7 +639,7 @@ async fn hidden_terminal_snapshot_without_counters_updates_picker_without_reques
     let full = render_bottom_popup(&app.chat_widget, /*width*/ 160);
     assert!(full.contains("snapshot 2h ago"));
     assert!(full.contains("provider 1d ago"));
-    assert!(full.contains("failed 120000→? (1h ago)"));
+    assert!(full.contains("failed 120K→? (1h ago)"));
     app.chat_widget
         .handle_key_event(KeyEvent::from(KeyCode::Down));
     insta::assert_snapshot!(
@@ -653,7 +653,7 @@ async fn hidden_terminal_snapshot_without_counters_updates_picker_without_reques
             .handle_key_event(KeyEvent::from(KeyCode::Char(key)));
     }
     let filtered = render_bottom_popup(&app.chat_widget, /*width*/ 160);
-    assert!(filtered.contains("failed 120000→? (1h ago)"));
+    assert!(filtered.contains("failed 120K→? (1h ago)"));
     assert!(app_event_rx.try_recv().is_err());
     assert!(op_rx.try_recv().is_err());
     Ok(())

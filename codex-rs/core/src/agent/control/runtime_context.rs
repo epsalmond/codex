@@ -30,6 +30,14 @@ impl LocalAgentRuntime {
             .ok_or_else(|| CodexErr::ThreadNotFound(agent_id))
     }
 
+    /// Whether this tree registers `thread_id` as a spawned, non-root agent.
+    pub(crate) fn has_spawned_agent(&self, thread_id: ThreadId) -> bool {
+        self.registry
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.agent_path)
+            .is_some_and(|agent_path| !agent_path.is_root())
+    }
+
     pub(crate) async fn list_live_agent_subtree_thread_ids(
         &self,
         agent_id: ThreadId,

@@ -1,3 +1,7 @@
+## Closing subagents from `/subagents`
+
+Closing a subagent in `/subagents` (or archiving/deleting it from the agents overview) now closes it and its whole descendant subtree in the agent tree: it leaves the status-bar count, `list_agents`, and cannot be cold-restored. Later messages or follow-ups to it tell the model the agent is closed and to spawn a fresh one; `/subagents` context sizes now use compact counts like `272K`.
+
 ## Only ancestors wake subagents
 
 `followup_task` now starts a turn only when the sender is the target's parent, grandparent, or root; siblings and cousins get an error and use `send_message`, which queues without waking the recipient or its durable sleep. `spawn_agent` without `fork_turns` now starts the child without parent history. Set `sibling_wake = true` under `[features.multi_agent_v2]` to restore sibling wakes.

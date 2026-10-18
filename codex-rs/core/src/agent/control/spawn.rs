@@ -2,6 +2,7 @@ use super::residency::is_v2_resident_session_source;
 use super::spawn_guard::PendingSpawn;
 use super::spawn_telemetry::SpawnMeasurements;
 use super::spawn_telemetry::record_spawn_success;
+use super::target::closed_agent_error;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::role::apply_role_to_config;
@@ -294,6 +295,46 @@ impl LocalAgentControl {
         Ok(spawned_agent.thread_id)
     }
 
+    /// Agents whose spawn edge was closed stay closed; collaboration must not cold-restore
+    /// them. Archive alone is not closure: archiving a root archives its whole subtree, and
+    /// after the root is unarchived its collaboration may resume archived descendants.
+    /// Closing a subagent through archive closes its spawn edges first.
+    async fn ensure_v2_agent_reloadable(
+        &self,
+        state: &ThreadManagerState,
+        thread_id: ThreadId,
+        stored_thread: &codex_thread_store::StoredThread,
+    ) -> CodexResult<()> {
+        let closed_error = || {
+            let reference = stored_thread
+                .agent_path
+                .clone()
+                .or_else(|| {
+                    self.get_agent_metadata(thread_id)
+                        .and_then(|metadata| metadata.agent_path)
+                        .map(|agent_path| agent_path.to_string())
+                })
+                .unwrap_or_else(|| thread_id.to_string());
+            closed_agent_error(&reference)
+        };
+        if let Some(parent_thread_id) = stored_thread.parent_thread_id
+            && let Some(agent_graph_store) = state.agent_graph_store()
+            && agent_graph_store
+                .list_thread_spawn_children(
+                    parent_thread_id,
+                    Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed),
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!("failed to load thread-spawn children: {err}"))
+                })?
+                .contains(&thread_id)
+        {
+            return Err(closed_error());
+        }
+        Ok(())
+    }
+
     fn validate_loaded_v2_child(
         &self,
         thread: &CodexThread,
@@ -344,6 +385,7 @@ impl LocalAgentControl {
                     .map_err(|error| CodexErr::InvalidRequest(error.to_owned()))
             })
             .transpose()?;
+        self.runtime.ensure_agent_not_closed(thread_id)?;
         let membership = self.runtime.admit_start()?;
         let state = self.runtime.upgrade()?;
         let owner_thread_id = parent.as_ref().map(|parent| parent.session.thread_id);
@@ -386,6 +428,8 @@ impl LocalAgentControl {
                 include_archived: true,
                 include_history: false,
             })
+            .await?;
+        self.ensure_v2_agent_reloadable(&state, thread_id, &stored_thread)
             .await?;
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
