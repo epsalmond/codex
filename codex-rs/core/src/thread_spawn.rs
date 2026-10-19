@@ -19,7 +19,6 @@ use crate::agent::types::SpawnAgentOptions;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use codex_config::config_toml::AgentLifetime;
 use codex_protocol::AgentPath;
 use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -36,8 +35,6 @@ pub(crate) struct ThreadSpawnRequest {
     pub agent_type: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
-    /// Explicit lifetime; `None` falls back to the role's lifetime, then `task`.
-    pub lifetime: Option<AgentLifetime>,
 }
 
 /// Accepted child and its effective configuration. Acceptance does not mean the turn completed.
@@ -70,7 +67,6 @@ pub(crate) async fn spawn(
         agent_type,
         model,
         reasoning_effort,
-        lifetime,
     } = request;
     let message_text = match &message {
         AgentMessage::Plaintext(text) | AgentMessage::Encrypted(text) => text,
@@ -98,15 +94,14 @@ pub(crate) async fn spawn(
     .await
     .map_err(ThreadSpawnError::Preparation)?;
     let config = prepared.config;
-    let lifetime = lifetime
-        .or_else(|| {
-            crate::agent::role::resolve_role_config(
-                &turn.config,
-                prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME),
-            )
-            .and_then(|role| role.lifetime)
-        })
-        .unwrap_or_default();
+    // The agent type sets the lifetime; `spawn_agent` has no `lifetime` parameter because the
+    // server requires reserved collaboration tools to keep upstream's parameter schema.
+    let lifetime = crate::agent::role::resolve_role_config(
+        &turn.config,
+        prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME),
+    )
+    .and_then(|role| role.lifetime)
+    .unwrap_or_default();
     // Forked history can contain provider-encrypted reasoning that another provider cannot read.
     if fork_mode.is_some() && config.model_provider_id != turn.config.model_provider_id {
         let role_name = prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME);

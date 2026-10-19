@@ -2817,7 +2817,7 @@ impl Session {
     }
 
     /// Lifetime recorded when this process spawned the agent. An agent restored from disk has
-    /// no record, and its spawn may have chosen `persistent` explicitly, so it is never closed
+    /// no record, and its role's lifetime may have changed since the spawn, so it is never closed
     /// automatically: closing is permanent, while a wrongly kept agent only stays idle.
     fn agent_lifetime(&self) -> AgentLifetime {
         self.services

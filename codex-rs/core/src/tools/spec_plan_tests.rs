@@ -2924,7 +2924,163 @@ async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
     }
 }
 
-/// Typed reports give subagents `report` and `spawn_agent` its `lifetime`; the opt-out restores the
+/// The server rejects every request whose reserved `collaboration` tools differ from its configured
+/// parameter schema, so each must keep upstream's property names, types, and required list under
+/// every fork option. Descriptions are not validated and may differ. `report` is fork-only.
+#[tokio::test]
+async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
+    fn parameter_shape(parameters: &codex_tools::JsonSchema) -> serde_json::Value {
+        let parameters = serde_json::to_value(parameters).expect("serialize parameters");
+        let properties = parameters["properties"]
+            .as_object()
+            .map(|properties| {
+                properties
+                    .iter()
+                    .map(|(name, schema)| (name.clone(), schema["type"].clone()))
+                    .collect::<serde_json::Map<_, _>>()
+            })
+            .unwrap_or_default();
+        json!({
+            "type": parameters["type"],
+            "properties": properties,
+            "required": parameters["required"],
+        })
+    }
+    let upstream = BTreeMap::from([
+        (
+            "spawn_agent",
+            json!({
+                "type": "object",
+                "properties": {
+                    "agent_type": "string",
+                    "fork_turns": "string",
+                    "message": "string",
+                    "model": "string",
+                    "reasoning_effort": "string",
+                    "task_name": "string",
+                },
+                "required": ["task_name", "message"],
+            }),
+        ),
+        (
+            "send_message",
+            json!({
+                "type": "object",
+                "properties": { "message": "string", "target": "string" },
+                "required": ["target", "message"],
+            }),
+        ),
+        (
+            "followup_task",
+            json!({
+                "type": "object",
+                "properties": { "message": "string", "target": "string" },
+                "required": ["target", "message"],
+            }),
+        ),
+        (
+            "wait_agent",
+            json!({
+                "type": "object",
+                "properties": { "timeout_ms": "number" },
+                "required": null,
+            }),
+        ),
+        (
+            "interrupt_agent",
+            json!({
+                "type": "object",
+                "properties": { "target": "string" },
+                "required": ["target"],
+            }),
+        ),
+        (
+            "list_agents",
+            json!({
+                "type": "object",
+                "properties": { "path_prefix": "string" },
+                "required": null,
+            }),
+        ),
+    ]);
+    for typed_reports in [false, true] {
+        for sibling_wake in [false, true] {
+            for subagent in [false, true] {
+                let plan = probe(|turn| {
+                    set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+                    update_config(turn, |config| {
+                        config.multi_agent_v2.typed_reports = typed_reports;
+                        config.multi_agent_v2.sibling_wake = sibling_wake;
+                        // Expose every optional upstream spawn_agent property.
+                        config.multi_agent_v2.expose_spawn_agent_model_overrides = true;
+                        config.agent_roles.insert(
+                            "researcher".to_string(),
+                            crate::config::AgentRoleConfig {
+                                description: Some("Research the assigned question.".to_string()),
+                                config_file: None,
+                                nickname_candidates: None,
+                                lifetime: None,
+                            },
+                        );
+                    });
+                    if subagent {
+                        turn.session_source =
+                            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: ThreadId::new(),
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from("/root/worker").expect("agent path"),
+                                ),
+                                agent_nickname: None,
+                                agent_role: None,
+                            });
+                        turn.wake_mode_active = true;
+                    }
+                })
+                .await;
+                let case = format!(
+                    "typed_reports={typed_reports} sibling_wake={sibling_wake} subagent={subagent}"
+                );
+                let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE)
+                else {
+                    panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace ({case})");
+                };
+                let mut seen = Vec::new();
+                for tool in &namespace.tools {
+                    let ResponsesApiNamespaceTool::Function(tool) = tool else {
+                        panic!("{case}: unexpected custom collaboration tool");
+                    };
+                    if tool.name == "report" {
+                        continue;
+                    }
+                    let expected = upstream.get(tool.name.as_str()).unwrap_or_else(|| {
+                        panic!(
+                            "{case}: {} is not an upstream collaboration tool",
+                            tool.name
+                        )
+                    });
+                    assert_eq!(
+                        &parameter_shape(&tool.parameters),
+                        expected,
+                        "{case}: {} parameters",
+                        tool.name
+                    );
+                    seen.push(tool.name.as_str());
+                }
+                for tool_name in [
+                    "spawn_agent",
+                    "send_message",
+                    "followup_task",
+                    "list_agents",
+                ] {
+                    assert!(seen.contains(&tool_name), "{case}: missing {tool_name}");
+                }
+            }
+        }
+    }
+}
+
+/// Typed reports give subagents `report` and the matching descriptions; the opt-out restores the
 /// earlier tools and descriptions. The root never gets `report`.
 #[tokio::test]
 async fn multi_agent_v2_typed_reports_tools_follow_config() {
@@ -2962,15 +3118,6 @@ async fn multi_agent_v2_typed_reports_tools_follow_config() {
             "{case}"
         );
         let spawn_agent = tool("spawn_agent").expect("spawn_agent");
-        assert_eq!(
-            spawn_agent
-                .parameters
-                .properties
-                .as_ref()
-                .is_some_and(|properties| properties.contains_key("lifetime")),
-            typed_reports,
-            "{case}"
-        );
         assert_eq!(
             spawn_agent
                 .description
