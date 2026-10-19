@@ -35,7 +35,8 @@ pub struct SpawnAgentToolOptions {
     pub model_catalog_in_context: bool,
     pub usage_hint_text: Option<String>,
     pub child_report_mode: ChildReportMode,
-    /// Subagents report through `report`; adds `lifetime` and the matching guidance.
+    /// Subagents report through `report`; adds the matching guidance. The parameters stay
+    /// upstream's because the server validates reserved collaboration tool schemas.
     pub typed_reports: bool,
 }
 
@@ -143,15 +144,6 @@ pub fn create_spawn_agent_tool_v2(
                 .to_string(),
         )),
     );
-    if options.typed_reports {
-        properties.insert(
-            "lifetime".to_string(),
-            JsonSchema::string_enum(
-                vec![json!("task"), json!("persistent")],
-                Some(SPAWN_AGENT_LIFETIME_DESCRIPTION.to_string()),
-            ),
-        );
-    }
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
@@ -218,8 +210,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
-const SPAWN_AGENT_LIFETIME_DESCRIPTION: &str = "`task` (default unless the agent type sets one): the agent is closed after its final report, and later messages to it fail. `persistent`: the agent stays idle after its final report and resumes on a later followup_task. Use `persistent` only for an agent that must keep its context across several tasks.";
-const SPAWN_AGENT_TYPED_REPORTS_GUIDANCE: &str = "Agents spawned with the default `task` lifetime are closed after their final report. For new work, spawn a fresh agent with a self-contained brief instead of following up with a finished one. A child that reports `BLOCKED` waits for your followup_task with instructions. To ask a running child a question, use send_message; it replies with an `ANSWER` message.";
+const SPAWN_AGENT_TYPED_REPORTS_GUIDANCE: &str = "An agent's lifetime comes from its agent type and defaults to `task`: a `task` agent is closed after its final report. To keep an agent's context across several tasks, use an agent type whose lifetime is `persistent`. For new work, spawn a fresh agent with a self-contained brief instead of following up with a finished one. A child that reports `BLOCKED` waits for your followup_task with instructions. To ask a running child a question, use send_message; it replies with an `ANSWER` message.";
 
 /// `send_message` text for sibling and descendant messaging under the ancestor-only wake rule.
 const SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn: an idle target reads it at its next turn. Use this to share notes with sibling or cousin agents, which cannot start turns in each other.";

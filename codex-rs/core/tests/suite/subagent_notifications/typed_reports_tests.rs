@@ -3,6 +3,7 @@
 //! subagent turn gets one wrap-up reminder.
 
 use super::*;
+use codex_config::config_toml::AgentLifetime;
 use codex_core::CodexThread;
 use codex_extension_api::ExtensionRegistryBuilder;
 use core_test_support::ThreadIdle;
@@ -14,6 +15,7 @@ const WORKER_TASK: &str = "typed report worker task";
 const WORKER_FOLLOWUP: &str = "typed report worker followup";
 const WORKER_RESULT: &str = "typed report worker result";
 const WRAP_UP_TAG: &str = "<subagent_wrap_up>";
+const PERSISTENT_ROLE: &str = "keeper";
 
 fn peer_call(response: &str, call: &str, tool: &str, arguments: &str) -> Vec<Value> {
     vec![
@@ -303,7 +305,7 @@ async fn blocked_or_persistent_agent_stays_resumable(blocked: bool) -> Result<()
         )
     } else {
         (
-            json!({ "lifetime": "persistent" }),
+            json!({ "agent_type": PERSISTENT_ROLE }),
             peer_message("typed-worker-first", "typed report first result"),
             "FINAL_ANSWER",
             "typed report first result",
@@ -329,7 +331,18 @@ async fn blocked_or_persistent_agent_stays_resumable(blocked: bool) -> Result<()
             )],
             chunk(peer_message("typed-worker-second", WORKER_RESULT)),
         ],
-        |_| {},
+        |config| {
+            // Lifetime comes only from the agent type; `spawn_agent` has no `lifetime` parameter.
+            config.agent_roles.insert(
+                PERSISTENT_ROLE.to_string(),
+                AgentRoleConfig {
+                    description: Some("Keeps its context across tasks.".to_string()),
+                    config_file: None,
+                    nickname_candidates: None,
+                    lifetime: Some(AgentLifetime::Persistent),
+                },
+            );
+        },
     )
     .await?;
     ThreadIdle::wait(&run.test.codex).await;
