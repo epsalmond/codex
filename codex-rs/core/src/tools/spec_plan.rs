@@ -1599,15 +1599,9 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 );
             }
             if crate::session::typed_reports::typed_report_agent_path(turn_context).is_some() {
-                registry.register_trusted_with_exposure(
-                    multi_agent_v2_handler(
-                        ReportHandlerV2,
-                        tool_namespace,
-                        model_messages.multi_agent_tool_description_override("report"),
-                        model_messages.multi_agent_tool_parameters_override("report"),
-                    ),
-                    exposure,
-                );
+                // A plain top-level function: the server rejects any tool name it did not
+                // configure in the reserved `collaboration` namespace.
+                registry.register_trusted_with_exposure(Arc::new(ReportHandlerV2), exposure);
             }
             if child_report_mode == ChildReportMode::WaitAgent {
                 registry.register_trusted_with_exposure(

@@ -26,7 +26,7 @@ impl ContextualUserFragment for SubagentWrapUpReminder {
 
     fn body(&self) -> String {
         format!(
-            "You have made {} model calls on this task. Finish the current step, then report(kind=\"final\") — or report(kind=\"blocked\") if you can't finish.",
+            "You have made {} model calls on this task. Finish the current step, then report_to_parent(kind=\"final\") — or report_to_parent(kind=\"blocked\") if you can't finish.",
             self.model_calls
         )
     }

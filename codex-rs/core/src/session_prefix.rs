@@ -51,7 +51,7 @@ pub(crate) fn format_inter_agent_completion_message(
 const BLOCKED_NEXT_ACTION: &str =
     "This agent stopped and is waiting for instructions. Reply with followup_task to resume it.";
 
-/// Renders a subagent's `report(blocked)` for its parent.
+/// Renders a subagent's `report_to_parent(blocked)` for its parent.
 pub(crate) fn format_inter_agent_blocked_message(
     task_name: AgentPath,
     sender: AgentPath,

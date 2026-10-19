@@ -7,7 +7,7 @@ use codex_protocol::models::ContentItemKind;
 pub(crate) enum InterAgentMessageType {
     Message,
     NewTask,
-    /// A subagent's `report(answer)` reply to an ancestor's question.
+    /// A subagent's `report_to_parent(answer)` reply to an ancestor's question.
     Answer,
 }
 

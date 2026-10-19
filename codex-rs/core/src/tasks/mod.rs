@@ -1100,7 +1100,7 @@ impl Session {
         // In wake mode, a task that never reads the mail `start_task` handed it returns all of
         // it, in order, so the wake below delivers it. A model turn records unread mail as
         // upstream does, so a turn that ended before reading it cannot restart on it; so does a
-        // failed task. A turn ended by `report(blocked|final)` stops without sampling again, so
+        // failed task. A turn ended by `report_to_parent(blocked|final)` stops without sampling again, so
         // mail that joined it, such as a follow-up, also returns and starts the next turn.
         let ended_by_typed_report = turn_context
             .extension_data

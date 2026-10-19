@@ -12498,7 +12498,8 @@ max_concurrent_threads_per_session = 17
             (
                 root.contains("wait_agent"),
                 subagent.contains("When calling `wait_agent`, use long timeouts"),
-                subagent.contains("Use `report(kind=\"blocked\")` when something unexpected"),
+                subagent
+                    .contains("Use `report_to_parent(kind=\"blocked\")` when something unexpected"),
             ),
             (agent_polling == AgentPolling::Enabled, true, true,)
         );
@@ -12714,7 +12715,7 @@ wrap_up_after_model_calls = 0
     assert_eq!(config.wrap_up_after_model_calls, 0);
 
     // The opt-out restores the earlier subagent and orchestrator guidance, as do hosts that hide
-    // the native tools, which have no `report`.
+    // the native tools, which have no `report_to_parent`.
     for (typed_reports, disable_native_tools) in [(true, false), (false, false), (true, true)] {
         let mut config = defaults.clone();
         config.typed_reports = typed_reports;

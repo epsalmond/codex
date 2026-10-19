@@ -105,7 +105,7 @@ pub trait AgentControl: Send + Sync {
         })
     }
 
-    /// Deliver a subagent's `report(answer)` to `ancestor`, the ancestor whose question it
+    /// Deliver a subagent's `report_to_parent(answer)` to `ancestor`, the ancestor whose question it
     /// answers. A running ancestor reads it at its next boundary; an idle non-root ancestor starts
     /// a turn, and the root follows its child-report wake mode.
     fn send_report_answer(
@@ -284,7 +284,7 @@ pub struct AgentTurnOutcome {
     pub status: AgentStatus,
     /// Typed reason used to choose guidance in the parent notification.
     pub error_info: Option<CodexErrorInfo>,
-    /// The completed turn ended with `report(blocked)`: it needs instructions, not a result.
+    /// The completed turn ended with `report_to_parent(blocked)`: it needs instructions, not a result.
     pub blocked: bool,
 }
 

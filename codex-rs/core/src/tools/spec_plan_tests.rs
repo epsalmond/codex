@@ -1,5 +1,6 @@
 use crate::session::tests::update_turn_settings_for_test;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use codex_features::Feature;
@@ -53,6 +54,7 @@ use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::RegisteredTool;
 use crate::tools::router::ToolRouter;
@@ -2924,9 +2926,11 @@ async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
     }
 }
 
-/// The server rejects every request whose reserved `collaboration` tools differ from its configured
-/// parameter schema, so each must keep upstream's property names, types, and required list under
-/// every fork option. Descriptions are not validated and may differ. `report` is fork-only.
+/// The server rejects every request whose reserved `collaboration` namespace holds a tool it did not
+/// configure, or a configured tool whose parameter schema differs. So under every fork option the
+/// namespace must hold exactly upstream's tool names, each with upstream's property names, types,
+/// and required list. Descriptions are not validated and may differ. The fork-only
+/// `report_to_parent` is a plain top-level function.
 #[tokio::test]
 async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
     fn parameter_shape(parameters: &codex_tools::JsonSchema) -> serde_json::Value {
@@ -3050,9 +3054,6 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                     let ResponsesApiNamespaceTool::Function(tool) = tool else {
                         panic!("{case}: unexpected custom collaboration tool");
                     };
-                    if tool.name == "report" {
-                        continue;
-                    }
                     let expected = upstream.get(tool.name.as_str()).unwrap_or_else(|| {
                         panic!(
                             "{case}: {} is not an upstream collaboration tool",
@@ -3067,21 +3068,41 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                     );
                     seen.push(tool.name.as_str());
                 }
-                for tool_name in [
-                    "spawn_agent",
-                    "send_message",
-                    "followup_task",
-                    "list_agents",
-                ] {
-                    assert!(seen.contains(&tool_name), "{case}: missing {tool_name}");
+                // Wake-mode subagents get child reports as new turns, so the fork drops
+                // `wait_agent`; omitting a reserved tool is accepted, adding one is not.
+                let mut expected = upstream.keys().copied().collect::<BTreeSet<_>>();
+                if subagent {
+                    expected.remove("wait_agent");
                 }
+                assert_eq!(
+                    seen.into_iter().collect::<BTreeSet<_>>(),
+                    expected,
+                    "{case}: {MULTI_AGENT_V2_NAMESPACE} tool names"
+                );
+                let report_namespaces = plan
+                    .namespace_functions
+                    .iter()
+                    .filter(|(_, tools)| tools.iter().any(|tool| tool == REPORT_TOOL_NAME))
+                    .map(|(namespace, _)| namespace.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(report_namespaces, Vec::<&str>::new(), "{case}");
+                assert_eq!(
+                    matches!(
+                        plan.visible_specs
+                            .iter()
+                            .find(|spec| spec.name() == REPORT_TOOL_NAME),
+                        Some(ToolSpec::Function(_))
+                    ),
+                    typed_reports && subagent,
+                    "{case}: top-level {REPORT_TOOL_NAME}"
+                );
             }
         }
     }
 }
 
-/// Typed reports give subagents `report` and the matching descriptions; the opt-out restores the
-/// earlier tools and descriptions. The root never gets `report`.
+/// Typed reports give subagents `report_to_parent` and the matching descriptions; the opt-out
+/// restores the earlier tools and descriptions. The root never gets `report_to_parent`.
 #[tokio::test]
 async fn multi_agent_v2_typed_reports_tools_follow_config() {
     for (typed_reports, subagent) in [(true, true), (false, true), (true, false)] {
@@ -3113,7 +3134,9 @@ async fn multi_agent_v2_typed_reports_tools_follow_config() {
             })
         };
         assert_eq!(
-            tool("report").is_some(),
+            plan.visible_names
+                .iter()
+                .any(|name| name == REPORT_TOOL_NAME),
             typed_reports && subagent,
             "{case}"
         );
@@ -3121,7 +3144,7 @@ async fn multi_agent_v2_typed_reports_tools_follow_config() {
         assert_eq!(
             spawn_agent
                 .description
-                .contains("It reports to you only through its `report` tool"),
+                .contains("It reports to you only through its `report_to_parent` tool"),
             typed_reports,
             "{case}"
         );
