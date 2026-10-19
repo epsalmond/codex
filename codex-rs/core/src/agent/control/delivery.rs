@@ -41,7 +41,7 @@ impl AgentMessage {
         }
     }
 
-    /// Builds a subagent's `report(answer)` reply to `recipient`, one of its ancestors.
+    /// Builds a subagent's `report_to_parent(answer)` reply to `recipient`, one of its ancestors.
     pub(crate) fn into_answer_communication(
         self,
         author: AgentPath,

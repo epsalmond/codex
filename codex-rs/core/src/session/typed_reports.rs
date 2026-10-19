@@ -1,6 +1,6 @@
 //! Turn-side state for MultiAgentV2 typed reports.
 //!
-//! A subagent reports to its ancestors only through `report`. `blocked` and `final` end the turn
+//! A subagent reports to its ancestors only through `report_to_parent`. `blocked` and `final` end the turn
 //! and travel as the turn's terminal report; `answer` replies to an ancestor's question and spends
 //! one answer credit, granted per ancestor message delivered to the agent. The turn also counts
 //! model calls so a long-running subagent is told once to wrap up.
@@ -23,7 +23,7 @@ pub(crate) enum TerminalReportKind {
     Final,
 }
 
-/// A `report(blocked|final)` recorded during the current turn. The turn ends after the step that
+/// A `report_to_parent(blocked|final)` recorded during the current turn. The turn ends after the step that
 /// recorded it, and its message becomes the turn's last agent message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingTerminalReport {
@@ -46,7 +46,7 @@ impl AnswerCredits {
     }
 }
 
-/// Returns the agent path of a non-root V2 agent that reports through `report`. Hosts that hide
+/// Returns the agent path of a non-root V2 agent that reports through `report_to_parent`. Hosts that hide
 /// the native tools keep the earlier reporting behavior.
 pub(crate) fn typed_report_agent_path(turn_context: &TurnContext) -> Option<AgentPath> {
     let config = &turn_context.config.multi_agent_v2;
@@ -68,7 +68,7 @@ pub(crate) fn typed_report_agent_path(turn_context: &TurnContext) -> Option<Agen
 
 impl Session {
     /// Grants one answer credit for a queued message an ancestor sent this agent. Follow-up tasks
-    /// and spawn messages are assignments, answered by `report(final)`.
+    /// and spawn messages are assignments, answered by `report_to_parent(final)`.
     pub(crate) fn grant_answer_credit(
         &self,
         turn_context: &TurnContext,

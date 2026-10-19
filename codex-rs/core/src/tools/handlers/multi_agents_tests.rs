@@ -5341,7 +5341,7 @@ async fn multi_agent_v2_typed_reports_opt_out_restores_messages_to_parent() {
     );
 }
 
-/// Calls `report` as `sender` after the given ancestors each sent it one queued message.
+/// Calls `report_to_parent` as `sender` after the given ancestors each sent it one queued message.
 async fn call_report_in_wake_tree(
     sender: &str,
     questions_from: &[&str],
@@ -5383,7 +5383,7 @@ async fn call_report_in_wake_tree(
         let invocation = invocation(
             Arc::clone(&session),
             Arc::clone(&turn),
-            "report",
+            crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME,
             function_payload(report.clone()),
         );
         results.push(
@@ -5405,7 +5405,7 @@ async fn multi_agent_v2_report_answer_requires_an_ancestor_question() {
     assert_eq!(
         results,
         vec![Err(FunctionCallError::RespondToModel(
-            "report(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report(kind=\"blocked\") if you need instructions to continue, or report(kind=\"final\") when your task is done.".to_string()
+            "report_to_parent(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report_to_parent(kind=\"blocked\") if you need instructions to continue, or report_to_parent(kind=\"final\") when your task is done.".to_string()
         ))]
     );
     assert_eq!(
@@ -5491,7 +5491,8 @@ async fn multi_agent_v2_report_is_rejected_for_the_root() {
     assert_eq!(
         results,
         vec![Err(FunctionCallError::RespondToModel(
-            "report is only available to subagents with typed reports enabled.".to_string()
+            "report_to_parent is only available to subagents with typed reports enabled."
+                .to_string()
         ))]
     );
     assert!(

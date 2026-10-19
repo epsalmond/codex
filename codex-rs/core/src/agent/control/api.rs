@@ -137,7 +137,7 @@ impl AgentControl for LocalAgentControl {
                         .ensure_agent_known(caller)?
                         .agent_path
                         .unwrap_or_else(AgentPath::root);
-                    // Host-provided tools replace `report` when native tools are hidden.
+                    // Host-provided tools replace `report_to_parent` when native tools are hidden.
                     if resume_config.multi_agent_v2.typed_reports
                         && !resume_config.multi_agent_v2.disable_native_tools
                         && receiver
@@ -385,7 +385,7 @@ impl AgentControl for LocalAgentControl {
 }
 
 /// Model-visible rejection for a subagent's `send_message` or `followup_task` to an ancestor.
-pub(crate) const ANCESTOR_MESSAGE_REJECTION: &str = "Subagents cannot send free-form messages to their parent or other ancestors. Use report(kind=\"blocked\") when you need instructions to continue, report(kind=\"answer\") to reply to a question an ancestor sent you, or report(kind=\"final\") when your task is done.";
+pub(crate) const ANCESTOR_MESSAGE_REJECTION: &str = "Subagents cannot send free-form messages to their parent or other ancestors. Use report_to_parent(kind=\"blocked\") when you need instructions to continue, report_to_parent(kind=\"answer\") to reply to a question an ancestor sent you, or report_to_parent(kind=\"final\") when your task is done.";
 
 /// Model-visible rejection for a `followup_task` from an agent that is not the target's ancestor.
 pub(crate) fn non_ancestor_followup_message(target: &AgentPath) -> String {

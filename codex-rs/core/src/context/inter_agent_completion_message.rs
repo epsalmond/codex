@@ -21,7 +21,7 @@ impl InterAgentCompletionMessage {
         }
     }
 
-    /// A subagent's `report(blocked)`: it stopped and waits for instructions.
+    /// A subagent's `report_to_parent(blocked)`: it stopped and waits for instructions.
     pub(crate) fn blocked(
         task_name: AgentPath,
         sender: AgentPath,

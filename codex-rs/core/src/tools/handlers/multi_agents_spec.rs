@@ -35,7 +35,7 @@ pub struct SpawnAgentToolOptions {
     pub model_catalog_in_context: bool,
     pub usage_hint_text: Option<String>,
     pub child_report_mode: ChildReportMode,
-    /// Subagents report through `report`; adds the matching guidance. The parameters stay
+    /// Subagents report through `report_to_parent`; adds the matching guidance. The parameters stay
     /// upstream's because the server validates reserved collaboration tool schemas.
     pub typed_reports: bool,
 }
@@ -215,7 +215,7 @@ const SPAWN_AGENT_TYPED_REPORTS_GUIDANCE: &str = "An agent's lifetime comes from
 /// `send_message` text for sibling and descendant messaging under the ancestor-only wake rule.
 const SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn: an idle target reads it at its next turn. Use this to share notes with sibling or cousin agents, which cannot start turns in each other.";
 /// Added to `send_message` and `followup_task` under typed reports.
-const TYPED_REPORTS_MESSAGE_DESCRIPTION_SUFFIX: &str = " A subagent cannot send its parent or other ancestors free-form messages; it uses `report` instead. To ask a running descendant a question, use send_message; it replies with report(kind=\"answer\").";
+const TYPED_REPORTS_MESSAGE_DESCRIPTION_SUFFIX: &str = " A subagent cannot send its parent or other ancestors free-form messages; it uses `report_to_parent` instead. To ask a running descendant a question, use send_message; it replies with report_to_parent(kind=\"answer\").";
 /// `followup_task` text under the ancestor-only wake rule.
 const FOLLOWUP_TASK_DESCRIPTION: &str = "Send a follow-up task to an existing non-root descendant agent and trigger a turn if it is idle. Only an ancestor (parent, grandparent, or root) can follow up with an agent; use send_message to reach a sibling, cousin, or ancestor. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes.";
 /// `followup_task` text under the ancestor-only wake rule with typed reports.
@@ -247,8 +247,12 @@ pub(crate) fn followup_task_description(sibling_wake: bool, typed_reports: bool)
     }
 }
 
-/// `report` description; the tool exists only for subagents under typed reports.
-const REPORT_DESCRIPTION: &str = "Report to your parent. This is the only way to message your parent or other ancestors. Use it only for these three reasons, and never for progress updates:\n- `blocked`: you hit something unexpected and need instructions to continue. Your turn ends and you wait; your parent replies with a follow-up.\n- `answer`: reply to a question an ancestor sent you while you work. Allowed only when an ancestor message is waiting for an answer; your turn continues.\n- `final`: your task is done. Include everything your parent needs: what you did, results, and anything useful. Your turn ends, and unless you were spawned as `persistent` you are closed.\nEnding your turn without calling report delivers your last message as your final report.";
+/// Name of the typed-report tool. It is a plain top-level function, never namespaced: the server
+/// accepts only its own configured tools in the reserved `collaboration` namespace.
+pub(crate) const REPORT_TOOL_NAME: &str = "report_to_parent";
+
+/// `report_to_parent` description; the tool exists only for subagents under typed reports.
+const REPORT_DESCRIPTION: &str = "Report to your parent. This is the only way to message your parent or other ancestors. Use it only for these three reasons, and never for progress updates:\n- `blocked`: you hit something unexpected and need instructions to continue. Your turn ends and you wait; your parent replies with a follow-up.\n- `answer`: reply to a question an ancestor sent you while you work. Allowed only when an ancestor message is waiting for an answer; your turn continues.\n- `final`: your task is done. Include everything your parent needs: what you did, results, and anything useful. Your turn ends, and unless you were spawned as `persistent` you are closed.\nEnding your turn without calling report_to_parent delivers your last message as your final report.";
 
 pub fn create_report_tool() -> ToolSpec {
     let properties = BTreeMap::from([
@@ -261,15 +265,15 @@ pub fn create_report_tool() -> ToolSpec {
         ),
         (
             "message".to_string(),
+            // Plaintext: the server encrypts only its own reviewed collaboration parameters.
             JsonSchema::string(Some(
                 "The report: your question or blocker, your answer, or your final result."
                     .to_string(),
-            ))
-            .with_encrypted(),
+            )),
         ),
     ]);
     ToolSpec::Function(ResponsesApiTool {
-        name: "report".to_string(),
+        name: REPORT_TOOL_NAME.to_string(),
         description: REPORT_DESCRIPTION.to_string(),
         strict: false,
         defer_loading: None,
@@ -892,7 +896,7 @@ fn spawn_agent_tool_description_v2(
         .map(|guidance| format!("\n\n{guidance}"))
         .collect::<String>();
     let child_messages = if typed_reports {
-        "It reports to you only through its `report` tool: a final report when it finishes, a blocked report when it needs instructions, or an answer to a question you sent it."
+        "It reports to you only through its `report_to_parent` tool: a final report when it finishes, a blocked report when it needs instructions, or an answer to a question you sent it."
     } else {
         "It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes."
     };

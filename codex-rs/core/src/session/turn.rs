@@ -646,7 +646,7 @@ pub(crate) async fn run_turn(
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
                 model_calls = model_calls.saturating_add(1);
-                // `report(blocked|final)` ends the turn after the step that recorded it.
+                // `report_to_parent(blocked|final)` ends the turn after the step that recorded it.
                 if let Some(report) = turn_context
                     .extension_data
                     .get::<super::typed_reports::PendingTerminalReport>()

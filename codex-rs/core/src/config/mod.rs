@@ -1493,7 +1493,7 @@ pub struct MultiAgentV2Config {
     pub disable_direct_message: bool,
     /// Lets non-ancestor agents start turns in each other. See `sibling_wake` in the TOML config.
     pub sibling_wake: bool,
-    /// Subagents report only through `report`, and task agents close after their final report.
+    /// Subagents report only through `report_to_parent`, and task agents close after their final report.
     /// See `typed_reports` in the TOML config.
     pub typed_reports: bool,
     /// Subagent model calls per turn before the wrap-up reminder; 0 disables it.

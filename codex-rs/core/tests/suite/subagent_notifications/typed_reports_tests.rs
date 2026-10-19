@@ -1,4 +1,4 @@
-//! Typed subagent reports: `report(blocked|final)` ends the child's turn and reaches the root,
+//! Typed subagent reports: `report_to_parent(blocked|final)` ends the child's turn and reaches the root,
 //! task agents close after their final report, persistent agents stay resumable, and a long
 //! subagent turn gets one wrap-up reminder.
 
@@ -35,12 +35,12 @@ fn peer_message(response: &str, message: &str) -> Vec<Value> {
 
 fn report_call(response: &str, kind: &str, message: &str) -> Result<Vec<Value>> {
     let arguments = serde_json::to_string(&json!({ "kind": kind, "message": message }))?;
-    Ok(peer_call(
-        response,
-        &format!("{response}-call"),
-        "report",
-        &arguments,
-    ))
+    // `report_to_parent` is a plain top-level function, outside the reserved namespace.
+    Ok(vec![
+        ev_response_created(response),
+        ev_function_call(&format!("{response}-call"), "report_to_parent", &arguments),
+        ev_completed(response),
+    ])
 }
 
 fn chunk(events: Vec<Value>) -> Vec<StreamingSseChunk> {
@@ -409,7 +409,7 @@ async fn long_subagent_turn_gets_one_wrap_up_reminder() -> Result<()> {
     assert_eq!(reminders, vec![0, 0, 1, 1]);
     let third = &run.requests_for(run.worker_thread_id).await[2];
     assert!(third.to_string().contains(
-        "You have made 2 model calls on this task. Finish the current step, then report(kind=\\\"final\\\")"
+        "You have made 2 model calls on this task. Finish the current step, then report_to_parent(kind=\\\"final\\\")"
     ));
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! `report`: the only way a subagent messages its ancestors under typed reports.
+//! `report_to_parent`: the only way a subagent messages its ancestors under typed reports.
 //!
 //! `blocked` and `final` end the turn and reach the parent as its terminal report. `answer`
 //! replies to an ancestor's question without ending the turn and spends one answer credit.
@@ -11,11 +11,12 @@ use crate::session::typed_reports::PendingTerminalReport;
 use crate::session::typed_reports::TerminalReportKind;
 use crate::session::typed_reports::typed_report_agent_path;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME;
 use crate::tools::handlers::multi_agents_spec::create_report_tool;
 use codex_tools::ToolSpec;
 
-/// Model-visible rejection for `report(answer)` without an unanswered ancestor message.
-pub(crate) const ANSWER_WITHOUT_QUESTION: &str = "report(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report(kind=\"blocked\") if you need instructions to continue, or report(kind=\"final\") when your task is done.";
+/// Model-visible rejection for `report_to_parent(answer)` without an unanswered ancestor message.
+pub(crate) const ANSWER_WITHOUT_QUESTION: &str = "report_to_parent(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report_to_parent(kind=\"blocked\") if you need instructions to continue, or report_to_parent(kind=\"final\") when your task is done.";
 
 pub(crate) struct Handler;
 
@@ -36,7 +37,7 @@ struct ReportArgs {
 
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("report")
+        ToolName::plain(REPORT_TOOL_NAME)
     }
 
     fn spec(&self) -> ToolSpec {
@@ -63,22 +64,17 @@ async fn handle_report(
     let arguments = function_arguments(invocation.payload.clone())?;
     let args: ReportArgs = parse_arguments(&arguments)?;
     let message = message_content(args.message)?;
-    let ToolInvocation {
-        session,
-        turn,
-        source,
-        ..
-    } = invocation;
+    let ToolInvocation { session, turn, .. } = invocation;
     if typed_report_agent_path(&turn).is_none() {
-        return Err(FunctionCallError::RespondToModel(
-            "report is only available to subagents with typed reports enabled.".to_string(),
-        ));
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{REPORT_TOOL_NAME} is only available to subagents with typed reports enabled."
+        )));
     }
     let terminal_kind = match args.kind {
         ReportKind::Blocked => TerminalReportKind::Blocked,
         ReportKind::Final => TerminalReportKind::Final,
         ReportKind::Answer => {
-            return send_answer(&session, &turn, message, &source).await;
+            return send_answer(&session, &turn, message).await;
         }
     };
     if turn.extension_data.get::<PendingTerminalReport>().is_some() {
@@ -106,7 +102,6 @@ async fn send_answer(
     session: &std::sync::Arc<crate::session::session::Session>,
     turn: &std::sync::Arc<crate::session::turn_context::TurnContext>,
     message: String,
-    source: &crate::tools::context::ToolCallSource,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let Some(ancestor_path) = session.take_answer_credit() else {
         return Err(FunctionCallError::RespondToModel(
@@ -124,7 +119,8 @@ async fn send_answer(
                 session.thread_id,
                 ancestor,
                 resume_config,
-                agent_message_from_tool(message, source),
+                // The tool is fork-owned and its arguments are never encrypted.
+                AgentMessage::Plaintext(message),
                 TurnStartOptions {
                     parent_turn_id: Some(turn.sub_id.clone()),
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),

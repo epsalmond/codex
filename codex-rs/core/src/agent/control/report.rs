@@ -1,6 +1,6 @@
 //! Delivers typed subagent reports that are not terminal results.
 //!
-//! A `report(answer)` replies to an ancestor's question. It reaches a running ancestor at its next
+//! A `report_to_parent(answer)` replies to an ancestor's question. It reaches a running ancestor at its next
 //! boundary without a new turn, and starts a turn in an idle one so an ancestor that asked and
 //! went idle waiting is woken. The root follows its child-report wake mode instead.
 

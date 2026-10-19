@@ -12854,7 +12854,7 @@ async fn set_total_token_usage(sess: &Session, total_token_usage: TokenUsage) {
     }));
 }
 
-/// A turn ended by `report(blocked|final)` does not sample again, so a follow-up that joined it
+/// A turn ended by `report_to_parent(blocked|final)` does not sample again, so a follow-up that joined it
 /// returns to the mailbox to start the next turn instead of being recorded unread.
 #[test_case(true; "ended by typed report")]
 #[test_case(false; "ordinary turn end")]

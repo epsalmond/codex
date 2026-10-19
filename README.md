@@ -318,7 +318,9 @@ async_process_completion = false
 ### Typed subagent reports
 
 A MultiAgentV2 subagent reports to its parent and other ancestors only through
-its `report` tool, for one of three reasons:
+its `report_to_parent` tool, for one of three reasons. The tool is a plain
+top-level function: the server accepts only its own tools in the reserved
+`collaboration` namespace.
 
 - `blocked`: it hit something unexpected and needs instructions. Its turn ends,
   the parent receives a `BLOCKED` report, and a `followup_task` resumes it.
@@ -326,7 +328,7 @@ its `report` tool, for one of three reasons:
   Each such message allows one answer; without one the call is refused. The
   answer reaches a running ancestor at its next step and wakes an idle one.
 - `final`: it is done. Its turn ends and the parent receives the result as a
-  `FINAL_ANSWER`, exactly as when a turn ends without `report`.
+  `FINAL_ANSWER`, exactly as when a turn ends without `report_to_parent`.
 
 A subagent's `send_message` or `followup_task` to an ancestor is refused;
 sibling, cousin, and descendant messaging is unchanged. An agent's lifetime

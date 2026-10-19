@@ -356,7 +356,7 @@ pub struct MultiAgentV2ConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sibling_wake: Option<bool>,
     /// Typed subagent reports. Defaults to true: each subagent reports to its ancestors only
-    /// through `report` (`blocked`, `answer`, or `final`), cannot `send_message` or
+    /// through `report_to_parent` (`blocked`, `answer`, or `final`), cannot `send_message` or
     /// `followup_task` its ancestors, and an agent spawned with `lifetime = "task"` (the default)
     /// is closed after its final report. Set false to restore free-form reports and keep
     /// finished agents resumable.
