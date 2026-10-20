@@ -59,6 +59,8 @@ pub(crate) struct AgentNavigationState {
     dismissed_threads: HashSet<ThreadId>,
     /// Spawned children with no observed turn yet; local dismissal skips them.
     awaiting_first_turn: HashSet<ThreadId>,
+    /// Children seen running, finishing, or failing; late spawn hints cannot mark them pending.
+    turn_observed: HashSet<ThreadId>,
     /// Confirmed spawned descendants, including legacy children without agent paths.
     subagent_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
@@ -220,7 +222,7 @@ impl AgentNavigationState {
         if self.threads.contains_key(&thread_id) {
             self.picker_state.set_error(thread_id, is_error);
             if is_error {
-                self.awaiting_first_turn.remove(&thread_id);
+                self.note_turn_observed(thread_id);
             }
         }
     }
@@ -228,7 +230,7 @@ impl AgentNavigationState {
     pub(crate) fn set_error_from_discovery(&mut self, thread_id: ThreadId, is_error: bool) {
         if self.threads.contains_key(&thread_id) {
             if is_error {
-                self.awaiting_first_turn.remove(&thread_id);
+                self.note_turn_observed(thread_id);
             }
             self.picker_state
                 .set_error_without_revision(thread_id, is_error);
@@ -327,12 +329,12 @@ impl AgentNavigationState {
         entry.agent_path = Some(activity.agent_path);
         // `Started` reports the spawn, not a turn: the child's first turn may still be pending.
         // `Completed`/`Interrupted` prove a turn ended.
-        if activity.is_running_hint {
-            if !entry.is_closed {
-                self.awaiting_first_turn.insert(activity.thread_id);
-            }
-        } else {
+        // A late hint for a child whose turn was already observed must not pin it as pending.
+        if !activity.is_running_hint {
             self.awaiting_first_turn.remove(&activity.thread_id);
+            self.turn_observed.insert(activity.thread_id);
+        } else if !entry.is_closed && !self.turn_observed.contains(&activity.thread_id) {
+            self.awaiting_first_turn.insert(activity.thread_id);
         }
         // Spawn hints never follow a stop for the same child, so a stopped child stays stopped
         // here; its later turns arrive as turn/status notifications or `Interacted` activity.
@@ -357,7 +359,19 @@ impl AgentNavigationState {
 
     /// Any turn completion, including failures, proves the child has run.
     pub(crate) fn note_turn_completed(&mut self, thread_id: ThreadId) {
+        self.note_turn_observed(thread_id);
+    }
+
+    /// Marks a spawned child pending unless any of its turns was already observed.
+    pub(super) fn note_awaiting_first_turn(&mut self, thread_id: ThreadId) {
+        if !self.turn_observed.contains(&thread_id) {
+            self.awaiting_first_turn.insert(thread_id);
+        }
+    }
+
+    fn note_turn_observed(&mut self, thread_id: ThreadId) {
         self.awaiting_first_turn.remove(&thread_id);
+        self.turn_observed.insert(thread_id);
     }
 
     /// Records an authoritative turn start from the thread itself or a backend read.
@@ -392,6 +406,7 @@ impl AgentNavigationState {
             if is_running {
                 self.dismissed_threads.remove(&thread_id);
                 self.awaiting_first_turn.remove(&thread_id);
+                self.turn_observed.insert(thread_id);
             }
             self.picker_state.bump_status_revision(thread_id);
         }
@@ -403,6 +418,7 @@ impl AgentNavigationState {
             if is_running {
                 self.dismissed_threads.remove(&thread_id);
                 self.awaiting_first_turn.remove(&thread_id);
+                self.turn_observed.insert(thread_id);
             }
         }
     }
@@ -448,6 +464,7 @@ impl AgentNavigationState {
         self.picker_excluded_threads.clear();
         self.dismissed_threads.clear();
         self.awaiting_first_turn.clear();
+        self.turn_observed.clear();
         self.subagent_threads.clear();
         self.picker_refresh = None;
     }
@@ -466,6 +483,7 @@ impl AgentNavigationState {
         self.picker_excluded_threads.remove(&thread_id);
         self.dismissed_threads.remove(&thread_id);
         self.awaiting_first_turn.remove(&thread_id);
+        self.turn_observed.remove(&thread_id);
         self.subagent_threads.remove(&thread_id);
     }
 

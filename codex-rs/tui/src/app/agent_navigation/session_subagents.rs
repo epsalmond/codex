@@ -18,7 +18,7 @@ impl AgentNavigationState {
             .get(&thread_id)
             .is_some_and(|entry| entry.is_running || entry.is_closed)
         {
-            self.awaiting_first_turn.insert(thread_id);
+            self.note_awaiting_first_turn(thread_id);
         }
     }
 
