@@ -89,6 +89,15 @@ impl App {
             return;
         }
         for (thread_id, result) in results {
+            // A list requested before the agent's turn started is stale: the turn consumes
+            // delivered results, and the jobs are relisted once it completes.
+            if self
+                .agent_navigation
+                .get(&thread_id)
+                .is_some_and(|entry| entry.is_running)
+            {
+                continue;
+            }
             let jobs = result
                 .inspect_err(|error| {
                     tracing::debug!(%error, %thread_id, "failed to list subagent pending jobs");
@@ -115,16 +124,22 @@ fn pending_job(completion: ThreadPendingCompletion) -> AgentPendingJob {
         command,
         started_at: completion.created_at,
         finished: completion.status == ThreadPendingCompletionStatus::Ready,
+        wakes_owner: completion.wakes_owner,
     }
 }
 
-/// The idle row status, extended with pending work once it has been listed.
+/// The idle row status, extended with pending work once it has been listed. Only jobs whose
+/// result starts the agent's turn count as waiting; the rest are marked "no wake".
 pub(super) fn idle_status_label(jobs: Option<&[AgentPendingJob]>) -> String {
-    match jobs {
-        None => "idle".to_string(),
-        Some([]) => "idle · nothing pending".to_string(),
-        Some([_]) => "idle · waiting on 1 job".to_string(),
-        Some(jobs) => format!("idle · waiting on {} jobs", jobs.len()),
+    let Some(jobs) = jobs else {
+        return "idle".to_string();
+    };
+    let plural = |count: usize| if count == 1 { "job" } else { "jobs" };
+    let waking = jobs.iter().filter(|job| job.wakes_owner).count();
+    match (waking, jobs.len()) {
+        (_, 0) => "idle · nothing pending".to_string(),
+        (0, total) => format!("idle · {total} {}, no wake", plural(total)),
+        (waking, _) => format!("idle · waiting on {waking} {}", plural(waking)),
     }
 }
 
@@ -151,7 +166,8 @@ impl AgentPickerRowDetails {
                 let elapsed = u64::try_from(now.saturating_sub(job.started_at)).unwrap_or(0);
                 format!("running {}", fmt_elapsed_compact(elapsed))
             };
-            lines.push(format!("  • {} · {state}", job.command));
+            let wake = if job.wakes_owner { "" } else { " · no wake" };
+            lines.push(format!("  • {} · {state}{wake}", job.command));
         }
         lines
     }

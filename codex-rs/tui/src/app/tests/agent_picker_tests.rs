@@ -687,6 +687,7 @@ async fn idle_picker_rows_show_pending_jobs_once_listed() -> Result<()> {
         command: command.to_string(),
         started_at: 1,
         finished,
+        wakes_owner: true,
     };
     app.agent_navigation
         .set_pending_jobs(root, Some(Vec::new()));
@@ -712,6 +713,19 @@ async fn idle_picker_rows_show_pending_jobs_once_listed() -> Result<()> {
 
     // A new turn consumes delivered results, so the stale count is dropped until relisted.
     app.cache_agent_picker_notification(delivered, &turn_started_notification(delivered, "turn-2"));
+    assert_eq!(
+        app.agent_navigation
+            .picker_details(&delivered)
+            .and_then(|details| details.pending_jobs.clone()),
+        None
+    );
+
+    // A list that was in flight when the turn started must not restore the consumed jobs.
+    app.agent_navigation.mark_running(delivered);
+    app.apply_agent_picker_pending_jobs(
+        root,
+        vec![(delivered, Ok(vec![job("sleep 5", /*finished*/ true)]))],
+    );
     assert_eq!(
         app.agent_navigation
             .picker_details(&delivered)

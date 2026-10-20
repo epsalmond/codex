@@ -68,6 +68,8 @@ pub(crate) struct AgentPendingJob {
     /// Unix seconds when the job started.
     pub(crate) started_at: i64,
     pub(crate) finished: bool,
+    /// Publication of the result starts the agent's turn on its own.
+    pub(crate) wakes_owner: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
