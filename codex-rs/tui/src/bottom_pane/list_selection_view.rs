@@ -69,6 +69,10 @@ const MIN_LIST_WIDTH_FOR_SIDE: u16 = 40;
 /// panel when side-by-side layout is active.
 const SIDE_CONTENT_GAP: u16 = 2;
 
+/// Upper bound on the area reserved for per-row details, so a row with a long
+/// job list cannot push the popup over the status bar and footer.
+const MAX_ROW_DETAILS_HEIGHT: u16 = 6;
+
 /// Shared menu-surface horizontal inset (2 cells per side) used by selection popups.
 const MENU_SURFACE_HORIZONTAL_INSET: u16 = 4;
 
@@ -201,7 +205,9 @@ pub(crate) struct SelectionItem {
     pub category_tag: Option<String>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
-    /// Wrapped content below the list for the highlighted row.
+    /// Wrapped content below the list for the highlighted row. The view reserves
+    /// the tallest row's height, capped at `MAX_ROW_DETAILS_HEIGHT`, so the
+    /// renderable should summarize anything that does not fit its area.
     pub details: Option<Box<dyn Renderable>>,
     pub is_current: bool,
     pub is_disabled: bool,
@@ -1123,16 +1129,14 @@ impl ListSelectionView {
             return Vec::new();
         };
         let mut lines = wrap_styled_line(hint, width);
-        if self.reserve_result_rows {
-            let height = self
+        // Row-specific hints wrap differently, so reserve the tallest when the
+        // view keeps a stable height across selection changes.
+        if self.reserve_result_rows || self.has_row_details() {
+            let candidates = self
                 .tab_footer_hints
                 .iter()
-                .map(|(_, hint)| wrap_styled_line(hint, width).len())
-                .chain(
-                    self.footer_hint
-                        .iter()
-                        .map(|hint| wrap_styled_line(hint, width).len()),
-                )
+                .map(|(_, hint)| hint)
+                .chain(self.footer_hint.iter())
                 .chain(
                     self.items
                         .iter()
@@ -1149,9 +1153,18 @@ impl ListSelectionView {
                             ]
                             .into_iter()
                             .flatten()
-                        })
-                        .map(|hint| wrap_styled_line(hint, width).len()),
-                )
+                        }),
+                );
+            // Rows usually share a few hints; wrap each distinct one once.
+            let mut distinct: Vec<&Line<'static>> = Vec::new();
+            for hint in candidates {
+                if !distinct.contains(&hint) {
+                    distinct.push(hint);
+                }
+            }
+            let height = distinct
+                .into_iter()
+                .map(|hint| wrap_styled_line(hint, width).len())
                 .max()
                 .unwrap_or(lines.len());
             lines.resize(height.max(lines.len()), Line::default());
@@ -1247,6 +1260,38 @@ impl ListSelectionView {
         self.stacked_side_content
             .as_deref()
             .unwrap_or_else(|| self.side_content.as_ref())
+    }
+
+    /// Height of the stacked side area. When rows carry their own details, the
+    /// area is sized for the tallest row (capped) rather than the highlighted one,
+    /// so moving the selection never resizes or moves the popup.
+    fn all_row_details(&self) -> impl Iterator<Item = &dyn Renderable> {
+        self.items
+            .iter()
+            .chain(self.search_items.iter())
+            .chain(self.tabs.iter().flat_map(|tab| tab.items.iter()))
+            .filter_map(|item| item.details.as_deref())
+    }
+
+    /// Views whose rows carry their own details keep a selection-independent height.
+    fn has_row_details(&self) -> bool {
+        self.all_row_details().next().is_some()
+    }
+
+    fn stacked_side_height(&self, width: u16) -> u16 {
+        let fallback = self
+            .stacked_side_content
+            .as_deref()
+            .unwrap_or_else(|| self.side_content.as_ref());
+        if !self.has_row_details() {
+            return fallback.desired_height(width);
+        }
+        self.all_row_details()
+            .map(|details| details.desired_height(width))
+            .max()
+            .unwrap_or(/*default*/ 0)
+            .min(MAX_ROW_DETAILS_HEIGHT)
+            .max(fallback.desired_height(width))
     }
 
     /// Returns `Some(side_width)` when the content area is wide enough for a
@@ -1702,7 +1747,7 @@ impl Renderable for ListSelectionView {
             // Side-by-side — side content shares list rows vertically so it
             // doesn't add to total height.
         } else {
-            let side_h = self.stacked_side_content().desired_height(inner_width);
+            let side_h = self.stacked_side_height(inner_width);
             if side_h > 0 {
                 height = height.saturating_add(1 + side_h);
             }
@@ -1810,7 +1855,7 @@ impl Renderable for ListSelectionView {
 
         // Stacked (fallback) side content height — only used when not side-by-side.
         let stacked_side_h = if side_w.is_none() {
-            self.stacked_side_content().desired_height(inner_width)
+            self.stacked_side_height(inner_width)
         } else {
             0
         };
