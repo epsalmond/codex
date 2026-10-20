@@ -107,7 +107,8 @@ async fn handle_close_agents(
         .collect::<Vec<_>>();
 
     let mut failed = Vec::new();
-    let selected = if args.targets.len() == 1 && args.targets[0] == CLOSE_AGENTS_IDLE_TARGET {
+    let close_idle = args.targets.len() == 1 && args.targets[0] == CLOSE_AGENTS_IDLE_TARGET;
+    let selected = if close_idle {
         idle_subtree_roots(&descendants)
     } else {
         let mut selected = Vec::new();
@@ -141,6 +142,18 @@ async fn handle_close_agents(
     let mut closed = Vec::with_capacity(selected.len());
     for agent in selected {
         let agent_name = agent_name(agent);
+        // Earlier closes take time; skip a subtree that started work since it was listed
+        // rather than stop it.
+        if close_idle
+            && let Some(path) = agent.metadata.agent_path.as_ref()
+            && !subtree_still_idle(&session, &turn, path).await
+        {
+            failed.push(CloseFailure {
+                target: agent_name,
+                error: "became busy before it could be closed; left open".to_string(),
+            });
+            continue;
+        }
         match agent_control.close_v2_agent(agent.thread_id).await {
             Ok(()) => closed.push(ClosedAgent {
                 agent_name,
@@ -156,6 +169,25 @@ async fn handle_close_agents(
         }
     }
     Ok(CloseAgentsResult { closed, failed })
+}
+
+/// Whether `path` and its open descendants are all still idle.
+async fn subtree_still_idle(
+    session: &std::sync::Arc<crate::session::session::Session>,
+    turn: &std::sync::Arc<crate::session::turn_context::TurnContext>,
+    path: &AgentPath,
+) -> bool {
+    session
+        .services
+        .agent_control
+        .list(
+            session.thread_id,
+            turn.parent_thread_id,
+            &turn.session_source,
+            Some(path.as_str()),
+        )
+        .await
+        .is_ok_and(|agents| agents.iter().all(ListedAgent::is_idle))
 }
 
 fn agent_name(agent: &ListedAgent) -> String {

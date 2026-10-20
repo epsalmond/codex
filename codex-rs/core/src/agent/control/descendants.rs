@@ -81,11 +81,23 @@ impl ThreadManagerState {
             }
         }
 
+        let loaded = {
+            let threads = self.threads.read().await;
+            edges
+                .iter()
+                .map(|(thread_id, _)| {
+                    threads
+                        .get(thread_id)
+                        .filter(|thread| !thread.session_source.is_internal())
+                        .cloned()
+                })
+                .collect::<Vec<_>>()
+        };
         let mut descendants = Vec::with_capacity(edges.len());
-        for (thread_id, edge_status) in edges {
-            let live_status = match self.get_thread(thread_id).await {
-                Ok(thread) => Some(thread.agent_status().await),
-                Err(_) => None,
+        for ((thread_id, edge_status), thread) in edges.into_iter().zip(loaded) {
+            let live_status = match thread {
+                Some(thread) => Some(thread.agent_status().await),
+                None => None,
             };
             descendants.push(SpawnedDescendant {
                 thread_id,

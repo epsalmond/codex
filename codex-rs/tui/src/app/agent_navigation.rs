@@ -63,6 +63,8 @@ pub(crate) struct AgentNavigationState {
     turn_observed: HashSet<ThreadId>,
     /// Confirmed spawned descendants, including legacy children without agent paths.
     subagent_threads: HashSet<ThreadId>,
+    /// Unloaded descendants awaiting the backend's lifecycle; unconfirmed ones close.
+    pub(super) unload_checks: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<AgentPickerRefreshState>,
 }
@@ -466,6 +468,7 @@ impl AgentNavigationState {
         self.awaiting_first_turn.clear();
         self.turn_observed.clear();
         self.subagent_threads.clear();
+        self.unload_checks.clear();
         self.picker_refresh = None;
     }
 
@@ -485,6 +488,7 @@ impl AgentNavigationState {
         self.awaiting_first_turn.remove(&thread_id);
         self.turn_observed.remove(&thread_id);
         self.subagent_threads.remove(&thread_id);
+        self.unload_checks.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.

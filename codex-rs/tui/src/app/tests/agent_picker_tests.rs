@@ -959,6 +959,26 @@ async fn picker_lifecycle_follows_spawn_edges_not_load_state() -> Result<()> {
         1,
         "the unloaded open child still counts as open"
     );
+
+    // A local close after the request began outranks a stale "open".
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    let revisions = app.agent_navigation.status_revision_snapshot();
+    app.mark_agent_picker_thread_closed(unloaded_open);
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        revisions,
+        Ok(crate::app_event::AgentPickerThreadRefresh {
+            threads: vec![listed_subagent(
+                unloaded_open,
+                ThreadStatus::NotLoaded,
+                Some(ThreadSpawnEdgeStatus::Open),
+            )],
+            archived_thread_ids: HashSet::new(),
+        }),
+    );
+    assert!(app.agent_navigation.get(&unloaded_open).unwrap().is_closed);
     app_server.shutdown().await?;
     Ok(())
 }
@@ -988,5 +1008,19 @@ async fn unloading_a_session_subagent_leaves_it_open_until_the_backend_says_clos
         refresh_requested |= matches!(event, AppEvent::RefreshAgentPickerThreads);
     }
     assert!(refresh_requested);
+
+    // Without lifecycle from the backend, the unload counts as a close, as before.
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Err("thread/list failed".to_string()),
+    );
+    assert!(app.agent_navigation.get(&child).unwrap().is_closed);
+    app_server.shutdown().await?;
     Ok(())
 }

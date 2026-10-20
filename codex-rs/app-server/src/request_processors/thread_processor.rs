@@ -2828,10 +2828,14 @@ impl ThreadRequestProcessor {
             (None, None) => None,
         };
 
-        let relation_root = relation_filter.as_ref().map(|filter| match filter {
-            StoreThreadRelationFilter::DirectChildrenOf(thread_id)
-            | StoreThreadRelationFilter::DescendantsOf(thread_id) => *thread_id,
-        });
+        // Archived subagents are closed; only live listings need the lifecycle overlay.
+        let relation_root = relation_filter
+            .as_ref()
+            .filter(|_| archived != Some(true))
+            .map(|filter| match filter {
+                StoreThreadRelationFilter::DirectChildrenOf(thread_id)
+                | StoreThreadRelationFilter::DescendantsOf(thread_id) => *thread_id,
+            });
 
         let requested_page_size = limit
             .map(|value| value as usize)

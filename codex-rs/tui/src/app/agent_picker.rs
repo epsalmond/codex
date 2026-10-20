@@ -117,6 +117,23 @@ impl App {
         });
     }
 
+    /// Closes unloaded descendants the backend did not list, or could not be asked about, as
+    /// before lifecycle data: with no spawn edge saying otherwise, an unload is a close.
+    /// Listed ones whose status changed mid-request wait for the next refresh.
+    fn close_unconfirmed_unloads(&mut self, returned: &HashSet<ThreadId>) {
+        let unconfirmed = self
+            .agent_navigation
+            .unload_checks
+            .iter()
+            .copied()
+            .filter(|thread_id| !returned.contains(thread_id))
+            .collect::<Vec<_>>();
+        for thread_id in unconfirmed {
+            self.agent_navigation.unload_checks.remove(&thread_id);
+            self.mark_agent_picker_thread_closed(thread_id);
+        }
+    }
+
     pub(super) fn refresh_agent_picker_previews(
         &mut self,
         app_server: &AppServerSession,
@@ -217,6 +234,7 @@ impl App {
             Ok(refresh) => refresh,
             Err(err) => {
                 tracing::warn!(%err, "failed to refresh agent picker descendants");
+                self.close_unconfirmed_unloads(/*returned*/ &HashSet::new());
                 self.agent_navigation.prune_untracked_picker_exclusions();
                 if completion.follow_up_requested {
                     self.refresh_agent_picker_threads(app_server, root);
@@ -224,6 +242,12 @@ impl App {
                 return;
             }
         };
+        let returned = refresh
+            .threads
+            .iter()
+            .filter_map(|thread| ThreadId::from_string(&thread.id).ok())
+            .collect::<HashSet<_>>();
+        let mut confirmed_unloads = Vec::new();
         for thread in refresh.threads {
             let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
                 continue;
@@ -251,12 +275,20 @@ impl App {
                 .as_ref()
                 .and_then(|extra| extra.spawn_edge_status);
             let is_closed = match edge_status {
-                Some(status) => status == ThreadSpawnEdgeStatus::Closed,
+                // Closing is permanent, so a closed edge outranks newer local state.
+                Some(ThreadSpawnEdgeStatus::Closed) => true,
+                // A local close or reopen since this request started is newer than "open".
+                Some(ThreadSpawnEdgeStatus::Open) if status_unchanged => false,
                 None if status_unchanged => {
                     !live && matches!(thread.status, ThreadStatus::NotLoaded)
                 }
-                None => previous.is_some_and(|entry| entry.is_closed),
+                Some(ThreadSpawnEdgeStatus::Open) | None => {
+                    previous.is_some_and(|entry| entry.is_closed)
+                }
             };
+            if status_unchanged {
+                confirmed_unloads.push(thread_id);
+            }
             if edge_status.is_none() && !is_closed && previous.is_some_and(|entry| entry.is_closed)
             {
                 // An idle-evicted child reloads under the same id when it gets a follow-up.
@@ -304,6 +336,10 @@ impl App {
                 );
             }
         }
+        for thread_id in confirmed_unloads {
+            self.agent_navigation.unload_checks.remove(&thread_id);
+        }
+        self.close_unconfirmed_unloads(&returned);
         self.agent_navigation.prune_untracked_picker_exclusions();
         if completion.follow_up_requested {
             self.refresh_agent_picker_threads(app_server, root);
@@ -549,7 +585,7 @@ impl App {
                 {
                     // Idle children are unloaded but stay open; a close also unloads them.
                     // Only the backend's spawn edges tell the two apart, so re-read them.
-                    self.agent_navigation.mark_stopped(thread_id);
+                    self.agent_navigation.note_unloaded(thread_id);
                     self.app_event_tx.send(AppEvent::RefreshAgentPickerThreads);
                 }
                 ThreadStatus::NotLoaded => {}

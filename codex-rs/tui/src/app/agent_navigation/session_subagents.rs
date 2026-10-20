@@ -119,6 +119,14 @@ impl AgentNavigationState {
             .collect()
     }
 
+    /// Records that a descendant unloaded. Idle children unload but stay open, so it stays
+    /// open, stopped, until the next picker refresh reports its lifecycle; a refresh that
+    /// cannot confirm it closes it.
+    pub(crate) fn note_unloaded(&mut self, thread_id: ThreadId) {
+        self.mark_stopped(thread_id);
+        self.unload_checks.insert(thread_id);
+    }
+
     /// Whether `thread_id` is a subagent in the root session's tree.
     pub(crate) fn is_session_descendant(&self, root: ThreadId, thread_id: ThreadId) -> bool {
         self.session_descendants(root)

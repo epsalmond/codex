@@ -290,7 +290,7 @@ pub fn create_report_tool() -> ToolSpec {
 pub(crate) const CLOSE_AGENTS_TOOL_NAME: &str = "close_agents";
 /// The `close_agents` target that selects every idle descendant.
 pub(crate) const CLOSE_AGENTS_IDLE_TARGET: &str = "idle";
-const CLOSE_AGENTS_DESCRIPTION: &str = "Close agents you spawned, and their descendants, once you no longer need them. Closing is permanent: a closed agent cannot be messaged or resumed, and anything still running in it is stopped. Open agents count toward the concurrency limit until closed, including idle agents whose runtime is unloaded (`list_agents` status \"unloaded\"). Pass task names or paths from `spawn_agent`/`list_agents`, or `[\"idle\"]` to close every idle descendant whose own descendants are idle too. Returns the closed agents with their previous status, and any targets that failed.";
+const CLOSE_AGENTS_DESCRIPTION: &str = "Close agents you spawned, and their descendants, once you no longer need them. Closing is permanent: a closed agent cannot be messaged or resumed, and anything still running in it is stopped. Open agents count toward the concurrency limit until closed, including idle agents whose runtime is unloaded (`list_agents` status \"unloaded\"). Pass task names or paths from `spawn_agent`/`list_agents`, or exactly `[\"idle\"]` to close every idle descendant whose own descendants are idle too (an agent named `idle` is closed by its full path). Returns the closed agents with their previous status, and any targets that failed.";
 
 pub fn create_close_agents_tool() -> ToolSpec {
     let properties = BTreeMap::from([(

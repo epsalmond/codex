@@ -167,7 +167,7 @@ impl From<ThreadSource> for CoreThreadSource {
 pub enum ThreadSpawnEdgeStatus {
     /// The subagent is open, including when it is idle and unloaded.
     Open,
-    /// The subagent, or an ancestor subagent, was closed.
+    /// The subagent, or a subagent between it and the listed parent or ancestor, was closed.
     Closed,
 }
 

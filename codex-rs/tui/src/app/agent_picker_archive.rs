@@ -119,13 +119,19 @@ impl App {
         if !self.agent_navigation.queue_picker_refresh(root) {
             self.refresh_agent_picker_threads(app_server, root);
         }
-        let noun = if closed == 1 { "subagent" } else { "subagents" };
-        self.chat_widget
-            .add_info_message(format!("Closed {closed} idle {noun}."), /*hint*/ None);
-        if let Some(error) = failures.first() {
+        let subagents = |count: usize| if count == 1 { "subagent" } else { "subagents" };
+        if closed > 0 {
+            self.chat_widget.add_info_message(
+                format!("Closed {closed} idle {}.", subagents(closed)),
+                /*hint*/ None,
+            );
+        }
+        if !failures.is_empty() {
             self.chat_widget.add_error_message(format!(
-                "Failed to close {} idle subagent(s): {error}",
-                failures.len()
+                "Failed to close {} idle {}: {}",
+                failures.len(),
+                subagents(failures.len()),
+                failures.join("; ")
             ));
         }
         if self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID) {
