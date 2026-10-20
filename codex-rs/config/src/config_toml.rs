@@ -1140,8 +1140,7 @@ pub struct AgentRoleToml {
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
 
-    /// Default MultiAgentV2 lifetime for agents spawned with this role. An explicit
-    /// `spawn_agent` `lifetime` wins; without either, agents use `task`.
+    /// MultiAgentV2 lifetime for agents spawned with this role; without it, agents use `task`.
     pub lifetime: Option<AgentLifetime>,
 }
 

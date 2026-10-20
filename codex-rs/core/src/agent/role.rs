@@ -381,6 +381,13 @@ pub(crate) mod spawn_tool_spec {
     }
 
     fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
+        // Lifetime comes only from the role, so the model needs it to pick a resumable agent.
+        let lifetime_note = match declaration.lifetime {
+            Some(codex_config::config_toml::AgentLifetime::Persistent) => {
+                "\n- Lifetime: `persistent`. Agents of this type stay resumable after their final report."
+            }
+            _ => "",
+        };
         if let Some(description) = &declaration.description {
             let locked_settings_note = declaration
                 .config_file
@@ -426,9 +433,9 @@ pub(crate) mod spawn_tool_spec {
                     format!("{model_note}{provider_note}")
                 })
                 .unwrap_or_default();
-            format!("{name}: {{\n{description}{locked_settings_note}\n}}")
+            format!("{name}: {{\n{description}{locked_settings_note}{lifetime_note}\n}}")
         } else {
-            format!("{name}: no description")
+            format!("{name}: no description{lifetime_note}")
         }
     }
 }

@@ -65,7 +65,7 @@
               "$ref": "#/definitions/AgentLifetime"
             }
           ],
-          "description": "Default MultiAgentV2 lifetime for agents spawned with this role. An explicit `spawn_agent` `lifetime` wins; without either, agents use `task`."
+          "description": "MultiAgentV2 lifetime for agents spawned with this role; without it, agents use `task`."
         },
         "nickname_candidates": {
           "description": "Candidate nicknames for agents spawned with this role.",
