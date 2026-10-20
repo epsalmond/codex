@@ -660,3 +660,19 @@ fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<Str
         })
         .unwrap_or_default()
 }
+
+#[test]
+fn report_to_parent_arguments_are_kept_out_of_tool_logs() {
+    let payload = ToolPayload::Function {
+        arguments: r#"{"kind":"final","message":"secret result"}"#.to_string(),
+    };
+    let call = ToolCall {
+        tool_name: ToolName::plain(crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME),
+        call_id: "call-report".to_string(),
+        payload: payload.clone(),
+        encrypted_function_args: None,
+    };
+    let source = call.direct_source();
+    assert_eq!(source, ToolCallSource::DirectPlaintextMessage);
+    assert_eq!(tool_log_payload(&payload, &source), "[plaintext arguments]");
+}

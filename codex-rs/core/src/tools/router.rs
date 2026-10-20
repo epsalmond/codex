@@ -54,6 +54,13 @@ pub struct ToolCall {
 
 impl ToolCall {
     pub(crate) fn direct_source(&self) -> ToolCallSource {
+        // `report_to_parent` is fork-owned and never encrypted, so its message is always plaintext
+        // and kept out of tool logs like plaintext collaboration messages.
+        if self.tool_name.namespace.is_none()
+            && self.tool_name.name == crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME
+        {
+            return ToolCallSource::DirectPlaintextMessage;
+        }
         if self.tool_name.namespace.as_deref() == Some("collaboration")
             && matches!(
                 self.tool_name.name.as_str(),
