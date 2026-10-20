@@ -2928,189 +2928,191 @@ async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
 
 /// The server rejects every request whose reserved `collaboration` namespace holds a tool it did not
 /// configure, or a configured tool whose parameter schema differs. So under every fork option the
-/// namespace must hold exactly upstream's tool names, each with upstream's property names, types,
-/// required list, and encrypted markers. Descriptions are not validated and may differ. The fork-only
+/// namespace must hold exactly upstream's tool names, each with upstream's full parameter schema:
+/// property schemas, required list, `additionalProperties`, and encrypted markers. Descriptions are
+/// not validated and may differ. The fork-only
 /// `report_to_parent` is a plain top-level function.
 #[tokio::test]
 async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
+    // Everything but descriptions: property names and schemas, enums, `required`, and
+    // `additionalProperties`.
     fn parameter_shape(parameters: &codex_tools::JsonSchema) -> serde_json::Value {
-        let parameters = serde_json::to_value(parameters).expect("serialize parameters");
-        let properties = parameters["properties"]
-            .as_object()
-            .map(|properties| {
-                properties
-                    .iter()
-                    .map(|(name, schema)| (name.clone(), schema["type"].clone()))
-                    .collect::<serde_json::Map<_, _>>()
-            })
-            .unwrap_or_default();
-        // The server encrypts only the reviewed parameters, so the marker is part of the schema.
-        let encrypted = properties
-            .keys()
-            .filter(|name| parameters["properties"][name.as_str()]["encrypted"] == json!(true))
-            .cloned()
-            .collect::<Vec<_>>();
-        json!({
-            "type": parameters["type"],
-            "properties": properties,
-            "required": parameters["required"],
-            "encrypted": encrypted,
-        })
+        fn strip_descriptions(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.remove("description");
+                    map.values_mut().for_each(strip_descriptions);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(strip_descriptions),
+                _ => {}
+            }
+        }
+        let mut parameters = serde_json::to_value(parameters).expect("serialize parameters");
+        strip_descriptions(&mut parameters);
+        parameters
     }
+    let string = json!({ "type": "string" });
+    // Upstream marks message bodies as reviewed encrypted parameters.
+    let encrypted = json!({ "type": "string", "encrypted": true });
+    let object = |properties: serde_json::Value, required: Option<serde_json::Value>| {
+        let mut schema = json!({
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": false,
+        });
+        if let Some(required) = required {
+            schema["required"] = required;
+        }
+        schema
+    };
     let upstream = BTreeMap::from([
         (
             "spawn_agent",
-            json!({
-                "type": "object",
-                "properties": {
-                    "agent_type": "string",
-                    "fork_turns": "string",
-                    "message": "string",
-                    "model": "string",
-                    "reasoning_effort": "string",
-                    "task_name": "string",
-                },
-                "required": ["task_name", "message"],
-                "encrypted": ["message"],
-            }),
+            object(
+                json!({
+                    "agent_type": string,
+                    "fork_turns": string,
+                    "message": encrypted,
+                    "model": string,
+                    "reasoning_effort": string,
+                    "task_name": string,
+                }),
+                Some(json!(["task_name", "message"])),
+            ),
         ),
         (
             "send_message",
-            json!({
-                "type": "object",
-                "properties": { "message": "string", "target": "string" },
-                "required": ["target", "message"],
-                "encrypted": ["message"],
-            }),
+            object(
+                json!({ "message": encrypted, "target": string }),
+                Some(json!(["target", "message"])),
+            ),
         ),
         (
             "followup_task",
-            json!({
-                "type": "object",
-                "properties": { "message": "string", "target": "string" },
-                "required": ["target", "message"],
-                "encrypted": ["message"],
-            }),
+            object(
+                json!({ "message": encrypted, "target": string }),
+                Some(json!(["target", "message"])),
+            ),
         ),
         (
             "wait_agent",
-            json!({
-                "type": "object",
-                "properties": { "timeout_ms": "number" },
-                "required": null,
-                "encrypted": [],
-            }),
+            object(json!({ "timeout_ms": { "type": "number" } }), None),
         ),
         (
             "interrupt_agent",
-            json!({
-                "type": "object",
-                "properties": { "target": "string" },
-                "required": ["target"],
-                "encrypted": [],
-            }),
+            object(json!({ "target": string }), Some(json!(["target"]))),
         ),
         (
             "list_agents",
-            json!({
-                "type": "object",
-                "properties": { "path_prefix": "string" },
-                "required": null,
-                "encrypted": [],
-            }),
+            object(json!({ "path_prefix": string }), None),
         ),
     ]);
-    for typed_reports in [false, true] {
-        for sibling_wake in [false, true] {
-            for subagent in [false, true] {
-                let plan = probe(|turn| {
-                    set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-                    update_config(turn, |config| {
-                        config.multi_agent_v2.typed_reports = typed_reports;
-                        config.multi_agent_v2.sibling_wake = sibling_wake;
-                        // Expose every optional upstream spawn_agent property.
-                        config.multi_agent_v2.expose_spawn_agent_model_overrides = true;
-                        config.agent_roles.insert(
-                            "researcher".to_string(),
-                            crate::config::AgentRoleConfig {
-                                description: Some("Research the assigned question.".to_string()),
-                                config_file: None,
-                                nickname_candidates: None,
-                                lifetime: None,
-                            },
-                        );
-                    });
-                    if subagent {
-                        turn.session_source =
-                            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                                parent_thread_id: ThreadId::new(),
-                                depth: 1,
-                                agent_path: Some(
-                                    AgentPath::try_from("/root/worker").expect("agent path"),
-                                ),
-                                agent_nickname: None,
-                                agent_role: None,
-                            });
-                        turn.wake_mode_active = true;
-                    }
-                })
-                .await;
-                let case = format!(
-                    "typed_reports={typed_reports} sibling_wake={sibling_wake} subagent={subagent}"
-                );
-                let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE)
-                else {
-                    panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace ({case})");
-                };
-                let mut seen = Vec::new();
-                for tool in &namespace.tools {
-                    let ResponsesApiNamespaceTool::Function(tool) = tool else {
-                        panic!("{case}: unexpected custom collaboration tool");
-                    };
-                    let expected = upstream.get(tool.name.as_str()).unwrap_or_else(|| {
-                        panic!(
-                            "{case}: {} is not an upstream collaboration tool",
-                            tool.name
-                        )
-                    });
-                    assert_eq!(
-                        &parameter_shape(&tool.parameters),
-                        expected,
-                        "{case}: {} parameters",
-                        tool.name
-                    );
-                    seen.push(tool.name.as_str());
+    // `all_options` exposes every optional upstream spawn_agent property; without it, no roles
+    // and no model overrides drop them all, as upstream does.
+    let cases = [false, true].into_iter().flat_map(|typed_reports| {
+        [false, true].into_iter().flat_map(move |sibling_wake| {
+            [false, true].into_iter().flat_map(move |subagent| {
+                [false, true]
+                    .map(|all_options| (typed_reports, sibling_wake, subagent, all_options))
+            })
+        })
+    });
+    for (typed_reports, sibling_wake, subagent, all_options) in cases {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.typed_reports = typed_reports;
+                config.multi_agent_v2.sibling_wake = sibling_wake;
+                config.multi_agent_v2.expose_spawn_agent_model_overrides = all_options;
+                if !all_options {
+                    return;
                 }
-                // Wake-mode subagents get child reports as new turns, so the fork drops
-                // `wait_agent`; omitting a reserved tool is accepted, adding one is not.
-                let mut expected = upstream.keys().copied().collect::<BTreeSet<_>>();
-                if subagent {
-                    expected.remove("wait_agent");
-                }
-                assert_eq!(
-                    seen.into_iter().collect::<BTreeSet<_>>(),
-                    expected,
-                    "{case}: {MULTI_AGENT_V2_NAMESPACE} tool names"
+                config.agent_roles.insert(
+                    "researcher".to_string(),
+                    crate::config::AgentRoleConfig {
+                        description: Some("Research the assigned question.".to_string()),
+                        config_file: None,
+                        nickname_candidates: None,
+                        lifetime: None,
+                    },
                 );
-                let report_namespaces = plan
-                    .namespace_functions
-                    .iter()
-                    .filter(|(_, tools)| tools.iter().any(|tool| tool == REPORT_TOOL_NAME))
-                    .map(|(namespace, _)| namespace.as_str())
-                    .collect::<Vec<_>>();
-                assert_eq!(report_namespaces, Vec::<&str>::new(), "{case}");
-                assert_eq!(
-                    matches!(
-                        plan.visible_specs
-                            .iter()
-                            .find(|spec| spec.name() == REPORT_TOOL_NAME),
-                        Some(ToolSpec::Function(_))
-                    ),
-                    typed_reports && subagent,
-                    "{case}: top-level {REPORT_TOOL_NAME}"
-                );
+            });
+            if subagent {
+                turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: ThreadId::new(),
+                    depth: 1,
+                    agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+                    agent_nickname: None,
+                    agent_role: None,
+                });
+                turn.wake_mode_active = true;
             }
+        })
+        .await;
+        let case = format!(
+            "typed_reports={typed_reports} sibling_wake={sibling_wake} subagent={subagent} all_options={all_options}"
+        );
+        let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+            panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace ({case})");
+        };
+        let mut seen = Vec::new();
+        for tool in &namespace.tools {
+            let ResponsesApiNamespaceTool::Function(tool) = tool else {
+                panic!("{case}: unexpected custom collaboration tool");
+            };
+            let mut expected = upstream
+                .get(tool.name.as_str())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{case}: {} is not an upstream collaboration tool",
+                        tool.name
+                    )
+                })
+                .clone();
+            if tool.name == "spawn_agent" && !all_options {
+                let properties = expected["properties"]
+                    .as_object_mut()
+                    .expect("spawn_agent properties");
+                for optional in ["agent_type", "model", "reasoning_effort"] {
+                    properties.remove(optional);
+                }
+            }
+            assert_eq!(
+                parameter_shape(&tool.parameters),
+                expected,
+                "{case}: {} parameters",
+                tool.name
+            );
+            seen.push(tool.name.as_str());
         }
+        // Wake-mode subagents get child reports as new turns, so the fork drops
+        // `wait_agent`; omitting a reserved tool is accepted, adding one is not.
+        let mut expected = upstream.keys().copied().collect::<BTreeSet<_>>();
+        if subagent {
+            expected.remove("wait_agent");
+        }
+        assert_eq!(
+            seen.into_iter().collect::<BTreeSet<_>>(),
+            expected,
+            "{case}: {MULTI_AGENT_V2_NAMESPACE} tool names"
+        );
+        let report_namespaces = plan
+            .namespace_functions
+            .iter()
+            .filter(|(_, tools)| tools.iter().any(|tool| tool == REPORT_TOOL_NAME))
+            .map(|(namespace, _)| namespace.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(report_namespaces, Vec::<&str>::new(), "{case}");
+        assert_eq!(
+            matches!(
+                plan.visible_specs
+                    .iter()
+                    .find(|spec| spec.name() == REPORT_TOOL_NAME),
+                Some(ToolSpec::Function(_))
+            ),
+            typed_reports && subagent,
+            "{case}: top-level {REPORT_TOOL_NAME}"
+        );
     }
 }
 

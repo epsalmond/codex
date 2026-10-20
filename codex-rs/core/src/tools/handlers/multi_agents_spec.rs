@@ -210,7 +210,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
-const SPAWN_AGENT_TYPED_REPORTS_GUIDANCE: &str = "An agent's lifetime comes from its agent type and defaults to `task`: a `task` agent is closed after its final report. To keep an agent's context across several tasks, use an agent type whose lifetime is `persistent`. For new work, spawn a fresh agent with a self-contained brief instead of following up with a finished one. A child that reports `BLOCKED` waits for your followup_task with instructions. To ask a running child a question, use send_message; it replies with an `ANSWER` message.";
+const SPAWN_AGENT_TYPED_REPORTS_GUIDANCE: &str = "An agent's lifetime comes from its agent type and defaults to `task`: a `task` agent is closed after its final report. To keep an agent's context across several tasks, use an agent type listed with lifetime `persistent`, if any. For new work, spawn a fresh agent with a self-contained brief instead of following up with a finished one. A child that reports `BLOCKED` waits for your followup_task with instructions. To ask a running child a question, use send_message; it replies with an `ANSWER` message.";
 
 /// `send_message` text for sibling and descendant messaging under the ancestor-only wake rule.
 const SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn: an idle target reads it at its next turn. Use this to share notes with sibling or cousin agents, which cannot start turns in each other.";

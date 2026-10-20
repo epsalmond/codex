@@ -912,6 +912,34 @@ fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
     assert!(!spec.contains("Explorers are fast and authoritative."));
 }
 
+/// Lifetime comes only from the role, so the agent_type list marks persistent roles.
+#[test]
+fn spawn_tool_spec_marks_persistent_role_lifetime() {
+    let role = |lifetime| AgentRoleConfig {
+        description: Some("Keeps context.".to_string()),
+        config_file: None,
+        nickname_candidates: None,
+        lifetime,
+    };
+    let user_defined_roles = BTreeMap::from([
+        (
+            "keeper".to_string(),
+            role(Some(codex_config::config_toml::AgentLifetime::Persistent)),
+        ),
+        (
+            "worker".to_string(),
+            role(Some(codex_config::config_toml::AgentLifetime::Task)),
+        ),
+    ]);
+
+    let spec = spawn_tool_spec::build(&user_defined_roles);
+
+    assert!(spec.contains(
+        "keeper: {\nKeeps context.\n- Lifetime: `persistent`. Agents of this type stay resumable after their final report.\n}"
+    ));
+    assert!(spec.contains("worker: {\nKeeps context.\n}"));
+}
+
 #[test]
 fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
     let user_defined_roles = BTreeMap::from([(
