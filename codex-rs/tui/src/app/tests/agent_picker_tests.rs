@@ -734,3 +734,113 @@ async fn idle_picker_rows_show_pending_jobs_once_listed() -> Result<()> {
     );
     Ok(())
 }
+
+/// Renders the chat widget anchored to the bottom of a fixed-size terminal, as the inline
+/// viewport does, returning the viewport height and the painted rows.
+fn render_in_terminal(chat: &ChatWidget, width: u16, height: u16) -> (u16, Vec<String>) {
+    let viewport = chat.desired_height(width).min(height);
+    let terminal = ratatui::layout::Rect::new(0, 0, width, height);
+    let mut buf = ratatui::buffer::Buffer::empty(terminal);
+    chat.render(
+        ratatui::layout::Rect::new(0, height - viewport, width, viewport),
+        &mut buf,
+    );
+    let rows = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    (viewport, rows)
+}
+
+#[tokio::test]
+async fn picker_height_stays_fixed_while_selection_moves_through_many_agents() -> Result<()> {
+    const WIDTH: u16 = 100;
+    const HEIGHT: u16 = 32;
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_u128(/*value*/ 100);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        root,
+        /*agent_nickname*/ None,
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    let job = |command: String| crate::multi_agents::AgentPendingJob {
+        command,
+        started_at: 1,
+        finished: true,
+        wakes_owner: true,
+    };
+    let mut with_jobs = Vec::new();
+    for n in 1..60_u128 {
+        let id = ThreadId::from_u128(100 + n);
+        app.upsert_agent_picker_thread(
+            id,
+            Some(format!("Agent {n:02}")),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+        // Only some rows have pending jobs, in varying numbers; one has more than fit.
+        let count = match n {
+            29 => 12,
+            n if n % 7 == 0 => (n / 7 % 3 + 1) as usize,
+            _ => continue,
+        };
+        app.agent_navigation.set_pending_jobs(
+            id,
+            Some(
+                (0..count)
+                    .map(|k| job(format!("agent-job -- cargo test -p crate-{n}-{k}")))
+                    .collect(),
+            ),
+        );
+        with_jobs.push(n);
+    }
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
+
+    let title_row = |rows: &[String]| rows.iter().position(|row| row.trim() == "Subagents");
+    let (height, rows) = render_in_terminal(&app.chat_widget, WIDTH, HEIGHT);
+    let title = title_row(&rows);
+    assert!(
+        title.is_some(),
+        "picker title not rendered:\n{}",
+        rows.join("\n")
+    );
+    assert!(height < HEIGHT, "picker should fit in the terminal");
+
+    let mut snapshot = None;
+    let mut saw_overflow = false;
+    for step in 1..=70 {
+        let key = if step <= 62 {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        };
+        app.chat_widget.handle_key_event(KeyEvent::from(key));
+        let (step_height, rows) = render_in_terminal(&app.chat_widget, WIDTH, HEIGHT);
+        let screen = rows.join("\n");
+        assert_eq!(
+            (step_height, title_row(&rows)),
+            (height, title),
+            "picker moved after {step} key presses:\n{screen}"
+        );
+        saw_overflow |= screen.contains("Agent 29") && screen.contains("more");
+        if step == 29 {
+            snapshot = Some(screen);
+        }
+    }
+    assert!(saw_overflow, "expected the long job list to be capped");
+    insta::assert_snapshot!(
+        "agent_picker_fixed_height_many_agents",
+        snapshot.expect("snapshot captured")
+    );
+    assert_eq!(with_jobs.len(), 9);
+    Ok(())
+}

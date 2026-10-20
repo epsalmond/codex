@@ -20,6 +20,7 @@ use codex_app_server_protocol::ThreadPendingCompletionsListResponse;
 use futures::StreamExt;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
@@ -184,7 +185,15 @@ impl AgentPickerRowDetails {
 
 impl Renderable for AgentPickerRowDetails {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        Renderable::render(&Paragraph::new(self.wrapped(area.width)), area, buf);
+        let mut lines = self.wrapped(area.width);
+        let height = usize::from(area.height);
+        if height > 0 && lines.len() > height {
+            // The popup reserves a capped details area; summarize what does not fit.
+            let hidden = lines.len() - (height - 1);
+            lines.truncate(height - 1);
+            lines.push(Line::from(format!("  … +{hidden} more lines")).dim());
+        }
+        Renderable::render(&Paragraph::new(lines), area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {

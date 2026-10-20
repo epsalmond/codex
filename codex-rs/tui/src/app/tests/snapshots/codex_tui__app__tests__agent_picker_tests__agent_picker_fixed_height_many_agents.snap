@@ -1,0 +1,36 @@
+---
+source: tui/src/app/tests/agent_picker_tests.rs
+expression: "snapshot.expect(\"snapshot captured\")"
+---
+
+
+
+
+
+
+
+
+
+
+
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+↑
+  23. • Agent 22 [worker]        idle context ?
+  24. • Agent 23 [worker]        idle context ?
+  25. • Agent 24 [worker]        idle context ?
+  26. • Agent 25 [worker]        idle context ?
+  27. • Agent 26 [worker]        idle context ?
+  28. • Agent 27 [worker]        idle context ?
+  29. • Agent 28 [worker]        idle · waiting on 2 jobs context ?
+› 30. • Agent 29 [worker]        idle · waiting on 12 jobs context ?
+↓
+
+  Pending jobs:
+    • agent-job -- cargo test -p crate-29-0 · finished, awaiting delivery
+    • agent-job -- cargo test -p crate-29-1 · finished, awaiting delivery
+    • agent-job -- cargo test -p crate-29-2 · finished, awaiting delivery
+    • agent-job -- cargo test -p crate-29-3 · finished, awaiting delivery
+    … +8 more lines
+  enter select · / search · x close agent · q hide inactive locally · esc back
