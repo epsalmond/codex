@@ -46,6 +46,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::followup_task_description;
 use crate::tools::handlers::multi_agents_spec::send_message_description;
+use crate::tools::handlers::multi_agents_v2::CloseAgentsHandler as CloseAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -1632,6 +1633,11 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 ),
                 exposure,
             );
+            if turn_context.config.multi_agent_v2.close_agents_tool {
+                // A plain top-level function, like `report_to_parent`: the server rejects any
+                // tool name it did not configure in the reserved `collaboration` namespace.
+                registry.register_trusted_with_exposure(Arc::new(CloseAgentsHandlerV2), exposure);
+            }
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);

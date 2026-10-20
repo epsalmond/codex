@@ -1376,6 +1376,19 @@
     },
     "ThreadExtra": {
       "description": "Extra app-server data for a thread.",
+      "properties": {
+        "spawnEdgeStatus": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSpawnEdgeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set on `thread/list` results filtered by `parentThreadId` or `ancestorThreadId`. `open` subagents are still part of the tree even when not loaded."
+        }
+      },
       "type": "object"
     },
     "ThreadHistoryMode": {
@@ -2335,6 +2348,25 @@
     },
     "ThreadSource": {
       "type": "string"
+    },
+    "ThreadSpawnEdgeStatus": {
+      "description": "Lifecycle of a subagent's spawn edge, as its agent tree records it.",
+      "oneOf": [
+        {
+          "description": "The subagent is open, including when it is idle and unloaded.",
+          "enum": [
+            "open"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The subagent, or a subagent between it and the listed parent or ancestor, was closed.",
+          "enum": [
+            "closed"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "ThreadStatus": {
       "oneOf": [

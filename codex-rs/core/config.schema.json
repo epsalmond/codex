@@ -3185,6 +3185,10 @@
           ],
           "description": "Root child-report polling mode. Defaults to `disabled`: roots, including `codex exec` roots (which drain the agent tree before exiting), wake on child reports. `enabled` keeps `wait_agent` polling throughout the agent tree."
         },
+        "close_agents_tool": {
+          "description": "Offer the top-level `close_agents` tool, which closes named descendants or every idle one, loaded or unloaded. Defaults to true; set false to hide it.",
+          "type": "boolean"
+        },
         "default_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000.0,

@@ -134,8 +134,12 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
     app.enqueue_thread_notification(child, turn_started_notification(child, "turn-3"))
         .await?;
     assert_eq!(rendered_count(&app), "SubAgents: 1/1");
+    // An idle child unloads with `thread/closed` but stays open until the backend's spawn
+    // edges, re-read by the picker refresh, say it was closed.
     app.enqueue_thread_notification(child, thread_closed_notification(child))
         .await?;
+    assert_eq!(rendered_count(&app), "SubAgents: 0/1");
+    app.mark_agent_picker_thread_closed(child);
     assert_eq!(rendered_count(&app), "SubAgents: 0/0");
     Ok(())
 }

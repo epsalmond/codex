@@ -10,4 +10,5 @@ expression: "crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_wi
   2. • missing                   idle context ?
 › 3. • sibling                   idle context ?
 
-  enter select · / search · x close agent · q hide inactive locally · esc back
+  enter select · / search · x close agent · c close idle · q hide inactive
+  locally · esc back

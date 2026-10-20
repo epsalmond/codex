@@ -17,9 +17,8 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
 const SPAWN_AGENT_WAKE_ON_REPORT_TEXT: &str = "Delegation is asynchronous. Continue with independent work while children work. When no independent work remains, end your turn; a child report starts another turn and includes the result. Results may also arrive during your turn.";
-const LIST_AGENTS_DESCRIPTION: &str =
-    "List live agents in the current root thread tree. Optionally filter by task-path prefix.";
-const LIST_AGENTS_WAKE_ON_REPORT_DESCRIPTION: &str = "Look up the names and task paths of live agents in the current root thread tree, to address them with `send_message` or `followup_task`. Optionally filter by task-path prefix.";
+const LIST_AGENTS_DESCRIPTION: &str = "List open agents in the current root thread tree, including idle agents whose runtime is unloaded (status \"unloaded\"). Optionally filter by task-path prefix.";
+const LIST_AGENTS_WAKE_ON_REPORT_DESCRIPTION: &str = "Look up the names and task paths of open agents in the current root thread tree, to address them with `send_message` or `followup_task`. Idle agents whose runtime is unloaded are listed with status \"unloaded\". Optionally filter by task-path prefix.";
 
 /// How a MultiAgentV2 thread learns that a child agent has reported back.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

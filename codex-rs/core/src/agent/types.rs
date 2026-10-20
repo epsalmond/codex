@@ -3,6 +3,7 @@
 
 use crate::context::MultiAgentRoleInstructions;
 use crate::environment_selection::TurnEnvironmentSnapshot;
+pub use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
@@ -48,6 +49,41 @@ pub struct LiveAgent {
     pub thread_id: ThreadId,
     pub metadata: AgentMetadata,
     pub status: AgentStatus,
+}
+
+/// A spawned descendant as the persisted spawn graph records it, overlaid with live state.
+///
+/// Membership and lifecycle come from the spawn edges; `live_status` comes from the loaded
+/// runtime. An open agent whose runtime is unloaded is idle and reloads on demand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnedDescendant {
+    pub thread_id: ThreadId,
+    /// `Closed` when this agent's incoming edge, or any edge above it, is closed.
+    pub edge_status: ThreadSpawnEdgeStatus,
+    /// Status of the loaded runtime, or `None` when the agent is not loaded.
+    pub live_status: Option<AgentStatus>,
+}
+
+/// An open agent of a V2 tree: its identity, plus its live status when loaded.
+#[derive(Clone, Debug)]
+pub struct ListedAgent {
+    pub thread_id: ThreadId,
+    pub metadata: AgentMetadata,
+    /// Status of the loaded runtime, or `None` when the agent is unloaded and idle.
+    pub live_status: Option<AgentStatus>,
+}
+
+impl ListedAgent {
+    /// Whether the agent has no work in progress: unloaded, or loaded but not starting,
+    /// running or waiting on delegated work.
+    pub fn is_idle(&self) -> bool {
+        self.live_status.as_ref().is_none_or(|status| {
+            !matches!(
+                status,
+                AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Waiting
+            )
+        })
+    }
 }
 
 // Preserve the established core paths and legacy serialization names.

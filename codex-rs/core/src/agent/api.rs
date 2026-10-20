@@ -8,6 +8,7 @@ use crate::WorkObservation;
 use crate::agent::types::AgentExecutionGuard;
 use crate::agent::types::AgentMessage;
 use crate::agent::types::AgentMetadata;
+use crate::agent::types::ListedAgent;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -133,15 +134,17 @@ pub trait AgentControl: Send + Sync {
         version: MultiAgentVersion,
     ) -> BoxFuture<'_, Result<AgentInfo>>;
 
-    /// List loaded agents using the caller's captured source to resolve a path prefix.
-    /// The local backend lazily registers callers with no parent. Callers own formatting.
+    /// List the tree root and its open agents, loaded or not, using the caller's captured
+    /// source to resolve a path prefix. Membership comes from the persisted spawn edges; an
+    /// unloaded agent has no live status. The local backend lazily registers callers with no
+    /// parent. Callers own formatting.
     fn list<'a>(
         &'a self,
         caller: ThreadId,
         parent: Option<ThreadId>,
         source: &'a SessionSource,
         path_prefix: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<Vec<LiveAgent>>>;
+    ) -> BoxFuture<'a, Result<Vec<ListedAgent>>>;
 
     /// Known direct children for V2 model context, including unloaded agents. Loaded
     /// children come first, alphabetically within each group; an unknown parent yields none.

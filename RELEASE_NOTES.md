@@ -1,3 +1,7 @@
+## Agents see and close every open subagent
+
+`list_agents` now lists every open subagent, including idle ones whose runtime was unloaded (status `"unloaded"`), so the root no longer mistakes unloaded children for closed ones. `/subagents` reads the same lifecycle from the agent tree, so an unloaded idle child shows as idle rather than closed. A new top-level `close_agents` tool lets an agent close named descendants, or every idle one with `["idle"]`; set `close_agents_tool = false` under `[features.multi_agent_v2]` to hide it. Press `c` in `/subagents` to close every idle child. See [closing subagents](README.md#closing-subagents).
+
 ## Typed subagent reports
 
 Subagents now message their parent and other ancestors only through a `report_to_parent` tool: `blocked` (stops and waits for a follow-up), `answer` (replies to a question an ancestor sent with `send_message`), or `final` (done). Their `send_message` and `followup_task` to ancestors are refused, and a turn that ends without `report_to_parent` still delivers its last message as the final report. An agent type's `lifetime` sets how long its agents live: a `task` agent (the default) is closed after its final report, so new work goes to a fresh agent; a `persistent` agent stays resumable. A subagent turn that reaches 150 model calls is told once to wrap up. Set `typed_reports = false` under `[features.multi_agent_v2]` to restore free-form reports; `wrap_up_after_model_calls = 0` turns off the reminder. See [typed subagent reports](README.md#typed-subagent-reports).

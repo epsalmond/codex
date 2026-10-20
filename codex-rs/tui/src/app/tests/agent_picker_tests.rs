@@ -851,3 +851,176 @@ async fn picker_height_stays_fixed_while_selection_moves_through_many_agents() -
     assert_eq!(with_jobs.len(), 9);
     Ok(())
 }
+
+fn listed_subagent(
+    thread_id: ThreadId,
+    status: codex_app_server_protocol::ThreadStatus,
+    spawn_edge_status: Option<codex_app_server_protocol::ThreadSpawnEdgeStatus>,
+) -> codex_app_server_protocol::Thread {
+    codex_app_server_protocol::Thread {
+        originator: None,
+        environments: None,
+        id: thread_id.to_string(),
+        extra: Some(codex_app_server_protocol::ThreadExtra { spawn_edge_status }),
+        session_id: thread_id.to_string(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        preview: String::new(),
+        ephemeral: false,
+        section: None,
+        section_entered_at: None,
+        project_id: None,
+        daybreak_enabled: None,
+        history_mode: Default::default(),
+        model_provider: "mock".to_string(),
+        model: None,
+        reasoning_effort: None,
+        created_at: 1,
+        updated_at: 1,
+        recency_at: None,
+        status,
+        path: None,
+        cwd: test_path_buf("/tmp/subagent").abs(),
+        cli_version: "0.0.0".to_string(),
+        source: codex_app_server_protocol::SessionSource::Unknown,
+        can_accept_direct_input: None,
+        thread_source: None,
+        agent_nickname: None,
+        agent_role: None,
+        git_info: None,
+        name: None,
+        turns: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn picker_lifecycle_follows_spawn_edges_not_load_state() -> Result<()> {
+    use codex_app_server_protocol::ThreadSpawnEdgeStatus;
+    use codex_app_server_protocol::ThreadStatus;
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let root = ThreadId::new();
+    let unloaded_open = ThreadId::new();
+    let closed = ThreadId::new();
+    let legacy = ThreadId::new();
+    app.primary_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        root, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    // A stale unload marked this row closed; the open edge reopens it.
+    app.upsert_agent_picker_thread(
+        unloaded_open,
+        /*agent_nickname*/ None,
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Ok(crate::app_event::AgentPickerThreadRefresh {
+            threads: vec![
+                listed_subagent(
+                    unloaded_open,
+                    ThreadStatus::NotLoaded,
+                    Some(ThreadSpawnEdgeStatus::Open),
+                ),
+                listed_subagent(
+                    closed,
+                    ThreadStatus::NotLoaded,
+                    Some(ThreadSpawnEdgeStatus::Closed),
+                ),
+                // Servers without lifecycle data keep the load-state fallback.
+                listed_subagent(
+                    legacy,
+                    ThreadStatus::NotLoaded,
+                    /*spawn_edge_status*/ None,
+                ),
+            ],
+            archived_thread_ids: HashSet::new(),
+        }),
+    );
+
+    let is_closed = |thread_id| app.agent_navigation.get(&thread_id).unwrap().is_closed;
+    assert_eq!(
+        (
+            is_closed(unloaded_open),
+            is_closed(closed),
+            is_closed(legacy)
+        ),
+        (false, true, true)
+    );
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)).total,
+        1,
+        "the unloaded open child still counts as open"
+    );
+
+    // A local close after the request began outranks a stale "open".
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    let revisions = app.agent_navigation.status_revision_snapshot();
+    app.mark_agent_picker_thread_closed(unloaded_open);
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        revisions,
+        Ok(crate::app_event::AgentPickerThreadRefresh {
+            threads: vec![listed_subagent(
+                unloaded_open,
+                ThreadStatus::NotLoaded,
+                Some(ThreadSpawnEdgeStatus::Open),
+            )],
+            archived_thread_ids: HashSet::new(),
+        }),
+    );
+    assert!(app.agent_navigation.get(&unloaded_open).unwrap().is_closed);
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unloading_a_session_subagent_leaves_it_open_until_the_backend_says_closed() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    app.primary_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        child,
+        /*agent_nickname*/ None,
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(child, Some("/root/worker".to_string()));
+    app.ensure_thread_channel(child);
+
+    app.enqueue_thread_notification(child, thread_closed_notification(child))
+        .await?;
+
+    assert!(!app.agent_navigation.get(&child).unwrap().is_closed);
+    let mut refresh_requested = false;
+    while let Ok(event) = app_event_rx.try_recv() {
+        refresh_requested |= matches!(event, AppEvent::RefreshAgentPickerThreads);
+    }
+    assert!(refresh_requested);
+
+    // Without lifecycle from the backend, the unload counts as a close, as before.
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let request_id = app.agent_navigation.begin_picker_refresh(root).unwrap();
+    app.apply_agent_picker_thread_refresh(
+        &app_server,
+        root,
+        request_id,
+        app.agent_navigation.status_revision_snapshot(),
+        Err("thread/list failed".to_string()),
+    );
+    assert!(app.agent_navigation.get(&child).unwrap().is_closed);
+    app_server.shutdown().await?;
+    Ok(())
+}

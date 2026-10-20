@@ -80,7 +80,10 @@ impl Handler {
                     .as_ref()
                     .map(ToString::to_string)
                     .unwrap_or_else(|| agent.thread_id.to_string()),
-                agent_status: agent.status,
+                agent_status: match agent.live_status {
+                    Some(status) => ListedAgentStatus::Live(status),
+                    None => ListedAgentStatus::Unloaded(UNLOADED_AGENT_STATUS),
+                },
                 context,
             });
         }
@@ -100,10 +103,21 @@ struct ListAgentsArgs {
     path_prefix: Option<String>,
 }
 
+/// Status reported for an open agent whose idle runtime is unloaded. A message or follow-up
+/// reloads it.
+pub(crate) const UNLOADED_AGENT_STATUS: &str = "unloaded";
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ListedAgentStatus {
+    Live(AgentStatus),
+    Unloaded(&'static str),
+}
+
 #[derive(Debug, Serialize)]
 struct ListedAgent {
     agent_name: String,
-    agent_status: AgentStatus,
+    agent_status: ListedAgentStatus,
     context: Option<AgentContextUsage>,
 }
 

@@ -290,6 +290,88 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
 }
 
 #[tokio::test]
+async fn close_idle_archives_only_idle_subtrees() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.start_fresh_session(
+        &mut tui,
+        &mut app_server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
+    let root = app.chat_widget.thread_id().unwrap();
+    let mut children = Vec::new();
+    for (index, name) in ["idle", "busy"].into_iter().enumerate() {
+        let child = ThreadId::from_string(
+            &create_fake_parented_rollout_with_source(
+                &app.config.codex_home,
+                &format!("2026-10-03T02-00-0{index}"),
+                &format!("2026-10-03T02:00:0{index}Z"),
+                name,
+                Some(&app.config.model_provider_id),
+                /*git_info*/ None,
+                RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some(name.into()),
+                    agent_role: None,
+                }),
+                root.into(),
+                root,
+            )
+            .expect("child rollout"),
+        )?;
+        app_server
+            .resume_thread(
+                &app.local_settings,
+                app.config.clone(),
+                child,
+                app.resume_model_settings(),
+            )
+            .await?;
+        app.upsert_agent_picker_thread(
+            child,
+            Some(name.into()),
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+        app.agent_navigation
+            .set_agent_path(child, Some(format!("/root/{name}")));
+        children.push(child);
+    }
+    let (idle, busy) = (children[0], children[1]);
+    app.primary_thread_id = Some(root);
+    app.agent_navigation.mark_running(busy);
+    while rx.try_recv().is_ok() {}
+
+    app.close_idle_agent_picker_threads(&mut tui, &mut app_server)
+        .await?;
+
+    assert_eq!(
+        recorded_params(&requests, "thread/archive"),
+        vec![serde_json::json!({ "threadId": idle.to_string() })]
+    );
+    assert!(app.agent_navigation.get(&idle).unwrap().is_closed);
+    assert!(!app.agent_navigation.get(&busy).unwrap().is_closed);
+    assert!(next_history_message(&mut rx).contains("Closed 1 idle subagent."));
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn close_agent_archives_child_returns_main_and_preserves_failures() -> Result<()> {
     let (mut app, mut rx, _) = make_test_app_with_channels().await;
     let codex_home = tempdir()?;

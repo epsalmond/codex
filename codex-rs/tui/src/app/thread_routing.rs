@@ -1366,6 +1366,14 @@ impl App {
         }
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
+        } else if is_thread_closed
+            && let Some(root) = self.primary_thread_id
+            && self.agent_navigation.is_session_descendant(root, thread_id)
+        {
+            // Idle subagents unload with `thread/closed` but stay open; the backend's spawn
+            // edges decide whether this one was closed.
+            self.agent_navigation.note_unloaded(thread_id);
+            self.app_event_tx.send(AppEvent::RefreshAgentPickerThreads);
         } else if is_thread_closed {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {

@@ -5366,13 +5366,6 @@ class ThreadEnvironment(BaseModel):
     ]
 
 
-class ThreadExtra(BaseModel):
-    pass
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-
-
 class ThreadGoalClearResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6350,6 +6343,11 @@ class ThreadSourceKind(Enum):
     sub_agent_thread_spawn = "subAgentThreadSpawn"
     sub_agent_other = "subAgentOther"
     unknown = "unknown"
+
+
+class ThreadSpawnEdgeStatus(Enum):
+    open = "open"
+    closed = "closed"
 
 
 class ThreadStartSource(Enum):
@@ -10165,6 +10163,19 @@ class ThreadContextUsage(BaseModel):
             alias="shakeWatermark",
             description="Exclusive sealed-history-item boundary, not tokens or a percentage.",
             ge=0,
+        ),
+    ] = None
+
+
+class ThreadExtra(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    spawn_edge_status: Annotated[
+        ThreadSpawnEdgeStatus | None,
+        Field(
+            alias="spawnEdgeStatus",
+            description="Set on `thread/list` results filtered by `parentThreadId` or `ancestorThreadId`. `open` subagents are still part of the tree even when not loaded.",
         ),
     ] = None
 

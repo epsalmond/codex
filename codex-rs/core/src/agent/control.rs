@@ -6,6 +6,7 @@ use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::agent::types::AgentMetadata;
+use crate::agent::types::ListedAgent;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -75,6 +76,7 @@ mod close;
 mod completion;
 mod coordinator;
 mod delivery;
+mod descendants;
 mod dispatcher;
 mod execution;
 mod inspection;
@@ -423,8 +425,7 @@ impl LocalAgentControl {
         &self,
         current_session_source: &SessionSource,
         path_prefix: Option<&str>,
-    ) -> CodexResult<Vec<LiveAgent>> {
-        let state = self.runtime.upgrade()?;
+    ) -> CodexResult<Vec<ListedAgent>> {
         let resolved_prefix = path_prefix
             .map(|prefix| {
                 current_session_source
@@ -434,62 +435,7 @@ impl LocalAgentControl {
                     .map_err(CodexErr::UnsupportedOperation)
             })
             .transpose()?;
-
-        let mut live_agents = self.runtime.registry.live_agents();
-        live_agents.sort_by(|left, right| {
-            left.agent_path
-                .as_deref()
-                .unwrap_or_default()
-                .cmp(right.agent_path.as_deref().unwrap_or_default())
-                .then_with(|| {
-                    left.agent_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_default()
-                        .cmp(&right.agent_id.map(|id| id.to_string()).unwrap_or_default())
-                })
-        });
-
-        let root_path = AgentPath::root();
-        let mut agents = Vec::with_capacity(live_agents.len().saturating_add(1));
-        if resolved_prefix
-            .as_ref()
-            .is_none_or(|prefix| agent_matches_prefix(Some(&root_path), prefix))
-            && let Some(root_thread_id) = self.runtime.registry.agent_id_for_path(&root_path)
-            && let Ok(root_thread) = state.get_thread(root_thread_id).await
-        {
-            agents.push(LiveAgent {
-                thread_id: root_thread_id,
-                metadata: AgentMetadata {
-                    agent_id: Some(root_thread_id),
-                    agent_path: Some(root_path),
-                    ..Default::default()
-                },
-                status: root_thread.agent_status().await,
-            });
-        }
-
-        for metadata in live_agents {
-            let Some(thread_id) = metadata.agent_id else {
-                continue;
-            };
-            if resolved_prefix
-                .as_ref()
-                .is_some_and(|prefix| !agent_matches_prefix(metadata.agent_path.as_ref(), prefix))
-            {
-                continue;
-            }
-
-            let Ok(thread) = state.get_thread(thread_id).await else {
-                continue;
-            };
-            agents.push(LiveAgent {
-                thread_id,
-                metadata,
-                status: thread.agent_status().await,
-            });
-        }
-
-        Ok(agents)
+        self.list_open_agents(resolved_prefix.as_ref()).await
     }
 
     /// Starts a detached watcher for sub-agents spawned from another thread.

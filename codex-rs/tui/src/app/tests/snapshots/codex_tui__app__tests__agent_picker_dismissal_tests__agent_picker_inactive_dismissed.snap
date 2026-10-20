@@ -9,4 +9,4 @@ expression: "render_bottom_popup(&app.chat_widget, 120)"
   1. • Main [default] (current)  idle context ?
 › 2. • /root/idle/running        mid-turn context ?
 
-  enter select · / search · x close agent · q hide inactive locally · esc back
+  enter select · / search · x close agent · c close idle · q hide inactive locally · esc back

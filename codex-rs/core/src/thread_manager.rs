@@ -1092,6 +1092,15 @@ impl ThreadManager {
             .map_err(|err| thread_store_metadata_update_error(thread_id, err))
     }
 
+    /// List every spawned descendant of `root_thread_id` with its persisted lifecycle and,
+    /// when loaded, its live status. This is the view `list_agents` and clients share.
+    pub async fn list_spawned_descendants(
+        &self,
+        root_thread_id: ThreadId,
+    ) -> CodexResult<Vec<crate::agent::types::SpawnedDescendant>> {
+        self.state.list_spawned_descendants(root_thread_id).await
+    }
+
     /// List `thread_id` plus all known descendants in its spawn subtree.
     pub async fn list_agent_subtree_thread_ids(
         &self,

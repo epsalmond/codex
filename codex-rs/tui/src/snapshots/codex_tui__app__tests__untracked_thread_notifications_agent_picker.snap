@@ -9,7 +9,7 @@ Archived:
 
 › 1. • Main [default] (current)  idle context ?
 
-  enter select · / search · q hide inactive locally · esc back
+  enter select · / search · c close idle · q hide inactive locally · esc back
 Unarchived:
   Subagents
   Select an agent to watch. ⌥← previous, ⌥→ next.
@@ -18,4 +18,4 @@ Unarchived:
 › 1. • Main [default] (current)  idle context ?
   2. • Missed archive [worker]   idle context ?
 
-  enter select · / search · q hide inactive locally · esc back
+  enter select · / search · c close idle · q hide inactive locally · esc back

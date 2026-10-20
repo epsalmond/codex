@@ -3078,6 +3078,16 @@ impl App {
             AppEvent::DismissInactiveSubagents => {
                 self.dismiss_inactive_subagents();
             }
+            AppEvent::CloseIdleSubagents => {
+                self.close_idle_agent_picker_threads(tui, app_server).await?;
+            }
+            AppEvent::RefreshAgentPickerThreads => {
+                if let Some(root) = self.primary_thread_id
+                    && !self.agent_navigation.queue_picker_refresh(root)
+                {
+                    self.refresh_agent_picker_threads(app_server, root);
+                }
+            }
             AppEvent::CloseAgentThread(thread_id) => {
                 self.close_agent_picker_thread(tui, app_server, thread_id).await?;
             }

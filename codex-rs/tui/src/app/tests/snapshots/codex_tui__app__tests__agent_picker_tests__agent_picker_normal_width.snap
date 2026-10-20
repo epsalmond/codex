@@ -13,4 +13,4 @@ expression: "render_bottom_popup(&app.chat_widget, 96)"
   5. • Error [worker]                          error context ?
   6. • Agent 00000006                          idle context ?
 
-  enter select · / search · x close agent · q hide inactive locally · esc back
+  enter select · / search · x close agent · c close idle · q hide inactive locally · esc back

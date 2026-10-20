@@ -17,6 +17,7 @@ use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadSourceKind;
+use codex_app_server_protocol::ThreadSpawnEdgeStatus;
 use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
@@ -114,6 +115,23 @@ impl App {
                 result,
             });
         });
+    }
+
+    /// Closes unloaded descendants the backend did not list, or could not be asked about, as
+    /// before lifecycle data: with no spawn edge saying otherwise, an unload is a close.
+    /// Listed ones whose status changed mid-request wait for the next refresh.
+    fn close_unconfirmed_unloads(&mut self, returned: &HashSet<ThreadId>) {
+        let unconfirmed = self
+            .agent_navigation
+            .unload_checks
+            .iter()
+            .copied()
+            .filter(|thread_id| !returned.contains(thread_id))
+            .collect::<Vec<_>>();
+        for thread_id in unconfirmed {
+            self.agent_navigation.unload_checks.remove(&thread_id);
+            self.mark_agent_picker_thread_closed(thread_id);
+        }
     }
 
     pub(super) fn refresh_agent_picker_previews(
@@ -216,6 +234,7 @@ impl App {
             Ok(refresh) => refresh,
             Err(err) => {
                 tracing::warn!(%err, "failed to refresh agent picker descendants");
+                self.close_unconfirmed_unloads(/*returned*/ &HashSet::new());
                 self.agent_navigation.prune_untracked_picker_exclusions();
                 if completion.follow_up_requested {
                     self.refresh_agent_picker_threads(app_server, root);
@@ -223,6 +242,12 @@ impl App {
                 return;
             }
         };
+        let returned = refresh
+            .threads
+            .iter()
+            .filter_map(|thread| ThreadId::from_string(&thread.id).ok())
+            .collect::<HashSet<_>>();
+        let mut confirmed_unloads = Vec::new();
         for thread in refresh.threads {
             let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
                 continue;
@@ -243,12 +268,29 @@ impl App {
                 .agent_navigation
                 .status_revision_matches(thread_id, &status_revisions);
             let update_liveness = status_unchanged && (previous.is_none() || !is_running);
-            let is_closed = if status_unchanged {
-                !live && matches!(thread.status, ThreadStatus::NotLoaded)
-            } else {
-                previous.is_some_and(|entry| entry.is_closed)
+            // The backend reports lifecycle from the agent tree's spawn edges: an idle child
+            // that was unloaded is still open. Older servers omit it, so fall back to load state.
+            let edge_status = thread
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.spawn_edge_status);
+            let is_closed = match edge_status {
+                // Closing is permanent, so a closed edge outranks newer local state.
+                Some(ThreadSpawnEdgeStatus::Closed) => true,
+                // A local close or reopen since this request started is newer than "open".
+                Some(ThreadSpawnEdgeStatus::Open) if status_unchanged => false,
+                None if status_unchanged => {
+                    !live && matches!(thread.status, ThreadStatus::NotLoaded)
+                }
+                Some(ThreadSpawnEdgeStatus::Open) | None => {
+                    previous.is_some_and(|entry| entry.is_closed)
+                }
             };
-            if !is_closed && previous.is_some_and(|entry| entry.is_closed) {
+            if status_unchanged {
+                confirmed_unloads.push(thread_id);
+            }
+            if edge_status.is_none() && !is_closed && previous.is_some_and(|entry| entry.is_closed)
+            {
                 // An idle-evicted child reloads under the same id when it gets a follow-up.
                 if status_unchanged && is_running {
                     self.agent_navigation.mark_running(thread_id);
@@ -294,6 +336,10 @@ impl App {
                 );
             }
         }
+        for thread_id in confirmed_unloads {
+            self.agent_navigation.unload_checks.remove(&thread_id);
+        }
+        self.close_unconfirmed_unloads(&returned);
         self.agent_navigation.prune_untracked_picker_exclusions();
         if completion.follow_up_requested {
             self.refresh_agent_picker_threads(app_server, root);
@@ -363,10 +409,16 @@ impl App {
             title: Some("Subagents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
             footer_hint: Some(agent_picker_hint(AgentPickerHint::Select)),
-            key_actions: vec![crate::bottom_pane::SelectionViewAction {
-                keys: vec![crate::key_hint::plain(KeyCode::Char('q'))],
-                action: Box::new(|tx| tx.send(AppEvent::DismissInactiveSubagents)),
-            }],
+            key_actions: vec![
+                crate::bottom_pane::SelectionViewAction {
+                    keys: vec![crate::key_hint::plain(KeyCode::Char('q'))],
+                    action: Box::new(|tx| tx.send(AppEvent::DismissInactiveSubagents)),
+                },
+                crate::bottom_pane::SelectionViewAction {
+                    keys: vec![crate::key_hint::plain(KeyCode::Char('c'))],
+                    action: Box::new(|tx| tx.send(AppEvent::CloseIdleSubagents)),
+                },
+            ],
             items,
             initial_selected_idx,
             is_searchable: true,
@@ -531,7 +583,10 @@ impl App {
                             channel.attachment() == ThreadEventAttachment::Live
                         }) =>
                 {
-                    self.agent_navigation.mark_closed(thread_id);
+                    // Idle children are unloaded but stay open; a close also unloads them.
+                    // Only the backend's spawn edges tell the two apart, so re-read them.
+                    self.agent_navigation.note_unloaded(thread_id);
+                    self.app_event_tx.send(AppEvent::RefreshAgentPickerThreads);
                 }
                 ThreadStatus::NotLoaded => {}
             },
@@ -611,6 +666,8 @@ fn agent_picker_hint(hint: AgentPickerHint) -> ratatui::text::Line<'static> {
         ]);
     }
     spans.extend([
+        crate::key_hint::plain(KeyCode::Char('c')).into(),
+        " close idle · ".into(),
         crate::key_hint::plain(KeyCode::Char('q')).into(),
         " hide inactive locally · ".into(),
         crate::key_hint::plain(KeyCode::Esc).into(),

@@ -555,9 +555,10 @@ fn list_agents_tool_status_schema_includes_interrupted() {
         panic!("list_agents should be a function tool");
     };
 
+    let output_schema_value = output_schema.expect("list_agents output schema").to_value();
     assert_eq!(
-        output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
-            ["properties"]["agent_status"]["allOf"][0]["oneOf"][0]["enum"],
+        output_schema_value["properties"]["agents"]["items"]["properties"]["agent_status"]["oneOf"]
+            [0]["oneOf"][0]["enum"],
         json!([
             "pending_init",
             "running",
@@ -565,5 +566,10 @@ fn list_agents_tool_status_schema_includes_interrupted() {
             "shutdown",
             "not_found"
         ])
+    );
+    assert_eq!(
+        output_schema_value["properties"]["agents"]["items"]["properties"]["agent_status"]["oneOf"]
+            [1]["enum"],
+        json!(["unloaded"])
     );
 }

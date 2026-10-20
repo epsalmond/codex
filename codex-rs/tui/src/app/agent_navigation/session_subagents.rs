@@ -53,6 +53,86 @@ impl AgentNavigationState {
         self.dismissed_threads.extend(inactive);
     }
 
+    /// Open, idle descendants to close for "close all idle": rows that are not running or
+    /// awaiting a first turn and have no such descendant. Archiving closes a whole subtree, so
+    /// descendants of another target are left out.
+    pub(crate) fn idle_close_targets(&self, root: ThreadId) -> Vec<ThreadId> {
+        let open = self
+            .session_descendants(root)
+            .filter(|(_, entry)| !entry.is_closed)
+            .collect::<Vec<_>>();
+        let is_busy = |thread_id: &ThreadId, entry: &AgentPickerThreadEntry| {
+            entry.is_running || self.awaiting_first_turn.contains(thread_id)
+        };
+        let busy_paths = open
+            .iter()
+            .filter(|(thread_id, entry)| is_busy(thread_id, entry))
+            .filter_map(|(_, entry)| entry.agent_path.as_deref())
+            .collect::<Vec<_>>();
+        let idle =
+            open.iter()
+                .filter(|(thread_id, entry)| !is_busy(thread_id, entry))
+                .filter(|(_, entry)| {
+                    entry.agent_path.as_deref().is_none_or(|path| {
+                        !busy_paths.iter().any(|busy| is_path_ancestor(path, busy))
+                    })
+                })
+                .collect::<Vec<_>>();
+        let idle_paths = idle
+            .iter()
+            .filter_map(|(_, entry)| entry.agent_path.as_deref())
+            .collect::<Vec<_>>();
+        let mut targets = idle
+            .iter()
+            .filter(|(_, entry)| {
+                entry.agent_path.as_deref().is_none_or(|path| {
+                    !idle_paths.iter().any(|other| is_path_ancestor(other, path))
+                })
+            })
+            .map(|(thread_id, _)| *thread_id)
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|thread_id| self.order.iter().position(|id| id == thread_id));
+        targets
+    }
+
+    /// Descendants of the root session in `subtrees`, by agent path, including the roots.
+    pub(crate) fn session_subtree_threads(
+        &self,
+        root: ThreadId,
+        subtrees: &[ThreadId],
+    ) -> Vec<ThreadId> {
+        let subtree_paths = subtrees
+            .iter()
+            .filter_map(|thread_id| self.get(thread_id))
+            .filter_map(|entry| entry.agent_path.as_deref())
+            .collect::<Vec<_>>();
+        self.session_descendants(root)
+            .filter(|(thread_id, entry)| {
+                subtrees.contains(thread_id)
+                    || entry.agent_path.as_deref().is_some_and(|path| {
+                        subtree_paths
+                            .iter()
+                            .any(|subtree| is_path_ancestor(subtree, path))
+                    })
+            })
+            .map(|(thread_id, _)| thread_id)
+            .collect()
+    }
+
+    /// Records that a descendant unloaded. Idle children unload but stay open, so it stays
+    /// open, stopped, until the next picker refresh reports its lifecycle; a refresh that
+    /// cannot confirm it closes it.
+    pub(crate) fn note_unloaded(&mut self, thread_id: ThreadId) {
+        self.mark_stopped(thread_id);
+        self.unload_checks.insert(thread_id);
+    }
+
+    /// Whether `thread_id` is a subagent in the root session's tree.
+    pub(crate) fn is_session_descendant(&self, root: ThreadId, thread_id: ThreadId) -> bool {
+        self.session_descendants(root)
+            .any(|(descendant, _)| descendant == thread_id)
+    }
+
     fn session_descendants(
         &self,
         root: ThreadId,
@@ -74,4 +154,10 @@ impl AgentNavigationState {
                     )
             })
     }
+}
+
+/// Whether `ancestor` is a strict ancestor of `path` in the agent-path hierarchy.
+fn is_path_ancestor(ancestor: &str, path: &str) -> bool {
+    path.strip_prefix(ancestor)
+        .is_some_and(|rest| rest.starts_with('/'))
 }

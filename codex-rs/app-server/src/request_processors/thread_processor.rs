@@ -6,6 +6,7 @@ mod daemon_snapshot;
 
 use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
+use super::thread_enrichment::apply_spawn_edge_statuses;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::thread_input::can_accept_direct_input;
@@ -2827,6 +2828,15 @@ impl ThreadRequestProcessor {
             (None, None) => None,
         };
 
+        // Archived subagents are closed; only live listings need the lifecycle overlay.
+        let relation_root = relation_filter
+            .as_ref()
+            .filter(|_| archived != Some(true))
+            .map(|filter| match filter {
+                StoreThreadRelationFilter::DirectChildrenOf(thread_id)
+                | StoreThreadRelationFilter::DescendantsOf(thread_id) => *thread_id,
+            });
+
         let requested_page_size = limit
             .map(|value| value as usize)
             .unwrap_or(THREAD_LIST_DEFAULT_LIMIT)
@@ -2885,6 +2895,10 @@ impl ThreadRequestProcessor {
             |thread| thread,
         )
         .await;
+        if let Some(relation_root) = relation_root {
+            apply_spawn_edge_statuses(&self.thread_manager, relation_root, data.as_mut_slice())
+                .await;
+        }
         let read_states = super::thread_read_state::snapshots(self.state_db.as_ref(), &data).await;
         Ok(ThreadListResponse {
             data,
