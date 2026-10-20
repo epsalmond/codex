@@ -159,6 +159,7 @@ async fn exec_command_with_tty(
             network_approval: None,
             session: Arc::downgrade(session),
             last_used: started_at,
+            started_at_unix: 0,
         };
         manager
             .process_store
@@ -358,6 +359,9 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
             process_id: process_id.to_string(),
             command: "bash -i".to_string(),
             cwd: cwd.into(),
+            // The test helper stores its own entry with a zero start time.
+            started_at: Some(0),
+            wakes_owner: false,
         }]
     );
 
@@ -704,6 +708,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
             network_approval: None,
             session: Arc::downgrade(&session),
             last_used: Instant::now(),
+            started_at_unix: 0,
         },
     );
 
@@ -791,6 +796,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
             network_approval: None,
             session: Arc::downgrade(&session),
             last_used,
+            started_at_unix: 0,
         },
     );
 

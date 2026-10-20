@@ -1,8 +1,9 @@
 //! Root-scoped background refresh for the agent picker.
 
-use super::agent_context_display::AgentContextDetails;
 use super::agent_context_display::snapshot_summary;
 use super::agent_navigation::AgentPickerThreadVisibility;
+use super::agent_picker_pending::AgentPickerRowDetails;
+use super::agent_picker_pending::idle_status_label;
 use super::agent_picker_status::context_description;
 use super::agent_picker_status::picker_status_label;
 use super::*;
@@ -299,6 +300,11 @@ impl App {
                 root,
                 self.agent_navigation.tracked_thread_ids(),
             );
+            self.refresh_agent_picker_pending_jobs(
+                app_server,
+                root,
+                self.agent_navigation.tracked_thread_ids(),
+            );
         }
     }
 
@@ -384,42 +390,23 @@ impl App {
                 on_row(idx, thread_id);
                 let id = thread_id;
                 let is_primary = self.primary_thread_id == Some(thread_id);
-                let mut name = entry
-                    .agent_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|agent_path| !is_primary && !agent_path.is_empty())
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| {
-                        format_agent_picker_item_name(
-                            entry.agent_nickname.as_deref(),
-                            entry.agent_role.as_deref(),
-                            is_primary,
-                        )
-                    });
-                if !is_primary
-                    && entry
-                        .agent_nickname
-                        .as_deref()
-                        .is_none_or(|name| name.trim().is_empty())
-                    && entry
-                        .agent_role
-                        .as_deref()
-                        .is_none_or(|role| role.trim().is_empty())
-                    && entry
-                        .agent_path
-                        .as_deref()
-                        .is_none_or(|path| path.trim().is_empty())
-                {
-                    let uuid = thread_id.to_string();
-                    name = format!("Agent {}", &uuid[uuid.len() - 8..]);
-                }
+                let name = agent_picker_row_name(thread_id, entry, is_primary);
                 let details = self.agent_navigation.picker_details(&thread_id);
                 let is_error = details.is_some_and(|details| details.is_error);
                 let status = picker_status_label(entry.is_closed, entry.is_running, is_error);
-                let mut description = vec![match details
-                    .and_then(|details| details.context_snapshot.as_ref())
-                {
+                let pending_jobs = details.and_then(|details| details.pending_jobs.as_deref());
+                let status_label = if status == "idle" {
+                    idle_status_label(pending_jobs)
+                } else {
+                    status.to_string()
+                };
+                let context_snapshot =
+                    details.and_then(|details| details.context_snapshot.as_ref());
+                let row_details = AgentPickerRowDetails {
+                    context: context_snapshot.cloned(),
+                    jobs: pending_jobs.map(<[_]>::to_vec).unwrap_or_default(),
+                };
+                let mut description = vec![match context_snapshot {
                     Some(snapshot) => snapshot_summary(snapshot),
                     None => context_description(
                         details.and_then(|details| details.context_usage.as_ref()),
@@ -437,14 +424,10 @@ impl App {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed, is_error),
                     description: Some(description.join(" · ")),
-                    details: details
-                        .and_then(|details| details.context_snapshot.as_ref())
-                        .map(|snapshot| {
-                            Box::<dyn crate::render::renderable::Renderable>::from(
-                                AgentContextDetails(snapshot.clone()),
-                            )
-                        }),
-                    category_tag: Some(status.to_string()),
+                    details: (row_details.context.is_some() || !row_details.jobs.is_empty()).then(
+                        || Box::<dyn crate::render::renderable::Renderable>::from(row_details),
+                    ),
+                    category_tag: Some(status_label),
                     is_current: self.active_thread_id == Some(thread_id),
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
@@ -485,6 +468,9 @@ impl App {
             ServerNotification::TurnStarted(_) => {
                 self.agent_navigation
                     .set_error(thread_id, /*is_error*/ false);
+                // A turn consumes delivered results; relist once it ends.
+                self.agent_navigation
+                    .set_pending_jobs(thread_id, /*jobs*/ None);
             }
             ServerNotification::TurnCompleted(completed) => {
                 if let Some(snapshot) = &completed.context_usage {
@@ -495,6 +481,12 @@ impl App {
                     thread_id,
                     matches!(completed.turn.status, TurnStatus::Failed),
                 );
+                if self.primary_thread_id.is_some()
+                    && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
+                {
+                    self.app_event_tx
+                        .send(AppEvent::AgentPickerPendingJobsNeeded(thread_id));
+                }
                 let should_backfill = self.agent_navigation.note_completed_preview_turn(
                     thread_id,
                     &completed.turn.id,
@@ -561,6 +553,36 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// Row label: the agent path, else nickname and role, else a short thread ID suffix.
+pub(super) fn agent_picker_row_name(
+    thread_id: ThreadId,
+    entry: &crate::multi_agents::AgentPickerThreadEntry,
+    is_primary: bool,
+) -> String {
+    let non_empty = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    };
+    if !is_primary && let Some(agent_path) = non_empty(&entry.agent_path) {
+        return agent_path;
+    }
+    if !is_primary
+        && non_empty(&entry.agent_nickname).is_none()
+        && non_empty(&entry.agent_role).is_none()
+    {
+        let uuid = thread_id.to_string();
+        return format!("Agent {}", &uuid[uuid.len() - 8..]);
+    }
+    format_agent_picker_item_name(
+        entry.agent_nickname.as_deref(),
+        entry.agent_role.as_deref(),
+        is_primary,
+    )
 }
 
 enum AgentPickerHint {

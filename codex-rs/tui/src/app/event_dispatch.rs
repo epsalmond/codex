@@ -3042,6 +3042,38 @@ impl App {
                     self.refresh_agent_picker_previews(app_server, root, vec![thread_id]);
                 }
             }
+            AppEvent::AgentPickerPendingJobsLoaded {
+                primary_thread_id,
+                results,
+            } => {
+                self.apply_agent_picker_pending_jobs(primary_thread_id, results);
+            }
+            AppEvent::AgentPickerPendingJobsNeeded(thread_id) => {
+                if let Some(root) = self.primary_thread_id
+                    && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
+                {
+                    self.refresh_agent_picker_pending_jobs(app_server, root, vec![thread_id]);
+                }
+            }
+            AppEvent::OpenProcessTree => {
+                self.open_process_tree(app_server);
+            }
+            AppEvent::ProcessTreeLoaded {
+                primary_thread_id,
+                entries,
+            } => {
+                self.show_process_tree(primary_thread_id, entries);
+            }
+            AppEvent::ShowBackgroundTerminalOutput(entry) => {
+                self.show_background_terminal_output(*entry);
+            }
+            AppEvent::StopBackgroundTerminal(entry) => {
+                self.stop_background_terminal(app_server, *entry);
+            }
+            AppEvent::BackgroundTerminalStopped(result) => match result {
+                Ok(message) => self.chat_widget.add_info_message(message, /*hint*/ None),
+                Err(message) => self.chat_widget.add_error_message(message),
+            },
             AppEvent::DismissInactiveSubagents => {
                 self.dismiss_inactive_subagents();
             }

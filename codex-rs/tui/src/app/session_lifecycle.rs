@@ -172,6 +172,11 @@ impl App {
                 primary_thread_id,
                 self.agent_navigation.tracked_thread_ids(),
             );
+            self.refresh_agent_picker_pending_jobs(
+                app_server,
+                primary_thread_id,
+                self.agent_navigation.tracked_thread_ids(),
+            );
         }
     }
 

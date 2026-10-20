@@ -148,3 +148,83 @@ async fn unassigned_child_retains_explicit_completion_retrieval(version: MultiAg
     );
     assert!(session.active_turn.lock().await.is_none());
 }
+
+#[test_case::test_case(SessionSource::Cli, true; "root_wakes")]
+#[test_case::test_case(
+    SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review),
+    false;
+    "unassigned_child_does_not_wake"
+)]
+#[tokio::test]
+async fn pending_lists_yielded_records_with_wake_ownership(
+    source: SessionSource,
+    wakes_owner: bool,
+) {
+    let (session, turn, _) =
+        make_session_and_context_with_auth_and_config_and_session_source_and_rx(
+            CodexAuth::from_api_key("test-key"),
+            Vec::new(),
+            source.clone(),
+            |_| {},
+        )
+        .await;
+    let store = &session.services.async_completions;
+    // As `Session::new` does; the test constructor skips it.
+    store.attach_owner(&session, &source);
+    let mut inline = store
+        .reserve(
+            session.thread_id(),
+            &turn,
+            "inline",
+            /*process_id*/ 6,
+            /*cell_id*/ None,
+        )
+        .unwrap();
+    let _inline_publisher = inline.register();
+    let mut background = store
+        .reserve(
+            session.thread_id(),
+            &turn,
+            "background",
+            /*process_id*/ 7,
+            /*cell_id*/ None,
+        )
+        .unwrap();
+    background.set_command("sleep 60");
+    let publisher = background.register();
+    drop(background);
+
+    let pending = store.pending();
+    assert_eq!(pending.len(), 1, "only yielded records are pending");
+    let record = &pending[0];
+    assert_eq!(
+        (
+            record.call_id.as_str(),
+            record.process_id,
+            record.command.as_deref(),
+            record.ready,
+            record.wakes_owner,
+        ),
+        ("background", Some(7), Some("sleep 60"), false, wakes_owner)
+    );
+    assert!(record.created_at > 0);
+    assert_eq!(
+        session.list_pending_completions().await[0]
+            .process_id
+            .as_deref(),
+        Some("7")
+    );
+
+    if !wakes_owner {
+        publisher.publish(
+            CompletionStatus::Exited(0),
+            b"done",
+            /*omitted_bytes*/ 0,
+        );
+        assert!(
+            store.pending()[0].ready,
+            "published results stay pending until accepted"
+        );
+    }
+    drop(inline);
+}

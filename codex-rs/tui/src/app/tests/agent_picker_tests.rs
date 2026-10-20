@@ -658,3 +658,65 @@ async fn hidden_terminal_snapshot_without_counters_updates_picker_without_reques
     assert!(op_rx.try_recv().is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn idle_picker_rows_show_pending_jobs_once_listed() -> Result<()> {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_u128(/*value*/ 10);
+    let waiting = ThreadId::from_u128(/*value*/ 11);
+    let delivered = ThreadId::from_u128(/*value*/ 12);
+    let unlisted = ThreadId::from_u128(/*value*/ 13);
+    let running = ThreadId::from_u128(/*value*/ 14);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(delivered);
+    for (id, name) in [
+        (root, None),
+        (waiting, Some("Builder")),
+        (delivered, Some("Reviewer")),
+        (unlisted, Some("Scout")),
+        (running, Some("Tests")),
+    ] {
+        app.upsert_agent_picker_thread(
+            id,
+            name.map(str::to_string),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+    }
+    let job = |command: &str, finished: bool| crate::multi_agents::AgentPendingJob {
+        command: command.to_string(),
+        started_at: 1,
+        finished,
+    };
+    app.agent_navigation
+        .set_pending_jobs(root, Some(Vec::new()));
+    app.agent_navigation.set_pending_jobs(
+        waiting,
+        Some(vec![
+            job("agent-job -- cargo build", /*finished*/ false),
+            job("wait-for-build -- just test", /*finished*/ false),
+        ]),
+    );
+    app.agent_navigation
+        .set_pending_jobs(delivered, Some(vec![job("sleep 5", /*finished*/ true)]));
+    app.agent_navigation
+        .set_pending_jobs(running, Some(vec![job("npm run dev", /*finished*/ false)]));
+    app.agent_navigation.mark_running(running);
+
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
+    insta::assert_snapshot!(
+        "agent_picker_pending_jobs",
+        render_bottom_popup(&app.chat_widget, /*width*/ 96)
+    );
+
+    // A new turn consumes delivered results, so the stale count is dropped until relisted.
+    app.cache_agent_picker_notification(delivered, &turn_started_notification(delivered, "turn-2"));
+    assert_eq!(
+        app.agent_navigation
+            .picker_details(&delivered)
+            .and_then(|details| details.pending_jobs.clone()),
+        None
+    );
+    Ok(())
+}

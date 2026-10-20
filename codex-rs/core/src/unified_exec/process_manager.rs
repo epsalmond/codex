@@ -533,7 +533,10 @@ impl UnifiedExecProcessManager {
                 request.process_id,
                 context.originating_cell_id.as_deref(),
             ) {
-                Ok(reservation) => Some(reservation),
+                Ok(mut reservation) => {
+                    reservation.set_command(&request.hook_command);
+                    Some(reservation)
+                }
                 Err(message) => {
                     self.release_process_id(request.process_id).await;
                     return Err(UnifiedExecError::process_failed(message.to_owned()));
@@ -1302,6 +1305,12 @@ impl UnifiedExecProcessManager {
             network_approval,
             session: Arc::downgrade(&context.session),
             last_used: started_at,
+            // Stored immediately after spawn, so the wall clock now is the start time.
+            started_at_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+                }),
         };
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
@@ -1931,8 +1940,29 @@ impl UnifiedExecProcessManager {
                 process_id: entry.process_id.to_string(),
                 command: entry.hook_command.clone(),
                 cwd: entry.cwd.clone(),
+                started_at: Some(entry.started_at_unix),
+                wakes_owner: false,
             })
             .collect()
+    }
+
+    /// The newest retained output of a live or uncollected process, at most `max_bytes` long.
+    pub(crate) async fn recent_output(&self, process_id: i32, max_bytes: usize) -> Option<String> {
+        let process = {
+            let store = self.process_store.lock().await;
+            Arc::clone(&store.processes.get(&process_id)?.process)
+        };
+        let output = process
+            .output_handles()
+            .output_buffer
+            .lock()
+            .await
+            .transcript
+            .to_bytes();
+        let start = output.len().saturating_sub(max_bytes);
+        let text = String::from_utf8_lossy(&output[start..]);
+        // A byte cut can split a character; drop the replacement it leaves at the front.
+        Some(text.trim_start_matches('\u{fffd}').to_string())
     }
 
     pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {

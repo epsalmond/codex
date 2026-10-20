@@ -1482,6 +1482,11 @@ impl MessageProcessor {
                     .thread_background_terminals_list(params)
                     .await
             }
+            ClientRequest::ThreadPendingCompletionsList { params, .. } => {
+                self.thread_processor
+                    .thread_pending_completions_list(params)
+                    .await
+            }
             ClientRequest::ThreadBackgroundTerminalsTerminate { params, .. } => {
                 self.thread_processor
                     .thread_background_terminals_terminate(params)

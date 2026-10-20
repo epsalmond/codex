@@ -187,6 +187,14 @@ impl AgentPickerState {
         self.details.entry(thread_id).or_default().context_snapshot = Some(snapshot);
     }
 
+    pub(super) fn set_pending_jobs(
+        &mut self,
+        thread_id: ThreadId,
+        jobs: Option<Vec<crate::multi_agents::AgentPendingJob>>,
+    ) {
+        self.details.entry(thread_id).or_default().pending_jobs = jobs;
+    }
+
     pub(super) fn set_error(&mut self, thread_id: ThreadId, is_error: bool) {
         self.details.entry(thread_id).or_default().is_error = is_error;
         self.bump_status_revision(thread_id);
