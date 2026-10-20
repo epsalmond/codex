@@ -2929,7 +2929,7 @@ async fn multi_agent_v2_sibling_wake_restores_message_tool_descriptions() {
 /// The server rejects every request whose reserved `collaboration` namespace holds a tool it did not
 /// configure, or a configured tool whose parameter schema differs. So under every fork option the
 /// namespace must hold exactly upstream's tool names, each with upstream's property names, types,
-/// and required list. Descriptions are not validated and may differ. The fork-only
+/// required list, and encrypted markers. Descriptions are not validated and may differ. The fork-only
 /// `report_to_parent` is a plain top-level function.
 #[tokio::test]
 async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
@@ -2944,10 +2944,17 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                     .collect::<serde_json::Map<_, _>>()
             })
             .unwrap_or_default();
+        // The server encrypts only the reviewed parameters, so the marker is part of the schema.
+        let encrypted = properties
+            .keys()
+            .filter(|name| parameters["properties"][name.as_str()]["encrypted"] == json!(true))
+            .cloned()
+            .collect::<Vec<_>>();
         json!({
             "type": parameters["type"],
             "properties": properties,
             "required": parameters["required"],
+            "encrypted": encrypted,
         })
     }
     let upstream = BTreeMap::from([
@@ -2964,6 +2971,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                     "task_name": "string",
                 },
                 "required": ["task_name", "message"],
+                "encrypted": ["message"],
             }),
         ),
         (
@@ -2972,6 +2980,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                 "type": "object",
                 "properties": { "message": "string", "target": "string" },
                 "required": ["target", "message"],
+                "encrypted": ["message"],
             }),
         ),
         (
@@ -2980,6 +2989,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                 "type": "object",
                 "properties": { "message": "string", "target": "string" },
                 "required": ["target", "message"],
+                "encrypted": ["message"],
             }),
         ),
         (
@@ -2988,6 +2998,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                 "type": "object",
                 "properties": { "timeout_ms": "number" },
                 "required": null,
+                "encrypted": [],
             }),
         ),
         (
@@ -2996,6 +3007,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                 "type": "object",
                 "properties": { "target": "string" },
                 "required": ["target"],
+                "encrypted": [],
             }),
         ),
         (
@@ -3004,6 +3016,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                 "type": "object",
                 "properties": { "path_prefix": "string" },
                 "required": null,
+                "encrypted": [],
             }),
         ),
     ]);
