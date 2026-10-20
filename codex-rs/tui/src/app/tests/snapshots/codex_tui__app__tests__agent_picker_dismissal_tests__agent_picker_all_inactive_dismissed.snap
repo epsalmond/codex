@@ -8,4 +8,4 @@ expression: "render_bottom_popup(&app.chat_widget, 120)"
 
 › 1. • Main [default]  idle context ?
 
-  enter select · / search · q hide inactive locally · esc back
+  enter select · / search · c close idle · q hide inactive locally · esc back

@@ -11,4 +11,4 @@ expression: "render_bottom_popup(&app.chat_widget, 160)"
 
 
   context 120K · cap 100K · window 272K · gpt-6-luna · usage + estimate · snapshot 2h ago · provider 1d ago · failed 120K→? (1h ago)
-  enter select · / search · x close agent · q hide inactive locally · esc back
+  enter select · / search · x close agent · c close idle · q hide inactive locally · esc back

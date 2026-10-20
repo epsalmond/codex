@@ -3687,6 +3687,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
             "wait",
             "request_user_input",
             "agents",
+            "close_agents",
             // Hosted Responses tool.
             "web_search",
         ]
@@ -3853,6 +3854,7 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
             "request_user_input",
             // Multi-agent v2 tools.
             MULTI_AGENT_V2_NAMESPACE,
+            "close_agents",
             // Hosted Responses tools.
             "web_search",
         ]
@@ -4107,4 +4109,30 @@ async fn wait_kept_when_provider_lacks_readiness() {
     assert_wait_kept(&plan);
     // Process completion does not depend on the Code Mode provider.
     assert!(!write_stdin_chars_description(&plan).contains("retrieves session output"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_close_agents_is_top_level_and_opt_out() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+    })
+    .await;
+    plan.assert_visible_contains(&["close_agents"]);
+    // The server rejects tools it did not configure in the reserved namespace.
+    let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+        panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
+    };
+    assert!(!namespace.tools.iter().any(|tool| matches!(
+        tool,
+        ResponsesApiNamespaceTool::Function(tool) if tool.name == "close_agents"
+    )));
+
+    let disabled = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.multi_agent_v2.close_agents_tool = false;
+        });
+    })
+    .await;
+    disabled.assert_visible_lacks(&["close_agents"]);
 }

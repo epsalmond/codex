@@ -1496,6 +1496,8 @@ pub struct MultiAgentV2Config {
     /// Subagents report only through `report_to_parent`, and task agents close after their final report.
     /// See `typed_reports` in the TOML config.
     pub typed_reports: bool,
+    /// Offers the top-level `close_agents` tool. See `close_agents_tool` in the TOML config.
+    pub close_agents_tool: bool,
     /// Subagent model calls per turn before the wrap-up reminder; 0 disables it.
     pub wrap_up_after_model_calls: u32,
     pub message_board_in_memory: bool,
@@ -1543,6 +1545,7 @@ impl MultiAgentV2Config {
             disable_direct_message: false,
             sibling_wake: false,
             typed_reports: true,
+            close_agents_tool: true,
             wrap_up_after_model_calls: DEFAULT_MULTI_AGENT_V2_WRAP_UP_AFTER_MODEL_CALLS,
             message_board_in_memory: false,
             message_board_remote: None,
@@ -3009,6 +3012,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let typed_reports = base
         .and_then(|config| config.typed_reports)
         .unwrap_or(default.typed_reports);
+    let close_agents_tool = base
+        .and_then(|config| config.close_agents_tool)
+        .unwrap_or(default.close_agents_tool);
     let wrap_up_after_model_calls = base
         .and_then(|config| config.wrap_up_after_model_calls)
         .unwrap_or(default.wrap_up_after_model_calls);
@@ -3054,6 +3060,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         disable_direct_message,
         sibling_wake,
         typed_reports,
+        close_agents_tool,
         wrap_up_after_model_calls,
         message_board_in_memory,
         message_board_remote: base.and_then(|config| config.message_board_remote.clone()),

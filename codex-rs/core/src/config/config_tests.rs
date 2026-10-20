@@ -12699,6 +12699,18 @@ sibling_wake = true
 }
 
 #[test]
+fn multi_agent_v2_close_agents_tool_defaults_on_with_opt_out() {
+    assert!(resolve_multi_agent_v2_config(&ConfigToml::default()).close_agents_tool);
+    let config_toml: ConfigToml = toml::from_str(
+        r#"[features.multi_agent_v2]
+close_agents_tool = false
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+    assert!(!resolve_multi_agent_v2_config(&config_toml).close_agents_tool);
+}
+
+#[test]
 fn multi_agent_v2_typed_reports_default_on_with_documented_opt_outs() {
     let defaults = resolve_multi_agent_v2_config(&ConfigToml::default());
     assert!(defaults.typed_reports);

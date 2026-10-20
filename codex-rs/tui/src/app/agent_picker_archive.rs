@@ -65,6 +65,78 @@ impl App {
         Ok(())
     }
 
+    /// Closes every idle subagent through the same backend archive path as the per-row close.
+    pub(super) async fn close_idle_agent_picker_threads(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+    ) -> Result<()> {
+        let Some(root) = self.primary_thread_id else {
+            return Ok(());
+        };
+        let targets = self.agent_navigation.idle_close_targets(root);
+        if targets.is_empty() {
+            self.chat_widget.add_info_message(
+                "No idle subagents to close.".to_string(),
+                /*hint*/ None,
+            );
+            return Ok(());
+        }
+        let closing = self
+            .agent_navigation
+            .session_subtree_threads(root, &targets);
+        if self
+            .active_thread_id
+            .is_some_and(|thread_id| closing.contains(&thread_id))
+            || self
+                .current_displayed_thread_id()
+                .is_some_and(|thread_id| closing.contains(&thread_id))
+        {
+            // As with the per-row close, leave the subtree before the backend stops it.
+            self.select_agent_thread_and_discard_side(tui, app_server, root)
+                .await?;
+            if self.active_thread_id != Some(root)
+                || self.current_displayed_thread_id() != Some(root)
+            {
+                return Ok(());
+            }
+        }
+        let mut closed = 0usize;
+        let mut failures = Vec::new();
+        for thread_id in targets {
+            match app_server.thread_archive(thread_id).await {
+                Ok(()) => {
+                    self.mark_agent_picker_thread_closed(thread_id);
+                    self.set_agent_picker_thread_visibility(
+                        thread_id,
+                        AgentPickerThreadVisibility::Hidden,
+                    );
+                    closed += 1;
+                }
+                Err(error) => failures.push(format!("{error:#}")),
+            }
+        }
+        if !self.agent_navigation.queue_picker_refresh(root) {
+            self.refresh_agent_picker_threads(app_server, root);
+        }
+        let noun = if closed == 1 { "subagent" } else { "subagents" };
+        self.chat_widget
+            .add_info_message(format!("Closed {closed} idle {noun}."), /*hint*/ None);
+        if let Some(error) = failures.first() {
+            self.chat_widget.add_error_message(format!(
+                "Failed to close {} idle subagent(s): {error}",
+                failures.len()
+            ));
+        }
+        if self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID) {
+            self.update_agent_picker_rows_if_present();
+        } else {
+            let params = self.agent_picker_selection_view_params(/*selected*/ None);
+            self.chat_widget.show_selection_view(params);
+        }
+        Ok(())
+    }
+
     pub(super) fn set_agent_picker_thread_visibility(
         &mut self,
         thread_id: ThreadId,

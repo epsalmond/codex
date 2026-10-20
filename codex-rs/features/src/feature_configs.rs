@@ -362,6 +362,10 @@ pub struct MultiAgentV2ConfigToml {
     /// finished agents resumable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub typed_reports: Option<bool>,
+    /// Offer the top-level `close_agents` tool, which closes named descendants or every idle
+    /// one, loaded or unloaded. Defaults to true; set false to hide it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_agents_tool: Option<bool>,
     /// Model calls in one subagent turn after which the subagent is told to finish and report.
     /// Defaults to 150; 0 disables the reminder. Applies only with `typed_reports`.
     #[serde(skip_serializing_if = "Option::is_none")]

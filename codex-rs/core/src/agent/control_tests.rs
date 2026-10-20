@@ -6296,5 +6296,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
 
 #[path = "control_tests/close_v2_tests.rs"]
 mod close_v2_tests;
+#[path = "control_tests/descendants_tests.rs"]
+mod descendants_tests;
 #[path = "control_tests/polling_completion_tests.rs"]
 mod polling_completion_tests;

@@ -4,12 +4,51 @@ use crate::thread_status::ThreadWatchManager;
 use crate::thread_status::resolve_thread_status;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadExtra;
+use codex_app_server_protocol::ThreadSpawnEdgeStatus;
 use codex_app_server_protocol::ThreadStatus;
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
+
+/// Report each subagent's lifecycle from the agent tree's single descendant view, which
+/// `list_agents` also uses, so clients and agents agree on which subagents are open.
+pub(super) async fn apply_spawn_edge_statuses(
+    thread_manager: &ThreadManager,
+    root_thread_id: ThreadId,
+    threads: &mut [Thread],
+) {
+    let descendants = match thread_manager
+        .list_spawned_descendants(root_thread_id)
+        .await
+    {
+        Ok(descendants) => descendants,
+        Err(err) => {
+            tracing::warn!(%err, %root_thread_id, "failed to list spawned descendants");
+            return;
+        }
+    };
+    let statuses = descendants
+        .into_iter()
+        .map(|descendant| {
+            let status = match descendant.edge_status {
+                codex_core::ThreadSpawnEdgeStatus::Open => ThreadSpawnEdgeStatus::Open,
+                codex_core::ThreadSpawnEdgeStatus::Closed => ThreadSpawnEdgeStatus::Closed,
+            };
+            (descendant.thread_id.to_string(), status)
+        })
+        .collect::<HashMap<_, _>>();
+    for thread in threads {
+        if let Some(status) = statuses.get(&thread.id) {
+            thread
+                .extra
+                .get_or_insert_with(ThreadExtra::default)
+                .spawn_edge_status = Some(*status);
+        }
+    }
+}
 
 pub(super) async fn enrich_loaded_threads<T>(
     thread_manager: &ThreadManager,

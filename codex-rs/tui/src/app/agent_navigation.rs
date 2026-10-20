@@ -705,6 +705,44 @@ mod tests {
     }
 
     #[test]
+    fn idle_close_targets_skip_busy_subtrees_and_covered_descendants() {
+        let mut state = AgentNavigationState::default();
+        let root = ThreadId::from_u128(/*value*/ 1);
+        let ids = (2..=7).map(ThreadId::from_u128).collect::<Vec<_>>();
+        let rows = [
+            (ids[0], "/root/idle"),
+            (ids[1], "/root/idle/child"),
+            (ids[2], "/root/parent"),
+            (ids[3], "/root/parent/busy"),
+            (ids[4], "/root/closed"),
+            (ids[5], "/root/pending"),
+        ];
+        state.upsert(
+            root, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+        for (thread_id, path) in rows {
+            state.upsert(
+                thread_id,
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
+                /*is_closed*/ path == "/root/closed",
+            );
+            state.set_agent_path(thread_id, Some(path.to_string()));
+        }
+        state.mark_running(ids[3]);
+        state.note_awaiting_first_turn(ids[5]);
+
+        assert_eq!(state.idle_close_targets(root), vec![ids[0]]);
+        assert_eq!(
+            state
+                .session_subtree_threads(root, &[ids[0]])
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            HashSet::from([ids[0], ids[1]])
+        );
+    }
+
+    #[test]
     fn upsert_preserves_first_seen_order() {
         let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
 

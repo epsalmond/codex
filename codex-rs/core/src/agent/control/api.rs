@@ -15,6 +15,7 @@ use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
 use crate::agent::types::AgentExecutionGuard;
 use crate::agent::types::AgentMessage;
+use crate::agent::types::ListedAgent;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent_communication::AgentCommunicationContext;
@@ -277,7 +278,7 @@ impl AgentControl for LocalAgentControl {
         parent: Option<ThreadId>,
         source: &'a SessionSource,
         path_prefix: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<Vec<LiveAgent>>> {
+    ) -> BoxFuture<'a, Result<Vec<ListedAgent>>> {
         Box::pin(async move {
             self.runtime.register_session_root(caller, parent);
             self.list_agents(source, path_prefix).await

@@ -286,6 +286,37 @@ pub fn create_report_tool() -> ToolSpec {
     })
 }
 
+/// Fork-owned top-level tool; the reserved `collaboration` namespace rejects new tools.
+pub(crate) const CLOSE_AGENTS_TOOL_NAME: &str = "close_agents";
+/// The `close_agents` target that selects every idle descendant.
+pub(crate) const CLOSE_AGENTS_IDLE_TARGET: &str = "idle";
+const CLOSE_AGENTS_DESCRIPTION: &str = "Close agents you spawned, and their descendants, once you no longer need them. Closing is permanent: a closed agent cannot be messaged or resumed, and anything still running in it is stopped. Open agents count toward the concurrency limit until closed, including idle agents whose runtime is unloaded (`list_agents` status \"unloaded\"). Pass task names or paths from `spawn_agent`/`list_agents`, or `[\"idle\"]` to close every idle descendant whose own descendants are idle too. Returns the closed agents with their previous status, and any targets that failed.";
+
+pub fn create_close_agents_tool() -> ToolSpec {
+    let properties = BTreeMap::from([(
+        "targets".to_string(),
+        JsonSchema::array(
+            JsonSchema::string(/*description*/ None),
+            Some(
+                "Task names or paths of descendants to close, or [\"idle\"] for every idle descendant."
+                    .to_string(),
+            ),
+        ),
+    )]);
+    ToolSpec::Function(ResponsesApiTool {
+        name: CLOSE_AGENTS_TOOL_NAME.to_string(),
+        description: CLOSE_AGENTS_DESCRIPTION.to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["targets".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
 /// `send_message` description when `sibling_wake` lets any agent start a turn in another.
 pub(crate) const SIBLING_WAKE_SEND_MESSAGE_DESCRIPTION: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.";
 /// `followup_task` description when `sibling_wake` lets any agent start a turn in another.
@@ -584,8 +615,11 @@ fn list_agents_output_schema() -> Value {
                             "description": "Canonical task name for the agent when available, otherwise the agent id."
                         },
                         "agent_status": {
-                            "description": "Last known status of the agent.",
-                            "allOf": [agent_status_output_schema()]
+                            "description": "Status of the agent. \"unloaded\" means it is open and idle with its runtime unloaded; a message or follow-up reloads it.",
+                            "oneOf": [
+                                agent_status_output_schema(),
+                                { "type": "string", "enum": ["unloaded"] }
+                            ]
                         },
                         "context": {
                             "type": ["object", "null"],
@@ -606,7 +640,7 @@ fn list_agents_output_schema() -> Value {
                     "required": ["agent_name", "agent_status", "context"],
                     "additionalProperties": false
                 },
-                "description": "Live agents visible in the current root thread tree."
+                "description": "The root and every open agent in the current root thread tree, loaded or not."
             }
         },
         "required": ["agents"],

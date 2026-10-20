@@ -467,6 +467,10 @@ pub(crate) enum AppEvent {
     CloseAgentThread(ThreadId),
     /// Hide inactive descendant rows locally without stopping or archiving threads.
     DismissInactiveSubagents,
+    /// Close and archive every idle descendant whose own descendants are idle too.
+    CloseIdleSubagents,
+    /// Re-read subagent lifecycle from the backend, e.g. after a child unloaded.
+    RefreshAgentPickerThreads,
 
     /// Fork the current thread into a transient side conversation.
     StartSide {

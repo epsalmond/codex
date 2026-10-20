@@ -28,6 +28,7 @@ use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
+use codex_app_server_protocol::ThreadSpawnEdgeStatus;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
@@ -1893,6 +1894,18 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
             .iter()
             .all(|thread| thread.parent_thread_id.as_deref() == Some(cli_id.as_str()))
     );
+    // Lifecycle comes from the spawn edges, so unloaded subagents are still open.
+    assert_eq!(
+        response
+            .data
+            .iter()
+            .map(|thread| thread
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.spawn_edge_status))
+            .collect::<Vec<_>>(),
+        vec![Some(ThreadSpawnEdgeStatus::Open); expected_subagents.len()]
+    );
     assert_eq!(
         response
             .data
@@ -1908,6 +1921,62 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         expected_subagents
     );
     assert_eq!(response.next_cursor, None);
+
+    let closed_thread_id = expected_subagents[0].0.clone();
+    state_db
+        .upsert_thread_spawn_edge(
+            parent_thread_id,
+            ThreadId::from_string(&closed_thread_id)?,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await?;
+    let response: ThreadListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadList {
+            request_id,
+            params: codex_app_server_protocol::ThreadListParams {
+                excluded_thread_ids: None,
+                originators: None,
+                cursor: None,
+                limit: Some(10),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: Some(vec!["mock_provider".to_string()]),
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                archived: None,
+                section_id: None,
+                project_id: None,
+                cwd: None,
+                use_state_db_only: true,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: Some(parent_thread_id.to_string()),
+            },
+        })
+        .await?;
+    assert_eq!(
+        response
+            .data
+            .into_iter()
+            .map(|thread| {
+                let status = thread
+                    .extra
+                    .and_then(|extra| extra.spawn_edge_status)
+                    .expect("subagent lifecycle");
+                (thread.id, status)
+            })
+            .collect::<Vec<_>>(),
+        expected_subagents
+            .iter()
+            .map(|(thread_id, _, _)| {
+                let status = if *thread_id == closed_thread_id {
+                    ThreadSpawnEdgeStatus::Closed
+                } else {
+                    ThreadSpawnEdgeStatus::Open
+                };
+                (thread_id.clone(), status)
+            })
+            .collect::<Vec<_>>()
+    );
 
     Ok(())
 }

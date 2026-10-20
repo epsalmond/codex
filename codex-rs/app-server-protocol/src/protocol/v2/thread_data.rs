@@ -160,11 +160,28 @@ impl From<ThreadSource> for CoreThreadSource {
     }
 }
 
+/// Lifecycle of a subagent's spawn edge, as its agent tree records it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ThreadSpawnEdgeStatus {
+    /// The subagent is open, including when it is idle and unloaded.
+    Open,
+    /// The subagent, or an ancestor subagent, was closed.
+    Closed,
+}
+
 /// Extra app-server data for a thread.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
-pub struct ThreadExtra {}
+pub struct ThreadExtra {
+    /// Set on `thread/list` results filtered by `parentThreadId` or `ancestorThreadId`.
+    /// `open` subagents are still part of the tree even when not loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub spawn_edge_status: Option<ThreadSpawnEdgeStatus>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

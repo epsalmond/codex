@@ -22,6 +22,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
+use crate::tools::handlers::multi_agents_v2::CloseAgentsHandler as CloseAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -75,6 +76,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
@@ -1928,6 +1930,147 @@ async fn multi_agent_v2_list_agents_keeps_interrupted_resident_agents() {
     assert_eq!(result.agents.len(), 2);
     assert_eq!(result.agents[0].agent_name, "/root");
     assert_eq!(result.agents[1].agent_name, agent_path.as_str());
+}
+
+#[tokio::test]
+async fn multi_agent_v2_close_agents_closes_idle_and_named_descendants() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    for task_name in ["done", "named"] {
+        SpawnAgentHandlerV2::default()
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo",
+                    "task_name": task_name
+                })),
+            ))
+            .await
+            .expect("spawn_agent should succeed");
+    }
+    let resolve = |name: &'static str| {
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            session
+                .services
+                .local_agent_runtime
+                .resolve_agent_reference(session.thread_id, &turn.session_source, name)
+                .await
+                .expect("agent should resolve")
+        }
+    };
+    let done_id = resolve("done").await;
+    let named_id = resolve("named").await;
+    let done_thread = manager.get_thread(done_id).await.expect("done child");
+    let done_turn = done_thread.session.new_default_turn().await;
+    done_thread
+        .session
+        .send_event(
+            done_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
+                turn_id: done_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    drop(done_thread);
+    // Keep the named child busy so only the completed one is idle.
+    let named_thread = manager.get_thread(named_id).await.expect("named child");
+    let named_turn = named_thread.session.new_default_turn().await;
+    named_thread
+        .session
+        .send_event(
+            named_turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                turn_id: named_turn.sub_id.clone(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+        )
+        .await;
+    drop(named_thread);
+
+    let close = |targets: serde_json::Value| {
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            let output = CloseAgentsHandlerV2
+                .handle(invocation(
+                    session,
+                    turn,
+                    "close_agents",
+                    function_payload(json!({ "targets": targets })),
+                ))
+                .await
+                .expect("close_agents should succeed");
+            let (content, _) = expect_text_output(output);
+            serde_json::from_str::<serde_json::Value>(&content).expect("close_agents json")
+        }
+    };
+
+    assert_eq!(
+        close(json!(["idle"])).await,
+        json!({
+            "closed": [{"agent_name": "/root/done", "previous_status": {"completed": "done"}}],
+            "failed": []
+        })
+    );
+    assert_eq!(
+        close(json!(["named", "/root"])).await,
+        json!({
+            "closed": [{"agent_name": "/root/named", "previous_status": "running"}],
+            "failed": [{
+                "target": "/root",
+                "error": "not an open descendant of `/root`; agents can only close agents they spawned and those agents' descendants"
+            }]
+        })
+    );
+
+    let output = ListAgentsHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    assert_eq!(
+        result
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/root"]
+    );
 }
 
 #[tokio::test]
@@ -4263,8 +4406,16 @@ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
     let (content, _) = expect_text_output(output);
     let result: ListAgentsResult =
         serde_json::from_str(&content).expect("list_agents result should be json");
-    assert_eq!(result.agents.len(), 1);
-    assert_eq!(result.agents[0].agent_name, "/root");
+    // The edge is still open, so the unloaded worker stays listed.
+    assert_eq!(
+        result
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/root", "/root/worker"]
+    );
+    assert_eq!(result.agents[1].agent_status, json!("unloaded"));
 }
 
 #[tokio::test]

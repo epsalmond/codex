@@ -14,6 +14,7 @@ use codex_core::AgentTurnOutcome;
 use codex_core::DeliveryReceipt;
 use codex_core::ForkSnapshot;
 use codex_core::GuardianRootSnapshot;
+use codex_core::ListedAgent;
 use codex_core::LiveAgent;
 use codex_core::RolloutBudgetReminder;
 use codex_core::SendRequest;
@@ -141,7 +142,7 @@ impl AgentControl for TestAgentControl {
         _parent: Option<ThreadId>,
         _source: &'a SessionSource,
         _path_prefix: Option<&'a str>,
-    ) -> BoxFuture<'a, CodexResult<Vec<LiveAgent>>> {
+    ) -> BoxFuture<'a, CodexResult<Vec<ListedAgent>>> {
         assert_eq!(caller, self.thread_id);
         Box::pin(async { Err(CodexErr::InvalidRequest("host list rejection".to_string())) })
     }
