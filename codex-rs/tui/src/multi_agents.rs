@@ -321,6 +321,18 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     })
 }
 
+/// Returns the child a parent messaged or sent a follow-up to.
+pub(crate) fn sub_agent_interaction_thread_id(item: &ThreadItem) -> Option<ThreadId> {
+    match item {
+        ThreadItem::SubAgentActivity {
+            kind: SubAgentActivityKind::Interacted,
+            agent_thread_id,
+            ..
+        } => parse_thread_id(agent_thread_id),
+        _ => None,
+    }
+}
+
 pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     let ThreadItem::SubAgentActivity {
         kind, agent_path, ..

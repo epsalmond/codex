@@ -249,6 +249,10 @@ impl App {
                 previous.is_some_and(|entry| entry.is_closed)
             };
             if !is_closed && previous.is_some_and(|entry| entry.is_closed) {
+                // An idle-evicted child reloads under the same id when it gets a follow-up.
+                if status_unchanged && is_running {
+                    self.agent_navigation.mark_running(thread_id);
+                }
                 continue;
             }
             let agent_path = crate::app_server_session::source_agent_path(&thread.source);
@@ -276,6 +280,9 @@ impl App {
             if !live && update_liveness {
                 self.agent_navigation
                     .set_running_from_discovery(thread_id, is_running);
+            } else if status_unchanged && is_running {
+                // Liveness stays with live events, but a running child is never hidden.
+                self.agent_navigation.restore_dismissed_thread(thread_id);
             }
         }
 

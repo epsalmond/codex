@@ -57,6 +57,8 @@ pub(crate) struct AgentNavigationState {
     picker_excluded_threads: HashSet<ThreadId>,
     /// Local dismissal never changes backend liveness or saved history.
     dismissed_threads: HashSet<ThreadId>,
+    /// Spawned children with no observed turn yet; local dismissal skips them.
+    awaiting_first_turn: HashSet<ThreadId>,
     /// Confirmed spawned descendants, including legacy children without agent paths.
     subagent_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
@@ -217,11 +219,17 @@ impl AgentNavigationState {
     pub(crate) fn set_error(&mut self, thread_id: ThreadId, is_error: bool) {
         if self.threads.contains_key(&thread_id) {
             self.picker_state.set_error(thread_id, is_error);
+            if is_error {
+                self.awaiting_first_turn.remove(&thread_id);
+            }
         }
     }
 
     pub(crate) fn set_error_from_discovery(&mut self, thread_id: ThreadId, is_error: bool) {
         if self.threads.contains_key(&thread_id) {
+            if is_error {
+                self.awaiting_first_turn.remove(&thread_id);
+            }
             self.picker_state
                 .set_error_without_revision(thread_id, is_error);
         }
@@ -294,6 +302,9 @@ impl AgentNavigationState {
                 is_closed,
             },
         );
+        if is_closed {
+            self.awaiting_first_turn.remove(&thread_id);
+        }
     }
 
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
@@ -314,6 +325,17 @@ impl AgentNavigationState {
                     is_closed: false,
                 });
         entry.agent_path = Some(activity.agent_path);
+        // `Started` reports the spawn, not a turn: the child's first turn may still be pending.
+        // `Completed`/`Interrupted` prove a turn ended.
+        if activity.is_running_hint {
+            if !entry.is_closed {
+                self.awaiting_first_turn.insert(activity.thread_id);
+            }
+        } else {
+            self.awaiting_first_turn.remove(&activity.thread_id);
+        }
+        // Spawn hints never follow a stop for the same child, so a stopped child stays stopped
+        // here; its later turns arrive as turn/status notifications or `Interacted` activity.
         if activity.is_running_hint
             && !entry.is_closed
             && !self.stopped_threads.contains(&activity.thread_id)
@@ -328,14 +350,30 @@ impl AgentNavigationState {
         }
     }
 
+    /// Shows a locally dismissed row again, e.g. after a parent messages the child.
+    pub(crate) fn restore_dismissed_thread(&mut self, thread_id: ThreadId) {
+        self.dismissed_threads.remove(&thread_id);
+    }
+
+    /// Any turn completion, including failures, proves the child has run.
+    pub(crate) fn note_turn_completed(&mut self, thread_id: ThreadId) {
+        self.awaiting_first_turn.remove(&thread_id);
+    }
+
+    /// Records an authoritative turn start from the thread itself or a backend read.
+    ///
+    /// Idle V2 children are unloaded with `thread/closed` and reload under the same id for a
+    /// follow-up, so a closed row reopens here. Archived rows stay closed.
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
         self.picker_state.bump_status_revision(thread_id);
-        if self
-            .threads
-            .get(&thread_id)
-            .is_some_and(|entry| entry.is_closed)
+        let archived = self.picker_excluded_threads.contains(&thread_id);
+        if let Some(entry) = self.threads.get_mut(&thread_id)
+            && entry.is_closed
         {
-            return;
+            if archived {
+                return;
+            }
+            entry.is_closed = false;
         }
         self.stopped_threads.remove(&thread_id);
         self.set_error(thread_id, /*is_error*/ false);
@@ -353,6 +391,7 @@ impl AgentNavigationState {
             entry.is_running = is_running;
             if is_running {
                 self.dismissed_threads.remove(&thread_id);
+                self.awaiting_first_turn.remove(&thread_id);
             }
             self.picker_state.bump_status_revision(thread_id);
         }
@@ -363,6 +402,7 @@ impl AgentNavigationState {
             entry.is_running = is_running;
             if is_running {
                 self.dismissed_threads.remove(&thread_id);
+                self.awaiting_first_turn.remove(&thread_id);
             }
         }
     }
@@ -383,6 +423,7 @@ impl AgentNavigationState {
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
         self.picker_state.bump_status_revision(thread_id);
+        self.awaiting_first_turn.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -406,6 +447,7 @@ impl AgentNavigationState {
         self.parent_owned_threads.clear();
         self.picker_excluded_threads.clear();
         self.dismissed_threads.clear();
+        self.awaiting_first_turn.clear();
         self.subagent_threads.clear();
         self.picker_refresh = None;
     }
@@ -423,6 +465,7 @@ impl AgentNavigationState {
         self.parent_owned_threads.remove(&thread_id);
         self.picker_excluded_threads.remove(&thread_id);
         self.dismissed_threads.remove(&thread_id);
+        self.awaiting_first_turn.remove(&thread_id);
         self.subagent_threads.remove(&thread_id);
     }
 

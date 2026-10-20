@@ -2,6 +2,10 @@ use super::*;
 use crate::bottom_pane::StatusLineItem;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use crate::multi_agents::SubagentCounts;
+use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::SubAgentActivityKind;
+use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadStatusChangedNotification;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
@@ -217,6 +221,14 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
         }
     );
     app.agent_navigation.mark_stopped(side);
+    // The legacy child was just spawned and has not started its first turn.
+    app.dismiss_inactive_subagents();
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, side, legacy]
+    );
+    app.agent_navigation.mark_running(legacy);
+    app.agent_navigation.mark_stopped(legacy);
     app.dismiss_inactive_subagents();
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, side]);
     assert_eq!(
@@ -306,5 +318,169 @@ async fn archived_subagents_leave_status_counts_durably() -> Result<()> {
         }),
     );
     assert_eq!(app.agent_navigation.subagent_counts(Some(root)), remaining);
+    Ok(())
+}
+
+fn activity_notification(
+    parent: ThreadId,
+    child: ThreadId,
+    path: &str,
+    kind: SubAgentActivityKind,
+) -> ServerNotification {
+    ServerNotification::ItemCompleted(ItemCompletedNotification {
+        thread_id: parent.to_string(),
+        turn_id: "parent-turn".to_string(),
+        completed_at_ms: 0,
+        item: ThreadItem::SubAgentActivity {
+            id: "activity".to_string(),
+            kind,
+            agent_thread_id: child.to_string(),
+            agent_path: path.to_string(),
+            model: None,
+            reasoning_effort: None,
+        },
+    })
+}
+
+fn status_notification(thread_id: ThreadId, status: ThreadStatus) -> ServerNotification {
+    ServerNotification::ThreadStatusChanged(ThreadStatusChangedNotification {
+        thread_id: thread_id.to_string(),
+        status,
+    })
+}
+
+fn active_status() -> ThreadStatus {
+    ThreadStatus::Active {
+        active_flags: Vec::new(),
+    }
+}
+
+fn parent_event(app: &mut App, notification: ServerNotification) {
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(notification)));
+}
+
+fn press_q(app: &mut App, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+    while rx.try_recv().is_ok() {}
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Char('q')));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::DismissInactiveSubagents)
+    ));
+    app.dismiss_inactive_subagents();
+}
+
+#[tokio::test]
+async fn picker_dismissal_keeps_spawned_child_until_its_first_turn_ends() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let root = ThreadId::from_u128(/*value*/ 400);
+    let child = ThreadId::from_u128(/*value*/ 401);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        root, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(root, Some("/root".to_string()));
+    parent_event(
+        &mut app,
+        activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
+    );
+    // The new child reports idle before its first turn starts.
+    app.enqueue_thread_notification(child, status_notification(child, ThreadStatus::Idle))
+        .await?;
+    assert_eq!(
+        app.agent_navigation
+            .get(&child)
+            .map(|entry| entry.is_running),
+        Some(false)
+    );
+
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+
+    app.enqueue_thread_notification(child, turn_started_notification(child, "first"))
+        .await?;
+    app.enqueue_thread_notification(
+        child,
+        turn_completed_notification(child, "first", TurnStatus::Completed),
+    )
+    .await?;
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let root = ThreadId::from_u128(/*value*/ 500);
+    let child = ThreadId::from_u128(/*value*/ 501);
+    let path = "/root/worker";
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        root, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(root, Some("/root".to_string()));
+
+    // Spawn, first turn, and completion as the parent and child streams report them.
+    parent_event(
+        &mut app,
+        activity_notification(root, child, path, SubAgentActivityKind::Started),
+    );
+    for notification in [
+        status_notification(child, active_status()),
+        turn_started_notification(child, "first"),
+        turn_completed_notification(child, "first", TurnStatus::Completed),
+        status_notification(child, ThreadStatus::Idle),
+    ] {
+        app.enqueue_thread_notification(child, notification).await?;
+    }
+    parent_event(
+        &mut app,
+        activity_notification(root, child, path, SubAgentActivityKind::Completed),
+    );
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+
+    // The idle child is evicted, then reloads under the same id for the parent's follow-up.
+    app.enqueue_thread_notification(child, thread_closed_notification(child))
+        .await?;
+    parent_event(
+        &mut app,
+        activity_notification(root, child, path, SubAgentActivityKind::Interacted),
+    );
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+    for notification in [
+        status_notification(child, active_status()),
+        turn_started_notification(child, "follow-up"),
+    ] {
+        app.enqueue_thread_notification(child, notification).await?;
+    }
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)),
+        SubagentCounts {
+            running: 1,
+            total: 1
+        }
+    );
+
+    // Completion keeps the row until the user dismisses inactive rows again.
+    for notification in [
+        turn_completed_notification(child, "follow-up", TurnStatus::Completed),
+        status_notification(child, ThreadStatus::Idle),
+    ] {
+        app.enqueue_thread_notification(child, notification).await?;
+    }
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
     Ok(())
 }
