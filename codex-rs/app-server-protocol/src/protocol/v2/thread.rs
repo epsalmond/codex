@@ -1272,6 +1272,9 @@ pub struct ThreadBackgroundTerminalsListParams {
     /// Optional page size.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// Include each terminal's newest retained output in `recentOutput`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_recent_output: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1285,6 +1288,15 @@ pub struct ThreadBackgroundTerminal {
     pub os_pid: Option<u32>,
     pub cpu_percent: Option<f64>,
     pub rss_kb: Option<u64>,
+    /// Unix seconds when the process started, when known.
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    /// Whether the process's exit is delivered to this thread automatically and starts its turn.
+    #[serde(default)]
+    pub wakes_owner: bool,
+    /// Newest retained output, bounded; null unless `includeRecentOutput` was requested.
+    #[serde(default)]
+    pub recent_output: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1292,6 +1304,60 @@ pub struct ThreadBackgroundTerminal {
 #[ts(export_to = "v2/")]
 pub struct ThreadBackgroundTerminalsListResponse {
     pub data: Vec<ThreadBackgroundTerminal>,
+    /// Opaque cursor to pass to the next call to continue after the last item.
+    /// If None, there are no more items to return.
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPendingCompletionsListParams {
+    pub thread_id: String,
+    /// Opaque pagination cursor returned by a previous call.
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    /// Optional page size.
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+/// Work launched by the thread whose result is delivered to it automatically and has not been
+/// accepted yet: a running background process or code cell, or a finished result awaiting
+/// delivery.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPendingCompletion {
+    pub id: String,
+    pub call_id: String,
+    /// Background terminal process ID, for process producers.
+    pub process_id: Option<String>,
+    /// Code Mode cell ID, when the producer is or runs inside a cell.
+    pub cell_id: Option<String>,
+    pub command: Option<String>,
+    /// Unix seconds when the producer started.
+    pub created_at: i64,
+    pub status: ThreadPendingCompletionStatus,
+    /// Whether publication of the result starts a turn for this thread on its own.
+    pub wakes_owner: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadPendingCompletionStatus {
+    /// The producer is still running.
+    Running,
+    /// The producer finished; its result awaits delivery.
+    Ready,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPendingCompletionsListResponse {
+    pub data: Vec<ThreadPendingCompletion>,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// If None, there are no more items to return.
     pub next_cursor: Option<String>,

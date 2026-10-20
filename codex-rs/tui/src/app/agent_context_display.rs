@@ -1,38 +1,10 @@
 //! Rendering of captured child context, without refreshing or inferring measurements.
 
-use crate::render::renderable::Renderable;
 use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::ThreadContextReductionOutcome;
 use codex_app_server_protocol::ThreadContextTokenBasis;
 use codex_app_server_protocol::ThreadContextUsage;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
-
-/// Recompute age when the existing UI paints, using the original captured times.
-pub(super) struct AgentContextDetails(pub(super) ThreadContextUsage);
-
-impl Renderable for AgentContextDetails {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let description = snapshot_description(&self.0, chrono::Utc::now().timestamp());
-        let lines: Vec<Line<'_>> =
-            textwrap::wrap(&description, usize::from(area.width.max(/*other*/ 1)))
-                .into_iter()
-                .map(Line::from)
-                .collect();
-        Renderable::render(&Paragraph::new(lines), area, buf);
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        let description = snapshot_description(&self.0, chrono::Utc::now().timestamp());
-        textwrap::wrap(&description, usize::from(width.max(/*other*/ 1)))
-            .len()
-            .try_into()
-            .unwrap_or(u16::MAX)
-    }
-}
 
 pub(super) fn snapshot_summary(snapshot: &ThreadContextUsage) -> String {
     let tokens = count(snapshot.active_tokens);

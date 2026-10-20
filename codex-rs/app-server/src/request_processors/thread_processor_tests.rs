@@ -53,6 +53,9 @@ mod background_terminal_pagination_tests {
             os_pid: None,
             cpu_percent: None,
             rss_kb: None,
+            started_at: None,
+            wakes_owner: false,
+            recent_output: None,
         }
     }
 

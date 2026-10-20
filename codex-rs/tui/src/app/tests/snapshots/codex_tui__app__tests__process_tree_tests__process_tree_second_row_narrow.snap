@@ -1,0 +1,18 @@
+---
+source: tui/src/app/tests/process_tree_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 56)"
+---
+  Background terminals
+  Root and subagents. Exits marked "wakes owner" start
+  that agent's turn.
+
+
+  1. Main [default]        wakes owner 2m 05s · cargo b…
+› 2. Planner [worker]      no wake 1h 02m 05s · npm run…
+  3. /agents/review/tests  wakes owner ? · wait-for-bui…
+
+
+  ↳ > dev
+  ↳ ready on http://localhost:3000
+  ↳ compiled in 120ms
+  enter show output · x stop · / search · esc back

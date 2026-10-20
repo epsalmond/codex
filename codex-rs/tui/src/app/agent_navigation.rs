@@ -204,6 +204,16 @@ impl AgentNavigationState {
         self.picker_state.set_context_snapshot(thread_id, snapshot);
     }
 
+    pub(crate) fn set_pending_jobs(
+        &mut self,
+        thread_id: ThreadId,
+        jobs: Option<Vec<crate::multi_agents::AgentPendingJob>>,
+    ) {
+        if self.threads.contains_key(&thread_id) {
+            self.picker_state.set_pending_jobs(thread_id, jobs);
+        }
+    }
+
     pub(crate) fn set_error(&mut self, thread_id: ThreadId, is_error: bool) {
         if self.threads.contains_key(&thread_id) {
             self.picker_state.set_error(thread_id, is_error);

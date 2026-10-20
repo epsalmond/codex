@@ -56,6 +56,18 @@ pub(crate) struct AgentPickerThreadDetails {
     pub(crate) context_usage: Option<AgentPickerContextUsage>,
     pub(crate) context_snapshot: Option<codex_app_server_protocol::ThreadContextUsage>,
     pub(crate) is_error: bool,
+    /// Undelivered async completions; `None` until listed or when listing failed.
+    pub(crate) pending_jobs: Option<Vec<AgentPendingJob>>,
+}
+
+/// One job whose result will be delivered to an agent: a running background process or code
+/// cell, or a finished result awaiting delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentPendingJob {
+    pub(crate) command: String,
+    /// Unix seconds when the job started.
+    pub(crate) started_at: i64,
+    pub(crate) finished: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

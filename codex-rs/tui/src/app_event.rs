@@ -292,6 +292,19 @@ pub(crate) struct AgentPickerThreadRefresh {
     pub(crate) archived_thread_ids: std::collections::HashSet<ThreadId>,
 }
 
+/// One background terminal and the agent that owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessTreeEntry {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) owner: String,
+    pub(crate) process_id: String,
+    pub(crate) command: String,
+    /// Unix seconds when the process started, when the server reports it.
+    pub(crate) started_at: Option<i64>,
+    pub(crate) wakes_owner: bool,
+    pub(crate) recent_output: Vec<String>,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
@@ -423,6 +436,29 @@ pub(crate) enum AppEvent {
     },
     /// Backfill a missing preview after a completed child turn if the picker is still visible.
     AgentPickerPreviewNeeded(ThreadId),
+    /// Merge pending background jobs listed for picker rows.
+    AgentPickerPendingJobsLoaded {
+        primary_thread_id: ThreadId,
+        results: Vec<(
+            ThreadId,
+            Result<Vec<crate::multi_agents::AgentPendingJob>, String>,
+        )>,
+    },
+    /// Relist one agent's pending jobs after its turn ends if the picker is still visible.
+    AgentPickerPendingJobsNeeded(ThreadId),
+    /// Open `/ps`: tree-wide background terminals when subagents exist.
+    OpenProcessTree,
+    /// Show background terminals listed for the root and its subagents.
+    ProcessTreeLoaded {
+        primary_thread_id: ThreadId,
+        entries: Vec<ProcessTreeEntry>,
+    },
+    /// Add a background terminal's recent output to the transcript.
+    ShowBackgroundTerminalOutput(Box<ProcessTreeEntry>),
+    /// Terminate one background terminal of any agent in the tree.
+    StopBackgroundTerminal(Box<ProcessTreeEntry>),
+    /// Report a finished stop request: an info message, or an error message.
+    BackgroundTerminalStopped(Result<String, String>),
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
     /// Close and archive a child and its descendants while retaining saved history.

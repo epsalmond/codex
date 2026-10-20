@@ -44,6 +44,7 @@ pub(super) async fn check_background_terminals(
                 thread_id: thread_id.to_string(),
                 cursor: None,
                 limit: Some(1),
+                include_recent_output: false,
             },
         };
         let result = app_server

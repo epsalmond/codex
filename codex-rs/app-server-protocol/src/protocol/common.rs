@@ -780,6 +780,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadBackgroundTerminalsListResponse,
     },
+    #[experimental("thread/pendingCompletions/list")]
+    ThreadPendingCompletionsList => "thread/pendingCompletions/list" {
+        params: v2::ThreadPendingCompletionsListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadPendingCompletionsListResponse,
+    },
     #[experimental("thread/backgroundTerminals/terminate")]
     ThreadBackgroundTerminalsTerminate => "thread/backgroundTerminals/terminate" {
         params: v2::ThreadBackgroundTerminalsTerminateParams,
@@ -4031,6 +4037,7 @@ mod tests {
                 thread_id: "thr_123".to_string(),
                 cursor: None,
                 limit: None,
+                include_recent_output: false,
             },
         };
         assert_eq!(
@@ -4044,6 +4051,60 @@ mod tests {
                 }
             }),
             serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_thread_pending_completions_list() -> Result<()> {
+        let request = ClientRequest::ThreadPendingCompletionsList {
+            request_id: RequestId::Integer(9),
+            params: v2::ThreadPendingCompletionsListParams {
+                thread_id: "thr_123".to_string(),
+                cursor: None,
+                limit: Some(64),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "thread/pendingCompletions/list",
+                "id": 9,
+                "params": {
+                    "threadId": "thr_123",
+                    "cursor": null,
+                    "limit": 64
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        let response = v2::ThreadPendingCompletionsListResponse {
+            data: vec![v2::ThreadPendingCompletion {
+                id: "msg_1".to_string(),
+                call_id: "call_1".to_string(),
+                process_id: Some("42".to_string()),
+                cell_id: None,
+                command: Some("cargo build".to_string()),
+                created_at: 1_700_000_000,
+                status: v2::ThreadPendingCompletionStatus::Running,
+                wakes_owner: true,
+            }],
+            next_cursor: None,
+        };
+        assert_eq!(
+            json!({
+                "data": [{
+                    "id": "msg_1",
+                    "callId": "call_1",
+                    "processId": "42",
+                    "cellId": null,
+                    "command": "cargo build",
+                    "createdAt": 1_700_000_000,
+                    "status": "running",
+                    "wakesOwner": true
+                }],
+                "nextCursor": null
+            }),
+            serde_json::to_value(&response)?,
         );
         Ok(())
     }

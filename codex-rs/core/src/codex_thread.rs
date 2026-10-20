@@ -236,6 +236,26 @@ pub struct BackgroundTerminalInfo {
     pub process_id: String,
     pub command: String,
     pub cwd: PathUri,
+    /// Unix seconds when the process started, when known.
+    pub started_at: Option<i64>,
+    /// The process's exit is delivered to the owning thread automatically and starts its turn.
+    pub wakes_owner: bool,
+}
+
+/// A yielded async completion the owning thread has not accepted yet.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PendingCompletionInfo {
+    pub id: String,
+    pub call_id: String,
+    pub process_id: Option<String>,
+    pub cell_id: Option<String>,
+    pub command: Option<String>,
+    /// Unix seconds when the producer started.
+    pub created_at: i64,
+    /// The producer finished; its result awaits delivery.
+    pub ready: bool,
+    /// Publication of the result starts an owner turn automatically.
+    pub wakes_owner: bool,
 }
 
 /// Conduit for the bidirectional stream of messages that compose a thread
@@ -839,6 +859,23 @@ impl CodexThread {
 
     pub async fn terminate_background_terminal(&self, process_id: i32) -> bool {
         self.session.terminate_background_terminal(process_id).await
+    }
+
+    /// The newest retained output of a background terminal, at most `max_bytes` long.
+    pub async fn background_terminal_recent_output(
+        &self,
+        process_id: i32,
+        max_bytes: usize,
+    ) -> Option<String> {
+        self.session
+            .services
+            .unified_exec_manager
+            .recent_output(process_id, max_bytes)
+            .await
+    }
+
+    pub async fn list_pending_completions(&self) -> Vec<PendingCompletionInfo> {
+        self.session.list_pending_completions().await
     }
 
     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {

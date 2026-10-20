@@ -153,6 +153,9 @@ fn thread_background_terminals_list_response_round_trips_foreign_paths() {
                 os_pid: None,
                 cpu_percent: None,
                 rss_kb: None,
+                started_at: Some(1_700_000_000),
+                wakes_owner: true,
+                recent_output: Some("ready\n".to_string()),
             }],
             next_cursor: None,
         };
@@ -165,6 +168,9 @@ fn thread_background_terminals_list_response_round_trips_foreign_paths() {
                 "osPid": null,
                 "cpuPercent": null,
                 "rssKb": null,
+                "startedAt": 1_700_000_000,
+                "wakesOwner": true,
+                "recentOutput": "ready\n",
             }],
             "nextCursor": null,
         });

@@ -30,6 +30,7 @@ use tracing::warn;
 
 use crate::agent::control::WorkAdmissionError;
 use crate::codex_thread::BackgroundTerminalInfo;
+use crate::codex_thread::PendingCompletionInfo;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::hook_runtime::run_turn_interrupt_hooks;
@@ -1390,7 +1391,39 @@ impl Session {
     }
 
     pub(crate) async fn list_background_terminals(&self) -> Vec<BackgroundTerminalInfo> {
-        self.services.unified_exec_manager.list_processes().await
+        let mut terminals = self.services.unified_exec_manager.list_processes().await;
+        let waking = self
+            .services
+            .async_completions
+            .pending()
+            .into_iter()
+            .filter(|completion| !completion.ready && completion.wakes_owner)
+            .filter_map(|completion| completion.process_id)
+            .map(|process_id| process_id.to_string())
+            .collect::<std::collections::HashSet<_>>();
+        for terminal in &mut terminals {
+            terminal.wakes_owner = waking.contains(&terminal.process_id);
+        }
+        terminals
+    }
+
+    /// Yielded completions the owner has not accepted yet.
+    pub(crate) async fn list_pending_completions(&self) -> Vec<PendingCompletionInfo> {
+        self.services
+            .async_completions
+            .pending()
+            .into_iter()
+            .map(|completion| PendingCompletionInfo {
+                id: completion.id,
+                call_id: completion.call_id,
+                process_id: completion.process_id.map(|id| id.to_string()),
+                cell_id: completion.cell_id,
+                command: completion.command,
+                created_at: completion.created_at,
+                ready: completion.ready,
+                wakes_owner: completion.wakes_owner,
+            })
+            .collect()
     }
 
     pub(crate) async fn terminate_background_terminal(&self, process_id: i32) -> bool {

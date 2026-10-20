@@ -1,0 +1,8 @@
+---
+source: tui/src/app/agent_picker_pending_tests.rs
+expression: "details.lines(NOW).join(\"\\n\")"
+---
+Pending jobs:
+  • agent-job -- wait-for-build -- cargo build · running 2m 05s
+  • wait-for-status pr 222 · running 1h 02m 05s
+  • sleep 5 · finished, awaiting delivery

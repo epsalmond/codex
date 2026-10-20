@@ -832,6 +832,15 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_pending_completions_list(
+        &self,
+        params: ThreadPendingCompletionsListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_pending_completions_list_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_background_terminals_terminate(
         &self,
         params: ThreadBackgroundTerminalsTerminateParams,
@@ -2571,6 +2580,7 @@ impl ThreadRequestProcessor {
             thread_id,
             cursor,
             limit,
+            include_recent_output,
         } = params;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
@@ -2586,12 +2596,64 @@ impl ThreadRequestProcessor {
                 os_pid: None,
                 cpu_percent: None,
                 rss_kb: None,
+                started_at: terminal.started_at,
+                wakes_owner: terminal.wakes_owner,
+                recent_output: None,
             })
             .collect::<Vec<_>>();
 
-        let (data, next_cursor) = paginate_background_terminals(&terminals, cursor, limit)?;
+        let (mut data, next_cursor) = paginate_background_terminals(&terminals, cursor, limit)?;
+        if include_recent_output {
+            for terminal in &mut data {
+                if let Ok(process_id) = terminal.process_id.parse::<i32>() {
+                    terminal.recent_output = thread
+                        .background_terminal_recent_output(
+                            process_id,
+                            BACKGROUND_TERMINAL_RECENT_OUTPUT_BYTES,
+                        )
+                        .await;
+                }
+            }
+        }
 
         Ok(ThreadBackgroundTerminalsListResponse { data, next_cursor })
+    }
+
+    async fn thread_pending_completions_list_inner(
+        &self,
+        params: ThreadPendingCompletionsListParams,
+    ) -> Result<ThreadPendingCompletionsListResponse, JSONRPCErrorError> {
+        let ThreadPendingCompletionsListParams {
+            thread_id,
+            cursor,
+            limit,
+        } = params;
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        // Record IDs are ordered, so the last returned ID is a stable cursor.
+        let completions = thread
+            .list_pending_completions()
+            .await
+            .into_iter()
+            .filter(|completion| cursor.as_ref().is_none_or(|cursor| completion.id > *cursor))
+            .map(|completion| ThreadPendingCompletion {
+                id: completion.id,
+                call_id: completion.call_id,
+                process_id: completion.process_id,
+                cell_id: completion.cell_id,
+                command: completion.command,
+                created_at: completion.created_at,
+                status: if completion.ready {
+                    ThreadPendingCompletionStatus::Ready
+                } else {
+                    ThreadPendingCompletionStatus::Running
+                },
+                wakes_owner: completion.wakes_owner,
+            })
+            .collect::<Vec<_>>();
+        let limit = limit.map_or(completions.len(), |limit| limit.max(1) as usize);
+        let next_cursor = (completions.len() > limit).then(|| completions[limit - 1].id.clone());
+        let data = completions.into_iter().take(limit).collect();
+        Ok(ThreadPendingCompletionsListResponse { data, next_cursor })
     }
 
     async fn thread_background_terminals_terminate_inner(
@@ -6708,6 +6770,9 @@ fn build_thread_from_snapshot(
         turns: Vec::new(),
     }
 }
+
+/// Bounds `recentOutput` in background terminal listings.
+const BACKGROUND_TERMINAL_RECENT_OUTPUT_BYTES: usize = 4096;
 
 fn paginate_background_terminals(
     terminals: &[ThreadBackgroundTerminal],

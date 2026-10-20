@@ -99,6 +99,27 @@ struct Record {
     claimed: bool,
     terminal: Option<AsyncToolCompletion>,
     recorded: bool,
+    /// Display-only producer command, bounded by [`MAX_COMMAND_LABEL_BYTES`].
+    command: Option<String>,
+}
+
+/// Bounds the display-only command kept with each record for status views.
+const MAX_COMMAND_LABEL_BYTES: usize = 512;
+
+/// One retained, yielded completion record, as shown by status views.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingRecord {
+    pub(crate) id: String,
+    pub(crate) call_id: String,
+    pub(crate) process_id: Option<i32>,
+    pub(crate) cell_id: Option<String>,
+    pub(crate) command: Option<String>,
+    /// Unix seconds when the record was reserved, i.e. when its producer started.
+    pub(crate) created_at: i64,
+    /// The producer finished and its result awaits delivery to the owner.
+    pub(crate) ready: bool,
+    /// The result's publication starts (or started) an owner turn on its own.
+    pub(crate) wakes_owner: bool,
 }
 
 enum Producer {
@@ -169,6 +190,49 @@ impl AsyncCompletions {
                     .terminal
                     .as_ref()
                     .map(|fragment| fragment.text.clone())
+            })
+            .collect()
+    }
+
+    /// Yielded records not yet accepted by the owner: running producers whose result will be
+    /// delivered automatically, and finished results awaiting delivery.
+    pub(crate) fn pending(&self) -> Vec<PendingRecord> {
+        // Mirror `changed`: the current wake assignment owns wakeups; without one, only a root
+        // owner wakes for unassigned records. Read it before taking the record mutex.
+        let owner = self.owner.get().and_then(Weak::upgrade);
+        let wake_assignment = owner.as_ref().and_then(|owner| {
+            owner
+                .services
+                .local_agent_runtime
+                .current_wake_assignment(owner.thread_id())
+        });
+        let root_owner = self.root_owner.get() == Some(&true);
+        self.state()
+            .records
+            .iter()
+            .filter(|(_, record)| record.yielded)
+            .map(|(id, record)| {
+                let (process_id, cell_id) = match &record.producer {
+                    Producer::Process {
+                        process_id,
+                        cell_id,
+                    } => (Some(*process_id), cell_id.clone()),
+                    Producer::Cell { cell_id } => (None, cell_id.clone()),
+                };
+                let wakes_owner = match &wake_assignment {
+                    Some(assignment) => record.assignment.as_ref() == Some(assignment),
+                    None => root_owner && record.assignment.is_none(),
+                };
+                PendingRecord {
+                    id: id.to_string(),
+                    call_id: record.call_id.clone(),
+                    process_id,
+                    cell_id,
+                    command: record.command.clone(),
+                    created_at: record.create_time.as_f64().map_or(0, |time| time as i64),
+                    ready: record.terminal.is_some(),
+                    wakes_owner,
+                }
             })
             .collect()
     }
@@ -315,6 +379,7 @@ impl AsyncCompletions {
                 claimed: false,
                 terminal: None,
                 recorded: false,
+                command: None,
             };
             // Preserve every identifier; reject before launch if escaped metadata cannot fit.
             if !record.metadata_fits(&id) {
@@ -484,6 +549,17 @@ impl CompletionReservation {
             return Err("async completion metadata exceeds the encoded fragment limit");
         }
         Ok(())
+    }
+
+    /// Records the producer's command for status views, truncated at a character boundary.
+    pub(crate) fn set_command(&mut self, command: &str) {
+        let mut end = command.len().min(MAX_COMMAND_LABEL_BYTES);
+        while !command.is_char_boundary(end) {
+            end -= 1;
+        }
+        if let Some(record) = self.store.state().records.get_mut(&self.id) {
+            record.command = Some(command[..end].to_owned());
+        }
     }
 
     pub(crate) fn register(&mut self) -> CompletionPublisher {

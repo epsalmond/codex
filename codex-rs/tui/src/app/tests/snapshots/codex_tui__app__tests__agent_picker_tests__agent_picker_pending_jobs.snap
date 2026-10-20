@@ -1,0 +1,18 @@
+---
+source: tui/src/app/tests/agent_picker_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 96)"
+---
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+
+  1. • Main [default]               idle · nothing pending context ?
+  2. • Builder [worker]             idle · waiting on 2 jobs context ?
+› 3. • Reviewer [worker] (current)  idle · waiting on 1 job context ?
+  4. • Scout [worker]               idle context ?
+  5. • Tests [worker]               mid-turn context ?
+
+
+  Pending jobs:
+    • sleep 5 · finished, awaiting delivery
+  enter select · / search · x close agent · q hide inactive locally · esc back
