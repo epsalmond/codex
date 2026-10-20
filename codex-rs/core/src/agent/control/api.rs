@@ -235,6 +235,10 @@ impl AgentControl for LocalAgentControl {
         Box::pin(LocalAgentControl::close_v2_agent(self, agent))
     }
 
+    fn close_task_agent_after_final(&self, agent: ThreadId) -> BoxFuture<'_, Result<bool>> {
+        Box::pin(LocalAgentControl::close_task_agent_after_final(self, agent))
+    }
+
     fn send_report_answer(
         &self,
         caller: ThreadId,

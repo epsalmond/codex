@@ -450,3 +450,68 @@ async fn typed_reports_opt_out_keeps_finished_agent_and_reminder_off() -> Result
     assert!(run.worker_is_loaded().await);
     Ok(())
 }
+
+/// Interrupting the root's turn detaches its running children, so a detached worker's final
+/// report has no wake assignment to publish through. The report still reaches the root's next
+/// turn, and the task agent closes instead of staying open with its report dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn detached_task_agent_final_reaches_root_and_agent_closes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const INTERRUPTED_PROMPT: &str = "root turn the user interrupts";
+    const NEXT_PROMPT: &str = "root turn after the interrupt";
+    let (worker_release_tx, worker_release_rx) = oneshot::channel();
+    let (_interrupted_release_tx, interrupted_release_rx) = oneshot::channel();
+    let run = TypedReportsRun::start(
+        json!({}),
+        vec![
+            chunk(peer_message("typed-root-yield", "root waits for worker")),
+            vec![gated_streaming_chunk(
+                interrupted_release_rx,
+                peer_message("typed-root-interrupted", "interrupted before this"),
+            )],
+            chunk(peer_message("typed-root-done", "root done")),
+        ],
+        vec![vec![gated_streaming_chunk(
+            worker_release_rx,
+            report_call("typed-worker-final", "final", WORKER_RESULT)?,
+        )]],
+        |_| {},
+    )
+    .await?;
+    ThreadIdle::wait(&run.test.codex).await;
+    let user_turn = |text: &str| {
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }])
+    };
+    let root_request_containing = |text: &'static str| {
+        let root = run.root_thread_id();
+        wait_for_streaming_request_matching(&run.server, move |request| {
+            streaming_request_has_thread_id(request, root) && request.to_string().contains(text)
+        })
+    };
+
+    run.test
+        .codex
+        .start_or_steer_turn(user_turn(INTERRUPTED_PROMPT))
+        .await?;
+    root_request_containing(INTERRUPTED_PROMPT).await?;
+    run.test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(run.test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+    worker_release_tx.send(()).expect("release worker");
+
+    run.wait_for_worker_shutdown().await;
+    run.test
+        .codex
+        .start_or_steer_turn(user_turn(NEXT_PROMPT))
+        .await?;
+    let next = root_request_containing(NEXT_PROMPT).await?;
+    assert_eq!(agent_messages_containing(&next, WORKER_RESULT), 1);
+    assert!(next.to_string().contains("Message Type: FINAL_ANSWER"));
+    Ok(())
+}

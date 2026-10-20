@@ -223,6 +223,17 @@ pub(crate) fn resolve_role_config<'a>(
         .or_else(|| built_in::configs().get(role_name))
 }
 
+/// Lifetime of a MultiAgentV2 agent of `role_name`, the default role when `None`. The role alone
+/// decides it: the reserved `spawn_agent` schema has no lifetime parameter.
+pub(crate) fn resolve_role_lifetime(
+    config: &Config,
+    role_name: Option<&str>,
+) -> codex_config::config_toml::AgentLifetime {
+    resolve_role_config(config, role_name.unwrap_or(DEFAULT_ROLE_NAME))
+        .and_then(|role| role.lifetime)
+        .unwrap_or_default()
+}
+
 mod role_overrides {
     use super::*;
 

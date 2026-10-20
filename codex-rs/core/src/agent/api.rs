@@ -106,6 +106,12 @@ pub trait AgentControl: Send + Sync {
         })
     }
 
+    /// Close a task agent whose final report was accepted, unless input reached it first.
+    /// Returns whether the agent closed; one that kept input stays open for the turn it starts.
+    fn close_task_agent_after_final(&self, agent: ThreadId) -> BoxFuture<'_, Result<bool>> {
+        Box::pin(async move { self.close_v2_agent(agent).await.map(|()| true) })
+    }
+
     /// Deliver a subagent's `report_to_parent(answer)` to `ancestor`, the ancestor whose question it
     /// answers. A running ancestor reads it at its next boundary; an idle non-root ancestor starts
     /// a turn, and the root follows its child-report wake mode.

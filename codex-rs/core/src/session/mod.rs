@@ -2783,8 +2783,7 @@ impl Session {
                 .extension_data
                 .get::<typed_reports::PendingTerminalReport>()
                 .is_some_and(|report| report.kind == typed_reports::TerminalReportKind::Blocked);
-        let delivered = self
-            .services
+        self.services
             .agent_control
             .turn_finished(
                 AgentTurnOutcome {
@@ -2803,12 +2802,12 @@ impl Session {
                 &self.services.rollout_thread_trace,
             )
             .await;
-        // A task agent closes once its final report, explicit or implicit, reached the parent.
-        if delivered
-            && typed_reports
+        // A task agent closes once its final report, explicit or implicit, is accepted, whether
+        // or not it reached the parent: an undeliverable report cannot reach it later either.
+        if typed_reports
             && completed
             && !blocked
-            && self.agent_lifetime() == AgentLifetime::Task
+            && self.agent_lifetime(turn_context) == AgentLifetime::Task
         {
             turn_context
                 .extension_data
@@ -2816,14 +2815,21 @@ impl Session {
         }
     }
 
-    /// Lifetime recorded when this process spawned the agent. An agent restored from disk has
-    /// no record, and its role's lifetime may have changed since the spawn, so it is never closed
-    /// automatically: closing is permanent, while a wrongly kept agent only stays idle.
-    fn agent_lifetime(&self) -> AgentLifetime {
+    /// Lifetime recorded when this process spawned the agent. An agent restored from disk, as
+    /// after a restart, has no record; its role decides, as it did at the spawn.
+    fn agent_lifetime(&self, turn_context: &TurnContext) -> AgentLifetime {
         self.services
             .local_agent_runtime
             .agent_lifetime(self.thread_id)
-            .unwrap_or(AgentLifetime::Persistent)
+            .unwrap_or_else(|| {
+                let role = match &turn_context.session_source {
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
+                        agent_role.as_deref()
+                    }
+                    _ => None,
+                };
+                crate::agent::role::resolve_role_lifetime(&turn_context.config, role)
+            })
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {

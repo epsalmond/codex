@@ -1131,3 +1131,36 @@ async fn subagent_budget_is_absent_without_subagent_context_reduction() {
         (None, Some(244_800))
     );
 }
+
+/// An agent restored after a restart has no lifetime recorded at its spawn; resolving it from
+/// the role gives the spawn's answer, so a restored task agent still closes after its final.
+#[tokio::test]
+async fn role_lifetime_defaults_to_task_and_follows_the_role() {
+    use codex_config::config_toml::AgentLifetime;
+
+    let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    for (name, lifetime) in [
+        ("keeper", Some(AgentLifetime::Persistent)),
+        ("worker", None),
+    ] {
+        config.agent_roles.insert(
+            name.to_string(),
+            AgentRoleConfig {
+                description: None,
+                config_file: None,
+                nickname_candidates: None,
+                lifetime,
+            },
+        );
+    }
+
+    assert_eq!(resolve_role_lifetime(&config, None), AgentLifetime::Task);
+    assert_eq!(
+        resolve_role_lifetime(&config, Some("worker")),
+        AgentLifetime::Task
+    );
+    assert_eq!(
+        resolve_role_lifetime(&config, Some("keeper")),
+        AgentLifetime::Persistent
+    );
+}

@@ -96,12 +96,8 @@ pub(crate) async fn spawn(
     let config = prepared.config;
     // The agent type sets the lifetime; `spawn_agent` has no `lifetime` parameter because the
     // server requires reserved collaboration tools to keep upstream's parameter schema.
-    let lifetime = crate::agent::role::resolve_role_config(
-        &turn.config,
-        prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME),
-    )
-    .and_then(|role| role.lifetime)
-    .unwrap_or_default();
+    let lifetime =
+        crate::agent::role::resolve_role_lifetime(&turn.config, prepared.role_name.as_deref());
     // Forked history can contain provider-encrypted reasoning that another provider cannot read.
     if fork_mode.is_some() && config.model_provider_id != turn.config.model_provider_id {
         let role_name = prepared.role_name.as_deref().unwrap_or(DEFAULT_ROLE_NAME);
