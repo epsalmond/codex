@@ -32,5 +32,5 @@ expression: "snapshot.expect(\"snapshot captured\")"
     • agent-job -- cargo test -p crate-29-1 · finished, awaiting delivery
     • agent-job -- cargo test -p crate-29-2 · finished, awaiting delivery
     • agent-job -- cargo test -p crate-29-3 · finished, awaiting delivery
-    … +8 more lines
+    … +8 more jobs
   enter select · / search · x close agent · q hide inactive locally · esc back

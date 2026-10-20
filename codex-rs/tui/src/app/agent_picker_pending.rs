@@ -173,31 +173,65 @@ impl AgentPickerRowDetails {
         lines
     }
 
-    fn wrapped(&self, width: u16) -> Vec<Line<'static>> {
+    /// Wrapped lines for each entry from `lines`, flagging pending-job entries.
+    fn wrapped_entries(&self, width: u16) -> Vec<(bool, Vec<Line<'static>>)> {
         let width = usize::from(width.max(/*other*/ 1));
-        self.lines(chrono::Utc::now().timestamp())
+        let lines = self.lines(chrono::Utc::now().timestamp());
+        let first_job = lines.len() - self.jobs.len();
+        lines
             .iter()
-            .flat_map(|line| textwrap::wrap(line, width))
-            .map(|line| Line::from(line.into_owned()))
+            .enumerate()
+            .map(|(idx, line)| {
+                let wrapped = textwrap::wrap(line, width)
+                    .into_iter()
+                    .map(|line| Line::from(line.into_owned()))
+                    .collect();
+                (idx >= first_job, wrapped)
+            })
             .collect()
     }
 }
 
 impl Renderable for AgentPickerRowDetails {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let mut lines = self.wrapped(area.width);
+        let entries = self.wrapped_entries(area.width);
         let height = usize::from(area.height);
-        if height > 0 && lines.len() > height {
-            // The popup reserves a capped details area; summarize what does not fit.
-            let hidden = lines.len() - (height - 1);
-            lines.truncate(height - 1);
-            lines.push(Line::from(format!("  … +{hidden} more lines")).dim());
-        }
+        let total: usize = entries.iter().map(|(_, lines)| lines.len()).sum();
+        let lines = if height == 0 || total <= height {
+            entries.into_iter().flat_map(|(_, lines)| lines).collect()
+        } else {
+            // The popup reserves a capped details area; show whole entries and
+            // summarize the rest.
+            let mut lines = Vec::new();
+            let mut shown = 0;
+            for (_, entry) in &entries {
+                if lines.len() + entry.len() >= height {
+                    break;
+                }
+                lines.extend(entry.iter().cloned());
+                shown += 1;
+            }
+            let hidden = &entries[shown..];
+            let summary = if hidden.iter().all(|(is_job, _)| *is_job) {
+                let jobs = if hidden.len() == 1 { "job" } else { "jobs" };
+                format!("  … +{} more {jobs}", hidden.len())
+            } else {
+                let hidden_lines: usize = hidden.iter().map(|(_, lines)| lines.len()).sum();
+                format!("  … +{hidden_lines} more lines")
+            };
+            lines.push(Line::from(summary).dim());
+            lines
+        };
         Renderable::render(&Paragraph::new(lines), area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.wrapped(width).len().try_into().unwrap_or(u16::MAX)
+        let lines: usize = self
+            .wrapped_entries(width)
+            .iter()
+            .map(|(_, lines)| lines.len())
+            .sum();
+        lines.try_into().unwrap_or(u16::MAX)
     }
 }
 

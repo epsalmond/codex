@@ -806,14 +806,19 @@ async fn picker_height_stays_fixed_while_selection_moves_through_many_agents() -
         .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
 
     let title_row = |rows: &[String]| rows.iter().position(|row| row.trim() == "Subagents");
-    let (height, rows) = render_in_terminal(&app.chat_widget, WIDTH, HEIGHT);
-    let title = title_row(&rows);
-    assert!(
-        title.is_some(),
-        "picker title not rendered:\n{}",
-        rows.join("\n")
-    );
-    assert!(height < HEIGHT, "picker should fit in the terminal");
+    // The narrow width wraps the main row's footer hint differently from subagent rows.
+    let widths = [WIDTH, 70];
+    let initial = widths.map(|width| {
+        let (height, rows) = render_in_terminal(&app.chat_widget, width, HEIGHT);
+        let title = title_row(&rows);
+        assert!(
+            title.is_some(),
+            "picker title not rendered:\n{}",
+            rows.join("\n")
+        );
+        assert!(height < HEIGHT, "picker should fit in the terminal");
+        (height, title)
+    });
 
     let mut snapshot = None;
     let mut saw_overflow = false;
@@ -824,16 +829,18 @@ async fn picker_height_stays_fixed_while_selection_moves_through_many_agents() -
             KeyCode::Up
         };
         app.chat_widget.handle_key_event(KeyEvent::from(key));
-        let (step_height, rows) = render_in_terminal(&app.chat_widget, WIDTH, HEIGHT);
-        let screen = rows.join("\n");
-        assert_eq!(
-            (step_height, title_row(&rows)),
-            (height, title),
-            "picker moved after {step} key presses:\n{screen}"
-        );
-        saw_overflow |= screen.contains("Agent 29") && screen.contains("more");
-        if step == 29 {
-            snapshot = Some(screen);
+        for (width, expected) in widths.into_iter().zip(initial) {
+            let (step_height, rows) = render_in_terminal(&app.chat_widget, width, HEIGHT);
+            let screen = rows.join("\n");
+            assert_eq!(
+                (step_height, title_row(&rows)),
+                expected,
+                "picker moved at width {width} after {step} key presses:\n{screen}"
+            );
+            saw_overflow |= screen.contains("› 30. • Agent 29") && screen.contains("+8 more jobs");
+            if step == 29 && width == WIDTH {
+                snapshot = Some(screen);
+            }
         }
     }
     assert!(saw_overflow, "expected the long job list to be capped");

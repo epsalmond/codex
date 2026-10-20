@@ -205,7 +205,9 @@ pub(crate) struct SelectionItem {
     pub category_tag: Option<String>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
-    /// Wrapped content below the list for the highlighted row.
+    /// Wrapped content below the list for the highlighted row. The view reserves
+    /// the tallest row's height, capped at `MAX_ROW_DETAILS_HEIGHT`, so the
+    /// renderable should summarize anything that does not fit its area.
     pub details: Option<Box<dyn Renderable>>,
     pub is_current: bool,
     pub is_disabled: bool,
@@ -1127,16 +1129,14 @@ impl ListSelectionView {
             return Vec::new();
         };
         let mut lines = wrap_styled_line(hint, width);
-        if self.reserve_result_rows {
-            let height = self
+        // Row-specific hints wrap differently, so reserve the tallest when the
+        // view keeps a stable height across selection changes.
+        if self.reserve_result_rows || self.has_row_details() {
+            let candidates = self
                 .tab_footer_hints
                 .iter()
-                .map(|(_, hint)| wrap_styled_line(hint, width).len())
-                .chain(
-                    self.footer_hint
-                        .iter()
-                        .map(|hint| wrap_styled_line(hint, width).len()),
-                )
+                .map(|(_, hint)| hint)
+                .chain(self.footer_hint.iter())
                 .chain(
                     self.items
                         .iter()
@@ -1153,9 +1153,18 @@ impl ListSelectionView {
                             ]
                             .into_iter()
                             .flatten()
-                        })
-                        .map(|hint| wrap_styled_line(hint, width).len()),
-                )
+                        }),
+                );
+            // Rows usually share a few hints; wrap each distinct one once.
+            let mut distinct: Vec<&Line<'static>> = Vec::new();
+            for hint in candidates {
+                if !distinct.contains(&hint) {
+                    distinct.push(hint);
+                }
+            }
+            let height = distinct
+                .into_iter()
+                .map(|hint| wrap_styled_line(hint, width).len())
                 .max()
                 .unwrap_or(lines.len());
             lines.resize(height.max(lines.len()), Line::default());
@@ -1256,22 +1265,28 @@ impl ListSelectionView {
     /// Height of the stacked side area. When rows carry their own details, the
     /// area is sized for the tallest row (capped) rather than the highlighted one,
     /// so moving the selection never resizes or moves the popup.
-    fn stacked_side_height(&self, width: u16) -> u16 {
-        let mut row_details = self
-            .items
+    fn all_row_details(&self) -> impl Iterator<Item = &dyn Renderable> {
+        self.items
             .iter()
             .chain(self.search_items.iter())
             .chain(self.tabs.iter().flat_map(|tab| tab.items.iter()))
             .filter_map(|item| item.details.as_deref())
-            .peekable();
+    }
+
+    /// Views whose rows carry their own details keep a selection-independent height.
+    fn has_row_details(&self) -> bool {
+        self.all_row_details().next().is_some()
+    }
+
+    fn stacked_side_height(&self, width: u16) -> u16 {
         let fallback = self
             .stacked_side_content
             .as_deref()
             .unwrap_or_else(|| self.side_content.as_ref());
-        if row_details.peek().is_none() {
+        if !self.has_row_details() {
             return fallback.desired_height(width);
         }
-        row_details
+        self.all_row_details()
             .map(|details| details.desired_height(width))
             .max()
             .unwrap_or(/*default*/ 0)
