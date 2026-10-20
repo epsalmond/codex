@@ -6,3 +6,4 @@ Pending jobs:
   • agent-job -- wait-for-build -- cargo build · running 2m 05s
   • wait-for-status pr 222 · running 1h 02m 05s
   • sleep 5 · finished, awaiting delivery
+  • npm test · running 14s · no wake

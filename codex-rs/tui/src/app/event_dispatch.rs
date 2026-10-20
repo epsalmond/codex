@@ -3061,8 +3061,9 @@ impl App {
             AppEvent::ProcessTreeLoaded {
                 primary_thread_id,
                 entries,
+                failed_owners,
             } => {
-                self.show_process_tree(primary_thread_id, entries);
+                self.show_process_tree(primary_thread_id, entries, failed_owners);
             }
             AppEvent::ShowBackgroundTerminalOutput(entry) => {
                 self.show_background_terminal_output(*entry);

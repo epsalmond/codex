@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::agent_picker::AGENT_PICKER_VIEW_ID;
 use crate::app::process_tree_view::process_tree_view_params;
 use crate::app::process_tree_view::recent_output_lines;
 use crate::app_event::ProcessTreeEntry;
@@ -90,4 +91,21 @@ fn recent_output_keeps_newest_nonempty_lines() {
     assert_eq!(lines.len(), 12);
     assert_eq!(lines.first().map(String::as_str), Some("line 8"));
     assert_eq!(lines.last().map(String::as_str), Some("line 19"));
+}
+
+#[tokio::test]
+async fn late_process_tree_listing_does_not_cover_other_views_or_hide_failures() {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_u128(/*value*/ 1);
+    app.primary_thread_id = Some(root);
+
+    // Every listing failed: report it instead of claiming nothing is running.
+    app.show_process_tree(root, Vec::new(), vec!["Main [default]".to_string()]);
+    assert!(app.chat_widget.active_view_id().is_none());
+
+    // The user opened another view while the listing was in flight.
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
+    app.show_process_tree(root, entries(), Vec::new());
+    assert_eq!(app.chat_widget.active_view_id(), Some(AGENT_PICKER_VIEW_ID));
 }

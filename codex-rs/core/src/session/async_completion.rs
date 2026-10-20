@@ -553,12 +553,10 @@ impl CompletionReservation {
 
     /// Records the producer's command for status views, truncated at a character boundary.
     pub(crate) fn set_command(&mut self, command: &str) {
-        let mut end = command.len().min(MAX_COMMAND_LABEL_BYTES);
-        while !command.is_char_boundary(end) {
-            end -= 1;
-        }
+        let command =
+            codex_utils_string::take_bytes_at_char_boundary(command, MAX_COMMAND_LABEL_BYTES);
         if let Some(record) = self.store.state().records.get_mut(&self.id) {
-            record.command = Some(command[..end].to_owned());
+            record.command = Some(command.to_owned());
         }
     }
 

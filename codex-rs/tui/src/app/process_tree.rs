@@ -74,11 +74,13 @@ impl App {
             .collect::<Vec<_>>()
             .await;
             let mut entries = Vec::new();
+            let mut failed_owners = Vec::new();
             for (thread_id, owner, result) in lists {
                 let response = match result {
                     Ok(response) => response,
                     Err(error) => {
                         tracing::debug!(%error, %thread_id, "failed to list background terminals");
+                        failed_owners.push(owner);
                         continue;
                     }
                 };
@@ -101,23 +103,39 @@ impl App {
             app_event_tx.send(AppEvent::ProcessTreeLoaded {
                 primary_thread_id: root,
                 entries,
+                failed_owners,
             });
         });
     }
 
-    pub(super) fn show_process_tree(&mut self, root: ThreadId, entries: Vec<ProcessTreeEntry>) {
+    pub(super) fn show_process_tree(
+        &mut self,
+        root: ThreadId,
+        entries: Vec<ProcessTreeEntry>,
+        failed_owners: Vec<String>,
+    ) {
         if self.primary_thread_id != Some(root) {
             return;
         }
+        if !failed_owners.is_empty() {
+            self.chat_widget.add_error_message(format!(
+                "Failed to list background terminals for: {}",
+                failed_owners.join(", ")
+            ));
+        }
         if entries.is_empty() {
-            self.chat_widget
-                .add_to_history(history_cell::new_unified_exec_processes_output(Vec::new()));
+            if failed_owners.is_empty() {
+                self.chat_widget
+                    .add_to_history(history_cell::new_unified_exec_processes_output(Vec::new()));
+            }
             return;
         }
         let params = process_tree_view_params(&entries, chrono::Utc::now().timestamp());
         if !self
             .chat_widget
             .replace_selection_view_if_present(PROCESS_TREE_VIEW_ID, params)
+            // The listing is async; never push the picker over a view opened in the meantime.
+            && self.chat_widget.no_modal_or_popup_active()
         {
             self.chat_widget
                 .show_selection_view(process_tree_view_params(

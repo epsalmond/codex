@@ -452,6 +452,8 @@ pub(crate) enum AppEvent {
     ProcessTreeLoaded {
         primary_thread_id: ThreadId,
         entries: Vec<ProcessTreeEntry>,
+        /// Agents whose terminals could not be listed.
+        failed_owners: Vec<String>,
     },
     /// Add a background terminal's recent output to the transcript.
     ShowBackgroundTerminalOutput(Box<ProcessTreeEntry>),

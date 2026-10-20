@@ -8,24 +8,29 @@ fn job(command: &str, age: i64, finished: bool) -> AgentPendingJob {
         command: command.to_string(),
         started_at: NOW - age,
         finished,
+        wakes_owner: true,
     }
 }
 
 #[test]
 fn idle_label_counts_pending_jobs_only_once_listed() {
-    let jobs = [job("a", 1, false), job("b", 2, true)];
+    let mut silent = job("c", 3, false);
+    silent.wakes_owner = false;
+    let jobs = [job("a", 1, false), job("b", 2, true), silent];
     assert_eq!(
         [
             idle_status_label(/*jobs*/ None),
             idle_status_label(Some(&[])),
             idle_status_label(Some(&jobs[..1])),
             idle_status_label(Some(&jobs)),
+            idle_status_label(Some(&jobs[2..])),
         ],
         [
             "idle",
             "idle · nothing pending",
             "idle · waiting on 1 job",
             "idle · waiting on 2 jobs",
+            "idle · 1 job, no wake",
         ]
     );
 }
@@ -50,6 +55,7 @@ fn pending_job_labels_use_command_then_process_then_cell() {
             command: "agent-job -- make".to_string(),
             started_at: NOW,
             finished: true,
+            wakes_owner: true,
         }
     );
     assert_eq!(completion(None, Some("7"), None).command, "process 7");
@@ -67,6 +73,10 @@ fn pending_job_details_list_command_and_elapsed() {
             job("agent-job -- wait-for-build -- cargo build", 125, false),
             job("wait-for-status pr 222", 3_725, false),
             job("sleep 5", 30, true),
+            AgentPendingJob {
+                wakes_owner: false,
+                ..job("npm test", 14, false)
+            },
         ],
     };
     insta::assert_snapshot!(details.lines(NOW).join("\n"));
