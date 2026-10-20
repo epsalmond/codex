@@ -11,6 +11,17 @@ impl AgentNavigationState {
         self.subagent_threads.insert(thread_id);
     }
 
+    /// Records a live spawn whose first turn has not been observed yet.
+    pub(crate) fn mark_spawned(&mut self, thread_id: ThreadId) {
+        if !self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running || entry.is_closed)
+        {
+            self.awaiting_first_turn.insert(thread_id);
+        }
+    }
+
     /// Counts open descendants of the root session, including idle/error threads.
     /// Local dismissal affects navigation only; backend archives close agents and drop them.
     pub(crate) fn subagent_counts(&self, root: Option<ThreadId>) -> SubagentCounts {
@@ -26,12 +37,17 @@ impl AgentNavigationState {
             })
     }
 
-    /// Hides inactive descendants locally until they next become running.
+    /// Hides inactive descendants locally until they next become running or are messaged.
+    /// Inactive means finished, errored, or closed; a spawned child awaiting its first turn
+    /// is not inactive even though no turn has marked it running yet.
     /// Each row is independent, so an idle parent's running grandchild remains visible.
     pub(crate) fn dismiss_inactive_subagents(&mut self, root: ThreadId) {
         let inactive = self
             .session_descendants(root)
-            .filter(|(_, entry)| !entry.is_running)
+            .filter(|(thread_id, entry)| {
+                entry.is_closed
+                    || (!entry.is_running && !self.awaiting_first_turn.contains(thread_id))
+            })
             .map(|(thread_id, _)| thread_id)
             .collect::<Vec<_>>();
         self.dismissed_threads.extend(inactive);

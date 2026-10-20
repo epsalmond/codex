@@ -1314,6 +1314,7 @@ impl App {
             None
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let any_turn_completed = matches!(notification, ServerNotification::TurnCompleted(_));
         let is_turn_completed = matches!(
             &notification,
             ServerNotification::TurnCompleted(completed)
@@ -1360,6 +1361,9 @@ impl App {
                 turn_stopped,
             )
         };
+        if any_turn_completed {
+            self.agent_navigation.note_turn_completed(thread_id);
+        }
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
         } else if is_thread_closed {
@@ -1454,11 +1458,16 @@ impl App {
         &mut self,
         notification: &ServerNotification,
     ) {
-        if let Some(activity) =
-            sub_agent_activity_item(notification).and_then(sub_agent_activity_display)
-        {
-            self.agent_navigation.record_sub_agent_activity(activity);
-            self.sync_active_agent_label();
+        if let Some(item) = sub_agent_activity_item(notification) {
+            if let Some(activity) = sub_agent_activity_display(item) {
+                self.agent_navigation.record_sub_agent_activity(activity);
+                self.sync_active_agent_label();
+            } else if let Some(thread_id) =
+                crate::multi_agents::sub_agent_interaction_thread_id(item)
+            {
+                // The child's own turn notifications own liveness; this only restores the row.
+                self.agent_navigation.restore_dismissed_thread(thread_id);
+            }
             return;
         }
 
@@ -1494,14 +1503,15 @@ impl App {
             if is_spawn {
                 self.agent_navigation.mark_subagent(thread_id);
             }
-            if self.agent_navigation.get(&thread_id).is_some() {
-                continue;
+            if self.agent_navigation.get(&thread_id).is_none() {
+                self.upsert_agent_picker_thread(
+                    thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                    /*is_closed*/ false,
+                );
             }
-
-            self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                /*is_closed*/ false,
-            );
+            if is_spawn {
+                self.agent_navigation.mark_spawned(thread_id);
+            }
         }
     }
 
