@@ -484,3 +484,35 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
     Ok(())
 }
+
+#[tokio::test]
+async fn late_spawn_hints_do_not_pin_a_child_that_already_ran() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let root = ThreadId::from_u128(/*value*/ 600);
+    let child = ThreadId::from_u128(/*value*/ 601);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(
+        root, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(root, Some("/root".to_string()));
+
+    // The child's stream is routed immediately; the parent's buffered spawn hints drain later.
+    for notification in [
+        turn_started_notification(child, "first"),
+        turn_completed_notification(child, "first", TurnStatus::Failed),
+        status_notification(child, ThreadStatus::Idle),
+    ] {
+        app.enqueue_thread_notification(child, notification).await?;
+    }
+    parent_event(
+        &mut app,
+        activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
+    );
+    app.agent_navigation.mark_spawned(child);
+
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+    Ok(())
+}
