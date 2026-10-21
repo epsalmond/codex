@@ -181,6 +181,8 @@ impl LocalAgentRuntime {
         }
         let guard = Arc::clone(&thread.residency_gate).read_owned().await;
         let thread_id = thread.session.thread_id;
+        // A close holding the gate marks the agent closed before releasing it.
+        self.ensure_agent_not_closed(thread_id)?;
         if !Arc::ptr_eq(thread, &state.get_thread(thread_id).await?) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }

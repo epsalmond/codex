@@ -1363,7 +1363,7 @@ impl Session {
         let control = Arc::clone(&self.services.agent_control);
         let thread_id = self.thread_id;
         tokio::spawn(async move {
-            if let Err(err) = control.close_v2_agent(thread_id).await {
+            if let Err(err) = control.close_task_agent_after_final(thread_id).await {
                 warn!("failed to close task agent {thread_id} after its final report: {err}");
             }
         });

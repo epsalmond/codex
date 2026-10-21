@@ -209,67 +209,82 @@ impl LocalAgentControl {
         let Some(message) = message else {
             return false;
         };
+        // Without wake mode, completions to the root are marked as wakes; the root decides on
+        // receipt whether it is in wake mode. The root is exempt from the capacity check a
+        // triggered send adds. Non-root parents keep `wait_agent`.
+        let mut trigger_turn = parent_agent_path.is_root();
         if self.runtime.wake_mode_enabled() {
-            let Some(assignment) = self
+            match self
                 .runtime
                 .terminal_wake_assignment_for_turn(outcome.thread_id, &outcome.turn_id)
-            else {
-                debug!(
-                    "terminal turn {} has no current wake assignment",
-                    outcome.turn_id
-                );
-                return false;
-            };
-            let trace_message = trace.is_enabled().then(|| message.clone());
-            let trigger_turn =
-                !parent_agent_path.is_root() || !self.runtime.root_waits_for_children();
-            let communication = InterAgentCommunication::new(
-                child_agent_path.clone(),
-                parent_agent_path.clone(),
-                Vec::new(),
-                message,
-                trigger_turn,
-            );
-            let publication = self.runtime.wake_coordinator.publish_terminal_report(
-                &assignment,
-                &outcome.turn_id,
-                communication,
-            );
-            match publication {
-                Some(TerminalReportPublication::Published(report_id)) => {
-                    debug!("published terminal report {report_id}");
+            {
+                Some(assignment) => {
+                    let trace_message = trace.is_enabled().then(|| message.clone());
+                    let communication = InterAgentCommunication::new(
+                        child_agent_path.clone(),
+                        parent_agent_path.clone(),
+                        Vec::new(),
+                        message,
+                        !parent_agent_path.is_root() || !self.runtime.root_waits_for_children(),
+                    );
+                    match self.runtime.wake_coordinator.publish_terminal_report(
+                        &assignment,
+                        &outcome.turn_id,
+                        communication,
+                    ) {
+                        Some(TerminalReportPublication::Published(report_id)) => {
+                            debug!("published terminal report {report_id}");
+                        }
+                        Some(TerminalReportPublication::AlreadyPublished(report_id)) => {
+                            debug!("terminal report {report_id} was already published");
+                        }
+                        None => {
+                            warn!(
+                                "failed to publish terminal result for agent {} turn {}",
+                                outcome.thread_id, outcome.turn_id
+                            );
+                            return false;
+                        }
+                    }
+                    if let Some(message) = trace_message {
+                        trace.record_agent_result_interaction(
+                            outcome.turn_id.as_str(),
+                            parent_thread_id,
+                            &AgentResultTracePayload {
+                                child_agent_path: child_agent_path.as_str(),
+                                message: &message,
+                                status: &status,
+                            },
+                        );
+                    }
+                    return true;
                 }
-                Some(TerminalReportPublication::AlreadyPublished(report_id)) => {
-                    debug!("terminal report {report_id} was already published");
+                // Interrupting the parent's turn detaches its running children, and a detached
+                // child's assignment ends with its turn, leaving no report to publish. Queue
+                // its completed report for the parent's next turn without waking the parent, so
+                // a final or blocked report is not lost. Turns that never held an assignment do
+                // not reach this point; the session skips them before reporting.
+                None if matches!(status, AgentStatus::Completed(_))
+                    && self
+                        .runtime
+                        .wake_coordinator
+                        .current_assignment(outcome.thread_id)
+                        .is_none() =>
+                {
+                    trigger_turn = false;
                 }
                 None => {
-                    warn!(
-                        "failed to publish terminal result for agent {} turn {}",
-                        outcome.thread_id, outcome.turn_id
+                    debug!(
+                        "terminal turn {} has no current wake assignment",
+                        outcome.turn_id
                     );
                     return false;
                 }
             }
-            if let Some(message) = trace_message {
-                trace.record_agent_result_interaction(
-                    outcome.turn_id.as_str(),
-                    parent_thread_id,
-                    &AgentResultTracePayload {
-                        child_agent_path: child_agent_path.as_str(),
-                        message: &message,
-                        status: &status,
-                    },
-                );
-            }
-            return true;
         }
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());
-        // Mark completions to the root as wakes; the root decides on receipt whether it is in
-        // wake mode. The root is exempt from the capacity check a triggered send adds.
-        // Non-root parents keep `wait_agent`.
-        let trigger_turn = parent_agent_path.is_root();
         let mut communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,

@@ -13689,3 +13689,39 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
         "rejection must not permit same-name ordinary-auth replacement in this session"
     );
 }
+
+/// An agent restored after a restart has no lifetime recorded at its spawn. Its role decides, as
+/// it did at the spawn, so a restored task agent still closes after its final report.
+#[tokio::test]
+async fn restored_agent_lifetime_follows_its_role() {
+    use codex_config::config_toml::AgentLifetime;
+    use codex_protocol::protocol::SubAgentSource;
+
+    let (session, mut turn_context) = make_session_and_context().await;
+    Arc::make_mut(&mut turn_context.config).agent_roles.insert(
+        "keeper".to_string(),
+        crate::config::AgentRoleConfig {
+            description: None,
+            config_file: None,
+            nickname_candidates: None,
+            lifetime: Some(AgentLifetime::Persistent),
+        },
+    );
+    let spawned_as = |agent_role: Option<&str>| {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/worker").expect("worker path")),
+            agent_nickname: None,
+            agent_role: agent_role.map(str::to_string),
+        })
+    };
+
+    turn_context.session_source = spawned_as(None);
+    assert_eq!(session.agent_lifetime(&turn_context), AgentLifetime::Task);
+    turn_context.session_source = spawned_as(Some("keeper"));
+    assert_eq!(
+        session.agent_lifetime(&turn_context),
+        AgentLifetime::Persistent
+    );
+}

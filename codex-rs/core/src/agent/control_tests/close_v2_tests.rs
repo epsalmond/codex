@@ -217,3 +217,131 @@ async fn archived_descendant_with_open_edge_is_restored_and_reloadable() {
         .await
         .expect("an archived descendant with an open spawn edge must reload");
 }
+
+/// Starts a root with an idle `/root/worker`, as a task agent is once its final turn ends.
+async fn idle_worker_after_final(
+    agent_polling: AgentPolling,
+) -> (
+    AgentControlHarness,
+    ThreadId,
+    LocalAgentControl,
+    LiveAgent,
+    Arc<CodexThread>,
+) {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.agent_polling = agent_polling;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (root_id, root) = harness.start_thread().await;
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let worker =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &root, "worker").await;
+    let thread = harness.manager.get_thread(worker.thread_id).await.unwrap();
+    // The fixture has no task runner to finish the worker's first turn.
+    thread.session.mark_interrupted();
+    *thread.session.active_turn.lock().await = None;
+    (harness, root_id, control, worker, thread)
+}
+
+/// #213: a follow-up admitted before the close holds its residency pin until the worker handles
+/// it. The close waits for that delivery, finds the follow-up, and keeps the worker for the turn
+/// it starts instead of dropping it.
+#[tokio::test]
+async fn close_after_final_keeps_worker_for_in_flight_follow_up() {
+    let (harness, _root_id, control, worker, thread) =
+        idle_worker_after_final(AgentPolling::Enabled).await;
+
+    let in_flight = Arc::clone(&thread.residency_gate).read_owned().await;
+    let mut close = Box::pin(control.close_task_agent_after_final(worker.thread_id));
+    poll_fn(|cx| {
+        assert!(
+            close.as_mut().poll(cx).is_pending(),
+            "the close must wait for the in-flight follow-up"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    thread
+        .session
+        .input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                worker.metadata.agent_path.clone().unwrap(),
+                Vec::new(),
+                "more work".to_string(),
+                /*trigger_turn*/ true,
+            ),
+            Default::default(),
+        )
+        .await;
+    drop(in_flight);
+
+    assert!(!close.await.expect("close after final"));
+    assert!(harness.manager.get_thread(worker.thread_id).await.is_ok());
+    assert_eq!(
+        control.runtime.registry.closed_agent_path(worker.thread_id),
+        None
+    );
+    assert_eq!(
+        thread
+            .session
+            .input_queue
+            .trigger_turn_mailbox_count()
+            .await,
+        1
+    );
+}
+
+/// A follow-up that reaches the worker after the close decided gets the closed-agent error, and
+/// the spawn edge ends closed.
+#[tokio::test]
+async fn close_after_final_rejects_follow_up_queued_behind_it() {
+    let (harness, root_id, control, worker, thread) =
+        idle_worker_after_final(AgentPolling::Enabled).await;
+
+    let in_flight = Arc::clone(&thread.residency_gate).read_owned().await;
+    let mut close = Box::pin(control.close_task_agent_after_final(worker.thread_id));
+    let mut late = Box::pin(control.send(followup(
+        root_id,
+        AgentTarget::Id(worker.thread_id),
+        &harness.config,
+    )));
+    poll_fn(|cx| {
+        assert!(close.as_mut().poll(cx).is_pending());
+        assert!(late.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(thread);
+    drop(in_flight);
+
+    assert!(close.await.expect("close after final"));
+    let err = late
+        .await
+        .err()
+        .expect("a follow-up behind the close must fail");
+    assert_eq!(
+        model_visible_error(worker.thread_id, err),
+        "agent `/root/worker` is closed; spawn a fresh agent with a self-contained brief"
+    );
+    assert_thread_not_loaded(&harness.manager, worker.thread_id).await;
+    let closed_children = control
+        .runtime
+        .upgrade()
+        .unwrap()
+        .agent_graph_store()
+        .expect("sqlite agent graph store")
+        .list_thread_spawn_children(
+            root_id,
+            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed),
+        )
+        .await
+        .expect("closed children");
+    assert_eq!(closed_children, vec![worker.thread_id]);
+}
