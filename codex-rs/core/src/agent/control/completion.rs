@@ -262,7 +262,8 @@ impl LocalAgentControl {
                 // Interrupting the parent's turn detaches its running children, and a detached
                 // child's assignment ends with its turn, leaving no report to publish. Queue
                 // its completed report for the parent's next turn without waking the parent, so
-                // a final or blocked report is not lost.
+                // a final or blocked report is not lost. Turns that never held an assignment do
+                // not reach this point; the session skips them before reporting.
                 None if matches!(status, AgentStatus::Completed(_))
                     && self
                         .runtime

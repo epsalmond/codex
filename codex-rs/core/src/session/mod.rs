@@ -2822,13 +2822,10 @@ impl Session {
             .local_agent_runtime
             .agent_lifetime(self.thread_id)
             .unwrap_or_else(|| {
-                let role = match &turn_context.session_source {
-                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
-                        agent_role.as_deref()
-                    }
-                    _ => None,
-                };
-                crate::agent::role::resolve_role_lifetime(&turn_context.config, role)
+                crate::agent::role::resolve_role_lifetime(
+                    &turn_context.config,
+                    turn_context.session_source.get_agent_role().as_deref(),
+                )
             })
     }
 
