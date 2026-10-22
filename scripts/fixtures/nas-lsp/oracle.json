@@ -1,0 +1,352 @@
+{
+  "version": 1,
+  "positions": {
+    "human": "One-based line and Unicode scalar column; end_column is exclusive.",
+    "lsp": "Zero-based line and UTF-16 code-unit character; end is exclusive.",
+    "reference_declarations": true,
+    "utf8": "One-based byte columns retained as utf8_column and utf8_end_column for rg/AST auditing."
+  },
+  "locations": {
+    "primary_definition": {
+      "path": "pkg/primary.py",
+      "line": 4,
+      "column": 5,
+      "end_column": 11,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 4
+        },
+        "end": {
+          "line": 3,
+          "character": 10
+        }
+      },
+      "utf8_column": 5,
+      "utf8_end_column": 11
+    },
+    "secondary_definition": {
+      "path": "pkg/secondary.py",
+      "line": 4,
+      "column": 5,
+      "end_column": 11,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 4
+        },
+        "end": {
+          "line": 3,
+          "character": 10
+        }
+      },
+      "utf8_column": 5,
+      "utf8_end_column": 11
+    },
+    "first_primary": {
+      "path": "pkg/consumer.py",
+      "line": 5,
+      "column": 21,
+      "end_column": 27,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 20
+        },
+        "end": {
+          "line": 4,
+          "character": 26
+        }
+      },
+      "utf8_column": 21,
+      "utf8_end_column": 27
+    },
+    "first_secondary": {
+      "path": "pkg/consumer.py",
+      "line": 5,
+      "column": 23,
+      "end_column": 29,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 22
+        },
+        "end": {
+          "line": 4,
+          "character": 28
+        }
+      },
+      "utf8_column": 23,
+      "utf8_end_column": 29
+    },
+    "repeated_left": {
+      "path": "pkg/consumer.py",
+      "line": 6,
+      "column": 24,
+      "end_column": 30,
+      "lsp": {
+        "start": {
+          "line": 5,
+          "character": 23
+        },
+        "end": {
+          "line": 5,
+          "character": 29
+        }
+      },
+      "utf8_column": 24,
+      "utf8_end_column": 30
+    },
+    "repeated_right": {
+      "path": "pkg/consumer.py",
+      "line": 6,
+      "column": 49,
+      "end_column": 55,
+      "lsp": {
+        "start": {
+          "line": 5,
+          "character": 48
+        },
+        "end": {
+          "line": 5,
+          "character": 54
+        }
+      },
+      "utf8_column": 49,
+      "utf8_end_column": 55
+    },
+    "astral_primary": {
+      "path": "pkg/consumer.py",
+      "line": 7,
+      "column": 29,
+      "end_column": 35,
+      "lsp": {
+        "start": {
+          "line": 6,
+          "character": 29
+        },
+        "end": {
+          "line": 6,
+          "character": 35
+        }
+      },
+      "utf8_column": 34,
+      "utf8_end_column": 40
+    },
+    "other_secondary": {
+      "path": "pkg/consumer.py",
+      "line": 8,
+      "column": 23,
+      "end_column": 29,
+      "lsp": {
+        "start": {
+          "line": 7,
+          "character": 22
+        },
+        "end": {
+          "line": 7,
+          "character": 28
+        }
+      },
+      "utf8_column": 23,
+      "utf8_end_column": 29
+    },
+    "helper_primary": {
+      "path": "pkg/helper.py",
+      "line": 5,
+      "column": 20,
+      "end_column": 26,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 19
+        },
+        "end": {
+          "line": 4,
+          "character": 25
+        }
+      },
+      "utf8_column": 20,
+      "utf8_end_column": 26
+    },
+    "transient_primary": {
+      "path": "pkg/transient.py",
+      "line": 5,
+      "column": 20,
+      "end_column": 26,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 19
+        },
+        "end": {
+          "line": 4,
+          "character": 25
+        }
+      },
+      "utf8_column": 20,
+      "utf8_end_column": 26
+    },
+    "no_symbol": {
+      "path": "pkg/consumer.py",
+      "line": 12,
+      "column": 3,
+      "end_column": 17,
+      "utf8_column": 3,
+      "utf8_end_column": 17,
+      "lsp": {
+        "start": {
+          "line": 11,
+          "character": 2
+        },
+        "end": {
+          "line": 11,
+          "character": 16
+        }
+      }
+    }
+  },
+  "symbols": {
+    "pkg.primary.render": {
+      "definition": "primary_definition"
+    },
+    "pkg.secondary.render": {
+      "definition": "secondary_definition"
+    }
+  },
+  "scenarios": {
+    "base": {
+      "references": {
+        "pkg.primary.render": [
+          "primary_definition",
+          "first_primary",
+          "repeated_left",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary",
+          "transient_primary"
+        ],
+        "pkg.secondary.render": [
+          "secondary_definition",
+          "other_secondary"
+        ]
+      }
+    },
+    "changed": {
+      "replace": {
+        "pkg/consumer.py": "variants/changed-consumer.py"
+      },
+      "references": {
+        "pkg.primary.render": [
+          "primary_definition",
+          "repeated_left",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary",
+          "transient_primary"
+        ],
+        "pkg.secondary.render": [
+          "secondary_definition",
+          "first_secondary",
+          "other_secondary"
+        ]
+      }
+    },
+    "deleted": {
+      "replace": {
+        "pkg/consumer.py": "variants/changed-consumer.py"
+      },
+      "delete": [
+        "pkg/transient.py"
+      ],
+      "references": {
+        "pkg.primary.render": [
+          "primary_definition",
+          "repeated_left",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary"
+        ],
+        "pkg.secondary.render": [
+          "secondary_definition",
+          "first_secondary",
+          "other_secondary"
+        ]
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "cross_file_definition",
+      "operation": "definition",
+      "at": "helper_primary",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "same_name_secondary_definition",
+      "operation": "definition",
+      "at": "other_secondary",
+      "symbol": "pkg.secondary.render"
+    },
+    {
+      "id": "repeated_left_definition",
+      "operation": "definition",
+      "at": "repeated_left",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "repeated_right_definition",
+      "operation": "definition",
+      "at": "repeated_right",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "astral_definition",
+      "operation": "definition",
+      "at": "astral_primary",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "cross_file_references",
+      "operation": "references",
+      "at": "primary_definition",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "same_name_secondary_references",
+      "operation": "references",
+      "at": "secondary_definition",
+      "symbol": "pkg.secondary.render"
+    },
+    {
+      "id": "repeated_right_references",
+      "operation": "references",
+      "at": "repeated_right",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "astral_references",
+      "operation": "references",
+      "at": "astral_primary",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "comment_definition",
+      "operation": "definition",
+      "at": "no_symbol",
+      "symbol": null
+    },
+    {
+      "id": "helper_references",
+      "operation": "references",
+      "at": "helper_primary",
+      "symbol": "pkg.primary.render"
+    },
+    {
+      "id": "comment_references",
+      "operation": "references",
+      "at": "no_symbol",
+      "symbol": null
+    }
+  ]
+}

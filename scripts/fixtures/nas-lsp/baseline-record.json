@@ -1,0 +1,74 @@
+{
+  "method": "rg candidate search + complete candidate-file reads + fixture-only AST binding resolution",
+  "cache_note": "first/repeated passes; OS caches are not flushed; these are not cold-server measurements",
+  "token_note": "ceil(UTF-8 output bytes / 4) is an estimate, not measured model tokens",
+  "python": "3.13.11",
+  "rg": "ripgrep 15.2.0 (rev e89fff89ac)",
+  "corpus_sha256": "30537b1bdf9256dddab8e7bea9c3773df8781afed7424c700ac283d58b6f9012",
+  "correct": 72,
+  "tasks": 72,
+  "summaries": [
+    {
+      "scenario": "base",
+      "pass": "first",
+      "tasks": 12,
+      "correct": 12,
+      "latency_p50_ms": 4.341,
+      "latency_p95_ms": 4.779,
+      "total_bytes": 17576,
+      "token_estimate_bytes_div_4": 4400
+    },
+    {
+      "scenario": "base",
+      "pass": "repeated",
+      "tasks": 12,
+      "correct": 12,
+      "latency_p50_ms": 4.164,
+      "latency_p95_ms": 4.554,
+      "total_bytes": 17576,
+      "token_estimate_bytes_div_4": 4400
+    },
+    {
+      "scenario": "changed",
+      "pass": "first",
+      "tasks": 12,
+      "correct": 12,
+      "latency_p50_ms": 4.172,
+      "latency_p95_ms": 5.141,
+      "total_bytes": 17428,
+      "token_estimate_bytes_div_4": 4362
+    },
+    {
+      "scenario": "changed",
+      "pass": "repeated",
+      "tasks": 12,
+      "correct": 12,
+      "latency_p50_ms": 4.403,
+      "latency_p95_ms": 5.229,
+      "total_bytes": 17428,
+      "token_estimate_bytes_div_4": 4362
+    },
+    {
+      "scenario": "deleted",
+      "pass": "first",
+      "tasks": 12,
+      "correct": 12,
+      "latency_p50_ms": 4.035,
+      "latency_p95_ms": 4.299,
+      "total_bytes": 15648,
+      "token_estimate_bytes_div_4": 3918
+    },
+    {
+      "scenario": "deleted",
+      "pass": "repeated",
+      "tasks": 12,
+      "correct": 12,
+      "latency_p50_ms": 4.294,
+      "latency_p95_ms": 5.248,
+      "total_bytes": 15648,
+      "token_estimate_bytes_div_4": 3918
+    }
+  ],
+  "recorded_at_utc": "2026-10-22T18:29:09.230831+00:00",
+  "command": "python3 scripts/fixtures/nas-lsp/corpus.py baseline --rounds 2 --output /tmp/codex-164/corpus-baseline.json"
+}
