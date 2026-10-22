@@ -210,15 +210,19 @@ inside the registered root. Configuration inheritance must stay in that
 inventory. Project references, nonempty `compilerOptions.plugins` (including
 inherited or nested plugins), unsupported resolution settings, and unresolved
 external dependencies are rejected. The pinned TypeScript parser inspects
-source/configuration as data, including JSDoc and triple-slash inputs. A
+source/configuration as data. JSDoc import forms, dynamic imports that cannot
+be resolved statically, declaration maps and source-map redirects are rejected.
+Conditional/pattern package mappings, package imports and `typesVersions` are
+also outside this profile. Triple-slash inputs must resolve inside the saved
+inventory or the pinned standard-library runtime. A
 broker-controlled helper uses the registered Node and TypeScript runtime;
 repository JavaScript is not evaluated. The server receives no plugins,
 disables automatic typing acquisition, and uses the registered semantic
 tsserver. No npm scripts or type installation run during navigation.
 
 Ancestor `node_modules` lookup candidates must be absent. The adapter checks
-these negative inputs and relevant ancestor package/configuration candidates
-before and after each query; creating an outside lookup input invalidates a
+these negative inputs before and after each query; the explicit root package
+and config stop parent discovery. Creating an outside lookup input invalidates a
 result. Arbitrary external mutable npm packages are unsupported. A bounded
 in-root dependency still counts toward inventory limits, including its package
 metadata. The only external project inputs admitted by this profile are the
@@ -228,7 +232,10 @@ module directories immutable until broker restart.
 The worker admits saved TS/TSX/JS/JSX and module variants, then checks semantic
 project membership for every admitted source before returning locations.
 Extension admission alone does not establish feature qualification; consult the
-acceptance evidence for the exact tested matrix.
+acceptance evidence for the exact tested matrix. Pinned worker tests exercise
+`.ts`, `.js` import/use, `.tsx` declarations/use, and `.d.ts` declarations. They
+do not establish JSX-element semantics or a separate
+`.jsx`/`.mts`/`.cts`/`.mjs`/`.cjs` runtime matrix.
 
 ### Rust
 

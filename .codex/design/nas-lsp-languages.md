@@ -175,6 +175,15 @@ isolation and a malicious plugin sentinel which must never run. Record which
 JS/TSX/declaration/config features are actually exercised, rather than expanding
 claims from extension admission alone.
 
+Implemented TS profile: all JSDoc import forms are rejected with the pinned
+scanner; no partial import discovery is accepted. Declaration maps and
+sourceMappingURL redirects, dynamic unresolved imports, conditional/pattern
+package mappings, imports/typesVersions and unhandled compiler resolution
+options are also explicit unsupported cases. Worker qualification exercises .ts,
+.js import/use, .tsx declarations/use and .d.ts; it does not qualify JSX elements
+or separate module-extension matrices. Parent native/broker acceptance remains a
+separate gate from these worker tests.
+
 ## Rust lane
 
 Own `nas-lsp/src/language/rust.rs` and `nas-lsp/tests/rust.rs`.
