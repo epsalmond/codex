@@ -76,6 +76,7 @@ pub(crate) fn thread_extensions(
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
     }
+    codex_semantic_navigation::install(&mut builder);
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     codex_core::install_agent_message_board(&mut builder, thread_manager.clone());
     if let Some(state_db) = state_db {

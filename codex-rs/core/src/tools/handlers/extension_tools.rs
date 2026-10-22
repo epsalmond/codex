@@ -64,15 +64,16 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
         ToolInvocation: 'a,
     {
         Box::pin(async move {
-            let environment_accessors = invocation.step_context.environments();
+            let environment_accessors = invocation.step_context.extension_environments();
             let environments = environment_accessors
                 .iter()
-                .map(|(environment, fs)| {
+                .map(|(environment, fs, access)| {
                     ToolEnvironment::new(
                         environment.selection.environment_id.clone(),
                         environment.cwd().clone(),
                         fs,
                     )
+                    .with_local_navigation_access(*access)
                 })
                 .collect();
             self.0
@@ -207,6 +208,7 @@ async fn to_extension_call<'a>(
         codex_turn_metadata,
         truncation_policy: settings.model_info.truncation_policy.into(),
         source: extension_tool_call_source(invocation.source.clone()),
+        cancellation_token: invocation.cancellation_token.clone(),
         conversation_history,
         turn_item_emitter: Arc::new(CoreTurnItemEmitter {
             session: Arc::downgrade(&invocation.session),
@@ -478,11 +480,12 @@ mod tests {
         let model_info = Arc::make_mut(&mut settings.model_info);
         model_info.node_repl_disabled = !turn.model_info().node_repl_disabled;
         let node_repl_disabled = model_info.node_repl_disabled;
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
         let invocation = ToolInvocation {
             session,
             step_context,
             turn,
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            cancellation_token: cancellation_token.clone(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "call-extension".to_string(),
             tool_name: codex_tools::ToolName::plain("extension_echo"),
@@ -502,6 +505,8 @@ mod tests {
         let captured_call = captured_call.lock().await.clone().expect("captured call");
         assert!(weak_session.upgrade().is_none());
         assert!(weak_turn.upgrade().is_none());
+        cancellation_token.cancel();
+        assert!(captured_call.cancellation_token.is_cancelled());
         assert_eq!(captured_call.turn_id, turn_id);
         assert_eq!(captured_call.call_id, "call-extension");
         assert_eq!(

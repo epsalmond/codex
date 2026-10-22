@@ -2059,6 +2059,7 @@ async fn skills_list_only_returns_model_visible_bounded_metadata() -> TestResult
         arguments: serde_json::json!({"authority": {"kind": "cloud"}}).to_string(),
     };
     let call = ToolCall {
+        cancellation_token: Default::default(),
         turn_id: "turn-1".to_string(),
         call_id: "call-1".to_string(),
         tool_name: list_tool.tool_name(),
@@ -2219,6 +2220,7 @@ async fn skills_list_only_returns_model_visible_bounded_metadata() -> TestResult
     };
     let error = read_tool
         .handle(ToolCall {
+            cancellation_token: Default::default(),
             turn_id: "turn-1".to_string(),
             call_id: "insufficient-read-budget".to_string(),
             tool_name: read_tool.tool_name(),

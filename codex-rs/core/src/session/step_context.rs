@@ -14,10 +14,12 @@ use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ExtensionData;
 use codex_file_system::EnvironmentAccess;
+use codex_file_system::FileSystemEnvironmentAccessor;
 use codex_mcp::McpBinding;
 use codex_otel::SessionTelemetry;
 use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::protocol::TurnContextItem;
+use codex_tools::LocalNavigationAccess;
 use tokio_util::sync::CancellationToken;
 
 /// Request-scoped state that may change between model sampling requests.
@@ -72,6 +74,36 @@ impl StepContext {
             .collect()
     }
 
+    /// Capture grants once so the accessor and navigation verdict have identical authority.
+    pub(crate) fn extension_environments(
+        &self,
+    ) -> Vec<(
+        &TurnEnvironment,
+        impl EnvironmentAccess + '_,
+        LocalNavigationAccess,
+    )> {
+        self.environments
+            .turn_environments()
+            .map(|environment| {
+                let grants = self
+                    .turn
+                    .granted_permissions(&environment.selection.environment_id);
+                let sandbox = environment.sandbox_context(grants);
+                // A pending/failed second selection must not disappear into a single
+                // ready environment and authorize a broader local index.
+                let access = local_navigation_access(
+                    environment.environment.is_remote(),
+                    sandbox.should_read_from_sandbox() || self.environments.environments.len() != 1,
+                );
+                let fs = FileSystemEnvironmentAccessor::new(
+                    environment.environment.filesystem_ref(),
+                    sandbox,
+                );
+                (environment, fs, access)
+            })
+            .collect()
+    }
+
     /// Persist the context captured for this request, even after a live update.
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
         let mut item = self.turn.to_turn_context_item();
@@ -87,5 +119,81 @@ impl StepContext {
                 .effective_reasoning_effort()
                 .map(|effort| effort.to_string()),
         }
+    }
+}
+
+fn local_navigation_access(remote: bool, restricted_reads: bool) -> LocalNavigationAccess {
+    match (remote, restricted_reads) {
+        (true, _) => LocalNavigationAccess::Remote,
+        (false, true) => LocalNavigationAccess::Restricted,
+        (false, false) => LocalNavigationAccess::Allowed,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod navigation_authority_tests {
+    use super::*;
+    use crate::environment_selection::TurnEnvironmentState;
+    use codex_exec_server::Environment;
+    use codex_protocol::models::AdditionalPermissionProfile;
+    use codex_protocol::models::FileSystemPermissions;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::models::PermissionProfileSnapshot;
+    use codex_utils_path_uri::PathUri;
+
+    #[tokio::test]
+    async fn extension_authority_captures_real_locality_and_effective_grants_together() {
+        let (_session, turn) = crate::session::tests::make_session_and_context().await;
+        let turn = Arc::new(turn);
+        let mut step = StepContext::for_test(turn.clone());
+        let step = Arc::get_mut(&mut step).expect("unshared step");
+        let mut environment = step
+            .environments
+            .turn_environments()
+            .next()
+            .expect("local environment")
+            .clone();
+        let environment_id = environment.selection.environment_id.clone();
+        environment.config_mut().permission_profile =
+            PermissionProfileSnapshot::legacy(PermissionProfile::default());
+        step.environments.environments = vec![TurnEnvironmentState::Ready(environment.clone())];
+        let before = step.extension_environments();
+        assert_eq!(before[0].2, LocalNavigationAccess::Restricted);
+        turn.record_granted_permissions(
+            &environment_id,
+            AdditionalPermissionProfile {
+                file_system: Some(FileSystemPermissions::from_read_write_path_uris(
+                    Some(vec![PathUri::from_host_native_path("/").expect("root")]),
+                    None,
+                )),
+                ..Default::default()
+            },
+            false,
+        );
+        let after = step.extension_environments();
+        assert_eq!(after[0].2, LocalNavigationAccess::Allowed);
+        assert_ne!(before[0].1.cache_key(), after[0].1.cache_key());
+        // A callback already holding the old accessor retains the old verdict and grants.
+        assert_eq!(before[0].2, LocalNavigationAccess::Restricted);
+        drop(before);
+        drop(after);
+        step.environments
+            .environments
+            .push(TurnEnvironmentState::Ready(environment.clone()));
+        assert!(
+            step.extension_environments()
+                .iter()
+                .all(|(_, _, access)| *access == LocalNavigationAccess::Restricted)
+        );
+        // Same id and local-looking cwd, but the actual executor is remote.
+        environment.environment = Arc::new(
+            Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_owned()))
+                .expect("remote environment"),
+        );
+        step.environments.environments = vec![TurnEnvironmentState::Ready(environment)];
+        assert_eq!(
+            step.extension_environments()[0].2,
+            LocalNavigationAccess::Remote
+        );
     }
 }
