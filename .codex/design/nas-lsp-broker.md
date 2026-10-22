@@ -276,7 +276,11 @@ First query snapshots saved files before initialization and admits every saved
 `.py` and `.pyi` document to the worker, including reverse dependents that have
 never been queried. Require a supported document synchronization capability;
 without complete admission, return explicit Unavailable/Indexing rather than
-calling a declaration-only reference set complete. Before every later
+calling a declaration-only reference set complete. Advertise
+`workspace.workspaceFolders: true` alongside the supplied workspace folders:
+Pyrefly 1.2.0 otherwise ignores those folders and can infer different module
+identities for a declaration and its import. Both complete admission and this
+capability are necessary for exact declaration-position references. Before every later
 query compare the complete inventory with the worker generation. For any added,
 changed, deleted source/config file, shut down and recreate that worker before
 querying and readmitting the complete saved generation; this deliberately
