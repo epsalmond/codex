@@ -18,6 +18,8 @@ upstream_tag=""
 upstream_sha=""
 fork_sha=""
 output=""
+run_number=${GITHUB_RUN_NUMBER:-}
+run_attempt=${GITHUB_RUN_ATTEMPT:-}
 
 usage() {
   printf 'usage: %s --repo-root DIR --event-name NAME --event-ref REF --event-sha SHA --event-before SHA --output FILE [--upstream-url URL]\n' "$0" >&2
@@ -70,6 +72,8 @@ while (($# > 0)); do
       fork_sha=${2-}
       shift 2
       ;;
+    --run-number) run_number=${2:?--run-number requires a value}; shift 2 ;;
+    --run-attempt) run_attempt=${2:?--run-attempt requires a value}; shift 2 ;;
     --output)
       output=${2:?--output requires a value}
       shift 2
@@ -189,20 +193,14 @@ if [[ "$source_version" == 0.0.0 ]]; then
   source_version=${stable_lineage#rust-v}
 fi
 
-if [[ "$source_kind" == branch-merge ]]; then
-  short_sha=$("${git_cmd[@]}" rev-parse --short=12 "$release_sha")
-  source_sequence=$("${git_cmd[@]}" rev-list --first-parent --count "$release_sha")
-  printf -v source_sequence_hex '%016x' "$source_sequence"
-  commit_epoch=$("${git_cmd[@]}" show -s --format=%ct "$release_sha")
-  commit_timestamp=$(python3 - "$commit_epoch" <<'PY'
-import datetime
-import sys
-
-print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
-PY
-)
-  release_tag="local-features-v${source_version}-main-r${commit_timestamp}.${source_sequence_hex}${short_sha}"
-fi
+# Every workflow invocation/retry has its own identity, including tag recovery.
+# A tag event validates the requested source above, then publishes a fresh tag.
+identity=$(bash "$script_dir/fork-release-build.sh" build-identity \
+  --repo-root "$repo_root" --sha "$release_sha" --version "$source_version" \
+  --kind ci --run-number "$run_number" --run-attempt "$run_attempt")
+release_tag=$(sed -n 's/^release_tag=//p' <<< "$identity")
+build_revision=$(sed -n 's/^build_revision=//p' <<< "$identity")
+source_sequence=$(sed -n 's/^source_sequence=//p' <<< "$identity")
 
 if existing_tag_sha=$("${git_cmd[@]}" rev-parse --verify "refs/tags/$release_tag^{commit}" 2>/dev/null); then
   [[ "$existing_tag_sha" == "$release_sha" ]] ||
@@ -212,6 +210,9 @@ fi
 {
   printf 'release_sha=%s\n' "$release_sha"
   printf 'release_tag=%s\n' "$release_tag"
+  printf 'build_revision=%s\n' "$build_revision"
+  printf 'build_attempt=%s\n' "$run_attempt"
+  printf 'source_sequence=%s\n' "$source_sequence"
   printf 'source_version=%s\n' "$source_version"
   printf 'stable_lineage=%s\n' "$stable_lineage"
   printf 'included_upstream_main_sha=%s\n' "$included_upstream_main_sha"

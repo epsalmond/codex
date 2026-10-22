@@ -4,15 +4,19 @@
 # so a local codex-shake build stamps, verifies, and packages exactly like a
 # published release.
 #
+#   fork-release-build.sh build-identity --repo-root DIR --sha SHA --version X.Y.Z \
+#     --kind ci --run-number N --run-attempt N
 #   fork-release-build.sh workspace-version --repo-root DIR --sha SHA
 #   fork-release-build.sh stable-lineage --repo-root DIR --sha SHA \
 #     [--upstream-tag-namespace REFPREFIX]
 #   fork-release-build.sh stamp-version VERSION       (run in codex-rs/)
-#   fork-release-build.sh verify-version VERSION TAG  (run in codex-rs/)
+#   fork-release-build.sh verify-version VERSION TAG SHA  (run in codex-rs/)
 #   fork-release-build.sh package-archive --repo-root DIR --target TRIPLE \
 #     --version VERSION --stage-dir DIR --archive FILE [--bwrap-bin PATH]
 #                                                     (run in codex-rs/)
 set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 die() {
   printf 'fork-release-build: %s\n' "$1" >&2
@@ -102,17 +106,20 @@ stamp_version() {
 
 verify_version() {
   local source_version=${1:?verify-version needs VERSION} release_tag=${2:?verify-version needs TAG}
-  local shake_version reported expected short_reported
+  local source_sha=${3:?verify-version needs SHA}
+  local binary=${CODEX_VERSION_BINARY:-target/release/codex}
+  local shake_version reported expected short_reported build_revision
+  build_revision=$(python3 "$script_dir/fork-build-identity.py" describe "$release_tag")
   shake_version=$(sed -n 's/^[[:space:]]*pub(crate) const SHAKE_FEATURE_VERSION: &str = "\([^"]*\)";$/\1/p' tui/src/fork_update.rs)
   test -n "$shake_version"
-  reported=$(target/release/codex --version)
-  expected=$(printf 'codex-cli %s\nShake feature version: %s\nRelease tag: %s' \
-    "$source_version" "$shake_version" "$release_tag")
+  reported=$("$binary" --version)
+  expected=$(printf 'codex-cli %s\nShake feature version: %s\nCLI build: %s\nSource commit: %s\nRelease tag: %s' \
+    "$source_version" "$shake_version" "$build_revision" "$source_sha" "$release_tag")
   [[ "$reported" == "$expected" ]] || {
     echo "codex --version reported '$reported', expected source, Shake, and release versions" >&2
     exit 1
   }
-  short_reported=$(target/release/codex -V)
+  short_reported=$("$binary" -V)
   [[ "$short_reported" == "codex-cli $source_version" ]] || {
     echo "codex -V reported '$short_reported', expected codex-cli $source_version" >&2
     exit 1
@@ -197,6 +204,7 @@ command=${1:-}
 [[ -n "$command" ]] || die "missing subcommand"
 shift
 case "$command" in
+  build-identity) python3 "$script_dir/fork-build-identity.py" allocate "$@" ;;
   workspace-version) workspace_version "$@" ;;
   stable-lineage) stable_lineage "$@" ;;
   stamp-version) stamp_version "$@" ;;

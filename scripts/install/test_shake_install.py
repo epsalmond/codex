@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -117,6 +118,217 @@ class ShakeInstallTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(os.readlink(home_dir / "current"), accepted)
 
+    def test_latest_selection_orders_build_runs_and_attempts(self) -> None:
+        prefix = "local-features-v0.154.0-main-r20260914000000."
+        legacy = prefix + "0000000000000002" + "a" * 12
+        run_one = legacy + "0000000000000001" + "00000001"
+        run_two = legacy + "0000000000000002" + "00000001"
+        attempt_two = legacy + "0000000000000002" + "00000002"
+        later_source = (
+            prefix + "0000000000000003" + "b" * 12 + "0000000000000001" + "00000001"
+        )
+        for tags, expected in [
+            ([legacy, run_one], run_one),
+            ([run_two, run_one], run_two),
+            ([run_two, attempt_two], attempt_two),
+            ([attempt_two, later_source], later_source),
+        ]:
+            with self.subTest(tags=tags), tempfile.TemporaryDirectory() as temp_dir:
+                result, home_dir, _, _ = run_installer(
+                    Path(temp_dir),
+                    tag=None,
+                    release_feed=json.dumps(
+                        [{"tag_name": tag, "draft": False} for tag in tags]
+                    ),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(home_dir / "current"), expected)
+
+    def test_new_install_explains_missing_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, _, _, _ = run_installer(Path(temp_dir))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("previous release baseline unavailable", result.stderr)
+            self.assertIn(
+                f"https://github.com/owner/repo/releases/tag/{TAG}", result.stderr
+            )
+
+    def test_already_current_does_not_fetch_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, _, _, _ = run_installer(root, previous_tag=TAG)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"already current: {TAG}", result.stderr)
+            self.assertNotIn("/compare/", (root / "requests.log").read_text())
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
+    def test_update_range_includes_skipped_builds_and_treats_titles_as_data(
+        self,
+    ) -> None:
+        previous = "local-features-v0.154.0-r202609101200.abcdef1"
+        message = "Fix updater $(touch never-execute) `touch never-execute`\x1b[31m\nDetailed body"
+        comparison = {
+            "status": "ahead",
+            "total_commits": 3,
+            "commits": [
+                {"commit": {"message": "Fix from skipped build"}},
+                {"commit": {"message": "Upstream: improve tools"}},
+                {"commit": {"message": message}},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root, previous_tag=previous, comparison=comparison
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(os.readlink(home_dir / "current"), TAG)
+            self.assertIn("including skipped builds", result.stderr)
+            self.assertIn("Fix from skipped build", result.stderr)
+            self.assertIn("Upstream: improve tools", result.stderr)
+            self.assertIn("$(touch never-execute) `touch never-execute`", result.stderr)
+            self.assertNotIn("\x1b", result.stderr)
+            self.assertNotIn("Detailed body", result.stderr)
+            self.assertFalse((root / "never-execute").exists())
+            requests = (root / "requests.log").read_text().splitlines()
+            self.assertEqual(
+                [url for url in requests if "/compare/" in url],
+                [
+                    f"https://api.github.com/repos/owner/repo/compare/{previous}...{TAG}?per_page=100"
+                ],
+            )
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
+    def test_notes_outage_and_malformed_response_do_not_fail_install(self) -> None:
+        for failure in (True, False):
+            with (
+                self.subTest(outage=failure),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                result, home_dir, _, _ = run_installer(
+                    Path(temp_dir),
+                    previous_tag="old-build",
+                    comparison_failure=failure,
+                    comparison={"message": "not a comparison"},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(home_dir / "current"), TAG)
+                self.assertIn(
+                    "changelog summary unavailable; installation succeeded",
+                    result.stderr,
+                )
+                self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
+    def test_large_range_fetches_final_page_and_shows_newest_fork_fix(self) -> None:
+        for total in (100, 101, 350):
+            with self.subTest(total=total), tempfile.TemporaryDirectory() as temp_dir:
+                comparison = {
+                    "status": "ahead",
+                    "total_commits": total,
+                    "commits": [
+                        {"commit": {"message": f"Old upstream change {i}"}}
+                        for i in range(1, 100)
+                    ]
+                    + [{"commit": {"message": "Fresh fork fix"}}],
+                }
+                page = (total + 99) // 100
+                final_commits = total - 100 * (page - 1)
+                last_page = {
+                    "status": "ahead",
+                    "total_commits": total,
+                    "commits": [
+                        {"commit": {"message": f"Recent change {i}"}}
+                        for i in range(final_commits - 1)
+                    ]
+                    + [{"commit": {"message": "Fresh fork fix"}}],
+                }
+                root = Path(temp_dir)
+                result, _, _, _ = run_installer(
+                    root,
+                    previous_tag="old-build",
+                    comparison=comparison,
+                    comparison_last_page=last_page,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("  - Fresh fork fix\n", result.stderr)
+                self.assertNotIn("  - Old upstream change 1\n", result.stderr)
+                shown = min(12, final_commits)
+                self.assertIn(
+                    f"Showing {shown} of {total} commits (newest first)", result.stderr
+                )
+                requests = [
+                    url
+                    for url in (root / "requests.log").read_text().splitlines()
+                    if "/compare/" in url
+                ]
+                self.assertEqual(len(requests), 2 if total > 100 else 1)
+                if total > 100:
+                    self.assertTrue(requests[-1].endswith(f"&page={page}"))
+                    self.assertNotIn("Old upstream change", result.stderr)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
+    def test_failed_or_malformed_final_page_does_not_show_old_titles(self) -> None:
+        for failure in (True, False):
+            with (
+                self.subTest(outage=failure),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                result, home_dir, _, _ = run_installer(
+                    Path(temp_dir),
+                    previous_tag="old-build",
+                    comparison={
+                        "status": "ahead",
+                        "total_commits": 350,
+                        "commits": [{"commit": {"message": "Old title"}}],
+                    },
+                    comparison_last_page={
+                        "status": "ahead",
+                        "total_commits": 350,
+                        "commits": [],
+                    },
+                    comparison_last_page_failure=failure,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(home_dir / "current"), TAG)
+                self.assertIn(
+                    "summary unavailable; installation succeeded", result.stderr
+                )
+                self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
+                self.assertNotIn("Old title", result.stderr)
+                self.assertNotIn("newest first", result.stderr)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
+    def test_same_source_rebuild_and_rollback_are_explicit(self) -> None:
+        for status, expected in [
+            ("identical", "No source changes (rebuild of the same source)."),
+            ("behind", "Source histories are behind;"),
+        ]:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temp_dir:
+                result, _, _, _ = run_installer(
+                    Path(temp_dir),
+                    previous_tag="old-build",
+                    comparison={"status": status, "total_commits": 0, "commits": []},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, result.stderr)
+
+    def test_without_jq_selects_release_and_links_entire_update_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, home_dir, _, _ = run_installer(
+                root,
+                tag=None,
+                without_jq=True,
+                previous_tag="old-build",
+                release_feed=json.dumps([{"tag_name": TAG, "draft": False}]),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(os.readlink(home_dir / "current"), TAG)
+            self.assertIn("changelog summary unavailable without jq", result.stderr)
+            self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
+            self.assertNotIn("/compare/", (root / "requests.log").read_text())
+
     def test_update_helper_preserves_custom_paths_and_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -171,6 +383,12 @@ def run_installer(
     bin_dir: Path | None = None,
     repo: str = "owner/repo",
     include_estimator: bool = False,
+    previous_tag: str | None = None,
+    comparison: dict | None = None,
+    comparison_failure: bool = False,
+    comparison_last_page: dict | None = None,
+    comparison_last_page_failure: bool = False,
+    without_jq: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     fake_bin = root / "fake-bin"
     fake_bin.mkdir()
@@ -202,7 +420,18 @@ def run_installer(
               if [ "$previous" = "-o" ]; then output="$arg"; fi
               previous="$arg"
             done
+            printf '%s\\n' "$url" >> "$CODEX_TEST_REQUEST_LOG"
             case "$url" in
+              https://api.github.com/*/compare/*)
+                if [ "$CODEX_TEST_COMPARISON_FAILURE" = 1 ]; then exit 22; fi
+                case "$url" in
+                  *'&page='*)
+                    if [ "$CODEX_TEST_LAST_PAGE_FAILURE" = 1 ]; then exit 22; fi
+                    printf '%s\\n' "$CODEX_TEST_LAST_PAGE"
+                    ;;
+                  *) printf '%s\\n' "$CODEX_TEST_COMPARISON" ;;
+                esac
+                ;;
               https://api.github.com/*/releases*)
                 printf '%s\\n' "$CODEX_TEST_RELEASE_FEED"
                 ;;
@@ -268,10 +497,45 @@ def run_installer(
     home_dir.parent.mkdir(parents=True, exist_ok=True)
     bin_dir.parent.mkdir(parents=True, exist_ok=True)
 
+    if previous_tag is not None:
+        assert home_dir is not None
+        previous_dir = home_dir / previous_tag
+        previous_dir.mkdir(parents=True)
+        write_executable(previous_dir / "codex", "#!/bin/sh\nexit 0\n")
+        (home_dir / "current").symlink_to(previous_tag)
+
+    # A real PATH without jq exercises the POSIX fallback, even on hosts where
+    # jq is installed globally. All network/extraction tools remain fixtures.
+    test_path = f"{fake_bin}:/usr/bin:/bin"
+    if without_jq:
+        for name in [
+            "mkdir",
+            "cp",
+            "sha256sum",
+            "cut",
+            "sed",
+            "mktemp",
+            "rm",
+            "mv",
+            "ln",
+            "chmod",
+            "grep",
+            "readlink",
+            "awk",
+            "sort",
+            "tail",
+            "tr",
+            "cat",
+        ]:
+            tool = shutil.which(name, path="/usr/bin:/bin")
+            assert tool is not None, name
+            (fake_bin / name).symlink_to(tool)
+        test_path = str(fake_bin)
+
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"CODEX_SHAKE_HOME", "CODEX_SHAKE_BIN_DIR"}
+        if key not in {"CODEX_SHAKE_HOME", "CODEX_SHAKE_BIN_DIR", "CODEX_SHAKE_TAG"}
     }
     env.update(
         {
@@ -279,8 +543,15 @@ def run_installer(
             "CODEX_TEST_ARCHIVE": str(archive),
             "CODEX_TEST_CHECKSUM": str(checksum),
             "CODEX_TEST_HELPER_ENV": str(helper_env),
+            "CODEX_TEST_REQUEST_LOG": str(root / "requests.log"),
+            "CODEX_TEST_COMPARISON": json.dumps(comparison or {}),
+            "CODEX_TEST_COMPARISON_FAILURE": "1" if comparison_failure else "0",
+            "CODEX_TEST_LAST_PAGE": json.dumps(comparison_last_page or {}),
+            "CODEX_TEST_LAST_PAGE_FAILURE": "1"
+            if comparison_last_page_failure
+            else "0",
             "HOME": str(root / "home"),
-            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "PATH": test_path,
         }
     )
     if tag is not None:

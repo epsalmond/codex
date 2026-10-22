@@ -275,6 +275,52 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     )
 }
 
+/// Keep the release tag intact across wrapping so a copied /status identifies
+/// this executable exactly, even after the installed/current symlink changes.
+fn cli_identity_lines(
+    formatter: &FieldFormatter,
+    value_width: usize,
+    build_revision: &str,
+    release_tag: &str,
+) -> Vec<Line<'static>> {
+    let feature_version = crate::fork_update::SHAKE_FEATURE_VERSION;
+    let mut lines = vec![formatter.line(
+        "CLI build",
+        vec![format!("Shake {feature_version} · {build_revision}").into()],
+    )];
+    let wrapped = word_wrap_lines(
+        [Line::from(release_tag.to_string())],
+        RtOptions::new(value_width.max(1)),
+    );
+    let mut wrapped = wrapped.into_iter();
+    if let Some(first) = wrapped.next() {
+        lines.push(formatter.line("CLI release", first.spans));
+        lines.extend(wrapped.map(|line| formatter.continuation(line.spans)));
+    }
+    lines.push(Line::from(Vec::<Span<'static>>::new()));
+    lines
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    use super::*;
+
+    #[test]
+    fn status_preserves_exact_cli_release_tag_when_wrapped() {
+        let tag = "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa00000000000004d200000002";
+        let formatter = FieldFormatter::from_labels(["CLI build", "CLI release"]);
+        let lines = cli_identity_lines(&formatter, formatter.value_width(44), "1234.2", tag);
+        assert!(lines[0].to_string().contains("Shake 0.4.0 · 1234.2"));
+        let reconstructed = lines[1..]
+            .iter()
+            .flat_map(|line| line.spans.iter().skip(1))
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(reconstructed, tag);
+        assert!(lines.iter().all(|line| line_width(line) <= 44));
+    }
+}
+
 impl StatusHistoryCell {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -759,6 +805,9 @@ impl StatusHistoryCell {
             .into_iter()
             .map(str::to_string)
             .collect();
+        if crate::fork_update::FORK_RELEASE_TAG.is_some() {
+            labels.extend(["CLI build".to_string(), "CLI release".to_string()]);
+        }
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
         let thread_name = self.thread_name.as_deref().filter(|name| !name.is_empty());
         #[expect(clippy::expect_used)]
@@ -820,6 +869,18 @@ impl StatusHistoryCell {
                 lines.extend(wrapped_remote.map(|line| formatter.continuation(line.spans)));
             }
             lines.push(Line::from(Vec::<Span<'static>>::new()));
+        }
+
+        if let (Some(build_revision), Some(release_tag)) = (
+            crate::fork_update::cli_build_revision(),
+            crate::fork_update::FORK_RELEASE_TAG,
+        ) {
+            lines.extend(cli_identity_lines(
+                &formatter,
+                value_width,
+                build_revision,
+                release_tag,
+            ));
         }
 
         let mut model_spans = vec![Span::from(self.model_name.clone())];

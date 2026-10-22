@@ -39,6 +39,84 @@ shell_quote() {
 }
 need curl; need tar
 
+# Capture the installed baseline before current is repointed. The symlink is
+# installer-owned; no running session or mutable version output is consulted.
+previous_tag=""
+if [ -x "$home_dir/current/codex" ] && command -v readlink >/dev/null 2>&1; then
+  previous_target=$(readlink "$home_dir/current" 2>/dev/null || true)
+  previous_tag=${previous_target##*/}
+fi
+
+# Notes are advisory: use at most two bounded API lookups for the source range,
+# including skipped builds. Without a JSON parser, provide honest browser links
+# rather than trying to parse arbitrary JSON/release bodies as shell text.
+show_update_notes() {
+  notes_url="https://github.com/$repo/releases/tag/$tag"
+  if [ "$previous_tag" = "$tag" ]; then
+    say "already current: $tag"
+    say "release notes: $notes_url"
+    return 0
+  fi
+  if [ -z "$previous_tag" ]; then
+    say 'previous release baseline unavailable (new or unmanaged installation)'
+    say "release notes: $notes_url"
+    return 0
+  fi
+  compare_url="https://github.com/$repo/compare/$previous_tag...$tag"
+  say "changes: $previous_tag -> $tag (including skipped builds)"
+  say "full comparison: $compare_url"
+  say "target release notes: $notes_url"
+  if ! command -v jq >/dev/null 2>&1; then
+    say 'changelog summary unavailable without jq; use the comparison link above'
+    return 0
+  fi
+  # jq encodes URL path data; none of the returned text is evaluated as code.
+  previous_ref=$(printf '%s' "$previous_tag" | jq -sRr @uri) || return 0
+  target_ref=$(printf '%s' "$tag" | jq -sRr @uri) || return 0
+  compare_api="https://api.github.com/repos/$repo/compare/$previous_ref...$target_ref?per_page=100"
+  if ! changes=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+    -H 'Accept: application/vnd.github+json' \
+    "$compare_api"); then
+    say 'changelog summary unavailable; installation succeeded; use the links above'
+    return 0
+  fi
+  if ! last_page=$(printf '%s' "$changes" | jq -er '
+    if (.commits | type) != "array" or (.total_commits | type) != "number" or
+       .total_commits < 0 or (.total_commits | floor) != .total_commits or
+       (.status != "ahead" and .status != "identical" and .status != "behind" and .status != "diverged") then
+      error("invalid comparison")
+    elif .status == "ahead" then ([1, ((.total_commits + 99) / 100 | floor)] | max)
+    else 1 end' 2>/dev/null); then
+    say 'changelog summary unavailable; installation succeeded; use the links above'
+    return 0
+  fi
+  total_commits=$(printf '%s' "$changes" | jq -r .total_commits)
+  if [ "$last_page" -gt 1 ]; then
+    if ! changes=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+      -H 'Accept: application/vnd.github+json' "$compare_api&page=$last_page"); then
+      say 'newest changelog summary unavailable; installation succeeded; use the links above'
+      return 0
+    fi
+  fi
+  if ! summary=$(printf '%s' "$changes" | jq -er --argjson total "$total_commits" --argjson page "$last_page" '
+    if (.commits | type) != "array" or .total_commits != $total or
+       ($page > 1 and .status != "ahead") or
+       (.status == "ahead" and (.commits | length) != ($total - 100 * ($page - 1))) then
+      error("invalid final comparison page")
+    elif .status == "identical" then "No source changes (rebuild of the same source)."
+    elif .status != "ahead" then
+      "Source histories are " + .status + "; see the full comparison for rollback or divergence."
+    else
+      (.commits[-12:] | reverse) as $recent |
+      ($recent[] | "  - " + (.commit.message | split("\n")[0])),
+      "Showing " + ($recent | length | tostring) + " of " + (.total_commits | tostring) + " commits (newest first); see the full comparison for all changes."
+    end' 2>/dev/null); then
+    say 'changelog summary unavailable; installation succeeded; use the links above'
+    return 0
+  fi
+  printf '%s\n' "$summary" | LC_ALL=C tr -d '\000-\010\013-\037\177' >&2
+}
+
 case "$(uname -s)" in
   Darwin) os=apple-darwin ;;
   Linux) os=unknown-linux-gnu ;;
@@ -136,9 +214,15 @@ else
             precision = length(digits)
             if (precision == 12) normalized = digits "00"
             source_sequence = ""
-            if (length(suffix) == 28) source_sequence = tolower(substr(suffix, 1, 16))
-            printf "%020d\t%02d\t%s\t%s:%s\t%s\n", normalized + 0, precision,
-              source_sequence, tolower(version), tolower(suffix), tag
+            if (length(suffix) == 28 || length(suffix) == 52) source_sequence = tolower(substr(suffix, 1, 16))
+            rebuild_sequence = "0000000000000000"
+            rebuild_attempt = "00000000"
+            if (length(suffix) == 52) {
+              rebuild_sequence = tolower(substr(suffix, 29, 16))
+              rebuild_attempt = tolower(substr(suffix, 45, 8))
+            }
+            printf "%020d\t%02d\t%s\t%s\t%s\t%s:%s\t%s\n", normalized + 0, precision,
+              source_sequence, rebuild_sequence, rebuild_attempt, tolower(version), tolower(suffix), tag
             next
           }
           dash = 0
@@ -152,14 +236,14 @@ else
           version = substr(rest, 1, dash - 1)
           suffix = substr(rest, dash + 1)
           if (valid_version(version) && length(suffix) == 12 && is_hex(suffix)) {
-            printf "%020d\t%02d\t%s\t%s:%s\t%s\n", 0, 0, "",
+            printf "%020d\t%02d\t%s\t%s\t%s\t%s:%s\t%s\n", 0, 0, "", "", "",
               tolower(version), tolower(suffix), tag
           }
         }
       ' |
-      LC_ALL=C sort -t '	' -k1,1n -k2,2n -k3,3 -k4,4 |
+      LC_ALL=C sort -t '	' -k1,1n -k2,2n -k3,3 -k4,4 -k5,5 -k6,6 |
       tail -n 1 |
-      cut -f5-
+      cut -f7-
   )
   [ -n "$tag" ] || die "no $tag_prefix* release found in $repo"
 fi
@@ -273,5 +357,6 @@ case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) say "note: $bin_dir is not on your PATH; add it or run $wrapper directly" ;;
 esac
+show_update_notes || say 'changelog unavailable; installation succeeded'
 say 'run: codex-shake'
 say 'update: codex-shake-update'

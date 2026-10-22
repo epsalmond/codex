@@ -1909,7 +1909,8 @@ fn session_header_shows_shake_branding() {
         PathBuf::from("project"),
         "0.154.0",
     )
-    .with_feature_version(Some(crate::fork_update::SHAKE_FEATURE_VERSION));
+    .with_feature_version(Some(crate::fork_update::SHAKE_FEATURE_VERSION))
+    .with_build_revision(Some("1234.2"));
 
     let lines = cell.display_lines(/*width*/ 80);
     let shake = lines[1]
@@ -1929,7 +1930,8 @@ fn session_header_shows_shake_branding_in_narrow_width() {
         PathBuf::from("project"),
         "0.154.0",
     )
-    .with_feature_version(Some(crate::fork_update::SHAKE_FEATURE_VERSION));
+    .with_feature_version(Some(crate::fork_update::SHAKE_FEATURE_VERSION))
+    .with_build_revision(Some("1234.2"));
 
     insta::assert_snapshot!(render_lines(&cell.display_lines(/*width*/ 44)).join("\n"));
 }

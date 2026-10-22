@@ -29,12 +29,65 @@ pub(crate) const FORK_RELEASE_TAG: Option<&str> = option_env!("CODEX_FORK_RELEAS
 /// upstream base and release build.
 pub(crate) const SHAKE_FEATURE_VERSION: &str = "0.4.0";
 
+static CLI_BUILD_REVISION: std::sync::LazyLock<Option<String>> =
+    std::sync::LazyLock::new(|| FORK_RELEASE_TAG.map(build_revision_for_tag));
+
 static CLI_LONG_VERSION: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
     FORK_RELEASE_TAG.map(|release_tag| {
-        let source_version = env!("CARGO_PKG_VERSION");
-        format!("{source_version}\nShake feature version: {SHAKE_FEATURE_VERSION}\nRelease tag: {release_tag}")
+        format_cli_long_version(
+            env!("CARGO_PKG_VERSION"),
+            release_tag,
+            option_env!("CODEX_FORK_SOURCE_SHA"),
+        )
     })
 });
+
+/// Read only the identity embedded in this executable, never installed/current.
+fn build_revision_for_tag(tag: &str) -> String {
+    let Some((_, revision)) = tag.rsplit_once("-r") else {
+        return "legacy (see release tag)".to_string();
+    };
+    let Some((timestamp, suffix)) = revision.split_once('.') else {
+        return "legacy (see release tag)".to_string();
+    };
+    if !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return "legacy (see release tag)".to_string();
+    }
+    if suffix.len() == 52
+        && let (Ok(run), Ok(attempt)) = (
+            u64::from_str_radix(&suffix[28..44], 16),
+            u32::from_str_radix(&suffix[44..52], 16),
+        )
+    {
+        return if timestamp.len() == 12 {
+            format!("local {run}")
+        } else {
+            format!("{run}.{attempt}")
+        };
+    }
+    if suffix.len() == 28
+        && let Ok(sequence) = u64::from_str_radix(&suffix[..16], 16)
+    {
+        return format!("source {sequence} (legacy)");
+    }
+    "legacy (see release tag)".to_string()
+}
+
+fn format_cli_long_version(
+    source_version: &str,
+    release_tag: &str,
+    source_sha: Option<&str>,
+) -> String {
+    let build_revision = build_revision_for_tag(release_tag);
+    let source_sha = source_sha.unwrap_or("unknown (legacy build)");
+    format!(
+        "{source_version}\nShake feature version: {SHAKE_FEATURE_VERSION}\nCLI build: {build_revision}\nSource commit: {source_sha}\nRelease tag: {release_tag}"
+    )
+}
+
+pub(crate) fn cli_build_revision() -> Option<&'static str> {
+    CLI_BUILD_REVISION.as_deref()
+}
 
 #[cfg(any(not(debug_assertions), test))]
 #[cfg_attr(debug_assertions, allow(dead_code))]
@@ -134,6 +187,8 @@ struct ReleaseIdentity {
     normalized_counter: Option<u64>,
     counter_precision: Option<u8>,
     source_sequence: Option<u64>,
+    rebuild_sequence: Option<u64>,
+    rebuild_attempt: Option<u32>,
     tie_break: String,
 }
 
@@ -181,7 +236,7 @@ fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
             (counter_digits.to_string(), counter_digits.len() as u8)
         };
         let normalized_counter = normalized_digits.parse().ok()?;
-        let source_sequence = if suffix.len() == 28 {
+        let source_sequence = if matches!(suffix.len(), 28 | 52) {
             Some(u64::from_str_radix(&suffix[..16], 16).ok()?)
         } else {
             None
@@ -190,6 +245,16 @@ fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
             normalized_counter: Some(normalized_counter),
             counter_precision: Some(counter_precision),
             source_sequence,
+            rebuild_sequence: if suffix.len() == 52 {
+                Some(u64::from_str_radix(&suffix[28..44], 16).ok()?)
+            } else {
+                None
+            },
+            rebuild_attempt: if suffix.len() == 52 {
+                Some(u32::from_str_radix(&suffix[44..52], 16).ok()?)
+            } else {
+                None
+            },
             tie_break: format!("{version}:{suffix}").to_ascii_lowercase(),
         });
     }
@@ -207,6 +272,8 @@ fn fork_release_identity(tag: &str) -> Option<ReleaseIdentity> {
         normalized_counter: None,
         counter_precision: None,
         source_sequence: None,
+        rebuild_sequence: None,
+        rebuild_attempt: None,
         tie_break: format!("{version}:{suffix}").to_ascii_lowercase(),
     })
 }
@@ -219,6 +286,8 @@ fn compare_fork_release_tags(left: &str, right: &str) -> std::cmp::Ordering {
             .cmp(&right.normalized_counter)
             .then_with(|| left.counter_precision.cmp(&right.counter_precision))
             .then_with(|| left.source_sequence.cmp(&right.source_sequence))
+            .then_with(|| left.rebuild_sequence.cmp(&right.rebuild_sequence))
+            .then_with(|| left.rebuild_attempt.cmp(&right.rebuild_attempt))
             .then_with(|| left.tie_break.cmp(&right.tie_break)),
         (Some(_), None) => std::cmp::Ordering::Greater,
         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -246,7 +315,9 @@ pub(crate) fn newest_fork_release_tag(releases_json: &str) -> Option<String> {
 /// the same second. Generated tags use a single hexadecimal suffix containing
 /// a fixed-width ancestry sequence followed by the producer SHA; this keeps
 /// the format readable by older binaries while making same-second ordering
-/// follow source chronology. Bare SHA-suffixed tags predate numeric ordering.
+/// follow source chronology. New 52-hex suffixes append a 16-hex workflow run
+/// number (or local build counter) and 8-hex attempt. Bare SHA-suffixed tags
+/// predate numeric ordering.
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) fn fork_tag_is_newer(candidate: &str, current: &str) -> bool {
     if candidate == current {
@@ -262,6 +333,58 @@ pub(crate) fn fork_tag_is_newer(candidate: &str, current: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn build_identity_labels_ci_local_and_legacy_sources() {
+        let ci = "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa00000000000004d200000002";
+        let local = "local-features-v0.163.0-main-r202610210000.000000000000007baaaaaaaaaaaa000000000000000700000000";
+        assert_eq!(build_revision_for_tag(ci), "1234.2");
+        assert_eq!(build_revision_for_tag(local), "local 7");
+        assert_eq!(
+            build_revision_for_tag(
+                "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa"
+            ),
+            "source 123 (legacy)"
+        );
+        assert_eq!(
+            format_cli_long_version(
+                "0.163.0",
+                ci,
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            ),
+            format!(
+                "0.163.0\nShake feature version: 0.4.0\nCLI build: 1234.2\nSource commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nRelease tag: {ci}"
+            )
+        );
+    }
+
+    #[test]
+    fn rebuilds_order_after_legacy_and_by_run_then_attempt() {
+        let tag = |run, attempt| {
+            format!(
+                "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa{run:016x}{attempt:08x}"
+            )
+        };
+        let legacy = "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa";
+        assert!(fork_tag_is_newer(&tag(1234u64, 1u32), legacy));
+        assert!(fork_tag_is_newer(&tag(1234, 2), &tag(1234, 1)));
+        assert!(fork_tag_is_newer(&tag(1235, 1), &tag(1234, 2)));
+        assert!(!fork_tag_is_newer(&tag(1234, 1), &tag(1234, 2)));
+        let local = "local-features-v0.163.0-main-r202610210000.000000000000007baaaaaaaaaaaa00000000000fffff00000000";
+        assert!(fork_tag_is_newer(&tag(1234, 1), local));
+        let newer_source = "local-features-v0.163.0-main-r20261021000000.000000000000007caaaaaaaaaaaa000000000000000100000001";
+        assert!(fork_tag_is_newer(newer_source, &tag(1235, 1)));
+        // The first new-format release advances the source timestamp. Older
+        // clients also compare this timestamp before their legacy source field.
+        let migration_release = "local-features-v0.163.0-main-r20261021000001.000000000000007caaaaaaaaaaaa000000000000000100000001";
+        assert!(fork_tag_is_newer(migration_release, legacy));
+        let json = format!(
+            r#"[{{"tag_name":"{}"}},{{"tag_name":"{}"}},{{"tag_name":"{legacy}"}}]"#,
+            tag(1234, 1),
+            tag(1234, 2)
+        );
+        assert_eq!(newest_fork_release_tag(&json), Some(tag(1234, 2)));
+    }
 
     const SAMPLE_RELEASES_JSON: &str = r#"[
         {"tag_name": "local-features-v0.155.0-r202609131159.9876543", "draft": false},

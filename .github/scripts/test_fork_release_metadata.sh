@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export GITHUB_RUN_NUMBER=1234 GITHUB_RUN_ATTEMPT=1
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 metadata_script="$script_dir/fork-release-metadata.sh"
 workflow_file="$script_dir/../workflows/fork-release.yml"
+python3 "$script_dir/test_fork_build_identity.py"
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 
@@ -78,12 +80,13 @@ grep -Fxq "source_version=0.154.0" "$event_output"
 grep -Fxq "stable_lineage=rust-v2.0.0" "$event_output"
 grep -Fxq "included_upstream_main_sha=$upstream_tip" "$event_output"
 grep -Fxq 'source_kind=branch-merge' "$event_output"
+grep -Fxq 'build_attempt=1' "$event_output"
 release_tag=$(sed -n 's/^release_tag=//p' "$event_output")
 source_sequence=$(git -C "$fixture" rev-list --first-parent --count "$merge_sha")
 printf -v source_sequence_hex '%016x' "$source_sequence"
 producer_sha=$(git -C "$fixture" rev-parse --short=12 "$merge_sha")
-[[ "$release_tag" =~ ^local-features-v0\.154\.0-main-r[0-9]{14}\.[0-9a-f]{28}$ ]]
-[[ "${release_tag##*.}" == "$source_sequence_hex$producer_sha" ]]
+[[ "$release_tag" =~ ^local-features-v0\.154\.0-main-r[0-9]{14}\.[0-9a-f]{52}$ ]]
+[[ "${release_tag##*.}" == "${source_sequence_hex}${producer_sha}00000000000004d200000001" ]]
 
 dispatch_output="$fixture/dispatch-output"
 bash "$metadata_script" \
@@ -162,7 +165,7 @@ config_line=$(grep -n '^      - name: Verify release publisher configuration$' "
 validate_line=$(grep -n '^  validate:$' "$workflow_file" | cut -d: -f1)
 verify_artifacts_line=$(grep -n '^      - name: Verify artifacts and compose release body$' "$workflow_file" | cut -d: -f1)
 token_line=$(grep -n '^      - name: Create release publisher token$' "$workflow_file" | cut -d: -f1)
-publish_line=$(grep -n '^      - name: Create or update release after identity verification$' "$workflow_file" | cut -d: -f1)
+publish_line=$(grep -n '^      - name: Create immutable release after identity verification$' "$workflow_file" | cut -d: -f1)
 [[ "$metadata_line" -lt "$config_line" && "$config_line" -lt "$validate_line" ]]
 [[ "$verify_artifacts_line" -lt "$token_line" && "$token_line" -lt "$publish_line" ]]
 sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
@@ -176,7 +179,7 @@ body=$(bash "$script_dir/fork-release-notes.sh" \
 grep -Fq "**Build:** Based on upstream \`rust-v2.0.0\`; [upstream release notes](https://github.com/openai/codex/releases/tag/rust-v2.0.0); Codex \`0.154.0\`" <<< "$body"
 grep -Fq "https://github.com/epsalmond/codex/releases/tag/$sample_release_tag" <<< "$body"
 grep -Fq "https://github.com/epsalmond/codex/commit/$merge_sha" <<< "$body"
-grep -Fq "https://github.com/epsalmond/codex/blob/$merge_sha/codex-rs/docs/example.md" <<< "$body"
+grep -Fq "https://github.com/epsalmond/codex/blob/$merge_sha/RELEASE_NOTES.md" <<< "$body"
 
 # A same-name tag pointing elsewhere is rejected before any publish step.
 git -C "$fixture" tag "$release_tag" HEAD
@@ -189,6 +192,19 @@ if bash "$metadata_script" \
   --upstream-url "$upstream_remote" \
   --output "$fixture/collision-output"; then
   echo "expected derived-tag collision to fail" >&2
+  exit 1
+fi
+
+# A retry of the same source gets a distinct immutable build identity.
+GITHUB_RUN_ATTEMPT=2 bash "$metadata_script" \
+  --repo-root "$fixture" --event-name push --event-ref refs/heads/main \
+  --event-sha "$merge_sha" --event-before "$fork_tip" \
+  --upstream-url "$upstream_remote" --output "$fixture/retry-output"
+retry_tag=$(sed -n 's/^release_tag=//p' "$fixture/retry-output")
+[[ "$retry_tag" != "$release_tag" && "${retry_tag: -8}" == 00000002 ]]
+grep -Fxq 'build_revision=1234.2' "$fixture/retry-output"
+if grep -Fq -- '--clobber' "$workflow_file"; then
+  echo "published release assets must be immutable" >&2
   exit 1
 fi
 
@@ -219,7 +235,7 @@ bash "$metadata_script" \
   --upstream-url "$upstream_remote" \
   --output "$recovery_output"
 grep -Fxq "release_sha=$recovery_sha" "$recovery_output"
-grep -Fxq "release_tag=$recovery_tag" "$recovery_output"
+[[ "$(sed -n 's/^release_tag=//p' "$recovery_output")" =~ ^local-features-v0\.154\.0-main-r[0-9]{14}\.[0-9a-f]{52}$ ]]
 grep -Fxq "stable_lineage=rust-v2.0.0" "$recovery_output"
 grep -Fxq "included_upstream_main_sha=$upstream_tip" "$recovery_output"
 grep -Fxq 'source_kind=tag' "$recovery_output"
@@ -283,7 +299,7 @@ bash "$metadata_script" \
 grep -Fxq "source_version=2.0.0" "$unstamped_output"
 grep -Fxq "stable_lineage=rust-v2.0.0" "$unstamped_output"
 unstamped_tag=$(sed -n 's/^release_tag=//p' "$unstamped_output")
-[[ "$unstamped_tag" =~ ^local-features-v2\.0\.0-main-r[0-9]{14}\.[0-9a-f]{28}$ ]]
+[[ "$unstamped_tag" =~ ^local-features-v2\.0\.0-main-r[0-9]{14}\.[0-9a-f]{52}$ ]]
 
 # shake-local-install.sh fetches upstream tags outside refs/tags and names
 # that namespace; the default still reads refs/tags/fork-release-upstream.

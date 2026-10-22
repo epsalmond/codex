@@ -187,6 +187,7 @@ pub(crate) fn new_session_info(
         CODEX_CLI_VERSION,
     )
     .with_feature_version(crate::fork_update::shake_feature_version())
+    .with_build_revision(crate::fork_update::cli_build_revision())
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,
         &session.permission_profile,
@@ -275,6 +276,7 @@ pub(crate) fn has_yolo_permissions(
 pub(crate) struct SessionHeaderHistoryCell {
     version: &'static str,
     feature_version: Option<&'static str>,
+    build_revision: Option<&'static str>,
     model: String,
     reasoning_effort: Option<ReasoningEffortConfig>,
     directory: PathBuf,
@@ -291,6 +293,7 @@ impl SessionHeaderHistoryCell {
         Self {
             version,
             feature_version: None,
+            build_revision: None,
             model,
             reasoning_effort,
             directory,
@@ -308,6 +311,11 @@ impl SessionHeaderHistoryCell {
     /// keeping this setter lets rendering tests cover the fork-specific title.
     pub(crate) fn with_feature_version(mut self, feature_version: Option<&'static str>) -> Self {
         self.feature_version = feature_version;
+        self
+    }
+
+    pub(crate) fn with_build_revision(mut self, build_revision: Option<&'static str>) -> Self {
+        self.build_revision = build_revision;
         self
     }
 
@@ -357,15 +365,18 @@ impl HistoryCell for SessionHeaderHistoryCell {
                 format!(" v{feature_version}").dim(),
             ]);
         }
-        let mut lines = vec![
-            Line::default(),
-            Line::from(title),
-            Line::from(vec![
-                "     ".into(),
-                self.format_directory(Some(width.saturating_sub(/*rhs*/ 5)))
-                    .dim(),
-            ]),
-        ];
+        let mut lines = vec![Line::default(), Line::from(title)];
+        if let Some(build_revision) = self.build_revision {
+            lines.push(Line::from(vec![
+                "     CLI build: ".dim(),
+                build_revision.to_string().dim(),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            "     ".into(),
+            self.format_directory(Some(width.saturating_sub(/*rhs*/ 5)))
+                .dim(),
+        ]));
         if self.yolo_mode {
             lines.push(Line::from(vec![
                 "  permissions: ".dim(),
@@ -388,6 +399,11 @@ impl HistoryCell for SessionHeaderHistoryCell {
                 )
             })
             .unwrap_or_else(|| format!("OpenAI Codex (v{})", self.version));
+        let title = if let Some(build_revision) = self.build_revision {
+            format!("{title} · CLI build {build_revision}")
+        } else {
+            title
+        };
         let mut lines = vec![
             Line::from(title),
             Line::from(format!(
