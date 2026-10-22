@@ -145,6 +145,17 @@ class BuildIdentityTest(unittest.TestCase):
         self.assertFalse(install_root.exists())
 
     def test_local_counter_default_survives_install_root_changes(self):
+        # State selection is independent of the host's compiler/libcap setup.
+        # Supply dry-run preflight tools without requiring installed packages.
+        tools = self.root / "bin"
+        tools.mkdir()
+        for name, contents in {
+            "rustc": "#!/bin/sh\nprintf 'host: x86_64-unknown-linux-gnu\\n'\n",
+            "pkg-config": "#!/bin/sh\nexit 0\n",
+        }.items():
+            tool = tools / name
+            tool.write_text(contents)
+            tool.chmod(0o755)
         state = self.root / "state"
         counter = state / "codex-shake/local-build-counter"
         counter.parent.mkdir(parents=True)
@@ -154,6 +165,7 @@ class BuildIdentityTest(unittest.TestCase):
             install_root = self.root / name
             env = {
                 **os.environ,
+                "PATH": str(tools) + os.pathsep + os.environ["PATH"],
                 "XDG_STATE_HOME": str(state),
                 "CODEX_SHAKE_HOME": str(install_root),
             }
