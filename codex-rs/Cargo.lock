@@ -2129,6 +2129,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-rollout",
  "codex-sandboxing",
+ "codex-semantic-navigation",
  "codex-shell-command",
  "codex-skills",
  "codex-skills-extension",
@@ -2971,6 +2972,7 @@ dependencies = [
  "codex-image-generation-extension",
  "codex-install-context",
  "codex-login",
+ "codex-lsp-protocol",
  "codex-mcp",
  "codex-mcp-extension",
  "codex-memories-read",
@@ -2987,6 +2989,7 @@ dependencies = [
  "codex-rollout",
  "codex-rollout-trace",
  "codex-sandboxing",
+ "codex-semantic-navigation",
  "codex-shell-command",
  "codex-skills",
  "codex-skills-extension",
@@ -2995,6 +2998,7 @@ dependencies = [
  "codex-test-binary-support",
  "codex-thread-store",
  "codex-tools",
+ "codex-uds",
  "codex-utils-absolute-path",
  "codex-utils-audio",
  "codex-utils-cache",
@@ -3895,6 +3899,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-lsp-protocol"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "codex-mcp"
 version = "0.0.0"
 dependencies = [
@@ -4153,6 +4167,28 @@ dependencies = [
  "tracelogging",
  "windows-sys 0.61.2",
  "wxc_common",
+]
+
+[[package]]
+name = "codex-nas-lsp"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "codex-lsp-protocol",
+ "codex-uds",
+ "libc",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
+ "url",
+ "walkdir",
 ]
 
 [[package]]
@@ -4573,6 +4609,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-semantic-navigation"
+version = "0.0.0"
+dependencies = [
+ "codex-exec-server",
+ "codex-extension-api",
+ "codex-file-system",
+ "codex-lsp-protocol",
+ "codex-protocol",
+ "codex-tools",
+ "codex-uds",
+ "codex-utils-path-uri",
+ "libc",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "codex-shell-command"
 version = "0.0.0"
 dependencies = [
@@ -4789,6 +4846,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio-util",
  "urlencoding",
 ]
 

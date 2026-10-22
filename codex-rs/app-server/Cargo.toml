@@ -84,6 +84,7 @@ codex-models-manager = { workspace = true }
 codex-prompts = { workspace = true }
 codex-protocol = { workspace = true }
 codex-queue-extension = { workspace = true }
+codex-semantic-navigation = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-app-server-transport = { workspace = true }
 codex-feedback = { workspace = true }

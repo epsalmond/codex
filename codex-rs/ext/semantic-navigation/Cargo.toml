@@ -1,0 +1,31 @@
+[package]
+name = "codex-semantic-navigation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-extension-api = { workspace = true }
+codex-file-system = { workspace = true }
+codex-lsp-protocol = { workspace = true }
+codex-protocol = { workspace = true }
+codex-tools = { workspace = true }
+codex-uds = { workspace = true }
+codex-utils-path-uri = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "sync", "time"] }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+codex-exec-server = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
