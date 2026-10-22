@@ -108,15 +108,19 @@ impl<'call> ToolExecutor<ToolCall<'call>> for NavigationTool {
             description: "Find saved-file definitions or references (including the declaration). Paths are relative to the registered workspace; line and column are 1-based Unicode characters. Returns locations and an explicit availability/freshness status.".to_owned(),
             strict: true,
             parameters: codex_tools::parse_tool_input_schema(&json!({
-                "type":"object", "properties":{
-                    "operation":{"type":"string","enum":["definition","references"]},
-                    "path":{"type":"string"},
-                    "line":{"type":"integer","minimum":1},
-                    "column":{"type":"integer","minimum":1}
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["definition", "references"]},
+                    "path": {"type": "string"},
+                    "line": {"type": "integer", "minimum": 1},
+                    "column": {"type": "integer", "minimum": 1},
                 },
-                "required":["operation","path","line","column"], "additionalProperties":false
-            })).expect("static navigation schema"),
-            output_schema: None, defer_loading: None,
+                "required": ["operation", "path", "line", "column"],
+                "additionalProperties": false,
+            }))
+            .expect("static navigation schema"),
+            output_schema: None,
+            defer_loading: None,
         })
     }
 

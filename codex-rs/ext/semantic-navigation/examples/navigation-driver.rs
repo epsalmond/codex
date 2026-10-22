@@ -80,12 +80,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let call = ToolCall {
-        turn_id: "driver".to_owned(), call_id: "driver".to_owned(), tool_name: tool.tool_name(),
-        model: "acceptance".to_owned(), codex_turn_metadata: None,
-        truncation_policy: TruncationPolicy::Bytes(request.budget), source, cancellation_token,
-        conversation_history: Default::default(), turn_item_emitter: Arc::new(codex_tools::NoopTurnItemEmitter),
-        environments: vec![ToolEnvironment::new("driver".to_owned(), PathUri::from_host_native_path(request.cwd)?, &accessor).with_local_navigation_access(access)],
-        payload: ToolPayload::Function { arguments: json!({ "operation":request.operation, "path":request.path, "line":request.position.line, "column":request.position.column }).to_string() },
+        turn_id: "driver".to_owned(),
+        call_id: "driver".to_owned(),
+        tool_name: tool.tool_name(),
+        model: "acceptance".to_owned(),
+        codex_turn_metadata: None,
+        truncation_policy: TruncationPolicy::Bytes(request.budget),
+        source,
+        cancellation_token,
+        conversation_history: Default::default(),
+        turn_item_emitter: Arc::new(codex_tools::NoopTurnItemEmitter),
+        environments: vec![
+            ToolEnvironment::new(
+                "driver".to_owned(),
+                PathUri::from_host_native_path(request.cwd)?,
+                &accessor,
+            )
+            .with_local_navigation_access(access),
+        ],
+        payload: ToolPayload::Function {
+            arguments: json!({
+                "operation": request.operation,
+                "path": request.path,
+                "line": request.position.line,
+                "column": request.position.column,
+            })
+            .to_string(),
+        },
     };
     let effective_response_budget = call.response_byte_budget(MAX_RESPONSE_BYTES);
     let payload = call.payload.clone();
@@ -101,7 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let content = response.body.to_text().unwrap_or_default();
     println!(
         "{}",
-        json!({ "content":content, "serialized_bytes":content.len(), "elapsed_ms":elapsed_ms, "effective_response_budget":effective_response_budget, "output":output.code_mode_result(&payload) })
+        json!({
+            "content": content,
+            "serialized_bytes": content.len(),
+            "elapsed_ms": elapsed_ms,
+            "effective_response_budget": effective_response_budget,
+            "output": output.code_mode_result(&payload),
+        })
     );
     Ok(())
 }
