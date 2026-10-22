@@ -139,6 +139,10 @@ mod navigation_authority_tests {
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::models::PermissionProfileSnapshot;
+    use codex_protocol::permissions::FileSystemAccessMode;
+    use codex_protocol::permissions::FileSystemPath;
+    use codex_protocol::permissions::FileSystemSandboxEntry;
+    use codex_protocol::permissions::FileSystemSpecialPath;
     use codex_utils_path_uri::PathUri;
 
     #[tokio::test]
@@ -171,12 +175,34 @@ mod navigation_authority_tests {
             false,
         );
         let after = step.extension_environments();
-        assert_eq!(after[0].2, LocalNavigationAccess::Allowed);
+        // A literal path grant does not imply unrestricted read authority.
+        assert_eq!(after[0].2, LocalNavigationAccess::Restricted);
         assert_ne!(before[0].1.cache_key(), after[0].1.cache_key());
+        turn.record_granted_permissions(
+            &environment_id,
+            AdditionalPermissionProfile {
+                file_system: Some(FileSystemPermissions {
+                    entries: vec![FileSystemSandboxEntry::new(
+                        FileSystemPath::Special {
+                            value: FileSystemSpecialPath::Root,
+                        },
+                        FileSystemAccessMode::Read,
+                    )],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            false,
+        );
+        let unrestricted = step.extension_environments();
+        assert_eq!(unrestricted[0].2, LocalNavigationAccess::Allowed);
+        assert_ne!(after[0].1.cache_key(), unrestricted[0].1.cache_key());
         // A callback already holding the old accessor retains the old verdict and grants.
         assert_eq!(before[0].2, LocalNavigationAccess::Restricted);
+        assert_eq!(after[0].2, LocalNavigationAccess::Restricted);
         drop(before);
         drop(after);
+        drop(unrestricted);
         step.environments
             .environments
             .push(TurnEnvironmentState::Ready(environment.clone()));
