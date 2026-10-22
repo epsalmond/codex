@@ -401,6 +401,10 @@ adapter test are sufficient; avoid rebuilding half of core for a fixture loop.
 Position encoding, cancellation, lifecycle and readiness limitations follow the
 [Microsoft LSP 3.17 specification](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md)
 and its [initialize contract](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/general/initialize.md).
+[Pyrefly 1.2.0 workspace initialization](https://github.com/facebook/pyrefly/blob/1.2.0/pyrefly/lib/lsp/non_wasm/server.rs#L2677-L2688)
+requires the workspace-folder capability before it accepts supplied folders;
+its [module identity fallback](https://github.com/facebook/pyrefly/blob/1.2.0/pyrefly/lib/lsp/non_wasm/workspace.rs#L148-L159)
+explains why merely opening every source did not fix declaration references.
 Prior Arcade Pyrefly qualification is context only; it is not this acceptance run.
 No MCP, remote execution, restricted-read broker access, raw JSON-RPC tool,
 workspace edits, rename, commands, diagnostics injection, tagged reads, hashline
