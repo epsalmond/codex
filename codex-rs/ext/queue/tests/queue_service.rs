@@ -26,13 +26,17 @@ use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::TurnStartAdmission;
+use codex_features::AgentPolling;
+use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput;
 use codex_queue_extension::QueueServiceError;
@@ -43,10 +47,12 @@ use codex_thread_store::LocalQueueStore;
 use codex_thread_store::QueueStore;
 use codex_thread_store::ThreadStoreError;
 use codex_utils_absolute_path::test_support::PathExt;
+use core_test_support::ThreadIdle;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::responses::start_mock_server;
 use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::start_routed_streaming_sse_server;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
@@ -134,6 +140,7 @@ fn registered_queue_extensions() -> (
     let installed = Arc::new(InstalledQueue::default());
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(installed.clone());
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     (installed, Arc::new(extensions.build()))
 }
 
@@ -589,6 +596,339 @@ async fn wait_for_queue_empty(
     })
     .await
     .context("queued item was not consumed")?
+}
+
+#[tokio::test]
+async fn enqueue_wakes_waiting_parent_before_its_child_finishes() -> anyhow::Result<()> {
+    queued_input_wakes_waiting_parent(/*external*/ false, /*reject_admission*/ false).await
+}
+
+#[tokio::test]
+async fn external_queue_wakes_waiting_parent_before_its_child_finishes() -> anyhow::Result<()> {
+    queued_input_wakes_waiting_parent(/*external*/ true, /*reject_admission*/ false).await
+}
+
+#[tokio::test]
+async fn rejected_admission_preserves_waiting_parent_and_queued_input() -> anyhow::Result<()> {
+    queued_input_wakes_waiting_parent(/*external*/ false, /*reject_admission*/ true).await
+}
+
+/// Hold a real delegated turn open: no child report or fabricated idle event can wake the parent.
+async fn queued_input_wakes_waiting_parent(
+    external: bool,
+    reject_admission: bool,
+) -> anyhow::Result<()> {
+    const QUEUED: &str = "user follow-up while worker runs";
+    const REPORT: &str = "worker finished after queued input";
+    let (release_child, child_gate) = oneshot::channel();
+    let (release_queued_turn, queued_turn_gate) = oneshot::channel();
+    let chunk = |events| StreamingSseChunk {
+        gate: None,
+        body: responses::sse(events),
+    };
+    let completed = |id| vec![chunk(vec![responses::ev_completed(id)])];
+    let root_thread = Arc::new(OnceLock::<String>::new());
+    let route_root = Arc::clone(&root_thread);
+    let (server, _completions) = start_routed_streaming_sse_server(
+        vec![
+            vec![
+                vec![chunk(vec![
+                    responses::ev_function_call_with_namespace(
+                        "queue-worker-spawn",
+                        "collaboration",
+                        "spawn_agent",
+                        &serde_json::json!({
+                            "task_name": "worker",
+                            "message": "finish the delegated task",
+                            "fork_turns": "none",
+                        })
+                        .to_string(),
+                    ),
+                    responses::ev_completed("root-spawn"),
+                ])],
+                completed("root-waiting"),
+                vec![StreamingSseChunk {
+                    gate: Some(queued_turn_gate),
+                    body: responses::sse_completed("queued-user-turn"),
+                }],
+                completed("root-integrated-report"),
+            ],
+            vec![vec![
+                chunk(vec![responses::ev_response_created("child-running")]),
+                StreamingSseChunk {
+                    gate: Some(child_gate),
+                    body: responses::sse(vec![
+                        responses::ev_assistant_message("child-answer", REPORT),
+                        responses::ev_completed("child-running"),
+                    ]),
+                },
+            ]],
+        ],
+        move |_, body| {
+            let body: serde_json::Value = serde_json::from_slice(body).ok()?;
+            let thread_id = body["client_metadata"]["thread_id"].as_str()?;
+            let root = route_root.get_or_init(|| thread_id.to_owned());
+            Some(usize::from(thread_id != root))
+        },
+    )
+    .await;
+    let installed = Arc::new(InstalledQueue::default());
+    let admission = Arc::new(TestAdmission(AtomicBool::new(false)));
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(installed.clone());
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    extensions.turn_start_admission(admission.clone());
+    let test = test_codex()
+        .with_model("koffing")
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| {
+            config.features.enable(Feature::Collab).unwrap();
+            config.features.enable(Feature::MultiAgentV2).unwrap();
+            config.multi_agent_v2.agent_polling = AgentPolling::Disabled;
+            config.include_environment_context = false;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_streaming_server(&server)
+        .await?;
+    let thread_id = test.session_configured.thread_id;
+    let queue = install_registered_queue(&test, installed.as_ref())?;
+    let mut created = test.thread_manager.subscribe_thread_created();
+    test.submit_text_turn("delegate the worker task").await?;
+    ThreadIdle::wait(&test.codex).await;
+    assert_eq!(AgentStatus::Waiting, test.codex.agent_status().await);
+    let child_id = created.recv().await?;
+    let child = test.thread_manager.get_thread(child_id).await?;
+    tokio::time::timeout(Duration::from_secs(10), server.wait_for_request_count(3)).await?;
+    assert_eq!(AgentStatus::Running, child.agent_status().await);
+    let work = test
+        .codex
+        .work_observation()
+        .context("work observer missing")?;
+    assert_eq!(2, work.snapshot().running_finite_work);
+    admission.0.store(reject_admission, Ordering::SeqCst);
+
+    if external {
+        let external_runtime = StateRuntime::init(
+            test.codex
+                .state_db()
+                .context("state runtime missing")?
+                .sqlite()
+                .clone(),
+            "test-provider".to_string(),
+        )
+        .await?;
+        let external_queue = QueuedItemService::new(
+            Arc::new(LocalQueueStore::new(external_runtime)),
+            Weak::new(),
+            Arc::new(NoopExtensionEventSink),
+        );
+        let mut watcher_extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::new();
+        codex_queue_extension::install(&mut watcher_extensions, Arc::clone(&queue));
+        // Let the watcher establish its data version before a separate SQLite connection writes.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let item = external_queue
+            .enqueue(thread_id, user_input(QUEUED))
+            .await?;
+        assert_eq!(vec![item], queue.list(thread_id).await?);
+        advance_queue_poll().await;
+    } else {
+        queue.enqueue(thread_id, user_input(QUEUED)).await?;
+    }
+
+    if reject_admission {
+        assert_eq!(1, queue.list(thread_id).await?.len());
+        assert_eq!(AgentStatus::Waiting, test.codex.agent_status().await);
+        assert_eq!(AgentStatus::Running, child.agent_status().await);
+        assert_eq!(3, server.requests().await.len());
+        // The refused wake emitted an idle notification without starting a turn.
+        ThreadIdle::wait(&test.codex).await;
+        admission.0.store(false, Ordering::SeqCst);
+        test.codex
+            .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+            .await;
+    }
+
+    let wake = tokio::time::timeout(Duration::from_secs(3), server.wait_for_request_count(4)).await;
+    if wake.is_err() {
+        // Establish that the pre-fix failure is suppression, not a consumed/lost user message.
+        assert_eq!(1, queue.list(thread_id).await?.len());
+        assert_eq!(AgentStatus::Waiting, test.codex.agent_status().await);
+        assert_eq!(AgentStatus::Running, child.agent_status().await);
+    }
+    wake.context("queued user input did not wake the idle waiting parent")?;
+    // Consume the explicit wake's idle callback while the admitted turn is still gated.
+    // Its later natural idle notification must prove active-turn cleanup independently.
+    ThreadIdle::wait(&test.codex).await;
+    wait_for_queue_empty(&queue, thread_id).await?;
+    assert_eq!(AgentStatus::Running, test.codex.agent_status().await);
+    release_queued_turn
+        .send(())
+        .expect("queued turn should still be gated");
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    })
+    .await;
+    ThreadIdle::wait(&test.codex).await;
+    assert_eq!(AgentStatus::Waiting, test.codex.agent_status().await);
+    assert_eq!(AgentStatus::Running, child.agent_status().await);
+    assert_eq!(2, work.snapshot().running_finite_work);
+
+    release_child.send(()).expect("child should still be gated");
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    })
+    .await;
+    ThreadIdle::wait(&test.codex).await;
+    assert_eq!(0, work.snapshot().running_finite_work);
+    let root = root_thread.get().context("root request missing")?;
+    let requests = server
+        .requests()
+        .await
+        .into_iter()
+        .map(|body| serde_json::from_slice::<serde_json::Value>(&body))
+        .collect::<Result<Vec<_>, _>>()?;
+    let roots = requests
+        .iter()
+        .filter(|body| body["client_metadata"]["thread_id"].as_str() == Some(root))
+        .collect::<Vec<_>>();
+    assert_eq!(4, roots.len(), "one queued turn and one child-report turn");
+    let input = roots[2]["input"]
+        .as_array()
+        .context("queue input missing")?;
+    assert_eq!(
+        1,
+        input
+            .iter()
+            .filter(|item| {
+                item["role"] == "user" && item["content"].to_string().contains(QUEUED)
+            })
+            .count()
+    );
+    assert!(!roots[2].to_string().contains(REPORT));
+    let reports = roots[3]["input"]
+        .as_array()
+        .context("report input missing")?;
+    assert_eq!(
+        1,
+        reports
+            .iter()
+            .filter(|item| {
+                item["type"] == "agent_message" && item["content"].to_string().contains(REPORT)
+            })
+            .count(),
+        "original child's report must arrive exactly once"
+    );
+    let child_request = requests
+        .iter()
+        .find(|body| {
+            body["client_metadata"]["thread_id"].as_str() == Some(child_id.to_string().as_str())
+        })
+        .context("child request missing")?;
+    let original_root_turn = roots[0]["client_metadata"]["root_turn_id"].as_str();
+    assert!(original_root_turn.is_some());
+    responses::assert_root_turn(child_request, original_root_turn)?;
+    assert_ne!(
+        roots[0]["client_metadata"]["root_turn_id"],
+        roots[2]["client_metadata"]["root_turn_id"]
+    );
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_queue_wakes_preserve_active_and_interrupted_turns() -> anyhow::Result<()> {
+    let (_release, response_gate) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![vec![
+        StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![responses::ev_response_created("active-turn")]),
+        },
+        StreamingSseChunk {
+            gate: Some(response_gate),
+            body: responses::sse_completed("active-turn"),
+        },
+    ]])
+    .await;
+    let (installed, extensions) = registered_queue_extensions();
+    let test = test_codex()
+        .with_extensions(extensions)
+        .build_with_streaming_server(&server)
+        .await?;
+    let thread_id = test.session_configured.thread_id;
+    let queue = install_registered_queue(&test, installed.as_ref())?;
+    let external_runtime = StateRuntime::init(
+        test.codex
+            .state_db()
+            .context("state runtime missing")?
+            .sqlite()
+            .clone(),
+        "test-provider".to_string(),
+    )
+    .await?;
+    let external_queue = QueuedItemService::new(
+        Arc::new(LocalQueueStore::new(external_runtime)),
+        Weak::new(),
+        Arc::new(NoopExtensionEventSink),
+    );
+    let mut watcher_extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::new();
+    codex_queue_extension::install(&mut watcher_extensions, Arc::clone(&queue));
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::new(user_input("active turn")))
+        .await?;
+    tokio::time::timeout(Duration::from_secs(10), server.wait_for_request_count(1)).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let first = queue
+        .enqueue(thread_id, user_input("direct while active"))
+        .await?;
+    let second = external_queue
+        .enqueue(thread_id, user_input("external while active"))
+        .await?;
+    advance_queue_poll().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(AgentStatus::Running, test.codex.agent_status().await);
+    assert_eq!(
+        vec![first.clone(), second.clone()],
+        queue.list(thread_id).await?
+    );
+    assert_eq!(1, server.requests().await.len());
+
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnAborted(_)).then_some(())
+    })
+    .await;
+    // Active interruption clears its slot without the normal completion-idle callback.
+    // A submission barrier proves the interrupt handler has finished all cleanup.
+    test.codex
+        .submit(Op::RealtimeConversationListVoices)
+        .await?;
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_)).then_some(())
+    })
+    .await;
+    assert_eq!(AgentStatus::Interrupted, test.codex.agent_status().await);
+    let third = queue
+        .enqueue(thread_id, user_input("direct while interrupted"))
+        .await?;
+    let fourth = external_queue
+        .enqueue(thread_id, user_input("external while interrupted"))
+        .await?;
+    advance_queue_poll().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(AgentStatus::Interrupted, test.codex.agent_status().await);
+    assert_eq!(
+        vec![first, second, third, fourth],
+        queue.list(thread_id).await?
+    );
+    assert_eq!(
+        1,
+        server.requests().await.len(),
+        "automatic wakes must not restart an interrupted turn"
+    );
+    server.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test]
