@@ -27,11 +27,24 @@ pub struct WorkspaceConfig {
     pub source_extensions: Vec<String>,
     pub exclude_dirs: Vec<String>,
     pub readiness: Readiness,
+    pub typescript_tsserver: Option<PathBuf>,
+    pub rustc: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Readiness {
     PyreflyLazyBlocking,
+    TypeScriptProject,
+    RustAnalyzerProject,
+}
+impl Readiness {
+    fn name(self) -> &'static str {
+        match self {
+            Self::PyreflyLazyBlocking => "pyrefly_lazy_blocking",
+            Self::TypeScriptProject => "typescript_project",
+            Self::RustAnalyzerProject => "rust_analyzer_project",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -108,14 +121,23 @@ struct WorkspaceWire {
     language: String,
     executable: PathBuf,
     args: Vec<String>,
-    #[serde(default = "default_extensions")]
-    source_extensions: Vec<String>,
+    #[serde(default)]
+    source_extensions: Option<Vec<String>>,
     #[serde(default = "default_excludes")]
     exclude_dirs: Vec<String>,
     readiness: String,
+    #[serde(default)]
+    typescript_tsserver: Option<PathBuf>,
+    #[serde(default)]
+    rustc: Option<PathBuf>,
 }
-fn default_extensions() -> Vec<String> {
-    vec!["py".into(), "pyi".into()]
+fn extensions(language: &str) -> &[&str] {
+    match language {
+        "python" => &["py", "pyi"],
+        "typescript" => &["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"],
+        "rust" => &["rs"],
+        _ => &[],
+    }
 }
 fn default_excludes() -> Vec<String> {
     [".git", "target", "node_modules", ".venv"]
@@ -164,18 +186,29 @@ impl BrokerConfig {
             .workspaces
             .into_iter()
             .map(|w| {
-                if w.readiness != "pyrefly_lazy_blocking" {
-                    return Err(invalid("unsupported readiness"));
-                }
+                let readiness = match w.readiness.as_str() {
+                    "pyrefly_lazy_blocking" => Readiness::PyreflyLazyBlocking,
+                    "typescript_project" => Readiness::TypeScriptProject,
+                    "rust_analyzer_project" => Readiness::RustAnalyzerProject,
+                    _ => return Err(invalid("unsupported readiness")),
+                };
+                let source_extensions = w.source_extensions.unwrap_or_else(|| {
+                    extensions(&w.language)
+                        .iter()
+                        .map(|ext| (*ext).to_owned())
+                        .collect()
+                });
                 Ok(Arc::new(WorkspaceConfig {
                     id: w.id,
                     root: w.root,
                     language: w.language,
                     executable: w.executable,
                     args: w.args,
-                    source_extensions: w.source_extensions,
+                    source_extensions,
                     exclude_dirs: w.exclude_dirs,
-                    readiness: Readiness::PyreflyLazyBlocking,
+                    readiness,
+                    typescript_tsserver: w.typescript_tsserver,
+                    rustc: w.rustc,
                 }))
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -227,31 +260,48 @@ impl BrokerConfig {
             {
                 return Err(invalid("overlapping workspace roots"));
             }
-            if w.language != "python"
-                || w.args != ["lsp", "--indexing-mode", "lazy-blocking", "--threads", "1"]
-            {
+            let profile_valid = match (w.language.as_str(), w.readiness) {
+                ("python", Readiness::PyreflyLazyBlocking) => {
+                    w.args == ["lsp", "--indexing-mode", "lazy-blocking", "--threads", "1"]
+                        && w.typescript_tsserver.is_none()
+                        && w.rustc.is_none()
+                }
+                ("typescript", Readiness::TypeScriptProject) => {
+                    if w.args.len() != 2 || w.args[1] != "--stdio" || w.rustc.is_some() {
+                        false
+                    } else if let Some(tsserver) = &w.typescript_tsserver {
+                        validate_runtime_path(Path::new(&w.args[0]), false)?;
+                        validate_runtime_path(tsserver, false)?;
+                        !Path::new(&w.args[0]).starts_with(&w.root)
+                            && !tsserver.starts_with(&w.root)
+                            && tsserver
+                                .file_name()
+                                .is_some_and(|name| name == "tsserver.js")
+                    } else {
+                        false
+                    }
+                }
+                ("rust", Readiness::RustAnalyzerProject) => {
+                    if let Some(rustc) = &w.rustc {
+                        validate_runtime_path(rustc, true)?;
+                        w.args.is_empty()
+                            && w.typescript_tsserver.is_none()
+                            && !rustc.starts_with(&w.root)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if !profile_valid {
                 return Err(invalid("unsupported language or server arguments"));
             }
             // A missing registered binary is an explicit query-time availability result.
-            if !w.executable.is_absolute() {
-                return Err(invalid("executable must be absolute"));
-            }
-            if let Ok(meta) = fs::metadata(&w.executable) {
-                if !meta.is_file()
-                    || meta.mode() & 0o111 == 0
-                    || fs::canonicalize(&w.executable)? != w.executable
-                {
-                    return Err(invalid("executable must be canonical executable file"));
-                }
-            } else if w
-                .executable
-                .components()
-                .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
-            {
-                return Err(invalid("invalid executable path"));
-            }
+            validate_runtime_path(&w.executable, true)?;
             if w.source_extensions.is_empty()
-                || w.source_extensions.iter().any(|s| s != "py" && s != "pyi")
+                || w.source_extensions
+                    .iter()
+                    .any(|s| !extensions(&w.language).contains(&s.as_str()))
                 || w.exclude_dirs.len() > 64
                 || w.exclude_dirs.iter().any(|s| {
                     s.is_empty() || s == ".." || s == "." || s.contains('/') || s.len() > 128
@@ -261,6 +311,27 @@ impl BrokerConfig {
             }
         }
         Ok(())
+    }
+}
+fn validate_runtime_path(path: &Path, executable: bool) -> io::Result<()> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err(invalid("runtime path must be absolute without traversal"));
+    }
+    match fs::metadata(path) {
+        Ok(meta)
+            if !meta.is_file()
+                || (executable && meta.mode() & 0o111 == 0)
+                || fs::canonicalize(path)? != path =>
+        {
+            Err(invalid("runtime path must be canonical regular file"))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 fn validate_registry_file(file: &File) -> io::Result<()> {
@@ -305,7 +376,9 @@ impl WorkspaceConfig {
                 &self.args,
                 &self.source_extensions,
                 &self.exclude_dirs,
-                "pyrefly_lazy_blocking",
+                self.readiness.name(),
+                &self.typescript_tsserver,
+                &self.rustc,
             ))
             .expect("configuration serializes"),
         );
@@ -412,6 +485,8 @@ readiness = "pyrefly_lazy_blocking"
             source_extensions: vec!["py".into()],
             exclude_dirs: Vec::new(),
             readiness: Readiness::PyreflyLazyBlocking,
+            typescript_tsserver: None,
+            rustc: None,
         };
         assert!(workspace.resolve_source("a.py").is_ok());
         for path in ["/etc/passwd", "../a.py", "alias.py", "a.txt", ""] {
@@ -430,6 +505,8 @@ readiness = "pyrefly_lazy_blocking"
             source_extensions: vec!["py".into()],
             exclude_dirs: Vec::new(),
             readiness: Readiness::PyreflyLazyBlocking,
+            typescript_tsserver: None,
+            rustc: None,
         };
         let identity = RootIdentity::read(root.path()).expect("identity");
         let mut changed = workspace.clone();

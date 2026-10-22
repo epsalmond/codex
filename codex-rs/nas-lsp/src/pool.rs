@@ -406,6 +406,8 @@ while True:
             source_extensions: vec!["py".into()],
             exclude_dirs: vec![],
             readiness: Readiness::PyreflyLazyBlocking,
+            typescript_tsserver: None,
+            rustc: None,
         })
     }
     fn query(root: &Path, operation: Operation) -> WorkerQuery {

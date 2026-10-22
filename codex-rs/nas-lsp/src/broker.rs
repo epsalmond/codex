@@ -416,6 +416,8 @@ mod tests {
                 source_extensions: vec!["py".into()],
                 exclude_dirs: vec![".git".into()],
                 readiness: Readiness::PyreflyLazyBlocking,
+                typescript_tsserver: None,
+                rustc: None,
             })],
             limits: PoolLimits::default(),
         };
