@@ -117,17 +117,16 @@ impl Broker {
             Ok(permit) => permit,
             Err(_) => return status(Status::Busy, "query_limit"),
         };
-        let cwd = match fs::canonicalize(&request.cwd) {
-            Ok(cwd) if cwd == request.cwd && cwd.is_dir() => cwd,
-            _ => return status(Status::InvalidRequest, "invalid_cwd"),
-        };
+        if !request.cwd.is_absolute() {
+            return status(Status::InvalidRequest, "invalid_cwd");
+        }
         let Some((index, workspace)) = self
             .inner
             .config
             .workspaces
             .iter()
             .enumerate()
-            .find(|(_, w)| cwd.starts_with(&w.root))
+            .find(|(_, w)| request.cwd.starts_with(&w.root))
         else {
             return status(Status::Unavailable, "unregistered_workspace");
         };
@@ -138,6 +137,10 @@ impl Broker {
                 .invalidate(&workspace.key(&self.inner.identities[index]))
                 .await;
             return status(Status::Unavailable, "workspace_identity_changed");
+        }
+        match fs::canonicalize(&request.cwd) {
+            Ok(cwd) if cwd == request.cwd && cwd.is_dir() => {}
+            _ => return status(Status::InvalidRequest, "invalid_cwd"),
         }
         let path = match workspace.resolve_source(&request.path) {
             Ok(path) => path,
@@ -453,6 +456,15 @@ mod tests {
         );
         let moved = root.path().with_extension("moved");
         fs::rename(root.path(), &moved).expect("move root");
+        assert_eq!(
+            broker
+                .query(request(&config), CancellationToken::new())
+                .await
+                .reason
+                .as_deref(),
+            Some("workspace_identity_changed"),
+            "a missing registered root invalidates its slot before cwd resolution"
+        );
         fs::create_dir(root.path()).expect("replace root");
         assert_eq!(
             broker
