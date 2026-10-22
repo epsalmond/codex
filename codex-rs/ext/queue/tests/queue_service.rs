@@ -682,8 +682,8 @@ async fn queued_input_wakes_waiting_parent(
         .with_model("koffing")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config.features.enable(Feature::Collab).unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
+            assert!(config.features.enable(Feature::Collab).is_ok());
+            assert!(config.features.enable(Feature::MultiAgentV2).is_ok());
             config.multi_agent_v2.agent_polling = AgentPolling::Disabled;
             config.include_environment_context = false;
             config.model_provider.request_max_retries = Some(0);
@@ -763,9 +763,10 @@ async fn queued_input_wakes_waiting_parent(
     ThreadIdle::wait(&test.codex).await;
     wait_for_queue_empty(&queue, thread_id).await?;
     assert_eq!(AgentStatus::Running, test.codex.agent_status().await);
-    release_queued_turn
-        .send(())
-        .expect("queued turn should still be gated");
+    assert!(
+        release_queued_turn.send(()).is_ok(),
+        "queued turn should still be gated"
+    );
     wait_for_event_match(test.codex.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_)).then_some(())
     })
@@ -775,7 +776,10 @@ async fn queued_input_wakes_waiting_parent(
     assert_eq!(AgentStatus::Running, child.agent_status().await);
     assert_eq!(2, work.snapshot().running_finite_work);
 
-    release_child.send(()).expect("child should still be gated");
+    assert!(
+        release_child.send(()).is_ok(),
+        "child should still be gated"
+    );
     wait_for_event_match(test.codex.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_)).then_some(())
     })
