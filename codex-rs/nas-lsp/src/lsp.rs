@@ -1,17 +1,28 @@
 //! Bounded stdio LSP session. See `.codex/design/nas-lsp-broker.md`.
 
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 use std::collections::HashSet;
 use std::io;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::io::AsyncBufRead;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 use tokio_util::sync::CancellationToken;
 
 const MAX_HEADER: usize = 8192;

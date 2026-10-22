@@ -1,16 +1,22 @@
 //! Bounded saved-file generations. See `.codex/design/nas-lsp-broker.md`.
 
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::fs::{self, File};
+use std::fs::File;
+use std::fs::{self};
 use std::io::Read;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
