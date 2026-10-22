@@ -277,17 +277,26 @@ impl Worker {
                 json!({"textDocument":{"uri":uri},"position":position,"context":{"includeDeclaration":true}}),
             ),
         };
-        // Lazy-blocking is the configured Pyrefly readiness barrier; initialize
-        // by itself cannot turn an empty, incompletely indexed result into Ok.
+        // The profile's barrier and permit qualify this request. Initialize by
+        // itself cannot turn an incompletely indexed empty answer into Ok.
         let result = session
             .request(method, params.take(), deadline, cancel.clone())
             .await;
         let result = match result {
             Ok(result) if session.permit_valid(permit, adapter.requires_server_status()) => result,
+            Ok(_) if !session.healthy() => return unavailable("lsp_io"),
+            Ok(_)
+                if adapter.requires_server_status()
+                    && session
+                        .server_status()
+                        .is_some_and(|status| !status.healthy) =>
+            {
+                return unavailable("server_health");
+            }
             Ok(_) => return status(Status::Indexing, "indexing"),
             Err(error) => return request_error(error),
         };
-        if let Err(error) = adapter.validate_inputs(deadline, cancel).await {
+        if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
             return request_error(error);
         }
         let root = self.config.root.clone();
@@ -307,7 +316,12 @@ impl Worker {
         )
         .await
         {
-            Ok(generation) if generation == self.generation => response,
+            Ok(generation) if generation == self.generation => {
+                match adapter.validate_inputs(deadline, cancel).await {
+                    Ok(()) => response,
+                    Err(error) => request_error(error),
+                }
+            }
             Ok(_) => status(Status::Stale, "files_changed_during_query"),
             Err(error) => inventory_error(error),
         }
