@@ -2,6 +2,8 @@
 //!
 //! See the [design contract](../../../.codex/design/nas-lsp-broker.md).
 
+#![cfg(target_os = "linux")]
+
 pub mod broker;
 pub mod config;
 pub mod freshness;
