@@ -59,6 +59,17 @@ fi
 # opposite of what we want for a fork build that must always sort newer than
 # the bare upstream version).
 deb_version="${source_version}+r${counter}.${sha}"
+if ((${#sha} == 52)); then
+  # dpkg compares digit runs numerically but letters lexically. Raw hexadecimal
+  # rebuild counters therefore misorder 9 -> a; encode numeric components only.
+  numeric_identity=$(python3 - "$sha" <<'PYTHON'
+import sys
+identity = sys.argv[1]
+print(".".join(str(int(identity[start:end], 16)) for start, end in ((0, 16), (28, 44), (44, 52))))
+PYTHON
+)
+  deb_version="${source_version}+r${counter}.${numeric_identity}"
+fi
 
 mkdir -p "$out_dir"
 out_dir=$(cd -- "$out_dir" && pwd)

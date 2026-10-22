@@ -5,4 +5,5 @@ expression: "render_lines(&cell.display_lines(44)).join(\"\\n\")"
 ---
 
   >_ OpenAI Codex (v0.154.0) · Shake v0.4.0
+     CLI build: 1234.2
      project

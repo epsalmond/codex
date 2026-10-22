@@ -13,7 +13,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/shake-local-install.sh [options] <commit-ish>
 
-Builds <commit-ish> in a fresh detached worktree, packages it like a fork
+Builds <commit-ish> in a detached worktree, packages it like a fork
 release, unpacks it into $CODEX_SHAKE_HOME/<tag>, and points `current` at it.
 Earlier release directories are kept for rollback.
 
@@ -23,7 +23,7 @@ Options:
                      when the workspace is at 0.0.0 (as fork-release does).
   --repo DIR         Repository to build from. Default: this checkout.
   --work-dir DIR     Build worktree and outputs.
-                     Default: ${XDG_CACHE_HOME:-~/.cache}/codex-shake-local/<sha12>
+                     Default: ${XDG_CACHE_HOME:-~/.cache}/codex-shake-local/<source-sha12>
   --keep-worktree    Keep the build worktree and its target/ after success.
   --no-activate      Install under $CODEX_SHAKE_HOME/<tag> but leave `current`.
   --host SSH_HOST    Copy this script to SSH_HOST and run it there.
@@ -35,6 +35,10 @@ Options:
 
 Environment:
   CODEX_SHAKE_HOME     Install root (default ~/.local/share/codex-shake).
+  CODEX_SHAKE_BUILD_COUNTER
+                       Persistent per-host local build counter (default
+                       $XDG_STATE_HOME/codex-shake/local-build-counter, or
+                       ~/.local/state/codex-shake/local-build-counter).
   CODEX_SHAKE_BIN_DIR  Directory holding the codex-shake wrappers (default
                        ~/.local/bin); only checked, never rewritten.
   RUSTY_V8_ARCHIVE, RUSTY_V8_SRC_BINDING_PATH
@@ -109,7 +113,7 @@ if [[ -n "$host" ]]; then
   [[ -t 0 && -t 1 ]] && ssh_tty=(-t)
   rdir=$(ssh "$host" 'mktemp -d "${TMPDIR:-/tmp}/shake-local-install.XXXXXX"')
   [[ -n "$rdir" ]] || die "could not create a temporary directory on $host"
-  if ! tar -C "$script_root" -cf - scripts/shake-local-install.sh .github/scripts/fork-release-build.sh |
+  if ! tar -C "$script_root" -cf - scripts/shake-local-install.sh .github/scripts/fork-release-build.sh .github/scripts/fork-build-identity.py |
     ssh "$host" "tar -C $(quote "$rdir") -xf -"; then
     ssh "$host" "rm -rf $(quote "$rdir")" 2>/dev/null || true
     die "could not copy this script to $host:$rdir"
@@ -173,12 +177,6 @@ else
 fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version $version is not X.Y.Z"
 
-# Commit time to the minute (UTC). The installer and updater pad a 12-digit
-# counter with 00 seconds and rank it below a 14-digit CI counter for the
-# same time, so the official release for this commit still counts as newer.
-commit_minute=$(TZ=UTC git -C "$repo" show -s --date=format-local:%Y%m%d%H%M --format=%cd "$sha")
-tag="local-features-v${version}-main-r${commit_minute}.${sha12}"
-
 target=$(rustc -vV | awk '$1 == "host:" { print $2 }')
 case "$target" in
   *-apple-darwin) split_debuginfo=packed ;;
@@ -200,6 +198,15 @@ for candidate in python3 python3.14 python3.13 python3.12 python3.11 /opt/homebr
 done
 [[ -n "$python" ]] || die "need Python 3.11 or newer (python3, python3.1x, or /opt/homebrew/bin/python3.1x)"
 
+# Allocate once per invocation, under a process lock. A dry run only previews
+# the next counter; it never reserves an identity or touches the install root.
+identity_args=(--repo-root "$repo" --sha "$sha" --version "$version" --kind local
+  --counter-file "${CODEX_SHAKE_BUILD_COUNTER:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-shake/local-build-counter}")
+$dry_run && identity_args+=(--preview)
+identity=$("$python" "$script_root/.github/scripts/fork-build-identity.py" allocate "${identity_args[@]}")
+tag=$(sed -n 's/^release_tag=//p' <<< "$identity")
+build_revision=$(sed -n 's/^build_revision=//p' <<< "$identity")
+
 # ---- bwrap (Linux packages bundle codex-resources/bwrap) ---------------------
 bwrap_mode=none bwrap_note=""
 current_tag=$(readlink "$home_dir/current" 2>/dev/null || true)
@@ -215,10 +222,12 @@ if [[ "$target" == *linux* ]]; then
     current_bwrap="$home_dir/current/codex-resources/bwrap"
     [[ -n "$current_tag" && -x "$current_bwrap" ]] ||
       die "cannot build bwrap ($reason) and the current release ($home_dir/current) has no codex-resources/bwrap to reuse; install pkg-config and libcap-dev (sudo apt-get install pkg-config libcap-dev)"
-    # The tag ends in the commit's 12-character SHA (CI tags prefix it with
-    # a 16-digit sequence).
+    # Structured tags put the SHA after the 16-hex source sequence; newer
+    # tags also append the rebuild number and attempt.
     current_hex=${current_tag##*.}
-    if ((${#current_hex} > 12)); then
+    if ((${#current_hex} == 28 || ${#current_hex} == 52)); then
+      current_hex=${current_hex:16:12}
+    elif ((${#current_hex} > 12)); then
       current_hex=${current_hex: -12}
     fi
     current_sha=$(git -C "$repo" rev-parse --verify --quiet "$current_hex^{commit}") ||
@@ -247,12 +256,13 @@ cat <<EOF
 commit        $sha
 version       $version ($version_source)
 tag           $tag
+CLI build     $build_revision
 target        $target (split-debuginfo=$split_debuginfo)
 python        $python
 repository    $repo
 worktree      $wt$($keep_worktree && printf ' (kept)' || printf ' (removed on success)')
 outputs       $out
-cargo         CODEX_FORK_RELEASE_TAG=$tag cargo build --release ${bins[*]}
+cargo         CODEX_FORK_RELEASE_TAG=$tag CODEX_FORK_SOURCE_SHA=$sha cargo build --release ${bins[*]}
 bwrap         ${bwrap_note:-not packaged on $target}
 install       $install_dir$install_note
 current       ${current_tag:-<none>}$($activate && printf ' -> %s' "$tag" || printf ' (unchanged; --no-activate)')
@@ -260,12 +270,66 @@ EOF
 if $dry_run; then
   exit 0
 fi
+[[ ! -e "$install_dir" ]] ||
+  die "allocated install path $install_dir already exists; preserve the persistent build counter"
 
 # ---- build -------------------------------------------------------------------
+mkdir -p "$work_dir"
+# Keep the lock on the shell's open file description through packaging and
+# cleanup. fcntl is available on both Linux and macOS; flock(1) is not.
+exec 9>"$work_dir/.lock"
+"$python" - "$work_dir" <<'PY' || exit 1
+import fcntl
+import sys
+
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(f"another build owns {sys.argv[1]}; wait for it or pass --work-dir")
+PY
 mkdir -p "$out"
 if [[ -e "$wt" ]]; then
   [[ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" == "$sha" ]] ||
     die "$wt exists but is not a worktree at $sha12; remove it or pass --work-dir"
+  # A failed Cargo build leaves only the version stamp and its lockfile
+  # updates. Accept those generated changes, but never claim the source SHA
+  # for a cached worktree containing additional source or dependency edits.
+  "$python" - "$wt" "$sha" "$version" <<'PY' ||
+import pathlib
+import subprocess
+import sys
+import tomllib
+
+root, sha, version = sys.argv[1:]
+
+def git(*args):
+    return subprocess.check_output(["git", "-C", root, *args], text=True)
+
+changed = set(git("diff", "--name-only", sha).splitlines())
+allowed = {"codex-rs/Cargo.toml", "codex-rs/Cargo.lock"}
+if changed - allowed or git("ls-files", "--others", "--exclude-standard").strip():
+    sys.exit("cached build worktree contains source edits")
+for name in changed:
+    original = tomllib.loads(git("show", f"{sha}:{name}"))
+    actual = tomllib.loads((pathlib.Path(root) / name).read_text())
+    if name.endswith("Cargo.toml"):
+        if original["workspace"]["package"]["version"] == "0.0.0":
+            original["workspace"]["package"]["version"] = version
+    else:
+        local_names = {
+            package["name"] for package in original["package"]
+            if package["version"] == "0.0.0" and "source" not in package
+        }
+        replacements = {f"{name} 0.0.0": f"{name} {version}" for name in local_names}
+        for package in original["package"]:
+            if package["name"] in local_names and "source" not in package:
+                package["version"] = version
+            if "dependencies" in package:
+                package["dependencies"] = [replacements.get(dep, dep) for dep in package["dependencies"]]
+    if actual != original:
+        sys.exit(f"cached build worktree has unexpected changes in {name}")
+PY
+    die "preserving cached worktree $wt; use --work-dir for a separate build"
   say "resuming in existing worktree $wt"
 else
   # A worktree deleted by hand is still registered until pruned.
@@ -285,12 +349,11 @@ on_exit() {
 trap on_exit EXIT
 log="$out/build.log"
 say "logging to $log"
-exec > >(tee -a "$log") 2>&1
+exec > >(tee -a "$log" 9>&-) 2>&1
 
-# Workflow-shared steps come from the commit's helper, or from this checkout
-# for commits that predate it.
-helper="$wt/.github/scripts/fork-release-build.sh"
-[[ -f "$helper" ]] || helper=$own_helper
+# Allocation, verification, and packaging all use this invocation's helper,
+# matching CI's helper checkout from the workflow commit.
+helper=$own_helper
 
 # The release steps call `python3`; point it at the interpreter chosen above.
 mkdir -p "$out/python-shim"
@@ -319,11 +382,16 @@ export CARGO_TARGET_DIR="$wt/codex-rs/target"
 export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO="$split_debuginfo"
 [[ "$bwrap_mode" == copy ]] && export CODEX_SKIP_BWRAP_BUILD=1
 say "cargo build --release ${bins[*]}"
-CODEX_FORK_RELEASE_TAG="$tag" cargo build --release "${bins[@]}"
-bash "$helper" verify-version "$version" "$tag"
+# Build tools may start persistent compiler-cache daemons; do not let those
+# descendants retain the work-directory lock after this script exits.
+CODEX_FORK_RELEASE_TAG="$tag" CODEX_FORK_SOURCE_SHA="$sha" cargo build --release "${bins[@]}" 9>&-
+bash "$helper" verify-version "$version" "$tag" "$sha"
 
 # ---- package -----------------------------------------------------------------
-# A resumed run finds the binaries already stripped; keep the first symbols.
+# Every invocation has a fresh identity. Never reuse a package from a previous
+# invocation, including when --work-dir reuses the source/build directory.
+rm -rf "$out/codex-symbols-$target.tar.gz" "$out/codex-$target.tar.gz" \
+  "$out/codex-package-$target" "$out/runner-tmp"
 if [[ ! -s "$out/codex-symbols-$target.tar.gz" ]]; then
   mkdir -p "$out/runner-tmp"
   RUNNER_TEMP="$out/runner-tmp" bash "$wt/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \

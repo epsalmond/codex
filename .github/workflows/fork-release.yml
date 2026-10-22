@@ -54,6 +54,8 @@ jobs:
       release_sha: ${{ steps.metadata.outputs.release_sha }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       source_version: ${{ steps.metadata.outputs.source_version }}
+      build_revision: ${{ steps.metadata.outputs.build_revision }}
+      build_attempt: ${{ steps.metadata.outputs.build_attempt }}
       stable_lineage: ${{ steps.metadata.outputs.stable_lineage }}
       included_upstream_main_sha: ${{ steps.metadata.outputs.included_upstream_main_sha }}
       source_kind: ${{ steps.metadata.outputs.source_kind }}
@@ -83,6 +85,8 @@ jobs:
             --repo-root "$GITHUB_WORKSPACE" \
             --event-name "$EVENT_NAME" \
             --event-ref "$EVENT_REF" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --event-sha "$EVENT_SHA" \
             --event-before "$EVENT_BEFORE" \
             --upstream-url "$UPSTREAM_URL" \
@@ -162,6 +166,17 @@ jobs:
           sparse-checkout: .github/scripts
           persist-credentials: false
 
+      - name: Verify prepared workflow attempt
+        shell: bash
+        env:
+          PREPARED_ATTEMPT: ${{ needs.prepare.outputs.build_attempt }}
+        run: |
+          set -euo pipefail
+          if [[ "$PREPARED_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "::error::Use Re-run all jobs so both target binaries share this attempt's immutable identity" >&2
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -235,6 +250,7 @@ jobs:
         shell: bash
         env:
           CODEX_FORK_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          CODEX_FORK_SOURCE_SHA: ${{ needs.prepare.outputs.release_sha }}
           CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
         run: |
           set -euo pipefail
@@ -253,7 +269,7 @@ jobs:
         run: |
           set -euo pipefail
           bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-build.sh" verify-version \
-            "$SOURCE_VERSION" "$RELEASE_TAG"
+            "$SOURCE_VERSION" "$RELEASE_TAG" "${{ needs.prepare.outputs.release_sha }}"
 
       # Archives the debug symbols as codex-symbols-<target>.tar.gz (attached
       # to the release) and strips the binaries in place, so the tarball, the
@@ -335,6 +351,17 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
+      - name: Verify prepared workflow attempt
+        shell: bash
+        env:
+          PREPARED_ATTEMPT: ${{ needs.prepare.outputs.build_attempt }}
+        run: |
+          set -euo pipefail
+          if [[ "$PREPARED_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "::error::Use Re-run all jobs so both target binaries share this attempt's immutable identity" >&2
+            exit 1
+          fi
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-*
@@ -361,6 +388,7 @@ jobs:
       - name: Verify artifacts and compose release body
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           FORK_REPO: ${{ github.repository }}
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
@@ -395,11 +423,19 @@ jobs:
             sha256sum -c SHA256SUMS
           )
 
+          previous_tag=''
+          if gh api --paginate --slurp "repos/$FORK_REPO/releases?per_page=100" > published-releases.json; then
+            previous_tag=$(python3 .github/scripts/fork-release-baseline.py \
+              "$GITHUB_WORKSPACE" "$RELEASE_SHA" "$RELEASE_TAG" < published-releases.json) || \
+              echo '::warning::Published release baseline unavailable; showing recent source history'
+          else
+            echo '::warning::Published releases unavailable; showing recent source history'
+          fi
           bash .github/scripts/fork-release-notes.sh \
             "$GITHUB_WORKSPACE" "$FORK_REPO" "$FORK_BRANCH" \
             "$RELEASE_SHA" "$SOURCE_VERSION" "$STABLE_LINEAGE" \
             "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version.txt)" \
-            "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" > release-body.md
+            "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" "$previous_tag" > release-body.md
 
       - name: Create release publisher token
         id: publisher-token
@@ -424,7 +460,7 @@ jobs:
             exit 1
           fi
 
-      - name: Create or update release after identity verification
+      - name: Create immutable release after identity verification
         shell: bash
         env:
           GH_TOKEN: ${{ steps.publisher-token.outputs.token }}
@@ -432,6 +468,7 @@ jobs:
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
           SOURCE_KIND: ${{ needs.prepare.outputs.source_kind }}
           DEB_NAME: ${{ steps.deb.outputs.deb_name }}
         run: |
@@ -450,7 +487,7 @@ jobs:
             dist/codex-symbols-aarch64-apple-darwin.tar.gz
             dist/SHA256SUMS
           )
-          release_title="Shake v${shake_version} (Codex ${SOURCE_VERSION})"
+          release_title="Shake v${shake_version} · build ${BUILD_REVISION} (Codex ${SOURCE_VERSION})"
           for asset in "${assets[@]}"; do
             test -s "$asset"
           done
@@ -475,7 +512,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "$SOURCE_KIND" == branch-merge && -z "$remote_tag_sha" ]]; then
+          if [[ -z "$remote_tag_sha" ]]; then
             gh api --method POST "repos/$FORK_REPO/git/refs" \
               -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_SHA" >/dev/null
             remote_tag_sha="$(resolve_remote_tag_commit)"
@@ -485,24 +522,12 @@ jobs:
             exit 1
           fi
 
-          release_json="$(gh release view "$RELEASE_TAG" -R "$FORK_REPO" \
-            --json tagName 2>/dev/null || true)"
-          if [[ -n "$release_json" ]]; then
-            release_tag_name=$(jq -r '.tagName // empty' <<< "$release_json")
-            if [[ "$release_tag_name" != "$RELEASE_TAG" ]]; then
-              echo "Existing release has unexpected tag $release_tag_name" >&2
-              exit 1
-            fi
-            gh release upload "$RELEASE_TAG" -R "$FORK_REPO" \
-              "${assets[@]}" --clobber
-            gh release edit "$RELEASE_TAG" -R "$FORK_REPO" \
-              --title "$release_title" --notes-file release-body.md --prerelease
-          else
-            gh release create "$RELEASE_TAG" -R "$FORK_REPO" \
-              --target "$RELEASE_SHA" --prerelease \
-              --title "$release_title" \
-              --notes-file release-body.md "${assets[@]}"
-          fi
+          # A workflow retry has a fresh tag. Never replace published bytes,
+          # even if a duplicate invocation somehow reaches this exact identity.
+          gh release create "$RELEASE_TAG" -R "$FORK_REPO" \
+            --target "$RELEASE_SHA" --prerelease \
+            --title "$release_title" \
+            --notes-file release-body.md "${assets[@]}"
 
       - name: Update Homebrew tap
         shell: bash

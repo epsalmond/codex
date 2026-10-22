@@ -60,4 +60,33 @@ bash "$renderer" "$short_tag" "$source_version" "$darwin_sha" "$linux_sha" \
   > "$work/short-tag.rb"
 grep -Eq '^  version "0\.154\.0\.202609140816"$' "$work/short-tag.rb"
 
+# Extended identities must upgrade deterministically for retries, fresh runs,
+# and subsequent source commits even when the source timestamp is unchanged.
+versions=()
+for identity in \
+  00000000000028b2ec76d3de4ab800000000000004d200000001 \
+  00000000000028b2ec76d3de4ab800000000000004d200000002 \
+  00000000000028b2ec76d3de4ab800000000000004d300000001 \
+  00000000000028b3ec76d3de4ab8000000000000000100000001; do
+  new_tag="local-features-v0.154.0-main-r20260914110830.${identity}"
+  new_formula="$work/${identity}.rb"
+  bash "$renderer" "$new_tag" "$source_version" "$darwin_sha" "$linux_sha" > "$new_formula"
+  version=$(sed -n 's/^  version "\([^"]*\)"$/\1/p' "$new_formula")
+  [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]]
+  versions+=("$version")
+  grep -Fxq '# Source commit (short): ec76d3de4ab8' "$new_formula"
+  if command -v ruby >/dev/null 2>&1; then
+    ruby -c "$new_formula" >/dev/null
+  fi
+done
+[[ "${versions[0]}" == 0.154.0.20260914110830.10418.1234.1 ]]
+[[ "${versions[1]}" == 0.154.0.20260914110830.10418.1234.2 ]]
+[[ "${versions[2]}" == 0.154.0.20260914110830.10418.1235.1 ]]
+[[ "${versions[3]}" == 0.154.0.20260914110830.10419.1.1 ]]
+python3 - "${versions[@]}" <<'PYTHON'
+import sys
+versions = [tuple(map(int, value.split("."))) for value in sys.argv[1:]]
+assert all(left < right for left, right in zip(versions, versions[1:])), versions
+PYTHON
+
 echo "render-brew-formula tests passed"

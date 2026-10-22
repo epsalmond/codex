@@ -42,8 +42,21 @@ fi
 
 # Never include the sha in the formula version -- Homebrew treats
 # non-numeric-dotted suffixes awkwardly for upgrade comparisons, and the tag
-# plus sha are enough provenance in a comment.
+# plus sha are enough provenance in a comment. Preserve legacy versions;
+# new identities expose their numeric source/run/attempt so Homebrew upgrades
+# retries and same-source rebuilds instead of treating them as equal versions.
 formula_version="${source_version}.${counter}"
+if ((${#sha} == 52)); then
+  identity=$sha
+  numeric_identity=$(python3 - "$identity" <<'PYTHON'
+import sys
+identity = sys.argv[1]
+print(".".join(str(int(identity[start:end], 16)) for start, end in ((0, 16), (28, 44), (44, 52))))
+PYTHON
+)
+  formula_version+=".${numeric_identity}"
+  sha=${identity:16:12}
+fi
 
 cat <<RUBY
 # frozen_string_literal: true

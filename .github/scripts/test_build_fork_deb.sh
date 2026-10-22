@@ -134,6 +134,29 @@ else
   echo "test_build_fork_deb: dpkg not available -- skipping version-ordering assertions" >&2
 fi
 
+# Exercise real package metadata across hexadecimal digit boundaries, retries,
+# and source advancement. Legacy package version assertions above stay intact.
+previous_version=""
+for identity in \
+  00000000000028b2ec76d3de4ab8000000000000000900000009 \
+  00000000000028b2ec76d3de4ab800000000000000090000000a \
+  00000000000028b2ec76d3de4ab8000000000000000a00000001 \
+  00000000000028b3ec76d3de4ab8000000000000000100000001; do
+  new_tag="local-features-v0.154.0-main-r20260914110830.${identity}"
+  FORK_DEB_SKIP_SHLIBDEPS=1 bash "$builder" \
+    "$tarball" "$new_tag" "$source_version" "$work/rebuilds" > "$work/rebuild-output"
+  new_path=$(sed -n 's/^deb_path=//p' "$work/rebuild-output")
+  new_version=$(dpkg-deb -f "$new_path" Version)
+  [[ "$new_version" =~ ^0\.154\.0\+r20260914110830\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  if [[ -n "$previous_version" ]]; then
+    dpkg --compare-versions "$new_version" gt "$previous_version"
+  else
+    [[ "$new_version" == 0.154.0+r20260914110830.10418.9.9 ]]
+    dpkg --compare-versions "$new_version" gt "$expected_deb_version"
+  fi
+  previous_version=$new_version
+done
+
 # --- second build without the estimator payload: no estimate wrapper ------
 stage2="$work/stage2"
 mkdir -p "$stage2"

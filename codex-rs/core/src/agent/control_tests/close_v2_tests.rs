@@ -124,8 +124,7 @@ async fn archive_close_cascades_and_rejects_later_followups() {
             /*parent*/ None,
         )
         .await
-        .err()
-        .expect("closed agents must not reload");
+        .expect_err("closed agents must not reload");
     assert!(reload.to_string().contains("is closed"), "{reload}");
     assert_thread_not_loaded(&harness.manager, helper.thread_id).await;
 
