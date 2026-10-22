@@ -70,9 +70,9 @@ def file_identity(path: Path) -> dict:
     }
 
 
-def git_head() -> str:
+def git_head(cwd: Path = REPO) -> str:
     return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
+        ["git", "rev-parse", "HEAD"], cwd=cwd, text=True
     ).strip()
 
 
@@ -96,12 +96,22 @@ def prepare(destination: Path, socket_path: Path | None, source_root: Path | Non
     # A different definition range makes accidental shared indexing observable.
     primary = b / "pkg/primary.py"
     primary.write_bytes(b"# Independent worktree B definition range.\n" + primary.read_bytes())
+    # Independent regression: an excluded directory can still contain imports
+    # read by the server. Its saved changes must invalidate a warm generation.
+    freshness_probe = destination / "server-input-probe"
+    (freshness_probe / "hidden").mkdir(parents=True)
+    (freshness_probe / "hidden/__init__.py").write_text("")
+    (freshness_probe / "a.py").write_text("class A:\n    value: int = 1\n")
+    (freshness_probe / "b.py").write_text('class B:\n    value: str = "b"\n')
+    (freshness_probe / "hidden/bridge.py").write_text("from a import A\ndef make() -> A:\n    return A()\n")
+    (freshness_probe / "main.py").write_text("from hidden.bridge import make\nmake().value\n")
     result = {
         "version": 1,
         "source_head": git_head(),
         "corpus_sha256": corpus.corpus_digest(),
         "root_a": str(a),
         "root_b": str(b),
+        "freshness_probe_root": str(freshness_probe),
         "shared_git_common_dir": str(common_a),
         "fixture_git_commit": git("rev-parse", "HEAD"),
         "root_b_transform": {"pkg/primary.py": {"line_offset": 1}},
@@ -110,6 +120,7 @@ def prepare(destination: Path, socket_path: Path | None, source_root: Path | Non
     }
     if source_root is not None:
         result["source_root"] = str(source_root.resolve(strict=True))
+        result["source_root_head"] = git_head(source_root)
     write_json(destination / "setup.json", result)
     return result
 
@@ -132,6 +143,8 @@ def write_registry(setup: dict, server: Path) -> Path:
              "max_connections = 32", "idle_ttl_secs = 60",
              "memory_max_bytes = 1073741824", "pids_max = 64"]
     roots = [("a", setup["root_a"]), ("b", setup["root_b"])]
+    if "freshness_probe_root" in setup:
+        roots.append(("freshness", setup["freshness_probe_root"]))
     if "source_root" in setup:
         roots.append(("source", setup["source_root"]))
     for name, root in roots:
@@ -140,7 +153,7 @@ def write_registry(setup: dict, server: Path) -> Path:
                   f"executable = {json.dumps(str(server.resolve(strict=True)))}",
                   'args = ["lsp", "--indexing-mode", "lazy-blocking", "--threads", "1"]',
                   'source_extensions = ["py", "pyi"]',
-                  'exclude_dirs = [".git", "target", "node_modules", ".venv"]',
+                  'exclude_dirs = [".git", "target", "node_modules", ".venv", "hidden"]' if name == "freshness" else 'exclude_dirs = [".git", "target", "node_modules", ".venv"]',
                   'readiness = "pyrefly_lazy_blocking"']
     with path.open("x") as output:
         path.chmod(0o600)
@@ -329,6 +342,31 @@ class Runner:
         self.check("source-smoke/files_unchanged", before == [file_identity(path) for path in (layout_path, target_path)])
         self.snapshot("source_smoke")
 
+    def excluded_import_smoke(self) -> None:
+        """An import read by Pyrefly remains freshness-relevant when excluded."""
+        root = Path(self.setup["freshness_probe_root"])
+        main = (root / "main.py").read_text()
+        bridge = root / "hidden/bridge.py"
+        position = {"line": 2, "column": main.splitlines()[1].index("value") + 1}
+        for phase, module, symbol in (("before", "a", "A"), ("after", "b", "B")):
+            bridge.write_text(f"from {module} import {symbol}\ndef make() -> {symbol}:\n    return {symbol}()\n")
+            target = next(node.target for node in ast.walk(ast.parse((root / f"{module}.py").read_text())) if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "value")
+            wanted = [(f"{module}.py", target.lineno, target.col_offset + 1, target.end_lineno, target.end_col_offset + 1)]
+            for source in ("direct", "code_mode"):
+                request = self.request(corpus.ORACLE["queries"][0], cwd=str(root), path="main.py", operation="definition", position=position, source=source)
+                label = f"excluded-import/{phase}/{source}"
+                row = self.call(request, label)
+                for attempt in range(2):
+                    if not isinstance(row["response"], dict) or row["response"].get("status") not in ("stale", "indexing"):
+                        break
+                    row = self.call(request, f"{label}/followup-{attempt + 1}")
+                response = row["response"]
+                correct = isinstance(response, dict) and response.get("status") == "ok" and not response.get("truncated") and response_keys(response) == wanted
+                row.update({"correct": correct, "expected": wanted, "saved_import": file_identity(bridge)})
+                self.check(label, correct)
+                self.check(f"latency/{label}", row["wall_latency_ms"] <= THRESHOLDS["refreshed_ms"])
+        self.snapshot("excluded_import")
+
     def run(self) -> dict:
         initial = self.snapshot("before_queries")
         if not initial["bounded"] or not initial["descendants_same_cgroup"]:
@@ -389,6 +427,8 @@ class Runner:
         self.check("bytes/baseline_ratio", ratio <= THRESHOLDS["navigation_baseline_byte_ratio"], actual=ratio)
         if "source_root" in self.setup:
             self.source_smoke()
+        if "freshness_probe_root" in self.setup:
+            self.excluded_import_smoke()
         self.snapshot("final")
         return self.result(baseline=baseline, summary={
             "warm_p95_ms": warm_p95, "base_navigation_bytes": navigation_bytes,
@@ -399,6 +439,10 @@ class Runner:
         return {
             "scope": "native example ToolExecutor + persistent broker + real Pyrefly integration; no model-session E2E claim",
             "source_head": git_head(), "setup": self.setup,
+            "harness": file_identity(Path(__file__)),
+            "build_provenance": self.setup.get("build_provenance", {
+                "note": "Build commits were not supplied; source_head identifies the harness checkout only.",
+            }),
             "driver": file_identity(self.driver), "server": file_identity(self.executable),
             "server_version": subprocess.check_output([str(self.executable), "--version"], text=True).strip(),
             "server_args": ["lsp", "--indexing-mode", "lazy-blocking", "--threads", "1"],
@@ -425,6 +469,12 @@ def exercise(args) -> tuple[dict, bool]:
     """Own one broker's complete lifecycle inside the caller's bounded scope."""
     setup = prepare(args.output_dir.resolve(), None, args.source_root)
     directory = args.output_dir.resolve()
+    setup["build_provenance"] = {
+        "note": "Operator-provided binary build commits; hashes identify the actual executed files. source_head identifies the harness checkout.",
+        "broker_build_head": args.broker_build_head,
+        "driver_build_head": args.driver_build_head,
+        "build_receipts": [file_identity(path) for path in args.build_receipt],
+    }
     registry = write_registry(setup, args.server)
     setup["registry"] = file_identity(registry)
     write_json(directory / "setup.json", setup)
@@ -547,6 +597,9 @@ def main() -> None:
     launch.add_argument("--server", type=Path, required=True)
     launch.add_argument("--output-dir", type=Path, required=True, help="must not exist")
     launch.add_argument("--source-root", type=Path, help="optional real Codex scripts root, read-only smoke")
+    launch.add_argument("--broker-build-head", help="source commit used to build the broker, independent of the harness checkout")
+    launch.add_argument("--driver-build-head", help="source commit used to build the native driver")
+    launch.add_argument("--build-receipt", type=Path, action="append", default=[], help="preserved build log or receipt to hash; repeatable")
     args = parser.parse_args()
     if args.command == "self-test":
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(HarnessTests)
