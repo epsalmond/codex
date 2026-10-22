@@ -572,18 +572,22 @@ import json,sys
 def send(value):
  data=json.dumps(dict(jsonrpc='2.0',**value)).encode()
  sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(data)).encode()+data);sys.stdout.buffer.flush()
-while True:
+def read():
  headers={}
  while True:
   line=sys.stdin.buffer.readline()
   if not line: sys.exit(0)
   if line==b'\r\n':break
   key,value=line.decode().split(':',1);headers[key.lower()]=value.strip()
- msg=json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+ return json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+while True:
+ msg=read()
  if msg.get('method')=='exit':sys.exit(0)
  if 'id' not in msg:continue
  if msg.get('method')=='cycle':
   send(dict(id=900,method='window/workDoneProgress/create',params=dict(token='index')))
+  reply=read()
+  assert reply['id']==900 and 'result' in reply and reply['result'] is None
   send(dict(method='$/progress',params=dict(token='index',value=dict(kind='begin'))))
   send(dict(method='$/progress',params=dict(token='index',value=dict(kind='end'))))
  send(dict(id=msg['id'],result=None))
