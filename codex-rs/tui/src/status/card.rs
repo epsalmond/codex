@@ -301,26 +301,6 @@ fn cli_identity_lines(
     lines
 }
 
-#[cfg(test)]
-mod build_identity_tests {
-    use super::*;
-
-    #[test]
-    fn status_preserves_exact_cli_release_tag_when_wrapped() {
-        let tag = "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa00000000000004d200000002";
-        let formatter = FieldFormatter::from_labels(["CLI build", "CLI release"]);
-        let lines = cli_identity_lines(&formatter, formatter.value_width(44), "1234.2", tag);
-        assert!(lines[0].to_string().contains("Shake 0.4.0 · 1234.2"));
-        let reconstructed = lines[1..]
-            .iter()
-            .flat_map(|line| line.spans.iter().skip(1))
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert_eq!(reconstructed, tag);
-        assert!(lines.iter().all(|line| line_width(line) <= 44));
-    }
-}
-
 impl StatusHistoryCell {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1048,5 +1028,25 @@ impl HistoryCell for Arc<StatusHistoryCell> {
         width: u16,
     ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         self.display_hyperlink_lines(width)
+    }
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    use super::*;
+
+    #[test]
+    fn status_preserves_exact_cli_release_tag_when_wrapped() {
+        let tag = "local-features-v0.163.0-main-r20261021000000.000000000000007baaaaaaaaaaaa00000000000004d200000002";
+        let formatter = FieldFormatter::from_labels(["CLI build", "CLI release"]);
+        let lines = cli_identity_lines(&formatter, formatter.value_width(44), "1234.2", tag);
+        assert!(lines[0].to_string().contains("Shake 0.4.0 · 1234.2"));
+        let reconstructed = lines[1..]
+            .iter()
+            .flat_map(|line| line.spans.iter().skip(1))
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(reconstructed, tag);
+        assert!(lines.iter().all(|line| line_width(line) <= 44));
     }
 }
