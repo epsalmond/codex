@@ -561,6 +561,254 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn installed_semantic_navigation_through_adapter_preserves_authority_and_source_budget() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use codex_extension_api::ExtensionData;
+        use codex_extension_api::ExtensionRegistryBuilder;
+        use codex_lsp_protocol::Location;
+        use codex_lsp_protocol::MAX_REQUEST_BYTES;
+        use codex_lsp_protocol::MAX_RESPONSE_BYTES;
+        use codex_lsp_protocol::NavigationRequest;
+        use codex_lsp_protocol::NavigationResponse;
+        use codex_lsp_protocol::Operation;
+        use codex_lsp_protocol::Position;
+        use codex_lsp_protocol::Status;
+        use codex_protocol::models::AdditionalPermissionProfile;
+        use codex_protocol::models::FileSystemPermissions;
+        use codex_protocol::models::PermissionProfile;
+        use codex_protocol::models::PermissionProfileSnapshot;
+        use codex_protocol::models::ResponseInputItem;
+        use codex_protocol::openai_models::TruncationPolicyConfig;
+        use codex_protocol::permissions::FileSystemAccessMode;
+        use codex_protocol::permissions::FileSystemPath;
+        use codex_protocol::permissions::FileSystemSandboxEntry;
+        use codex_protocol::permissions::FileSystemSpecialPath;
+
+        use crate::environment_selection::TurnEnvironmentState;
+
+        for (source, expected_budget) in [
+            (ToolCallSource::Direct, 480),
+            (
+                ToolCallSource::CodeMode {
+                    cell_id: "navigation-cell".into(),
+                    runtime_tool_call_id: "navigation-nested-call".into(),
+                },
+                MAX_RESPONSE_BYTES,
+            ),
+        ] {
+            let directory = codex_uds::prepare_shared_daemon_socket_directory().unwrap();
+            let socket = tempfile::Builder::new()
+                .prefix("adapter-navigation-")
+                .tempfile_in(directory)
+                .unwrap()
+                .into_temp_path();
+            std::fs::remove_file(&socket).unwrap();
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+
+            // Resolve the real installed executor, rather than a capturing substitute.
+            let mut builder = ExtensionRegistryBuilder::<()>::new();
+            codex_semantic_navigation::install_with_socket(&mut builder, socket.to_path_buf());
+            let registry = builder.build();
+            let state = ExtensionData::new("adapter-navigation");
+            let executor = registry
+                .tool_contributors()
+                .iter()
+                .flat_map(|contributor| contributor.tools(&state, &state))
+                .find(|executor| {
+                    executor.tool_name() == codex_tools::ToolName::plain("semantic_navigation")
+                })
+                .expect("installed semantic navigation executor");
+            let handler = ExtensionToolAdapter::new(executor);
+            let (session, turn) = crate::session::tests::make_session_and_context().await;
+            let session = Arc::new(session);
+            let turn = Arc::new(turn);
+            let mut step = StepContext::for_test(Arc::clone(&turn));
+            let step_mut = Arc::get_mut(&mut step).unwrap();
+            Arc::make_mut(&mut Arc::make_mut(&mut step_mut.settings).model_info)
+                .truncation_policy = TruncationPolicyConfig::bytes(400);
+            let workspace = tempfile::tempdir().unwrap();
+            let cwd = workspace.path().canonicalize().unwrap();
+            let mut environment = step_mut
+                .environments
+                .turn_environments()
+                .next()
+                .unwrap()
+                .clone();
+            environment.selection.cwd = PathUri::from_host_native_path(&cwd).unwrap();
+            environment.config_mut().permission_profile =
+                PermissionProfileSnapshot::legacy(PermissionProfile::default());
+            let environment_id = environment.selection.environment_id.clone();
+            step_mut.environments.environments =
+                vec![TurnEnvironmentState::Ready(environment.clone())];
+
+            let invocation = |step_context| ToolInvocation {
+                session: Arc::clone(&session),
+                turn: Arc::clone(&turn),
+                step_context,
+                cancellation_token: tokio_util::sync::CancellationToken::new(),
+                tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+                call_id: "adapter-navigation".into(),
+                tool_name: codex_tools::ToolName::plain("semantic_navigation"),
+                source: source.clone(),
+                payload: ToolPayload::Function {
+                    arguments:
+                        json!({"operation":"references","path":"saved.py","line":2,"column":3})
+                            .to_string(),
+                },
+            };
+            let full_read_grant = || AdditionalPermissionProfile {
+                file_system: Some(FileSystemPermissions {
+                    entries: vec![FileSystemSandboxEntry::new(
+                        FileSystemPath::Special {
+                            value: FileSystemSpecialPath::Root,
+                        },
+                        FileSystemAccessMode::Read,
+                    )],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+
+            // Real grant lookup must remain scoped to the selected executor id.
+            turn.record_granted_permissions("other-environment", full_read_grant(), false);
+            for reason in ["restricted_reads", "restricted_reads", "remote_environment"] {
+                if reason == "remote_environment" {
+                    let mut remote = environment.clone();
+                    remote.environment = Arc::new(
+                        codex_exec_server::Environment::create_for_tests(Some(
+                            "ws://127.0.0.1:8765".into(),
+                        ))
+                        .unwrap(),
+                    );
+                    Arc::get_mut(&mut step).unwrap().environments.environments =
+                        vec![TurnEnvironmentState::Ready(remote)];
+                }
+                let call = invocation(Arc::clone(&step));
+                let payload = call.payload.clone();
+                let output = crate::tools::registry::ToolExecutor::handle(&handler, call)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    output.code_mode_result(&payload),
+                    serde_json::to_value(NavigationResponse::status(Status::Unavailable, reason))
+                        .unwrap()
+                );
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                // A literal filesystem path grant still cannot authorize the broader index.
+                turn.record_granted_permissions(
+                    &environment_id,
+                    AdditionalPermissionProfile {
+                        file_system: Some(FileSystemPermissions::from_read_write_path_uris(
+                            Some(vec![PathUri::from_host_native_path("/").unwrap()]),
+                            None,
+                        )),
+                        ..Default::default()
+                    },
+                    false,
+                );
+            }
+            turn.record_granted_permissions(&environment_id, full_read_grant(), false);
+            // A failed second selection remains part of the scope, even with only one ready executor.
+            Arc::get_mut(&mut step).unwrap().environments.environments = vec![
+                TurnEnvironmentState::Ready(environment.clone()),
+                TurnEnvironmentState::Failed {
+                    selection: environment.selection.clone(),
+                    required_skills: Vec::new(),
+                    error: "test unavailable environment".into(),
+                },
+            ];
+            let call = invocation(Arc::clone(&step));
+            let payload = call.payload.clone();
+            let output = crate::tools::registry::ToolExecutor::handle(&handler, call)
+                .await
+                .unwrap();
+            assert_eq!(
+                output.code_mode_result(&payload)["reason"],
+                "restricted_reads"
+            );
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            Arc::get_mut(&mut step).unwrap().environments.environments =
+                vec![TurnEnvironmentState::Ready(environment)];
+
+            let location = |path: String| Location {
+                path,
+                start: Position { line: 2, column: 3 },
+                end: Position { line: 2, column: 4 },
+            };
+            let short = location("saved.py".into());
+            let escaped = location("a\\\"".repeat(300));
+            let oversized = location("\\\"".repeat(513));
+            let reply = serde_json::to_vec(&NavigationResponse::ok(vec![
+                short.clone(),
+                escaped.clone(),
+                oversized,
+            ]))
+            .unwrap();
+            assert!(reply.len() > 480 && reply.len() <= MAX_RESPONSE_BYTES);
+            let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+            let broker = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bytes = codex_lsp_protocol::read_frame(&mut stream, MAX_REQUEST_BYTES)
+                    .await
+                    .unwrap();
+                let request: NavigationRequest = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(request.version, 1);
+                assert_eq!(request.cwd, cwd);
+                assert_eq!(request.path, "saved.py");
+                assert_eq!(request.operation, Operation::References);
+                assert_eq!(request.position, Position { line: 2, column: 3 });
+                assert_eq!(request.max_response_bytes, expected_budget);
+                assert_eq!(request.max_results, codex_lsp_protocol::MAX_RESULTS);
+                codex_lsp_protocol::write_frame(&mut stream, &reply, MAX_RESPONSE_BYTES)
+                    .await
+                    .unwrap();
+            });
+            let call = invocation(step);
+            let payload = call.payload.clone();
+            let output = crate::tools::registry::ToolExecutor::handle(&handler, call)
+                .await
+                .unwrap();
+            let ResponseInputItem::FunctionCallOutput {
+                output: response, ..
+            } = output.to_response_item("adapter-navigation", &payload)
+            else {
+                panic!("function output")
+            };
+            let text = response.body.to_text().unwrap();
+            assert!(text.len() <= expected_budget);
+            let expected = NavigationResponse {
+                status: Status::Ok,
+                locations: if expected_budget == 480 {
+                    vec![short]
+                } else {
+                    vec![short, escaped]
+                },
+                truncated: true,
+                reason: None,
+            };
+            assert_eq!(
+                serde_json::from_str::<NavigationResponse>(&text).unwrap(),
+                expected
+            );
+            assert_eq!(
+                output.code_mode_result(&payload),
+                serde_json::to_value(expected).unwrap()
+            );
+            broker.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn image_generation_publication_preserves_extension_saved_path() {
         let (session, turn, rx) = crate::session::tests::make_session_and_context_with_rx().await;
         let expected_path = test_path_buf("/tmp/extension-claimed.png").abs();
