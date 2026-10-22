@@ -33,7 +33,7 @@ impl PartialEq for Snapshot {
 /// A concurrently replaced directory can never redirect this walk outside root.
 fn inventory(
     root: &Path,
-    excludes: &[String],
+    _excludes: &[String],
     deadline: Instant,
 ) -> Result<Snapshot, &'static str> {
     let root_file = fs::OpenOptions::new()
@@ -46,7 +46,6 @@ fn inventory(
         files: BTreeMap::new(),
         entries: 0,
         bytes: 0,
-        excludes,
         deadline,
     };
     walk.directory(&root_file, Path::new(""))?;
@@ -72,15 +71,14 @@ fn inventory(
     })
 }
 
-struct Inventory<'a> {
+struct Inventory {
     files: BTreeMap<PathBuf, Arc<Vec<u8>>>,
     entries: usize,
     bytes: usize,
-    excludes: &'a [String],
     deadline: Instant,
 }
 
-impl Inventory<'_> {
+impl Inventory {
     fn directory(&mut self, directory: &File, relative: &Path) -> Result<(), &'static str> {
         if relative.components().count() > 128 {
             return Err("workspace_too_large");
@@ -122,16 +120,9 @@ impl Inventory<'_> {
                 continue;
             }
             if metadata.is_dir() {
-                if matches!(
-                    name.to_str(),
-                    Some(".git" | "target" | "node_modules" | ".venv")
-                ) || self
-                    .excludes
-                    .iter()
-                    .any(|excluded| name == excluded.as_str())
-                {
-                    continue;
-                }
+                // Directory exclusion hints cannot omit semantic inputs: the
+                // server may import their source/configuration regardless of
+                // those hints. Only Git metadata is outside the saved generation.
                 self.directory(&file, &relative.join(&name))?;
             } else if metadata.is_file() {
                 if self.files.len() >= MAX_FILES || metadata.len() > MAX_FILE {
@@ -214,5 +205,34 @@ mod tests {
             .await,
             Err("workspace_too_large")
         ));
+    }
+
+    #[tokio::test]
+    async fn exclusion_hints_cannot_hide_mutable_semantic_inputs_or_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["hidden", "target", "node_modules", ".venv"] {
+            fs::create_dir(dir.path().join(name)).unwrap();
+            fs::write(dir.path().join(name).join("source.py"), "x = 1\n").unwrap();
+        }
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/metadata"), "initial").unwrap();
+        let scan = || {
+            snapshot(
+                dir.path().to_path_buf(),
+                vec!["hidden".into()],
+                Instant::now() + Duration::from_secs(2),
+            )
+        };
+        let first = scan().await.unwrap();
+        assert_eq!(first.files.len(), 4);
+        fs::write(dir.path().join(".git/metadata"), "changed").unwrap();
+        assert!(first == scan().await.unwrap());
+        fs::write(dir.path().join("hidden/source.py"), "x = 2\n").unwrap();
+        assert!(first != scan().await.unwrap());
+        File::create(dir.path().join("target/large"))
+            .unwrap()
+            .set_len(MAX_FILE + 1)
+            .unwrap();
+        assert!(matches!(scan().await, Err("workspace_too_large")));
     }
 }

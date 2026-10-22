@@ -10,7 +10,7 @@ use codex_lsp_protocol::Position;
 use codex_lsp_protocol::Status;
 use codex_lsp_protocol::{MAX_PATH_BYTES, MAX_RESULTS};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Instant;
@@ -20,9 +20,6 @@ pub struct Worker {
     config: Arc<WorkspaceConfig>,
     generation: Snapshot,
     session: Option<Session>,
-    opened: BTreeMap<PathBuf, i32>,
-    open_close: bool,
-    sync: bool,
 }
 
 pub struct WorkerQuery {
@@ -46,9 +43,6 @@ impl Worker {
             config,
             generation,
             session: None,
-            opened: BTreeMap::new(),
-            open_close: false,
-            sync: false,
         };
         worker.initialize(deadline, cancel).await?;
         Ok(worker)
@@ -66,11 +60,14 @@ impl Worker {
         let root_uri = url::Url::from_directory_path(&self.config.root)
             .map_err(|_| unavailable("invalid_root"))?
             .to_string();
+        // Pyrefly only uses workspaceFolders when the corresponding client
+        // capability is true. Otherwise declarations and imports can receive
+        // different inferred module identities, hiding reverse references.
         let result = session.request("initialize", json!({
             "processId": std::process::id(), "rootUri":root_uri,
-            "capabilities":{"general":{"positionEncodings":["utf-16"]},"textDocument":{"definition":{"linkSupport":true},"references":{}},"window":{"workDoneProgress":false}},
+            "capabilities":{"general":{"positionEncodings":["utf-16"]},"workspace":{"workspaceFolders":true},"textDocument":{"definition":{"linkSupport":true},"references":{}},"window":{"workDoneProgress":false}},
             "workspaceFolders":[{"uri":root_uri,"name":self.config.id}]
-        }), deadline, cancel).await;
+        }), deadline, cancel.clone()).await;
         let result = match result {
             Ok(value) => value,
             Err(error) => {
@@ -97,19 +94,70 @@ impl Worker {
             }
         }
         let sync = &capabilities["textDocumentSync"];
-        self.open_close = sync["openClose"]
+        let open_close = sync["openClose"]
             .as_bool()
             .unwrap_or_else(|| sync.as_u64().is_some_and(|kind| kind > 0));
-        self.sync = sync["change"]
+        let supported_changes = sync["change"]
             .as_u64()
             .or_else(|| sync.as_u64())
-            .is_some_and(|kind| kind > 0);
+            .is_some_and(|kind| matches!(kind, 1 | 2));
+        if !open_close || !supported_changes {
+            session.shutdown().await;
+            return Err(unavailable("unsupported_document_sync"));
+        }
         if let Err(error) = session.notify("initialized", json!({}), deadline).await {
             session.shutdown().await;
             return Err(unavailable(error));
         }
-        self.opened.clear();
+        // Lazy-blocking waits for admitted documents, but does not discover all
+        // unopened reverse dependents. Admit the entire bounded Python source
+        // inventory before any navigation request, including stubs even when
+        // the operator only permits querying .py files. A saved change creates
+        // a new session, so every admitted document is immutable for its lifetime.
+        let admitted = self.admit_documents(&session, deadline, &cancel).await;
+        if let Err(response) = admitted {
+            session.shutdown().await;
+            return Err(response);
+        }
         self.session = Some(session);
+        Ok(())
+    }
+
+    async fn admit_documents(
+        &self,
+        session: &Session,
+        deadline: Instant,
+        cancel: &CancellationToken,
+    ) -> Result<(), NavigationResponse> {
+        for (relative, bytes) in &self.generation.files {
+            if cancel.is_cancelled() {
+                return Err(status(Status::Cancelled, "cancelled"));
+            }
+            if Instant::now() >= deadline {
+                return Err(status(Status::Timeout, "deadline"));
+            }
+            if !matches!(
+                relative.extension().and_then(|ext| ext.to_str()),
+                Some("py" | "pyi")
+            ) {
+                continue;
+            }
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| unavailable("unsupported_source_encoding"))?;
+            let uri = url::Url::from_file_path(self.config.root.join(relative))
+                .map_err(|_| unavailable("invalid_path"))?;
+            session
+                .notify(
+                    "textDocument/didOpen",
+                    json!({"textDocument": {
+                        "uri": uri.as_str(), "languageId": self.config.language,
+                        "version": 1, "text": text
+                    }}),
+                    deadline,
+                )
+                .await
+                .map_err(|error| request_error(RequestError::Failure(error)))?;
+        }
         Ok(())
     }
 
@@ -190,18 +238,6 @@ impl Worker {
             Some(session) => session,
             None => return unavailable("server_unavailable"),
         };
-        let opened = self.opened.contains_key(&relative);
-        let version = self.opened.entry(relative).or_insert(0);
-        *version = version.saturating_add(1);
-        if self.open_close && !opened {
-            if let Err(error) = session.notify("textDocument/didOpen", json!({"textDocument":{"uri":uri,"languageId":self.config.language,"version":1,"text":text}}), deadline).await {
-                session.invalidate(); return unavailable(error);
-            }
-        } else if self.open_close && self.sync {
-            if let Err(error) = session.notify("textDocument/didChange", json!({"textDocument":{"uri":uri,"version":*version},"contentChanges":[{"text":text}]}), deadline).await {
-                session.invalidate(); return unavailable(error);
-            }
-        }
         let (method, mut params) = match query.operation {
             Operation::Definition => (
                 "textDocument/definition",

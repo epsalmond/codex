@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "linux")]
 
-use codex_lsp_protocol::{NavigationResponse, Operation, Position, Status};
+use codex_lsp_protocol::{Location, NavigationResponse, Operation, Position, Status};
 use codex_nas_lsp::config::{Readiness, WorkspaceConfig};
 use codex_nas_lsp::worker::{Worker, WorkerQuery};
 use std::path::{Path, PathBuf};
@@ -56,6 +56,8 @@ def send(value):
     data=json.dumps(dict(jsonrpc='2.0',**value)).encode()
     sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(data)).encode()+data);sys.stdout.buffer.flush()
 waiting=None
+opened={}
+queries=0
 while True:
     headers={}
     while True:
@@ -66,8 +68,22 @@ while True:
     msg=json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
     method=msg.get('method')
     if method=='initialize':
-        send(dict(id=msg['id'],result=dict(capabilities=dict(positionEncoding='utf-8' if mode=='encoding' else 'utf-16',definitionProvider=True,referencesProvider=True,textDocumentSync=1))))
+        assert msg['params']['capabilities']['workspace']['workspaceFolders'] is True
+        sync={'openClose':True,'change':99} if mode=='unknown-sync' else (0 if mode=='no-sync' else 1)
+        send(dict(id=msg['id'],result=dict(capabilities=dict(positionEncoding='utf-8' if mode=='encoding' else 'utf-16',definitionProvider=True,referencesProvider=True,textDocumentSync=sync))))
+    elif method=='textDocument/didOpen':
+        document=msg['params']['textDocument']
+        assert document['uri'] not in opened
+        opened[document['uri']]=document['text']
     elif method in ('textDocument/definition','textDocument/references'):
+        queries+=1
+        if mode=='admission':
+            assert sorted(uri.rsplit('/',1)[-1] for uri in opened)==['dependent.py','main.py','types.pyi']
+            assert any(text=='stub: int\n' for text in opened.values())
+        if mode=='not-ready' and queries==1:
+            send(dict(id=msg['id'],error=dict(code=-32002,message='not ready')));continue
+        if mode=='progress':
+            send(dict(method='$/progress',params=dict(token='index',value=dict(kind='begin' if queries==1 else 'end'))))
         if mode=='cancel' and waiting is None:
             waiting=msg['id']
             if len(sys.argv)>2:
@@ -101,6 +117,123 @@ fn fake(root: &Path, mode: &str) -> Arc<WorkspaceConfig> {
         PathBuf::from("/usr/bin/python3"),
         vec!["-u".into(), "-c".into(), FAKE_SERVER.into(), mode.into()],
     )
+}
+
+#[tokio::test]
+async fn all_sources_and_stubs_are_admitted_once_with_py_only_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, text) in [
+        ("main.py", "x = 1\n"),
+        ("dependent.py", "from main import x\n"),
+        ("types.pyi", "stub: int\n"),
+        ("settings.toml", "[settings]\n"),
+    ] {
+        std::fs::write(dir.path().join(path), text).unwrap();
+    }
+    let mut worker = Worker::start(
+        fake(dir.path(), "admission"),
+        deadline(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let response = query(&mut worker, dir.path(), Operation::References, 1, 1).await;
+        assert_eq!(response.status, Status::Ok, "{response:?}");
+    }
+    worker.shutdown().await;
+}
+
+#[tokio::test]
+async fn active_progress_and_server_not_ready_discard_results_until_ready() {
+    for mode in ["progress", "not-ready"] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.py"), "x = 1\n").unwrap();
+        let mut worker =
+            Worker::start(fake(dir.path(), mode), deadline(), CancellationToken::new())
+                .await
+                .unwrap();
+        let pid = worker.process_id();
+        let response = query(&mut worker, dir.path(), Operation::References, 1, 1).await;
+        assert_eq!(response.status, Status::Indexing, "{mode}: {response:?}");
+        assert!(response.locations.is_empty());
+        let ready = query(&mut worker, dir.path(), Operation::References, 1, 1).await;
+        assert_eq!(ready.status, Status::Ok, "{mode}: {ready:?}");
+        assert_eq!(
+            ready.locations,
+            vec![Location {
+                path: "main.py".into(),
+                start: Position { line: 1, column: 1 },
+                end: Position { line: 1, column: 2 },
+            }]
+        );
+        assert_eq!(worker.process_id(), pid);
+        worker.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn unsupported_sync_or_unreadable_python_inventory_cannot_claim_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.py"), "x = 1\n").unwrap();
+    for mode in ["no-sync", "unknown-sync"] {
+        let response = Worker::start(fake(dir.path(), mode), deadline(), CancellationToken::new())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(response.status, Status::Unavailable);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("unsupported_document_sync")
+        );
+    }
+    std::fs::write(dir.path().join("invalid.pyi"), [0xff]).unwrap();
+    let response = Worker::start(
+        fake(dir.path(), "admission"),
+        deadline(),
+        CancellationToken::new(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(response.status, Status::Unavailable);
+    assert_eq!(
+        response.reason.as_deref(),
+        Some("unsupported_source_encoding")
+    );
+}
+
+#[tokio::test]
+async fn executable_exiting_before_initialize_is_compact_unavailable_and_reaped() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.py"), "x = 1\n").unwrap();
+    let processes = tempfile::tempdir().unwrap();
+    let pid_file = processes.path().join("pid");
+    let cfg = config(
+        dir.path(),
+        PathBuf::from("/usr/bin/python3"),
+        vec![
+            "-c".into(),
+            "import os,sys; open(sys.argv[1], 'w').write(str(os.getpid())); sys.exit(23)".into(),
+            pid_file.to_string_lossy().into_owned(),
+        ],
+    );
+    let response = Worker::start(cfg, deadline(), CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(response.status, Status::Unavailable);
+    assert!(response.locations.is_empty());
+    assert!(serde_json::to_vec(&response).unwrap().len() < 160);
+    let pid = std::fs::read_to_string(pid_file)
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
 
 #[tokio::test]
@@ -320,4 +453,207 @@ async fn real_pyrefly_unicode_empty_warm_saved_change_and_delete() {
         }
     );
     worker.shutdown().await;
+}
+
+fn real_config(root: &Path) -> Arc<WorkspaceConfig> {
+    config(
+        root,
+        PathBuf::from("/home/eric/arcade/scripts/codeintel/toolchain/.venv/bin/pyrefly"),
+        vec![
+            "lsp".into(),
+            "--indexing-mode".into(),
+            "lazy-blocking".into(),
+            "--threads".into(),
+            "1".into(),
+        ],
+    )
+}
+
+fn copy_corpus(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_corpus(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires pinned operator Pyrefly 1.2.0"]
+async fn real_pyrefly_full_corpus_exact_references_before_any_consumer_query() {
+    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/nas-lsp");
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(corpus.join("oracle.json")).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    copy_corpus(&corpus.join("workspace"), root);
+    let location = |id: &str| {
+        let at = &oracle["locations"][id];
+        Location {
+            path: at["path"].as_str().unwrap().into(),
+            start: Position {
+                line: at["line"].as_u64().unwrap() as u32,
+                column: at["column"].as_u64().unwrap() as u32,
+            },
+            end: Position {
+                line: at["line"].as_u64().unwrap() as u32,
+                column: at["end_column"].as_u64().unwrap() as u32,
+            },
+        }
+    };
+    let mut worker = Worker::start(real_config(root), deadline(), CancellationToken::new())
+        .await
+        .unwrap();
+    let mut pid = worker.process_id();
+    let mut checks = 0;
+    for scenario in ["base", "changed", "deleted"] {
+        let stage = &oracle["scenarios"][scenario];
+        if let Some(replace) = stage["replace"].as_object() {
+            for (target, source) in replace {
+                std::fs::copy(corpus.join(source.as_str().unwrap()), root.join(target)).unwrap();
+            }
+        }
+        if let Some(delete) = stage["delete"].as_array() {
+            for target in delete {
+                std::fs::remove_file(root.join(target.as_str().unwrap())).unwrap();
+            }
+        }
+        // Reference queries run first in each generation, at both declaration
+        // and consumer. No prior query opens helper.py or transient.py.
+        let mut probes = vec![
+            serde_json::json!({"id":"cold_declaration_refs", "operation":"references", "at":"primary_definition", "symbol":"pkg.primary.render"}),
+            serde_json::json!({"id":"unopened_dependent_refs", "operation":"references", "at":"repeated_right", "symbol":"pkg.primary.render"}),
+        ];
+        probes.extend(oracle["queries"].as_array().unwrap().iter().cloned());
+        for (index, probe) in probes.into_iter().enumerate() {
+            let at = location(probe["at"].as_str().unwrap());
+            let operation = if probe["operation"] == "definition" {
+                Operation::Definition
+            } else {
+                Operation::References
+            };
+            let mut expected = vec![];
+            if let Some(symbol) = probe["symbol"].as_str() {
+                if operation == Operation::Definition {
+                    expected.push(location(
+                        oracle["symbols"][symbol]["definition"].as_str().unwrap(),
+                    ));
+                } else {
+                    expected.extend(
+                        stage["references"][symbol]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|id| location(id.as_str().unwrap())),
+                    );
+                }
+            }
+            expected.sort();
+            let started = Instant::now();
+            let response = worker
+                .query(
+                    WorkerQuery {
+                        operation,
+                        path: root.join(at.path),
+                        position: at.start,
+                        max_results: 100,
+                    },
+                    deadline(),
+                    CancellationToken::new(),
+                )
+                .await;
+            assert_eq!(
+                response.status,
+                Status::Ok,
+                "{scenario}/{probe}: {response:?}"
+            );
+            assert!(!response.truncated);
+            assert_eq!(response.locations, expected, "{scenario}/{probe}");
+            println!(
+                "real corpus {scenario}/{} exact={} elapsed={:?}",
+                probe["id"],
+                response.locations.len(),
+                started.elapsed()
+            );
+            if index == 0 && scenario != "base" {
+                assert_ne!(worker.process_id(), pid, "changed generation must restart");
+                pid = worker.process_id();
+            } else {
+                assert_eq!(
+                    worker.process_id(),
+                    pid,
+                    "unchanged generation must stay warm"
+                );
+            }
+            checks += 1;
+        }
+    }
+    assert_eq!(checks, 42);
+    worker.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires pinned operator Pyrefly 1.2.0"]
+async fn real_pyrefly_excluded_bridge_saved_change_cannot_reuse_stale_definition() {
+    for hidden in ["hidden", "target", "node_modules"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(hidden)).unwrap();
+        std::fs::write(root.join(hidden).join("__init__.py"), "").unwrap();
+        std::fs::write(root.join("a.py"), "class A:\n    value: int = 1\n").unwrap();
+        std::fs::write(root.join("b.py"), "class B:\n    value: str = 'b'\n").unwrap();
+        std::fs::write(
+            root.join(hidden).join("bridge.py"),
+            "from a import A\ndef make() -> A:\n    return A()\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("main.py"),
+            format!("from {hidden}.bridge import make\nmake().value\n"),
+        )
+        .unwrap();
+        let mut cfg = (*real_config(root)).clone();
+        cfg.exclude_dirs = vec![hidden.into()];
+        let mut worker = Worker::start(Arc::new(cfg), deadline(), CancellationToken::new())
+            .await
+            .unwrap();
+        let first = query(&mut worker, root, Operation::Definition, 2, 8).await;
+        assert_eq!(first.status, Status::Ok, "{hidden}: {first:?}");
+        assert_eq!(
+            first.locations,
+            vec![Location {
+                path: "a.py".into(),
+                start: Position { line: 2, column: 5 },
+                end: Position {
+                    line: 2,
+                    column: 10
+                }
+            }]
+        );
+        let pid = worker.process_id();
+        std::fs::write(
+            root.join(hidden).join("bridge.py"),
+            "from b import B\ndef make() -> B:\n    return B()\n",
+        )
+        .unwrap();
+        let changed = query(&mut worker, root, Operation::Definition, 2, 8).await;
+        assert_eq!(changed.status, Status::Ok, "{hidden}: {changed:?}");
+        assert_eq!(
+            changed.locations,
+            vec![Location {
+                path: "b.py".into(),
+                start: Position { line: 2, column: 5 },
+                end: Position {
+                    line: 2,
+                    column: 10
+                }
+            }]
+        );
+        assert_ne!(worker.process_id(), pid);
+        worker.shutdown().await;
+    }
 }
