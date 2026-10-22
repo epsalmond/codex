@@ -243,6 +243,13 @@ control queried file eligibility, not what gets fingerprinted. Cap traversal at
 10,000 entries, 2,000 files, 2 MiB/file and 32 MiB total bytes.
 Exceeding any bound returns Unavailable (`workspace_too_large`), never partial Ok.
 Include file contents in the hash so same-size/same-mtime rewrites are detected.
+These defaults deliberately support bounded registered Python projects. The
+whole Codex checkout is outside this inventory scope (approximately 9,585 files
+and 96 MB in the initial source survey), and the installed host has no usable
+Rust server. A registered `scripts/` subtree is a real supported Python target;
+the selected environment cwd must resolve inside that registered root. The model
+cannot choose a different root through a path argument. Larger inventories or
+additional language adapters require explicit operator policy and qualification.
 Reject file symlinks rather than following them. No broad repository indexing or
 background prompt injection is added. External mutable project dependency roots
 are unsupported; qualification uses a self-contained project and operator-pinned
