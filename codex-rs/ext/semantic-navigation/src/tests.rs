@@ -6,6 +6,7 @@ use codex_file_system::FileSystemEnvironmentAccessor;
 use codex_lsp_protocol::Location;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_tools::ToolCallSource;
+use codex_tools::ToolEnvironment;
 use codex_utils_path_uri::PathUri;
 use std::os::unix::fs::PermissionsExt;
 use tokio::io::AsyncWriteExt;
