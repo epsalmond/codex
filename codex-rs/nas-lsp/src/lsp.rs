@@ -562,6 +562,60 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn completed_indexing_cycle_invalidates_permit() {
+        let root = tempfile::tempdir().expect("root");
+        let config = crate::config::WorkspaceConfig {
+            id: "epoch".into(), root: root.path().to_owned(), language: "python".into(),
+            executable: "/usr/bin/python3".into(),
+            args: vec!["-u".into(), "-c".into(), r#"
+import json,sys
+def send(value):
+ data=json.dumps(dict(jsonrpc='2.0',**value)).encode()
+ sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(data)).encode()+data);sys.stdout.buffer.flush()
+while True:
+ headers={}
+ while True:
+  line=sys.stdin.buffer.readline()
+  if not line: sys.exit(0)
+  if line==b'\r\n':break
+  key,value=line.decode().split(':',1);headers[key.lower()]=value.strip()
+ msg=json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+ if msg.get('method')=='exit':sys.exit(0)
+ if 'id' not in msg:continue
+ if msg.get('method')=='cycle':
+  send(dict(id=900,method='window/workDoneProgress/create',params=dict(token='index')))
+  send(dict(method='$/progress',params=dict(token='index',value=dict(kind='begin'))))
+  send(dict(method='$/progress',params=dict(token='index',value=dict(kind='end'))))
+ send(dict(id=msg['id'],result=None))
+"#.into()],
+            source_extensions: vec!["py".into()], exclude_dirs: vec![],
+            readiness: crate::config::Readiness::PyreflyLazyBlocking,
+            typescript_tsserver: None, rustc: None,
+        };
+        let mut session = Session::spawn(&config, Value::Null).expect("spawn");
+        let permit = session.navigation_permit(false).expect("initial idle");
+        session
+            .request(
+                "cycle",
+                Value::Null,
+                Instant::now() + Duration::from_secs(2),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("cycle");
+        assert!(!session.indexing(), "progress ended before response");
+        assert!(
+            !session.permit_valid(permit, false),
+            "the completed cycle must still invalidate the response"
+        );
+        assert!(
+            session.navigation_permit(false).is_ok(),
+            "later requests can use the surviving idle session"
+        );
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn framing_is_bounded_before_allocation() {
         for bad in [
             b"Content-Length: 2097153\r\n\r\n".to_vec(),

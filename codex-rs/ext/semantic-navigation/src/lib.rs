@@ -105,7 +105,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for NavigationTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.to_owned(),
-            description: "Find saved-file definitions or references (including the declaration). Paths are relative to the registered workspace; line and column are 1-based Unicode characters. Returns locations and an explicit availability/freshness status.".to_owned(),
+            description: "Find saved-file definitions or references (including the declaration). Paths are relative to the registered workspace; line and column are 1-based Unicode characters. Returns locations and an explicit availability/freshness status. If unavailable, continue with bounded search and file reads.".to_owned(),
             strict: true,
             parameters: codex_tools::parse_tool_input_schema(&json!({
                 "type": "object",

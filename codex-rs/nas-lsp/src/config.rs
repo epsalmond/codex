@@ -298,6 +298,9 @@ impl BrokerConfig {
             }
             // A missing registered binary is an explicit query-time availability result.
             validate_runtime_path(&w.executable, true)?;
+            if w.language != "python" && w.executable.starts_with(&w.root) {
+                return Err(invalid("language runtime must be outside workspace"));
+            }
             if w.source_extensions.is_empty()
                 || w.source_extensions
                     .iter()
@@ -518,6 +521,58 @@ readiness = "pyrefly_lazy_blocking"
                 device: identity.device,
                 inode: identity.inode + 1
             })
+        );
+    }
+
+    #[test]
+    fn language_profiles_require_fixed_runtime_fields_and_distinct_keys() {
+        let root = tempfile::tempdir().expect("root");
+        let runtime = tempfile::tempdir().expect("runtime");
+        let cli = runtime.path().join("cli.mjs");
+        let tsserver = runtime.path().join("tsserver.js");
+        fs::write(&cli, "// pinned operator runtime").expect("cli");
+        fs::write(&tsserver, "// pinned operator runtime").expect("tsserver");
+        let executable = fs::canonicalize("/bin/true").expect("executable");
+        let mut workspace = WorkspaceConfig {
+            id: "language".into(),
+            root: root.path().to_owned(),
+            language: "typescript".into(),
+            executable: executable.clone(),
+            args: vec![cli.to_string_lossy().into_owned(), "--stdio".into()],
+            source_extensions: vec!["ts".into(), "tsx".into(), "js".into()],
+            exclude_dirs: vec!["node_modules".into()],
+            readiness: Readiness::TypeScriptProject,
+            typescript_tsserver: Some(tsserver),
+            rustc: None,
+        };
+        let validate = |workspace: &WorkspaceConfig| {
+            BrokerConfig {
+                socket_path: codex_uds::shared_daemon_socket_directory()
+                    .expect("daemon")
+                    .join("language-profile.sock"),
+                workspaces: vec![Arc::new(workspace.clone())],
+                limits: PoolLimits::default(),
+            }
+            .validate()
+        };
+        assert!(validate(&workspace).is_ok());
+        workspace.typescript_tsserver = None;
+        assert!(validate(&workspace).is_err());
+        workspace.language = "rust".into();
+        workspace.args.clear();
+        workspace.source_extensions = vec!["rs".into()];
+        workspace.readiness = Readiness::RustAnalyzerProject;
+        assert!(validate(&workspace).is_err(), "Rust requires fixed rustc");
+        workspace.rustc = Some(executable);
+        assert!(validate(&workspace).is_ok());
+        let identity = RootIdentity::read(root.path()).expect("identity");
+        let key = workspace.key(&identity);
+        workspace.rustc = Some(PathBuf::from("/missing/different/rustc"));
+        assert_ne!(key, workspace.key(&identity));
+        workspace.readiness = Readiness::PyreflyLazyBlocking;
+        assert!(
+            validate(&workspace).is_err(),
+            "readiness cannot cross languages"
         );
     }
 }
