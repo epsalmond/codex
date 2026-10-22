@@ -4400,6 +4400,7 @@ dependencies = [
  "anyhow",
  "codex-core",
  "codex-extension-api",
+ "codex-features",
  "codex-protocol",
  "codex-state",
  "codex-thread-store",
