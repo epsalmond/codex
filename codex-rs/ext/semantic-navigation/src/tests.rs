@@ -108,6 +108,32 @@ async fn default_authority_is_restricted_and_remote_restricted_never_connect() {
         // Nonexistent cwd proves even canonicalization was skipped.
         assert_eq!(value["reason"], reason);
     }
+    let cancelled = call(
+        &accessor,
+        LocalNavigationAccess::Allowed,
+        MAX_RESPONSE_BYTES,
+        ToolCallSource::Direct,
+    );
+    cancelled.cancellation_token.cancel();
+    let payload = cancelled.payload.clone();
+    let output = tool.handle(cancelled).await.unwrap();
+    let value: NavigationResponse =
+        serde_json::from_str(&content(output.as_ref(), &payload)).unwrap();
+    assert_eq!(value.status, Status::Cancelled);
+    for count in [0, 2] {
+        let mut ambiguous = call(
+            &accessor,
+            LocalNavigationAccess::Allowed,
+            MAX_RESPONSE_BYTES,
+            ToolCallSource::Direct,
+        );
+        ambiguous.environments = vec![ambiguous.environments[0].clone(); count];
+        let payload = ambiguous.payload.clone();
+        let output = tool.handle(ambiguous).await.unwrap();
+        let value: NavigationResponse =
+            serde_json::from_str(&content(output.as_ref(), &payload)).unwrap();
+        assert_eq!(value.reason.as_deref(), Some("ambiguous_environment"));
+    }
     assert!(
         tokio::time::timeout(Duration::from_millis(20), listener.accept())
             .await
