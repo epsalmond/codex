@@ -83,6 +83,15 @@ pub trait TurnItemEmitter: Send + Sync {
     fn emit_completed<'a>(&'a self, item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a>;
 }
 
+/// Host verdict for accessing a local navigation index. Defaults fail closed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LocalNavigationAccess {
+    Allowed,
+    Remote,
+    #[default]
+    Restricted,
+}
+
 /// Callback-scoped view of a turn environment for extension tools.
 ///
 /// The host retains its runtime and configuration, and supplies access with this callback's
@@ -94,6 +103,7 @@ pub struct ToolEnvironment<'call> {
     /// Effective working directory for this turn in the environment.
     pub cwd: PathUri,
     file_system: &'call dyn EnvironmentAccess,
+    local_navigation_access: LocalNavigationAccess,
 }
 
 impl<'call> ToolEnvironment<'call> {
@@ -106,7 +116,18 @@ impl<'call> ToolEnvironment<'call> {
             environment_id,
             cwd,
             file_system,
+            local_navigation_access: LocalNavigationAccess::Restricted,
         }
+    }
+
+    /// Supplies the host verdict captured with this callback's filesystem grants.
+    pub fn with_local_navigation_access(mut self, access: LocalNavigationAccess) -> Self {
+        self.local_navigation_access = access;
+        self
+    }
+
+    pub fn local_navigation_access(&self) -> LocalNavigationAccess {
+        self.local_navigation_access
     }
 
     /// Borrows filesystem access with the permissions captured for this callback.
@@ -152,6 +173,8 @@ pub struct ToolCall<'call> {
     pub codex_turn_metadata: Option<String>,
     pub truncation_policy: TruncationPolicy,
     pub source: ToolCallSource,
+    /// Cancellation of this invocation, including nested Code Mode calls.
+    pub cancellation_token: tokio_util::sync::CancellationToken,
     pub conversation_history: ConversationHistory,
     pub turn_item_emitter: Arc<dyn TurnItemEmitter>,
     pub environments: Vec<ToolEnvironment<'call>>,

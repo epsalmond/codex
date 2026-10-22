@@ -216,6 +216,7 @@ async fn cloud_preference_preserves_aliases_reads_and_executor_fallback() -> Tes
                 };
                 let output = tool
                     .handle(ToolCall {
+                        cancellation_token: Default::default(),
                         turn_id: stage.to_string(),
                         call_id: "call".to_string(),
                         tool_name: tool.tool_name(),

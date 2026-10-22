@@ -73,6 +73,7 @@ members = [
     "ext/memories",
     "ext/mcp",
     "ext/queue",
+    "ext/semantic-navigation",
     "ext/skills",
     "ext/web-search",
     "external-agent-migration",
@@ -80,6 +81,7 @@ members = [
     "file-search",
     "file-watcher",
     "linux-sandbox",
+    "lsp-protocol",
     "lmstudio",
     "login",
     "codex-mcp",
@@ -90,6 +92,7 @@ members = [
     "mxc-sandbox",
     "models-manager",
     "network-proxy",
+    "nas-lsp",
     "ollama",
     "process-hardening",
     "realtime-webrtc",
@@ -266,6 +269,9 @@ codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-prompts = { path = "prompts" }
 codex-queue-extension = { path = "ext/queue" }
+codex-semantic-navigation = { path = "ext/semantic-navigation" }
+codex-lsp-protocol = { path = "lsp-protocol" }
+codex-nas-lsp = { path = "nas-lsp" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
