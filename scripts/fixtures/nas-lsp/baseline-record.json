@@ -4,7 +4,7 @@
   "token_note": "ceil(UTF-8 output bytes / 4) is an estimate, not measured model tokens",
   "python": "3.13.11",
   "rg": "ripgrep 15.2.0 (rev e89fff89ac)",
-  "corpus_sha256": "30537b1bdf9256dddab8e7bea9c3773df8781afed7424c700ac283d58b6f9012",
+  "corpus_sha256": "289e1f29360d5afd77a00c72d283eeccb09e9d9ebf3d5bbc580f05258671d435",
   "correct": 72,
   "tasks": 72,
   "summaries": [
@@ -13,62 +13,62 @@
       "pass": "first",
       "tasks": 12,
       "correct": 12,
-      "latency_p50_ms": 4.341,
-      "latency_p95_ms": 4.779,
-      "total_bytes": 17576,
-      "token_estimate_bytes_div_4": 4400
+      "latency_p50_ms": 12.001,
+      "latency_p95_ms": 28.56,
+      "total_bytes": 18162,
+      "token_estimate_bytes_div_4": 4544
     },
     {
       "scenario": "base",
       "pass": "repeated",
       "tasks": 12,
       "correct": 12,
-      "latency_p50_ms": 4.164,
-      "latency_p95_ms": 4.554,
-      "total_bytes": 17576,
-      "token_estimate_bytes_div_4": 4400
+      "latency_p50_ms": 22.009,
+      "latency_p95_ms": 40.933,
+      "total_bytes": 18162,
+      "token_estimate_bytes_div_4": 4544
     },
     {
       "scenario": "changed",
       "pass": "first",
       "tasks": 12,
       "correct": 12,
-      "latency_p50_ms": 4.172,
-      "latency_p95_ms": 5.141,
-      "total_bytes": 17428,
-      "token_estimate_bytes_div_4": 4362
+      "latency_p50_ms": 14.443,
+      "latency_p95_ms": 22.994,
+      "total_bytes": 18014,
+      "token_estimate_bytes_div_4": 4508
     },
     {
       "scenario": "changed",
       "pass": "repeated",
       "tasks": 12,
       "correct": 12,
-      "latency_p50_ms": 4.403,
-      "latency_p95_ms": 5.229,
-      "total_bytes": 17428,
-      "token_estimate_bytes_div_4": 4362
+      "latency_p50_ms": 13.702,
+      "latency_p95_ms": 23.423,
+      "total_bytes": 18014,
+      "token_estimate_bytes_div_4": 4508
     },
     {
       "scenario": "deleted",
       "pass": "first",
       "tasks": 12,
       "correct": 12,
-      "latency_p50_ms": 4.035,
-      "latency_p95_ms": 4.299,
-      "total_bytes": 15648,
-      "token_estimate_bytes_div_4": 3918
+      "latency_p50_ms": 15.839,
+      "latency_p95_ms": 38.554,
+      "total_bytes": 16234,
+      "token_estimate_bytes_div_4": 4064
     },
     {
       "scenario": "deleted",
       "pass": "repeated",
       "tasks": 12,
       "correct": 12,
-      "latency_p50_ms": 4.294,
-      "latency_p95_ms": 5.248,
-      "total_bytes": 15648,
-      "token_estimate_bytes_div_4": 3918
+      "latency_p50_ms": 15.181,
+      "latency_p95_ms": 42.242,
+      "total_bytes": 16234,
+      "token_estimate_bytes_div_4": 4064
     }
   ],
-  "recorded_at_utc": "2026-10-22T18:29:09.230831+00:00",
-  "command": "python3 scripts/fixtures/nas-lsp/corpus.py baseline --rounds 2 --output /tmp/codex-164/corpus-baseline.json"
+  "recorded_at_utc": "2026-10-22T18:39:09.853625+00:00",
+  "command": "python3 scripts/fixtures/nas-lsp/corpus.py baseline --rounds 2 --output /tmp/codex-164/corpus-baseline-three-occurrences.json"
 }

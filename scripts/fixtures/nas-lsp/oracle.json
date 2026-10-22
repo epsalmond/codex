@@ -100,20 +100,20 @@
     "repeated_right": {
       "path": "pkg/consumer.py",
       "line": 6,
-      "column": 49,
-      "end_column": 55,
+      "column": 46,
+      "end_column": 52,
       "lsp": {
         "start": {
           "line": 5,
-          "character": 48
+          "character": 45
         },
         "end": {
           "line": 5,
-          "character": 54
+          "character": 51
         }
       },
-      "utf8_column": 49,
-      "utf8_end_column": 55
+      "utf8_column": 46,
+      "utf8_end_column": 52
     },
     "astral_primary": {
       "path": "pkg/consumer.py",
@@ -204,6 +204,24 @@
           "character": 16
         }
       }
+    },
+    "repeated_third": {
+      "path": "pkg/consumer.py",
+      "line": 6,
+      "column": 68,
+      "end_column": 74,
+      "lsp": {
+        "start": {
+          "line": 5,
+          "character": 67
+        },
+        "end": {
+          "line": 5,
+          "character": 73
+        }
+      },
+      "utf8_column": 68,
+      "utf8_end_column": 74
     }
   },
   "symbols": {
@@ -222,6 +240,7 @@
           "first_primary",
           "repeated_left",
           "repeated_right",
+          "repeated_third",
           "astral_primary",
           "helper_primary",
           "transient_primary"
@@ -241,6 +260,7 @@
           "primary_definition",
           "repeated_left",
           "repeated_right",
+          "repeated_third",
           "astral_primary",
           "helper_primary",
           "transient_primary"
@@ -264,6 +284,7 @@
           "primary_definition",
           "repeated_left",
           "repeated_right",
+          "repeated_third",
           "astral_primary",
           "helper_primary"
         ],

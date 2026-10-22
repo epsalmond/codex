@@ -9,7 +9,7 @@ broker contract is documented in
 ## Fixed tasks and coordinates
 
 `oracle.json` defines twelve tasks: six definitions and six reference searches.
-They cover cross-file calls, two unrelated functions named `render`, two calls
+They cover cross-file calls, two unrelated functions named `render`, three calls
 on the same line, astral Unicode before a queried symbol, and an empty answer
 for a position inside a comment. Definition locations refer to identifier
 tokens, not whole statements. Reference answers **include the declaration**.
@@ -55,11 +55,11 @@ and worker alive while testing root A in this order:
 1. Query all twelve tasks at `base` in both roots.
 2. Run `python3 scripts/fixtures/nas-lsp/corpus.py stage ROOT_A changed`.
    The first consumer call now binds to `secondary.render`. Query all twelve
-   tasks again. Primary references decrease from seven to six; secondary
+   tasks again. Primary references decrease from eight to seven; secondary
    references increase from two to three, including their declarations.
 3. Run `python3 scripts/fixtures/nas-lsp/corpus.py stage ROOT_A deleted`.
    This retains the changed call and deletes `pkg/transient.py`. Primary
-   references decrease to five. Query all twelve tasks again.
+   references decrease to six. Query all twelve tasks again.
 4. Query root B after each mutation. It must retain the base answers and its
    own worker identity, including the transient file.
 
