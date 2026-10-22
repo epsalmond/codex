@@ -7,11 +7,12 @@ name: fork-ci
 # groups, so it can never pass here. Those workflows are disabled at the repo
 # level (`gh workflow disable`), not deleted, so upstream rebases/merges stay
 # conflict-free. This workflow replaces them for PRs with fmt + clippy + build
-# only, on standard GitHub-hosted Linux, macOS, and Windows runners. Tests are not run
-# here: contributors run them locally before pushing, and the workspace test
-# binaries do not fit a standard runner's disk or time budget. The build step
-# stays so people running the fork's binaries know they build in CI. Windows
-# also uploads a canonical dev-profile package for testing on a separate VM.
+# on standard GitHub-hosted Linux, macOS, and Windows runners, plus the focused
+# issue #238 regression tests on Linux. Full workspace test binaries do not fit
+# a standard runner's disk or time budget; broader baseline coverage remains
+# tracked in #155. The build step stays so people running the fork's binaries
+# know they build in CI. Windows also uploads a canonical dev-profile package
+# for testing on a separate VM.
 # Pushes to main run the same job only to write the Cargo cache
 # that PRs restore; the release itself is fork-release.yml.
 on:
@@ -201,6 +202,27 @@ jobs:
           fi
           cargo build --target ${{ matrix.target }} "${build_args[@]}"
           df -h /
+
+      - name: Install nextest for focused Linux tests
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest@0.9.103
+
+      # Reuse the dev build, target triple, V8 archive, and restored cache above.
+      # Select only three test targets to avoid linking unrelated test binaries.
+      - name: Test issue 238 regressions
+        if: runner.os == 'Linux'
+        working-directory: .
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: "8"
+        run: bash .github/scripts/test_issue_238.sh
+
+      - name: Report disk usage after focused tests
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: df -h / "$CARGO_TARGET_DIR"
 
       - name: Package Windows test build
         if: runner.os == 'Windows'

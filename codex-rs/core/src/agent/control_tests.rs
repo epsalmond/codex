@@ -1105,6 +1105,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_id, parent) = harness.start_paginated_thread().await;
+    failure_cleanup_tests::start_waiting_descendant(&parent, "cancelled-reload-parent").await;
     let control = parent
         .session
         .services
@@ -1121,7 +1122,17 @@ async fn cancelled_v2_send_finishes_reload_registration() {
         )])
         .await
         .unwrap();
-    // The existing fixture has no task runner to finish its initial turn.
+    // The fixture has no task runner to finish its initial turn. Interrupt the
+    // coordinator assignment as well as the status watch so reload restores an
+    // interrupted child rather than the synthetic running assignment.
+    assert_eq!(
+        control.runtime.wake_assignment_status(child_id),
+        Some(AgentStatus::Running),
+    );
+    control
+        .runtime
+        .interrupt_idle_wake_assignment(child_id, "cancelled-reload-child")
+        .expect("the synthetic child assignment must be interrupted");
     thread.session.mark_interrupted();
     *thread.session.active_turn.lock().await = None;
     assert_eq!(
@@ -1184,6 +1195,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
         control.runtime.registry.evicted_environments(child_id),
         None
     );
+    assert_eq!(reloaded.agent_status().await, AgentStatus::Interrupted);
     // Evict and reload again with the single child slot. This also catches a leaked
     // pin or pending residency reservation left behind by the cancelled sender.
     assert_eq!(
@@ -1216,6 +1228,10 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             /*trigger_turn*/ true,
         )],
     );
+    parent
+        .session
+        .abort_all_tasks(TurnAbortReason::Interrupted)
+        .await;
 }
 
 #[derive(Clone, Copy)]
@@ -1231,6 +1247,14 @@ async fn spawn_v2_reload_test_child(
     parent: &CodexThread,
     task_name: &str,
 ) -> LiveAgent {
+    let parent_turn_id = parent
+        .session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|turn| turn.task.as_ref())
+        .map(|task| task.turn_context.sub_id.clone());
     let source = thread_spawn_source(
         parent.session.thread_id,
         &parent.session_source,
@@ -1246,6 +1270,7 @@ async fn spawn_v2_reload_test_child(
             source,
             SpawnAgentOptions {
                 parent_thread_id: Some(parent.session.thread_id),
+                parent_turn_id,
                 ..Default::default()
             },
         )
@@ -4801,31 +4826,46 @@ async fn multi_agent_v2_completion_marks_only_root_parent_wake(
         &AgentStatus::Completed(Some("done".to_string())),
     )
     .expect("completed status should render");
-    let expected = (
-        parent_thread_id,
-        Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                child_path,
-                parent_path,
-                Vec::new(),
-                expected_message,
-                expected_trigger_turn,
-            ),
-            start_options: Default::default(),
-        },
+    let mut expected_communication = InterAgentCommunication::new(
+        child_path,
+        parent_path,
+        Vec::new(),
+        expected_message,
+        expected_trigger_turn,
     );
-    timeout(Duration::from_secs(5), async {
-        while !harness
-            .manager
-            .captured_ops()
-            .iter()
-            .any(|entry| captured_op_matches(entry, &expected))
-        {
-            sleep(Duration::from_millis(10)).await;
+    // send_event awaits completion routing, so its report is available on return.
+    let captured_ops = harness.manager.captured_ops();
+    assert_eq!(captured_ops.len(), 1);
+    let (
+        recipient,
+        Op::InterAgentCommunication {
+            communication,
+            start_options,
+        },
+    ) = &captured_ops[0]
+    else {
+        panic!("expected a completion report, got {captured_ops:?}");
+    };
+    assert_eq!(*recipient, parent_thread_id);
+    assert!(matches!(
+        start_options,
+        TurnStartOptions {
+            turn_trigger: None,
+            final_output_json_schema: None,
+            service_tier: None,
+            parent_turn_id: None,
+            initiating_agent_path: None,
+            root_turn_id: None,
+            cyber_access_program: None,
         }
-    })
-    .await
-    .expect("completion should reach the parent with the expected trigger_turn");
+    ));
+    let message_id = communication
+        .id
+        .as_ref()
+        .expect("completion reports should carry a message ID");
+    assert!(message_id.as_str().starts_with("msg_"));
+    expected_communication.id = Some(message_id.clone());
+    assert_eq!(communication, &expected_communication);
 }
 
 #[tokio::test]
