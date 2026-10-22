@@ -108,7 +108,7 @@ impl SessionTask for WaitForCancellation {
     }
 }
 
-async fn start_waiting_descendant(thread: &CodexThread, turn_id: &str) -> String {
+pub(super) async fn start_waiting_descendant(thread: &CodexThread, turn_id: &str) -> String {
     if let Some(context) = thread
         .session
         .active_turn

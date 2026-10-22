@@ -864,6 +864,13 @@ async fn ignores_session_prefix_messages_when_truncating() {
         .await
         .0;
     let mut items = crate::context_manager::updates::merge_world_state_updates(updates);
+    let session_prefix_len = items.len();
+    assert!(session_prefix_len > 0);
+    assert!(
+        items
+            .iter()
+            .any(|item| { matches!(item, ResponseItem::Message { role, .. } if role == "user") })
+    );
     items.push(user_msg("feature request"));
     items.push(assistant_msg("ack"));
     items.push(user_msg("second question"));
@@ -888,12 +895,12 @@ async fn ignores_session_prefix_messages_when_truncating() {
     );
     let got_items = truncated.get_rollout_items();
 
-    let expected: Vec<RolloutItem> = vec![
-        RolloutItem::ResponseItem(items[0].clone().into()),
-        RolloutItem::ResponseItem(items[1].clone().into()),
-        RolloutItem::ResponseItem(items[2].clone().into()),
-        RolloutItem::ResponseItem(items[3].clone().into()),
-    ];
+    let expected: Vec<RolloutItem> = items[..session_prefix_len + 2]
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .map(RolloutItem::ResponseItem)
+        .collect();
 
     assert_eq!(
         serde_json::to_value(got_items).unwrap(),
@@ -1285,6 +1292,7 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
 
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
     config.rollout_budget = Some(RolloutBudgetConfig {
         limit_tokens: 100,
         reminder_at_remaining_tokens: vec![75, 50, 25],
@@ -1449,6 +1457,7 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         .await
         .expect("parent budget reminder");
     assert_eq!(reminder.remaining_tokens, 75);
+    assert!(!reviewer.thread.session.get_config().await.agents_enabled);
     assert_eq!(reviewer_config.parent_thread_id, Some(parent.thread_id));
     assert_eq!(reviewer_config.forked_from_thread_id, None);
     assert_eq!(reviewer_config.originator, "codex_work_desktop");
@@ -3160,6 +3169,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
 async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_history() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
@@ -3230,7 +3240,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         .filter(|item| !matches!(item, RolloutItem::SessionMeta(_)))
         .collect();
     let interrupted_marker_json = serde_json::to_value(RolloutItem::ResponseItem(
-        contextual_user_interrupted_marker().into(),
+        developer_interrupted_marker().into(),
     ))
     .expect("serialize interrupted marker");
     let interrupted_abort_json = serde_json::to_value(RolloutItem::EventMsg(
@@ -3377,6 +3387,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
 async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_source() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
@@ -3446,7 +3457,7 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         .filter(|item| !matches!(item, RolloutItem::SessionMeta(_)))
         .collect();
     let interrupted_marker_json = serde_json::to_value(RolloutItem::ResponseItem(
-        contextual_user_interrupted_marker().into(),
+        developer_interrupted_marker().into(),
     ))
     .expect("serialize interrupted marker");
     assert_eq!(

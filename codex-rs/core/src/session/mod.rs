@@ -743,6 +743,10 @@ impl Session {
         };
 
         let mut config = config;
+        if isolation == codex_extension_api::SessionIsolation::Isolated {
+            // Isolated delegates cannot re-enable agents through a feature override.
+            config.agents_enabled = false;
+        }
         let context_settings_from_spawn = config.context_settings_from_spawn;
         // Ordinary later forks must resolve their own selected history boundary.
         config.context_settings_from_spawn = false;
