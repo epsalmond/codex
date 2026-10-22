@@ -269,7 +269,10 @@ unknown fields are rejected.
 
 Source closure follows ordinary local modules. Missing/ambiguous module files,
 `#[path]`, `#[cfg_attr]`, includes, environment macros, and macro tokens that
-could generate modules are unsupported. Conditional out-of-line modules need
+could generate modules are unsupported. Custom `macro_rules` definitions are
+also unsupported. A source file is limited to 65,536 syntax tokens, 32 nested
+token groups and 64 uninterrupted sibling tokens; deeper syntax is rejected.
+Conditional out-of-line modules need
 supported explicit cfg handling; an unopened or orphan source file does not
 become a graph member just because its text was admitted. Orphans and `build.rs`
 cannot be queried. All inventoried files still contribute to freshness.
@@ -285,7 +288,8 @@ standard-library/external dependency semantics, generated code, and proc-macro
 expansion are outside this profile. It does not qualify a dependency-heavy Cargo
 workspace such as Codex. The readiness barrier verifies admitted text, server
 health and quiescence before navigation, and discards results if indexing races
-with the request.
+with the request. The successful text check is reused only within one saved
+generation; every warm query still needs a fresh readiness permit.
 
 ## Dedicated Linux user service
 

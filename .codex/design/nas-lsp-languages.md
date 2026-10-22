@@ -206,12 +206,16 @@ complete local graphs, with all transitive mutable inputs inside the snapshot.
 Rust source closure is deliberately syntactic. Use the existing locked syn 2
 parser (full+visit) plus proc-macro2 token trees; no Rust code execution or custom
 lexer. Parse saved .rs files before spawn; reject unsupported parse syntax,
-all #[path]/#[cfg_attr] attributes and include!/include_str!/include_bytes!/
+all custom macro_rules definitions, #[path]/#[cfg_attr] attributes and include!/include_str!/include_bytes!/
 env!/option_env! invocations. Reject these spellings in macro token trees too,
 including raw identifiers, and reject macro token trees capable of generating
 module declarations (`mod` tokens), rather than implementing macro expansion.
 This conservative profile forbids external/.git inputs and generated modules.
-Comments and ordinary string contents do not become directives.
+Comments and ordinary string contents do not become directives. Before syn,
+the iterative token walk limits group nesting to 32, uninterrupted sibling runs
+to 64 and total tokens to 65,536 per file. Skip recursive expression visitors;
+deep/unsupported syntax returns unavailable instead of risking parser stack
+overflow. This is a bounded source profile, not unrestricted Rust syntax.
 
 Derive a bounded reachable source-file set from declared crate roots and normal
 syn ItemMod declarations: handle inline modules and the ordinary name.rs or
@@ -253,13 +257,16 @@ rustc version/target-cfg/layout commands, no Cargo/rustup/build/check despite
 hostile Cargo config/build.rs/rust-toolchain files. Final qualification repeats
 this sentinel evidence; the probe alone is not adapter acceptance.
 
-Enable experimental.serverStatusNotification. After complete admission, issue
+Enable experimental.serverStatusNotification. After complete admission, first
+wait for healthy quiescence, then issue
 one fixed read-only rust-analyzer/viewFileText request per saved source URI and
 require the exact admitted text. This causal barrier follows final didOpen:
 pinned main_loop.rs handles/process_changes after every event before processing
 the next request; handlers/request.rs reads the analysis snapshot; dispatch.rs
 returns a default while VFS is unready. A text mismatch returns Indexing, without
-request retries or sleeps. After the text barrier, wait
+request retries or sleeps. A successful text pass is cached only for that saved
+generation. Warm queries still require healthy quiescence and a fresh permit.
+After the text barrier, wait
 for health:ok and quiescent:true with no active work progress, then issue the
 navigation request. An initialize result, fixed delay, or first empty answer
 does not establish readiness. Missing/non-quiescent status is indexing with no
