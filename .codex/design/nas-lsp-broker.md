@@ -215,7 +215,10 @@ stale socket only while holding that lock. No TCP listener or remote executor.
 
 Registry contains explicit workspace entries with exact canonical roots, a
 single supported language, absolute canonical executable, fixed argument vector,
-source extensions/excluded directory names, readiness adapter, and pool limits.
+source extensions, readiness adapter, and pool limits. `exclude_dirs` remains a
+compatibility field, but cannot omit mutable input from inventory or admission:
+only `.git` metadata is excluded in this stage. In particular a custom `hidden`
+directory containing imported Python sources remains fingerprinted and admitted.
 No shell, environment interpolation, command search on PATH, or dynamic
 registration API. Reject overlapping/duplicate roots or ambiguous configurations.
 Match canonical cwd equal to or below one registered root; reject unknown roots.
@@ -235,9 +238,10 @@ cannot be made safe for restricted profiles by filtering returned snippets.
 ## Saved-file freshness and indexing
 
 Use a bounded full regular-file inventory per query as the simple first-stage policy:
-walk the registered root without following directory symlinks, skip fixed
-excluded directories (`.git`, `target`, `node_modules`, `.venv` by default), and
-hash all remaining regular-file contents, including .pyi, arbitrary nested project
+walk the registered root without following directory symlinks, omit only Git
+metadata (`.git` directory or linked-worktree pointer file), and hash every other
+regular-file content, including files inside fixed/operator exclusion hints,
+.pyi, arbitrary nested project
 configuration, manifests, and newly created/deleted files. Source extensions
 control queried file eligibility, not what gets fingerprinted. Cap traversal at
 10,000 entries, 2,000 files, 2 MiB/file and 32 MiB total bytes.
@@ -250,6 +254,10 @@ Rust server. A registered `scripts/` subtree is a real supported Python target;
 the selected environment cwd must resolve inside that registered root. The model
 cannot choose a different root through a path argument. Larger inventories or
 additional language adapters require explicit operator policy and qualification.
+Generated/cache directories such as `target`, `node_modules`, `.venv`, and
+`__pycache__` do not relax these limits: if they make an otherwise registered root
+too large, return Unavailable. Pyrefly can read imports/configuration inside a
+nominally excluded directory, so omitting their bytes would permit stale Ok.
 Reject file symlinks rather than following them. No broad repository indexing or
 background prompt injection is added. External mutable project dependency roots
 are unsupported; qualification uses a self-contained project and operator-pinned
@@ -258,10 +266,15 @@ immutable runtime inputs until broker restart; the service does not claim
 freshness for independently changed external dependencies. Reject out-of-root
 definition/reference targets explicitly rather than reporting a false empty Ok.
 
-First query snapshots saved files before initialization. Before every later
+First query snapshots saved files before initialization and admits every saved
+`.py` and `.pyi` document to the worker, including reverse dependents that have
+never been queried. Require a supported document synchronization capability;
+without complete admission, return explicit Unavailable/Indexing rather than
+calling a declaration-only reference set complete. Before every later
 query compare the complete inventory with the worker generation. For any added,
 changed, deleted source/config file, shut down and recreate that worker before
-querying; this deliberately conservative policy avoids relying on inconsistent
+querying and readmitting the complete saved generation; this deliberately
+conservative policy avoids relying on inconsistent
 server watcher support and clears deleted-file indexes. Reuse remains warm when
 the inventory is unchanged. Synchronize the queried saved document with didOpen
 and full-text didChange when supported; no unsaved buffer inputs. Inventory
@@ -271,7 +284,8 @@ generation on a failed refresh.
 
 LSP has no universal indexed/completed handshake. Initial supported real adapter
 is operator-registered Pyrefly with fixed `lsp --indexing-mode lazy-blocking
---threads 1`; a completed query is the adapter's readiness barrier. Initialize
+--threads 1`; after complete saved-source admission, a completed query is the
+adapter's readiness barrier. Initialize
 alone is insufficient. Track work-done progress and explicit server-not-ready
 errors; active indexing gives Indexing, with zero locations. Unknown readiness
 policies fail configuration rather than converting an empty answer to Ok.
@@ -300,7 +314,10 @@ Defaults: at most 2 workers, 1 active operation/worker, 4 queued operations/work
 8 total admitted queries, 32 connections, 60-second idle TTL. Queue admission is
 try-acquire and returns Busy rather than growing tasks without bound. Evict only
 idle, unleased workers, oldest first; full active pool returns Busy (`pool_full`).
-Use one broker-owned periodic maintenance task for idle/resource checks, not
+Retiring workers remain counted against the pool cap until their processes are
+reaped. Retirement belongs to the pool/actor, so cancelling a replacement caller
+cannot detach a removed worker and free its capacity early. Use one broker-owned
+periodic maintenance task for idle/resource checks, not
 per-session worker supervisors. No workers start until a registered query needs
 them. Spawn into a process group; shutdown sends LSP shutdown/exit, then TERM and
 KILL to the process group within 2 seconds. Broker shutdown has a 5-second bound
