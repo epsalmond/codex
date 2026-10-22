@@ -234,6 +234,12 @@ workers; same key reuses a worker across sessions. Operator-registered servers
 are trusted programs and can read host files, import project configuration, or
 launch subprocesses. Local full-read eligibility is mandatory: broader indexes
 cannot be made safe for restricted profiles by filtering returned snippets.
+Qualification applies to the pinned Pyrefly stdio profile and descendants that
+remain in its process group. Operator binaries that daemonize, change process
+groups, or depend on unrelated mutable services are outside this lifecycle
+qualification. The enclosing cgroup still bounds descendant memory/processes,
+but process-group shutdown does not prove that an arbitrary escaping daemon was
+reaped; such a server is not qualified by this stage.
 
 ## Saved-file freshness and indexing
 
