@@ -165,6 +165,11 @@ absent ancestor directory to a warm project returned
 on the initial query and both allowed follow-ups. The harness requires an
 unsupported-input rejection (`unavailable` or `invalid_request`) after the
 bounded transition allowance; it never received an incorrect `ok` answer.
+After removing that same ancestor directory in the same broker/socket run,
+`correct/config/ancestor-restored/a/cold_primary_references` passed with all six
+exact deleted-scenario references in 63.381 ms. The create/reject/remove/recover
+sequence is already enforced by `Runner.config_changes`; recovery is not inferred
+from restarting the broker.
 The test and exact location oracles remain unchanged pending the adapter owner's
 classification/lifecycle fix. No rerun has yet been justified by a source fix.
 
