@@ -2,6 +2,7 @@
 
 use crate::config::WorkspaceConfig;
 use crate::freshness::{self, Snapshot};
+use crate::language::Adapter;
 use crate::lsp::{RequestError, Session};
 use codex_lsp_protocol::Location;
 use codex_lsp_protocol::NavigationResponse;
@@ -20,6 +21,7 @@ pub struct Worker {
     config: Arc<WorkspaceConfig>,
     generation: Snapshot,
     session: Option<Session>,
+    adapter: Option<Adapter>,
 }
 
 pub struct WorkerQuery {
@@ -43,6 +45,7 @@ impl Worker {
             config,
             generation,
             session: None,
+            adapter: None,
         };
         worker.initialize(deadline, cancel).await?;
         Ok(worker)
@@ -56,18 +59,29 @@ impl Worker {
         if Instant::now() >= deadline {
             return Err(status(Status::Timeout, "deadline"));
         }
-        let mut session = Session::spawn(&self.config).map_err(unavailable)?;
+        let adapter = Adapter::prepare(&self.config, &self.generation, deadline, cancel.clone())
+            .await
+            .map_err(request_error)?;
+        let options = adapter.initialization_options();
+        let mut session = Session::spawn(&self.config, options.clone()).map_err(unavailable)?;
         let root_uri = url::Url::from_directory_path(&self.config.root)
             .map_err(|_| unavailable("invalid_root"))?
             .to_string();
         // Pyrefly only uses workspaceFolders when the corresponding client
         // capability is true. Otherwise declarations and imports can receive
         // different inferred module identities, hiding reverse references.
-        let result = session.request("initialize", json!({
+        let mut initialize = json!({
             "processId": std::process::id(), "rootUri":root_uri,
-            "capabilities":{"general":{"positionEncodings":["utf-16"]},"workspace":{"workspaceFolders":true},"textDocument":{"definition":{"linkSupport":true},"references":{}},"window":{"workDoneProgress":false}},
-            "workspaceFolders":[{"uri":root_uri,"name":self.config.id}]
-        }), deadline, cancel.clone()).await;
+            "capabilities":{"general":{"positionEncodings":["utf-16"]},"workspace":{"workspaceFolders":true},"textDocument":{"definition":{"linkSupport":true},"references":{}},"window":{"workDoneProgress":self.config.language != "python"}},
+            "workspaceFolders":[{"uri":root_uri,"name":self.config.id}],
+            "initializationOptions": options
+        });
+        if adapter.requires_server_status() {
+            initialize["capabilities"]["experimental"] = json!({"serverStatusNotification":true});
+        }
+        let result = session
+            .request("initialize", initialize, deadline, cancel.clone())
+            .await;
         let result = match result {
             Ok(value) => value,
             Err(error) => {
@@ -114,18 +128,22 @@ impl Worker {
         // inventory before any navigation request, including stubs even when
         // the operator only permits querying .py files. A saved change creates
         // a new session, so every admitted document is immutable for its lifetime.
-        let admitted = self.admit_documents(&session, deadline, &cancel).await;
+        let admitted = self
+            .admit_documents(&session, &adapter, deadline, &cancel)
+            .await;
         if let Err(response) = admitted {
             session.shutdown().await;
             return Err(response);
         }
         self.session = Some(session);
+        self.adapter = Some(adapter);
         Ok(())
     }
 
     async fn admit_documents(
         &self,
         session: &Session,
+        adapter: &Adapter,
         deadline: Instant,
         cancel: &CancellationToken,
     ) -> Result<(), NavigationResponse> {
@@ -136,12 +154,9 @@ impl Worker {
             if Instant::now() >= deadline {
                 return Err(status(Status::Timeout, "deadline"));
             }
-            if !matches!(
-                relative.extension().and_then(|ext| ext.to_str()),
-                Some("py" | "pyi")
-            ) {
+            let Some(language_id) = adapter.language_id(relative) else {
                 continue;
-            }
+            };
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| unavailable("unsupported_source_encoding"))?;
             let uri = url::Url::from_file_path(self.config.root.join(relative))
@@ -150,7 +165,7 @@ impl Worker {
                 .notify(
                     "textDocument/didOpen",
                     json!({"textDocument": {
-                        "uri": uri.as_str(), "languageId": self.config.language,
+                        "uri": uri.as_str(), "languageId": language_id,
                         "version": 1, "text": text
                     }}),
                     deadline,
@@ -226,6 +241,17 @@ impl Worker {
             Some(text) => text,
             None => return status(Status::InvalidRequest, "source_unavailable"),
         };
+        let adapter = match self.adapter.as_ref() {
+            Some(adapter) => adapter,
+            None => return unavailable("server_unavailable"),
+        };
+        if let Err(reason) = adapter.validate_query(&relative) {
+            return unavailable(reason);
+        }
+        if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
+            self.retire_invalid_state(&error).await;
+            return request_error(error);
+        }
         let position = match to_utf16(text, query.position) {
             Some(position) => position,
             None => return status(Status::InvalidRequest, "invalid_position"),
@@ -238,6 +264,13 @@ impl Worker {
             Some(session) => session,
             None => return unavailable("server_unavailable"),
         };
+        let permit = match adapter.ready(session, deadline, cancel.clone()).await {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.retire_invalid_state(&error).await;
+                return request_error(error);
+            }
+        };
         let (method, mut params) = match query.operation {
             Operation::Definition => (
                 "textDocument/definition",
@@ -248,16 +281,29 @@ impl Worker {
                 json!({"textDocument":{"uri":uri},"position":position,"context":{"includeDeclaration":true}}),
             ),
         };
-        // Lazy-blocking is the configured Pyrefly readiness barrier; initialize
-        // by itself cannot turn an empty, incompletely indexed result into Ok.
+        // The profile's barrier and permit qualify this request. Initialize by
+        // itself cannot turn an incompletely indexed empty answer into Ok.
         let result = session
-            .request(method, params.take(), deadline, cancel)
+            .request(method, params.take(), deadline, cancel.clone())
             .await;
         let result = match result {
-            Ok(result) if !session.indexing() => result,
+            Ok(result) if session.permit_valid(permit, adapter.requires_server_status()) => result,
+            Ok(_) if !session.healthy() => return unavailable("lsp_io"),
+            Ok(_)
+                if adapter.requires_server_status()
+                    && session
+                        .server_status()
+                        .is_some_and(|status| !status.healthy) =>
+            {
+                return unavailable("server_health");
+            }
             Ok(_) => return status(Status::Indexing, "indexing"),
             Err(error) => return request_error(error),
         };
+        if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
+            self.retire_invalid_state(&error).await;
+            return request_error(error);
+        }
         let root = self.config.root.clone();
         let generation = self.generation.clone();
         let normalized = tokio::task::spawn_blocking(move || {
@@ -275,9 +321,28 @@ impl Worker {
         )
         .await
         {
-            Ok(generation) if generation == self.generation => response,
+            Ok(generation) if generation == self.generation => {
+                match adapter.validate_inputs(deadline, cancel).await {
+                    Ok(()) => response,
+                    Err(error) => {
+                        self.retire_invalid_state(&error).await;
+                        request_error(error)
+                    }
+                }
+            }
             Ok(_) => status(Status::Stale, "files_changed_during_query"),
             Err(error) => inventory_error(error),
+        }
+    }
+
+    async fn retire_invalid_state(&mut self, error: &RequestError) {
+        // Caller cancellation/deadline alone does not invalidate a healthy
+        // generation. Profiles invalidate the session when a partial barrier
+        // cannot be reused safely, including an interrupted cold Rust barrier.
+        if !matches!(error, RequestError::Cancelled | RequestError::Timeout)
+            || !self.session.as_ref().is_some_and(Session::healthy)
+        {
+            self.shutdown().await;
         }
     }
 
@@ -309,6 +374,8 @@ fn request_error(error: RequestError) -> NavigationResponse {
     match error {
         RequestError::Timeout => status(Status::Timeout, "deadline"),
         RequestError::Cancelled => status(Status::Cancelled, "cancelled"),
+        RequestError::Indexing(reason) => status(Status::Indexing, reason),
+        RequestError::Stale(reason) => status(Status::Stale, reason),
         RequestError::Server(-32802 | -32002) => status(Status::Indexing, "server_not_ready"),
         RequestError::Server(-32801) => status(Status::Stale, "server_content_modified"),
         RequestError::Server(_) => unavailable("server_error"),
