@@ -53,6 +53,18 @@ def save(path, value):
     shared.write_json(path, value)
 
 
+def registered_roots(setup):
+    roots = [setup["root_a"], setup["root_b"], setup["cold_empty_root"]]
+    roots += [case["root"] for case in setup["negative_roots"]]
+    roots += [setup[key] for key in ("alias_root", "hostile_root", "source_root") if key in setup]
+    return [Path(root) for root in roots]
+
+
+def crash_reports(setup):
+    return sorted((shared.file_identity(path) for root in registered_roots(setup)
+                   for path in root.glob("rustc-ice-*.txt")), key=lambda row: row["path"])
+
+
 def prepare(directory, language, toolchains, source_root=None):
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     corpus = CORPORA[language]
@@ -365,6 +377,8 @@ def exercise(args):
     setup["build_provenance"] = {"broker_build_head": args.broker_build_head, "driver_build_head": args.driver_build_head,
                                   "receipts": [shared.file_identity(path) for path in args.build_receipt]}
     setup["toolchain_manifest"] = shared.file_identity(args.toolchains)
+    if args.language == "rust":
+        setup["workspace_crash_reports_before"] = crash_reports(setup)
     config = registry(setup, directory)
     setup["registry"] = shared.file_identity(config)
     save(directory / "setup.json", setup)
@@ -437,6 +451,9 @@ def exercise(args):
             runner.check("execve/trace_present", False)
         for path, expected in pinned_files:
             runner.check("pin/after/" + path, shared.file_identity(Path(path))["sha256"] == expected)
+        if args.language == "rust":
+            after = crash_reports(setup)
+            runner.check("crash_reports/no_workspace_side_effects", after == setup["workspace_crash_reports_before"], before=setup["workspace_crash_reports_before"], after=after)
         result.update(checks=runner.checks, checks_passed=sum(row["passed"] for row in runner.checks), checks_total=len(runner.checks), broker=shared.file_identity(args.broker))
         save(directory / "receipt.json", result)
     passed = "error" not in result and result["checks_passed"] == result["checks_total"]
