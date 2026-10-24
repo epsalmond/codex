@@ -279,3 +279,76 @@ Preserved Rust evidence:
 `/tmp/codex-nav-languages/runtime-rust-bf3da3f-20261024-a/execve.log`,
 `/tmp/codex-nav-languages/runtime-rust-bf3da3f-20261024-a/rustc-ice-evidence.json`,
 native supervisor `/home/eric/.local/state/agent-jobs/job-jsslh9gi/receipt.json`.
+
+### Qualified Rust resource-fix result and final ledger
+
+The architect traced excess threads to RA's separate global Rayon pool, which
+is independent of its configured main worker count. Rust-only child environment
+now sets `RAYON_NUM_THREADS=2` and points pinned rustc's `RUSTC_ICE` directory to
+existing private child scratch space. This changes neither the 1 GiB / 64-task
+ceilings nor any source, answer, latency, retry, or output gate.
+
+The canonical, independently audited archive of exactly eight task-created
+base91 reports was completed by the architect under root authorization before
+the final run. The actual archive is
+`/tmp/codex-nav-languages/rustc-ice-archive-bf3da3f/base91`; execution receipt
+`/tmp/codex-nav-languages/rustc-ice-archive-bf3da3f/move-receipt.json` records each
+original path, destination, hash, size and mtime. It preserves source hash
+`82626519922c397afc5849c4c01b9a053129d6c85a5a24f9b692081e2bcc828f`
+and zero remaining base91 reports. The acceptance agent's alternative
+`base91-ice-archive-plan.json` was preparation-only and never executed.
+The failed corpus roots and all previous failure receipts remain preserved.
+
+Final Rust broker source: `65b2d1d630211fc08ee618e64991ee00dda80e8d`, build
+receipt `/home/eric/.local/state/agent-jobs/job-ik9qo98o/receipt.json`, log
+`/home/eric/.local/state/wait-for-build/build-n8mpguh0/build.log`.
+Private artifacts `/tmp/codex-nav-languages/artifacts-65b2d1d630/` have broker
+SHA-256 `6e133da63b73d63e8eb5392407af57a16956d43e6f28cd2b39069704ec40e2ee`
+and driver SHA-256
+`a314cc5c89934bec218517929595c09d41348dd786914f2db400447117a8f7fc`.
+The Rust native run used harness commit
+`e736dc097f6ffb39f10bd5a1230bc4150b8740dc`, SHA-256
+`165cb162fa6ecff5d28d3fa9c4a998b8bebd9326ed3d4559219f84688d025e5c`.
+That harness adds a strictly stronger before/after check for compiler crash
+reports in every registered root; no earlier assertion was relaxed.
+
+The final Rust run passed **731/731**. All exact saved-scenario answers and
+complete cold reverse references passed, including changed/deleted files,
+config model removal/recovery, both shifted linked worktrees and Unicode.
+Cold references were 218.219 ms (A) and 504.471 ms (B); cold empty was
+213.051 ms; warm p95 was 15.132 ms. Navigation returned 4,488 bytes versus
+19,922 rg/read baseline bytes (22.528%). Cgroup peak was 57,036,800 bytes,
+shutdown 7.271 ms, exit zero, no observed worker survivors. Cancellation
+identities, safety negatives, private sentinel absence and all budgets passed.
+Check-count changes relative to the failed run reflect removal of stale
+follow-up queries, with the new crash-report assertion added.
+
+The actual existing base91 `ENCTAB` use resolved exactly to `src/lib.rs:38:7-13`
+in Direct (212.722 ms) and Code Mode (11.204 ms). Its source hash remained
+unchanged and every registered root's compiler-report inventory was empty both
+before and after the run. The independent exec audit passed 75 launches:
+nine RA and 66 canonical rustc invocations, each from the fixed allowed
+introspection argv list; no Cargo, rustup, build script or repository executable.
+This establishes local base91 navigation only, with the Rust dependency/std
+limitations above unchanged.
+
+| Final profile | Runtime checks | Source | Warm p95 | Navigation / rg+read |
+| --- | --- | --- | --- | --- |
+| TypeScript | 742/742 | `bf3da3fbc5` | 485.121 ms | 4,500 / 21,452 (20.977%) |
+| Rust | 731/731 | `65b2d1d630` | 15.132 ms | 4,488 / 19,922 (22.528%) |
+| Unchanged Python | 556/556 | `bf3da3fbc5` | 9.015 ms | 4,107 / 18,162 (22.613%) |
+
+The final Rust-only change leaves the qualified TypeScript/Python paths
+unchanged; they were not needlessly rerun. A separate actual bounded-service
+Rust regression also passed all 11 integration tests (five pinned-real), with
+two live workers and saved-source regeneration: pids peak 44, `pids.events`
+`max 0`, memory peak 44,285,952 bytes. Its receipt is
+`/tmp/codex-nav-languages/rust-resource-regression/receipt.json`.
+
+Final Rust evidence:
+`/tmp/codex-nav-languages/runtime-rust-65b2d1d-20261024-a/receipt.json`,
+`/tmp/codex-nav-languages/runtime-rust-65b2d1d-20261024-a/execve-audit.json`
+(audit-script and trace hashes included),
+native supervisor `/home/eric/.local/state/agent-jobs/job-k2sxqrmy/receipt.json`.
+These are native executor/broker/server qualification receipts. No active
+installation or model-session/V8 Code Mode end-to-end acceptance is claimed.
