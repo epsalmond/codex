@@ -266,7 +266,13 @@ impl Worker {
         };
         let permit = match adapter.ready(session, deadline, cancel.clone()).await {
             Ok(permit) => permit,
-            Err(error) => return request_error(error),
+            Err(error) => {
+                // A partial barrier may leave profile-local admission state
+                // incomplete even when the transport still looks healthy.
+                // A later caller must initialize a fresh session/generation.
+                self.shutdown().await;
+                return request_error(error);
+            }
         };
         let (method, mut params) = match query.operation {
             Operation::Definition => (
