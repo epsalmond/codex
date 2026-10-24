@@ -124,6 +124,51 @@ Snapshot/file/entry bounds remain unchanged.
 Harness self-test: three tests pass, including both independent 112-query source
 oracle audits, declaration-first ordering, shifted ranges and duplicate
 preservation. `strace -D` process ownership was checked independently with
-`/usr/bin/true`; that is observer-mechanics evidence only. Real broker results,
-exact integrated source/build hashes and failures will be recorded after the
-adapters and binary are assembled. Negative recipes above are not yet passed.
+`/usr/bin/true`; that check alone is observer-mechanics evidence. The integrated
+runtime results below supersede preparation status. Rust negative recipes are
+not yet passed.
+
+### First integrated TypeScript build and Python regression
+
+The successful clean build used source
+`75e237f95f9755f206de1f58b24c5df7326eae83`, with native build receipt
+`/home/eric/.local/state/agent-jobs/job-40yye71a/receipt.json` and build log
+`/home/eric/.local/state/wait-for-build/build-j0ad10q0/build.log`. Private copies
+in `/tmp/codex-nav-languages/artifacts-75e237f95f/` preserve the broker SHA-256
+`4908b73f21d1f95259f861cf0f844b762ab673c1e8cad48b38104794a37225d5`
+and native driver SHA-256
+`a314cc5c89934bec218517929595c09d41348dd786914f2db400447117a8f7fc`.
+
+On 2026-10-24, the unchanged Python harness passed **556/556**, including its
+actual-source smoke and excluded readable-import invalidation, against these
+artifacts. Warm p95 was 11.465 ms; navigation returned 4,107 bytes versus 18,162
+recorded rg/read bytes (22.613%). Evidence:
+`/tmp/codex-nav-languages/runtime-python-75e237f-20261024-a/receipt.json`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-d8pomh_z/receipt.json`.
+The TypeScript run used harness `11e1821` and its own separate transient service.
+
+### TypeScript first runtime: one persistent-stale boundary failure
+
+The first TypeScript runtime finished **747/748**. Every exact location query,
+including complete declaration-first references before consumers were queried,
+passed. Both linked worktrees, changed/deleted generations, new cold empty root,
+config alias changes, Direct/Code Mode paths, cancellation/surviving worker
+identities, byte budgets, all other negative cases, pinned pre/post artifact
+hashes, independent executable trace and bounded shutdown passed. Warm p95 was
+486.578 ms; navigation returned 4,500 bytes versus 21,452 baseline bytes
+(20.977%). Observed cgroup peak was 308,989,952 bytes; two TSLS workers and their
+two tsserver Node helpers remained in the bounded cgroup.
+
+The sole failure was `config/ancestor-node-modules-created`. Adding the previously
+absent ancestor directory to a warm project returned
+`{"locations":[],"reason":"typescript_external_lookup","status":"stale","truncated":false}`
+on the initial query and both allowed follow-ups. The harness requires an
+unsupported-input rejection (`unavailable` or `invalid_request`) after the
+bounded transition allowance; it never received an incorrect `ok` answer.
+The test and exact location oracles remain unchanged pending the adapter owner's
+classification/lifecycle fix. No rerun has yet been justified by a source fix.
+
+Preserved evidence:
+`/tmp/codex-nav-languages/runtime-typescript-75e237f-20261024-a/receipt.json`,
+`/tmp/codex-nav-languages/runtime-typescript-75e237f-20261024-a/execve.log`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-xvt9v31k/receipt.json`.
