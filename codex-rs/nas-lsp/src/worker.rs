@@ -249,7 +249,7 @@ impl Worker {
             return unavailable(reason);
         }
         if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
-            self.shutdown().await;
+            self.retire_invalid_state(&error).await;
             return request_error(error);
         }
         let position = match to_utf16(text, query.position) {
@@ -267,10 +267,7 @@ impl Worker {
         let permit = match adapter.ready(session, deadline, cancel.clone()).await {
             Ok(permit) => permit,
             Err(error) => {
-                // A partial barrier may leave profile-local admission state
-                // incomplete even when the transport still looks healthy.
-                // A later caller must initialize a fresh session/generation.
-                self.shutdown().await;
+                self.retire_invalid_state(&error).await;
                 return request_error(error);
             }
         };
@@ -304,7 +301,7 @@ impl Worker {
             Err(error) => return request_error(error),
         };
         if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
-            self.shutdown().await;
+            self.retire_invalid_state(&error).await;
             return request_error(error);
         }
         let root = self.config.root.clone();
@@ -328,13 +325,24 @@ impl Worker {
                 match adapter.validate_inputs(deadline, cancel).await {
                     Ok(()) => response,
                     Err(error) => {
-                        self.shutdown().await;
+                        self.retire_invalid_state(&error).await;
                         request_error(error)
                     }
                 }
             }
             Ok(_) => status(Status::Stale, "files_changed_during_query"),
             Err(error) => inventory_error(error),
+        }
+    }
+
+    async fn retire_invalid_state(&mut self, error: &RequestError) {
+        // Caller cancellation/deadline alone does not invalidate a healthy
+        // generation. Profiles invalidate the session when a partial barrier
+        // cannot be reused safely, including an interrupted cold Rust barrier.
+        if !matches!(error, RequestError::Cancelled | RequestError::Timeout)
+            || !self.session.as_ref().is_some_and(Session::healthy)
+        {
+            self.shutdown().await;
         }
     }
 

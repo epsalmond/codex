@@ -292,6 +292,10 @@ the next request; handlers/request.rs reads the analysis snapshot; dispatch.rs
 returns a default while VFS is unready. A text mismatch returns Indexing, without
 request retries or sleeps. A successful text pass is cached only for that saved
 generation. Warm queries still require healthy quiescence and a fresh permit.
+An interrupted or mismatched initial text barrier invalidates that Rust session;
+a later caller starts a fresh session and repeats admission. Cancellation or a
+deadline alone preserves a healthy completed generation, including Python warm
+workers; actual input invalidity retires it. No caller performs automatic retries.
 After the text barrier, wait
 for health:ok and quiescent:true with no active work progress, then issue the
 navigation request. An initialize result, fixed delay, or first empty answer

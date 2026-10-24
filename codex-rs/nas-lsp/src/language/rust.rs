@@ -246,18 +246,27 @@ impl Adapter {
         session.wait_rust_ready(deadline, cancel.clone()).await?;
         if !self.text_barrier_done.load(Ordering::Acquire) {
             if self.text_barrier_started.swap(true, Ordering::AcqRel) {
+                session.invalidate();
                 return Err(RequestError::Indexing("rust_text_not_ready"));
             }
             for (uri, text) in &self.sources {
-                let admitted = session
+                let admitted = match session
                     .request(
                         "rust-analyzer/viewFileText",
                         json!({"uri":uri}),
                         deadline,
                         cancel.clone(),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(admitted) => admitted,
+                    Err(error) => {
+                        session.invalidate();
+                        return Err(error);
+                    }
+                };
                 if admitted.as_str() != Some(text) {
+                    session.invalidate();
                     return Err(RequestError::Indexing("rust_text_not_ready"));
                 }
             }
