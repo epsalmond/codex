@@ -260,6 +260,42 @@ async fn real_explicit_cross_crate_graph_model_changes_and_orphan_rejection() {
     assert_eq!(deleted.status, Status::Unavailable);
     assert!(deleted.locations.is_empty());
     w.shutdown().await;
+
+    // Raw-spelled cfg/test identifiers have the same compiler meaning. The
+    // explicit graph enables test here; removing it must reject this module.
+    let raw = tempfile::tempdir().unwrap();
+    let mut model = graph();
+    model["crates"].as_array_mut().unwrap().truncate(1);
+    model["crates"][0]["cfg"] = json!(["test"]);
+    put(raw.path(), "rust-project.json", &model.to_string());
+    put(
+        raw.path(),
+        "lib.rs",
+        "#[r#cfg(r#test)] mod tests;\npub fn symbol() {}\n",
+    );
+    put(
+        raw.path(),
+        "tests.rs",
+        "pub fn test_user() { crate::symbol(); }\n",
+    );
+    let mut w = Worker::start(config(raw.path()), deadline(), CancellationToken::new())
+        .await
+        .unwrap();
+    let refs = query(&mut w, raw.path(), "lib.rs", Operation::References, 2, 8).await;
+    assert_eq!(refs.status, Status::Ok, "{refs:?}");
+    assert_eq!(
+        refs.locations
+            .iter()
+            .map(|l| l.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["lib.rs", "tests.rs"]
+    );
+    model["crates"][0]["cfg"] = json!([]);
+    put(raw.path(), "rust-project.json", &model.to_string());
+    let disabled = query(&mut w, raw.path(), "tests.rs", Operation::References, 1, 8).await;
+    assert_eq!(disabled.status, Status::Unavailable, "{disabled:?}");
+    assert_eq!(disabled.reason.as_deref(), Some("unsupported_rust_source"));
+    w.shutdown().await;
 }
 
 #[tokio::test]
@@ -380,8 +416,17 @@ async fn real_existing_wezterm_base91_own_symbol_navigation() {
 }
 
 const MOCK: &str = r#"
-import json,sys
-mode=sys.argv[1];opened={};barriers=0
+import json,socket,sys
+mode=sys.argv[1];opened={};barriers=0;recover=mode=='recover'
+
+def checkpoint(kind):
+    with socket.socket(socket.AF_UNIX) as channel:
+        channel.connect(sys.argv[2]);channel.sendall((kind+'\n').encode());reply=b''
+        while not reply.endswith(b'\n'):
+            chunk=channel.recv(64)
+            if not chunk:break
+            reply+=chunk
+        return reply.decode().strip()
 
 def send(v):
     b=json.dumps(dict(jsonrpc='2.0',**v)).encode();sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(b)).encode()+b);sys.stdout.buffer.flush()
@@ -396,6 +441,7 @@ while True:
         k,v=line.decode().strip().split(':',1);headers[k.lower()]=v.strip()
     msg=json.loads(sys.stdin.buffer.read(int(headers['content-length'])));method=msg.get('method')
     if method=='initialize':
+        if recover:mode=checkpoint('initialize')
         opts=msg['params']['initializationOptions']
         assert opts['cargo']['sysroot'] is None
         assert opts['cargo']['autoreload'] is True
@@ -411,6 +457,7 @@ while True:
     elif method=='rust-analyzer/viewFileText':
         assert set(msg['params'])=={'uri'}
         barriers+=1
+        if mode=='cancel':checkpoint('barrier')
         if mode=='barrier-once': assert barriers<=len(opened)
         send(dict(id=msg['id'],result='' if mode=='mismatch' else opened[msg['params']['uri']]))
     elif method in ('textDocument/definition','textDocument/references'):
@@ -418,7 +465,8 @@ while True:
         if mode=='epoch': status(quiet=False);status()
         if mode=='change-config':
             with open('rust-analyzer.toml','w') as f:f.write('')
-        send(dict(id=msg['id'],result=[]))
+        locations=[dict(uri=msg['params']['textDocument']['uri'],range=dict(start=dict(line=0,character=7),end=dict(line=0,character=13)))] if recover else []
+        send(dict(id=msg['id'],result=locations))
     elif method=='shutdown':send(dict(id=msg['id'],result=None))
     elif method=='exit':sys.exit(0)
 "#;
@@ -644,4 +692,164 @@ async fn deeply_nested_source_returns_unavailable_before_server_launch() {
     .unwrap();
     assert_eq!(result.status, Status::Unavailable);
     assert_eq!(result.reason.as_deref(), Some("unsupported_source_syntax"));
+}
+
+#[tokio::test]
+async fn raw_cfg_disabled_source_is_unavailable_before_server_launch() {
+    for source in [
+        "#[r#cfg(any())] mod disabled;",
+        "#![r#cfg(any())] mod disabled;",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        simple(dir.path());
+        put(dir.path(), "src/lib.rs", source);
+        put(dir.path(), "src/disabled.rs", "pub fn hidden() {}\n");
+        let result = Worker::start(
+            mocked(dir.path(), "barrier-once"),
+            deadline(),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(result.status, Status::Unavailable);
+        assert_eq!(result.reason.as_deref(), Some("unsupported_rust_source"));
+    }
+}
+
+#[tokio::test]
+async fn first_text_barrier_error_retires_session_then_survivor_is_exact() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{UnixListener, UnixStream};
+
+    async fn checkpoint(
+        listener: &UnixListener,
+        expected: &str,
+        reply: Option<&str>,
+    ) -> UnixStream {
+        let control_deadline = deadline();
+        let (stream, _) = tokio::time::timeout_at(control_deadline, listener.accept())
+            .await
+            .expect("mock initialize/barrier event within request budget")
+            .unwrap();
+        let mut stream = BufReader::new(stream);
+        let mut message = String::new();
+        tokio::time::timeout_at(control_deadline, stream.read_line(&mut message))
+            .await
+            .expect("mock control message within request budget")
+            .unwrap();
+        assert_eq!(message.trim_end(), expected);
+        if let Some(reply) = reply {
+            stream
+                .get_mut()
+                .write_all(format!("{reply}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        stream.into_inner()
+    }
+
+    for first in ["cancel", "mismatch"] {
+        let dir = tempfile::tempdir().unwrap();
+        let control = tempfile::tempdir().unwrap();
+        let socket = control.path().join("barrier.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        simple(dir.path());
+        let mut config = mocked(dir.path(), "recover");
+        Arc::make_mut(&mut config)
+            .args
+            .push(socket.to_str().unwrap().into());
+        let (started, _) = tokio::join!(
+            Worker::start(config, deadline(), CancellationToken::new()),
+            checkpoint(&listener, "initialize", Some(first)),
+        );
+        let mut worker = started.unwrap();
+        let original_pid = worker.process_id();
+        let first_response = if first == "cancel" {
+            let cancel = CancellationToken::new();
+            let requested = worker.query(
+                WorkerQuery {
+                    operation: Operation::References,
+                    path: dir.path().join("src/lib.rs"),
+                    position: Position { line: 1, column: 8 },
+                    max_results: 100,
+                },
+                deadline(),
+                cancel.clone(),
+            );
+            let (response, blocked_barrier) = tokio::join!(requested, async {
+                let channel = checkpoint(&listener, "barrier", None).await;
+                cancel.cancel();
+                channel
+            });
+            // Hold the server's barrier channel until session retirement has
+            // completed, so it cannot accidentally answer before cancellation.
+            drop(blocked_barrier);
+            response
+        } else {
+            query(
+                &mut worker,
+                dir.path(),
+                "src/lib.rs",
+                Operation::References,
+                1,
+                8,
+            )
+            .await
+        };
+        assert_eq!(
+            first_response.status,
+            if first == "cancel" {
+                Status::Cancelled
+            } else {
+                Status::Indexing
+            },
+            "{first}: {first_response:?}"
+        );
+        assert!(first_response.locations.is_empty());
+        assert_eq!(
+            worker.process_id(),
+            None,
+            "{first}: failed admission must retire the session"
+        );
+        let (survivor, _) = tokio::join!(
+            query(
+                &mut worker,
+                dir.path(),
+                "src/lib.rs",
+                Operation::References,
+                1,
+                8
+            ),
+            checkpoint(&listener, "initialize", Some("exact")),
+        );
+        assert_eq!(survivor.status, Status::Ok, "{first}: {survivor:?}");
+        let expected = vec![Location {
+            path: "src/lib.rs".into(),
+            start: Position { line: 1, column: 8 },
+            end: Position {
+                line: 1,
+                column: 14,
+            },
+        }];
+        assert_eq!(
+            survivor.locations, expected,
+            "{first}: survivor must pass its own text barrier and return exact locations"
+        );
+        let survivor_pid = worker.process_id();
+        assert_ne!(survivor_pid, original_pid);
+        let warm = query(
+            &mut worker,
+            dir.path(),
+            "src/lib.rs",
+            Operation::References,
+            1,
+            8,
+        )
+        .await;
+        assert_eq!(warm.status, Status::Ok, "{warm:?}");
+        assert_eq!(warm.locations, expected);
+        assert_eq!(worker.process_id(), survivor_pid);
+        worker.shutdown().await;
+    }
 }

@@ -124,7 +124,7 @@ impl Adapter {
             let file: syn::File = syn::parse2(tokens).map_err(|_| "unsupported_rust_source")?;
             // File-level cfg can hide the entire module closure. This profile
             // only models cfg on ordinary items and exact cfg(test) modules.
-            if file.attrs.iter().any(|a| a.path().is_ident("cfg")) {
+            if file.attrs.iter().any(|a| path_is(a.path(), "cfg")) {
                 return Err("unsupported_rust_source");
             }
             let mut audit = Audit {
@@ -600,6 +600,17 @@ fn unsafe_tokens(tokens: TokenStream) -> bool {
         _ => false,
     })
 }
+// syn's is_ident compares the raw spelling. Rust treats r#cfg/r#test as
+// their ordinary identifiers, so closure selection must normalize them too.
+fn path_is(path: &syn::Path, expected: &str) -> bool {
+    path.leading_colon.is_none()
+        && path.segments.len() == 1
+        && path.segments.first().is_some_and(|segment| {
+            matches!(&segment.arguments, syn::PathArguments::None)
+                && segment.ident.to_string().trim_start_matches("r#") == expected
+        })
+}
+
 struct Module {
     name: String,
     inline: Option<Vec<Module>>,
@@ -619,11 +630,11 @@ fn modules(items: &[syn::Item]) -> Result<Vec<Module>> {
             let mut test = false;
             {
                 for attr in &m.attrs {
-                    if attr.path().is_ident("cfg") {
+                    if path_is(attr.path(), "cfg") {
                         if test
                             || !attr
                                 .parse_args::<syn::Path>()
-                                .is_ok_and(|p| p.is_ident("test"))
+                                .is_ok_and(|p| path_is(&p, "test"))
                         {
                             return Err("unsupported_rust_source");
                         }
@@ -837,6 +848,44 @@ mod tests {
                 parse(&[("src/lib.rs", ""), (target, "fn main() {}")]),
                 Err("unsupported_cargo_project")
             ));
+        }
+    }
+    #[test]
+    fn raw_cfg_identifiers_follow_the_same_module_closure_rules() {
+        for source in [
+            "#[r#cfg(any())] mod disabled;",
+            "#![r#cfg(any())] mod disabled;",
+        ] {
+            assert!(
+                matches!(
+                    parse(&[
+                        ("src/lib.rs", source),
+                        ("src/disabled.rs", "pub fn hidden() {}")
+                    ]),
+                    Err("unsupported_rust_source")
+                ),
+                "{source}"
+            );
+        }
+        assert!(
+            parse(&[
+                ("src/lib.rs", "#[r#cfg(r#test)] mod tests;"),
+                ("src/tests.rs", "pub fn test_user() {}")
+            ])
+            .unwrap()
+            .validate_query(Path::new("src/tests.rs"))
+            .is_ok()
+        );
+        let no_test = json!({"crates":[{"root_module":"src/lib.rs","edition":"2021","deps":[],"cfg":[],"is_workspace_member":true}]});
+        for cfg in ["#[r#cfg(test)]", "#[cfg(r#test)]", "#[r#cfg(r#test)]"] {
+            assert!(
+                parse(&[
+                    ("rust-project.json", &no_test.to_string()),
+                    ("src/lib.rs", &format!("{cfg} mod tests;")),
+                    ("src/tests.rs", "pub fn test_user() {}")
+                ])
+                .is_err()
+            );
         }
     }
     #[test]
