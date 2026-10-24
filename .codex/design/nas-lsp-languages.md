@@ -175,8 +175,13 @@ isolation and a malicious plugin sentinel which must never run. Record which
 JS/TSX/declaration/config features are actually exercised, rather than expanding
 claims from extension admission alone.
 
-Implemented TS profile: all JSDoc import forms are rejected with the pinned
-scanner; no partial import discovery is accepted. Declaration maps and
+Implemented TS profile: all static import/export declarations, including
+namespace re-exports, are collected with the pinned AST as well as preprocessing.
+All JSDoc import forms and JSX import-source/runtime
+pragmas are rejected with the pinned scanner; no partial import discovery is
+accepted. An ancestor node_modules candidate makes the profile unavailable and
+retires the worker, so restoring the absent guard starts a fresh session.
+Declaration maps and
 sourceMappingURL redirects, dynamic unresolved imports, conditional/pattern
 package mappings, imports/typesVersions and unhandled compiler resolution
 options are also explicit unsupported cases. Worker qualification exercises .ts,

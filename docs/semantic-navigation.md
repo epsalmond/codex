@@ -210,7 +210,8 @@ inside the registered root. Configuration inheritance must stay in that
 inventory. Project references, nonempty `compilerOptions.plugins` (including
 inherited or nested plugins), unsupported resolution settings, and unresolved
 external dependencies are rejected. The pinned TypeScript parser inspects
-source/configuration as data. JSDoc import forms, dynamic imports that cannot
+source/configuration as data. JSDoc import forms, JSX import-source/runtime
+pragmas, dynamic imports that cannot
 be resolved statically, declaration maps and source-map redirects are rejected.
 Conditional/pattern package mappings, package imports and `typesVersions` are
 also outside this profile. Triple-slash inputs must resolve inside the saved
@@ -222,8 +223,10 @@ tsserver. No npm scripts or type installation run during navigation.
 
 Ancestor `node_modules` lookup candidates must be absent. The adapter checks
 these negative inputs before and after each query; the explicit root package
-and config stop parent discovery. Creating an outside lookup input invalidates a
-result. Arbitrary external mutable npm packages are unsupported. A bounded
+and config stop parent discovery. Creating an outside lookup input makes the
+profile unavailable and retires the server; removing it requires a fresh server
+before navigation resumes. Arbitrary external mutable npm packages are
+unsupported. A bounded
 in-root dependency still counts toward inventory limits, including its package
 metadata. The only external project inputs admitted by this profile are the
 operator-pinned TypeScript library files. Keep the runtime and its ancestor

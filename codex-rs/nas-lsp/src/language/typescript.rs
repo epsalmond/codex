@@ -160,7 +160,7 @@ impl Adapter {
             // candidates; exists() would incorrectly treat those as absent.
             match std::fs::symlink_metadata(candidate) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                _ => return Err(RequestError::Stale("typescript_external_lookup")),
+                _ => return Err(RequestError::Failure("typescript_external_lookup")),
             }
         }
         Ok(())
@@ -478,6 +478,17 @@ process.stdin.on('end', () => {
       const sf=ts.createSourceFile(p,text,ts.ScriptTarget.Latest,true);
       if(sf.parseDiagnostics.length)fail('source syntax');
       function visit(n) {
+        // preProcessFile omits namespace re-exports in the pinned compiler.
+        // Collect every static declaration from its parsed AST as well.
+        if((ts.isImportDeclaration(n)||ts.isExportDeclaration(n)) && n.moduleSpecifier) {
+          if(!ts.isStringLiteralLike(n.moduleSpecifier))fail('module declaration');
+          imports.add(n.moduleSpecifier.text);
+        }
+        if(ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference)) {
+          const spec=n.moduleReference.expression;
+          if(!spec||!ts.isStringLiteralLike(spec))fail('import equals');
+          imports.add(spec.text);
+        }
         if(ts.isCallExpression(n) && (n.expression.kind===ts.SyntaxKind.ImportKeyword ||
             (ts.isIdentifier(n.expression)&&n.expression.text==='require'))) {
           if(n.arguments.length!==1||!ts.isStringLiteralLike(n.arguments[0]))fail('dynamic module');
@@ -492,11 +503,12 @@ process.stdin.on('end', () => {
       visit(sf);
       // The pinned scanner identifies comment tokens, so strings containing
       // import spellings remain harmless. Conservatively reject JSDoc import
-      // forms rather than letting preProcessFile silently omit their inputs.
+      // forms and JSX runtime/import-source pragmas rather than letting
+      // preProcessFile silently omit their implicit module inputs.
       const scanner=ts.createScanner(ts.ScriptTarget.Latest,false,ts.LanguageVariant.Standard,text);
       for(let token=scanner.scan();token!==ts.SyntaxKind.EndOfFileToken;token=scanner.scan()) {
         if((token===ts.SyntaxKind.MultiLineCommentTrivia||token===ts.SyntaxKind.SingleLineCommentTrivia) &&
-            /@import\b|\bimport\s*\(|[#@]\s*sourceMappingURL\s*=/.test(scanner.getTokenText()))fail('unsupported jsdoc import');
+            /@import\b|\bimport\s*\(|@jsx(?:ImportSource|Runtime)\b|[#@]\s*sourceMappingURL\s*=/i.test(scanner.getTokenText()))fail('unsupported source pragma');
       }
       for(const spec of imports) {
         if(!spec||/[\\\0]/.test(spec)||/^[a-z][a-z0-9+.-]*:/i.test(spec)||spec.startsWith('#'))fail('module syntax');

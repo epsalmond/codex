@@ -272,8 +272,18 @@ async fn real_safety_rejects_before_server_spawn_and_never_runs_plugin() {
             "main.ts",
             "/** @type {import('../outside').T} */\nexport const x=1;",
         ),
+        (
+            "main.tsx",
+            "/** @jsxImportSource ../outside */\nexport const x = <div />;",
+        ),
+        (
+            "main.tsx",
+            "/** @jsxRuntime automatic */\nexport const x = <div />;",
+        ),
         ("main.ts", "import '../outside';"),
         ("main.ts", "export {x} from '../outside';"),
+        ("main.ts", "export * as ns from '../outside';"),
+        ("main.ts", "export type * as ns from '../outside';"),
         ("main.ts", "import x = require('../outside');"),
         ("main.ts", "const x = require('../outside');"),
         ("main.ts", "import('../outside');"),
@@ -312,6 +322,13 @@ async fn real_safety_rejects_before_server_spawn_and_never_runs_plugin() {
         let root = dir.path();
         simple(root);
         put(root, target, text);
+        if *target == "main.tsx" {
+            put(
+                root,
+                "tsconfig.json",
+                r#"{"compilerOptions":{"jsx":"preserve","module":"ESNext","moduleResolution":"Bundler","types":[]},"include":["*.ts","*.tsx"]}"#,
+            );
+        }
         if *target == "base.json" {
             put(root, "tsconfig.json", r#"{"extends":"./base.json"}"#);
         }
@@ -426,11 +443,33 @@ async fn real_alias_and_package_metadata_changes_deletion_and_negative_ancestor_
     put(&root, "tsconfig.json", &saved_config);
     let recovered = query(&mut worker, &root, Operation::Definition, "main.ts", 2, 1).await;
     assert_eq!(recovered.status, Status::Ok, "{recovered:?}");
+    let before_external = query(&mut worker, &root, Operation::References, "main.ts", 2, 1).await;
+    assert_eq!(before_external.status, Status::Ok, "{before_external:?}");
+    assert!(!before_external.locations.is_empty());
+    let before_external_pid = worker.process_id();
     std::fs::create_dir(parent.path().join("node_modules")).unwrap();
     let external = query(&mut worker, &root, Operation::Definition, "main.ts", 2, 1).await;
-    assert_eq!(external.status, Status::Stale, "{external:?}");
+    assert_eq!(external.status, Status::Unavailable, "{external:?}");
     assert!(external.locations.is_empty());
+    assert!(worker.process_id().is_none());
+    let still_external = query(&mut worker, &root, Operation::Definition, "main.ts", 2, 1).await;
+    assert_eq!(
+        still_external.status,
+        Status::Unavailable,
+        "{still_external:?}"
+    );
+    assert!(worker.process_id().is_none());
     std::fs::remove_dir(parent.path().join("node_modules")).unwrap();
+    let recovered = query(&mut worker, &root, Operation::Definition, "main.ts", 2, 1).await;
+    assert_eq!(recovered.status, Status::Ok, "{recovered:?}");
+    assert_eq!(
+        recovered.locations[0].path,
+        "node_modules/local-package/b.d.ts"
+    );
+    assert_ne!(worker.process_id(), before_external_pid);
+    let after_external = query(&mut worker, &root, Operation::References, "main.ts", 2, 1).await;
+    assert_eq!(after_external.status, Status::Ok, "{after_external:?}");
+    assert_eq!(after_external.locations, before_external.locations);
     worker.shutdown().await;
 }
 
@@ -464,6 +503,16 @@ async fn real_js_tsx_declarations_and_local_config_inheritance() {
         "use.js",
         "import {widget} from './widget';\nwidget;\n",
     );
+    put(
+        root.path(),
+        "barrel.ts",
+        "export * as widgets from './widget';\nexport type * as declared from './types';\n",
+    );
+    put(
+        root.path(),
+        "namespace.ts",
+        "import {widgets} from './barrel';\nwidgets.widget;\n",
+    );
     let mut worker = start(root.path()).await;
     let js = query(
         &mut worker,
@@ -476,6 +525,17 @@ async fn real_js_tsx_declarations_and_local_config_inheritance() {
     .await;
     assert_eq!(js.status, Status::Ok, "{js:?}");
     assert_eq!(js.locations[0].path, "widget.tsx");
+    let namespace = query(
+        &mut worker,
+        root.path(),
+        Operation::Definition,
+        "namespace.ts",
+        2,
+        9,
+    )
+    .await;
+    assert_eq!(namespace.status, Status::Ok, "{namespace:?}");
+    assert_eq!(namespace.locations[0].path, "widget.tsx");
     let dts = query(
         &mut worker,
         root.path(),

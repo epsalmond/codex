@@ -249,6 +249,7 @@ impl Worker {
             return unavailable(reason);
         }
         if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
+            self.shutdown().await;
             return request_error(error);
         }
         let position = match to_utf16(text, query.position) {
@@ -297,6 +298,7 @@ impl Worker {
             Err(error) => return request_error(error),
         };
         if let Err(error) = adapter.validate_inputs(deadline, cancel.clone()).await {
+            self.shutdown().await;
             return request_error(error);
         }
         let root = self.config.root.clone();
@@ -319,7 +321,10 @@ impl Worker {
             Ok(generation) if generation == self.generation => {
                 match adapter.validate_inputs(deadline, cancel).await {
                     Ok(()) => response,
-                    Err(error) => request_error(error),
+                    Err(error) => {
+                        self.shutdown().await;
+                        request_error(error)
+                    }
                 }
             }
             Ok(_) => status(Status::Stale, "files_changed_during_query"),
