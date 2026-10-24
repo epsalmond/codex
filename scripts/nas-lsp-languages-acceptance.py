@@ -156,6 +156,18 @@ class Runner(shared.Runner):
         self.corpus = CORPORA[setup["language"]]
         self.limits = THRESHOLDS[setup["language"]]
 
+    def snapshot(self, phase):
+        snap = {"phase": phase, **shared.process_snapshot(self.broker_pid, self.executable)}
+        # TSLS and its tsserver helpers use the same pinned Node executable.
+        # Pool capacity counts direct broker children; preserve every Node PID
+        # separately for descendant containment, cancellation and shutdown.
+        snap["pool_workers"] = [row for row in snap["workers"] if row["ppid"] == self.broker_pid]
+        snap["runtime_helpers"] = [row for row in snap["workers"] if row["ppid"] != self.broker_pid]
+        self.snapshots.append(snap)
+        self.check(f"cgroup/{phase}", snap["bounded"] and snap["descendants_same_cgroup"])
+        self.check(f"workers/{phase}", len(snap["pool_workers"]) <= 2, actual=len(snap["pool_workers"]), runtime_processes=len(snap["workers"]))
+        return snap
+
     def request(self, query, root_b=False, **overrides):
         at = self.corpus.query_location(query, "shifted" if root_b else "base")
         return {"socket_path": self.setup["socket_path"],
