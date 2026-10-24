@@ -285,7 +285,10 @@ become a graph member just because its text was admitted. Orphans and `build.rs`
 cannot be queried. All inventoried files still contribute to freshness.
 
 The worker supplies its validated graph inline and disables sysroot discovery,
-Cargo autoreload, build scripts, proc macros, and check/check-on-save commands.
+build scripts, proc macros, and check/check-on-save commands. The server's reload
+queue is enabled only to load this fixed inline graph; manifest discovery,
+detached files and discovery commands are absent. Explicit graph cfg values
+control test-module membership, with automatic test cfg injection disabled.
 It invokes neither Cargo metadata nor repository build/check commands. Repository
 `rust-analyzer.toml`/`.rust-analyzer.toml` settings are rejected; private user
 configuration directories and a clean environment prevent inherited toolchain,

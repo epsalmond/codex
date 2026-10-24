@@ -251,7 +251,15 @@ sysroot discovery: this initial profile covers the explicitly described local
 crate graph, without std/external dependency or generated/proc-macro semantics.
 Use linkedProjects inline, cargo.sysroot:null, cargo.buildScripts.enable:false,
 procMacro.enable:false, checkOnSave:false, check.enable:false as supported by
-the pinned version, cargo.autoreload:false and no workspace discovery commands.
+the pinned version, cfg.setTest:false, and no workspace discovery commands.
+Set cargo.autoreload:true only for this nonempty validated inline graph. In the
+pinned server, false leaves the initial queued workspace load undrained and
+permanently reports unhealthy pending reload; a reloadWorkspace request merely
+queues the same blocked operation. With inline linkedProjects, the enabled queue
+reloads that fixed graph through load_inline, bypassing manifest discovery. No
+detached files, discovery command, sysroot or sysroot source is supplied, so this
+does not enable Cargo discovery or builds. Explicit cfg values alone control
+test-module membership; the server's default injected test cfg is disabled.
 Reject saved rust-analyzer.toml/.rust-analyzer.toml wherever RA could discover
 them, and isolate user settings with private HOME/XDG_CONFIG_HOME. The LSP client
 returns only these immutable settings if asked. Sanitize inherited command
@@ -264,7 +272,11 @@ variables. The supporting process-real trace
 `/tmp/codex-nav-languages/inline-rust-probe/execve.log` saw only RA plus four
 rustc version/target-cfg/layout commands, no Cargo/rustup/build/check despite
 hostile Cargo config/build.rs/rust-toolchain files. Final qualification repeats
-this sentinel evidence; the probe alone is not adapter acceptance.
+this sentinel evidence; the probe alone is not adapter acceptance. The original
+false-autoreload probe established execution restrictions but did not establish
+healthy readiness. Qualification must demonstrate healthy quiescence and exact
+references with the enabled inline-graph reload queue, retaining every existing
+health, admitted-text and readiness-epoch check.
 
 Enable experimental.serverStatusNotification. After complete admission, first
 wait for healthy quiescence, then issue
