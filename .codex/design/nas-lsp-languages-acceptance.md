@@ -177,3 +177,45 @@ Preserved evidence:
 `/tmp/codex-nav-languages/runtime-typescript-75e237f-20261024-a/receipt.json`,
 `/tmp/codex-nav-languages/runtime-typescript-75e237f-20261024-a/execve.log`,
 native supervisor `/home/eric/.local/state/agent-jobs/job-xvt9v31k/receipt.json`.
+
+### Corrected TypeScript build: shared cancellation regression
+
+Source `854d6d37c84420eac0ef5bd3b7bc62c498cfeb44` changes unsupported-input
+classification and retires sessions after invalid external inputs or incomplete
+readiness. Its build receipt is
+`/home/eric/.local/state/agent-jobs/job-mo9svfam/receipt.json`, log
+`/home/eric/.local/state/wait-for-build/build-bb7kb02r/build.log`. Private broker
+copy `/tmp/codex-nav-languages/artifacts-854d6d37c8/codex-nas-lsp` has SHA-256
+`17e8033f87c2d69ba53b6222985b5a77ca48956ac065d2cfcac7382cac0039d1`;
+the driver hash remains `a314cc5c89934bec218517929595c09d41348dd786914f2db400447117a8f7fc`.
+
+The unchanged Python rerun completed **555/556**: all exact answers passed, but
+`cancel/same_surviving_processes` failed. Two warm worker identities existed
+before cancellation, and only the untouched B worker remained afterward. The
+cancelled A request returned `cancelled` in 7.050 ms; its concurrent survivor
+answered exactly in 6.631 ms. This does not meet the same-process acceptance
+gate. The new unconditional session retirement in shared validation/readiness
+error paths is the source-level candidate; cancellation must be distinguished
+from invalid/incomplete state before any rerun. Warm p95 was 8.650 ms; byte
+accounting was unchanged at 4,107 / 18,162.
+
+Preserved receipt:
+`/tmp/codex-nav-languages/runtime-python-854d6d3-20261024-a/receipt.json`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-kj_orxi1/receipt.json`.
+
+The strict TypeScript rerun at this same head completed **742/742**, with every
+location oracle and both source paths unchanged. The six-check reduction comes
+only from eliminating two stale follow-ups, each of which adds three transport
+checks. Ancestor creation returned `unavailable` in 13.593 ms; removing it
+restored all six exact references in the same broker/socket in 1,015.579 ms.
+Cold declaration references were 996.251 ms (A) and 984.208 ms (B); the new cold
+empty root was 1,059.143 ms. Warm p95 was 432.717 ms, navigation/baseline bytes
+remained 4,500 / 21,452 (20.977%), cgroup peak was 309,276,672 bytes, and shutdown
+completed in 3.197 ms with exit zero and no observed survivors. Cancellation
+identities, independent exec observation, pins and output budgets all passed.
+
+TypeScript passing receipt:
+`/tmp/codex-nav-languages/runtime-typescript-854d6d3-20261024-a/receipt.json`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-35oegr3y/receipt.json`.
+This head still fails the separate Python cancellation gate above and is not
+qualified as a complete multi-language delivery.
