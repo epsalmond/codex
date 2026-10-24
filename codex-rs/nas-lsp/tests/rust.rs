@@ -199,6 +199,32 @@ async fn real_cargo_corpus_cold_reverse_references_changes_and_separate_roots() 
             pid = wa.process_id();
         }
         assert_eq!(wb.process_id(), other_pid);
+        for (worker, root) in [(&wa, a.path()), (&wb, b.path())] {
+            let pid = worker.process_id().unwrap();
+            let threads = std::fs::read_dir(format!("/proc/{pid}/task"))
+                .unwrap()
+                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path().join("comm")).ok())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                threads
+                    .iter()
+                    .filter(|name| name.starts_with("RayonWorker"))
+                    .count(),
+                2,
+                "global Rayon pool must be bounded independently of numThreads: {threads:?}"
+            );
+            assert!(
+                threads.len() <= 20,
+                "unexpected analyzer task budget: {threads:?}"
+            );
+            assert!(std::fs::read_dir(root).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("rustc-ice-")
+            }));
+        }
     }
     assert_eq!(checks, 84);
     println!("rust two-root corpus total={:?}", cold.elapsed());
@@ -416,7 +442,7 @@ async fn real_existing_wezterm_base91_own_symbol_navigation() {
 }
 
 const MOCK: &str = r#"
-import json,socket,sys
+import json,os,pathlib,socket,sys
 mode=sys.argv[1];opened={};barriers=0;recover=mode=='recover'
 
 def checkpoint(kind):
@@ -449,6 +475,14 @@ while True:
         assert opts['linkedProjects'][0]['crates']
         assert opts['cargo']['buildScripts']['enable'] is False
         assert opts['procMacro']['enable'] is False
+        assert os.environ['RAYON_NUM_THREADS']=='2'
+        crash_dir=pathlib.Path(os.environ['RUSTC_ICE'])
+        assert crash_dir.is_absolute() and crash_dir.is_dir()
+        assert crash_dir == pathlib.Path(os.environ['TMPDIR'])
+        assert not crash_dir.is_relative_to(pathlib.Path.cwd())
+        # Exercise the compiler's directory-based report naming contract with
+        # a controlled diagnostic file, without deliberately crashing rustc.
+        (crash_dir/'rustc-ice-mock.txt').write_text('private diagnostic')
         assert msg['params']['capabilities']['experimental']['serverStatusNotification'] is True
         send(dict(id=msg['id'],result=dict(capabilities=dict(definitionProvider=True,referencesProvider=True,textDocumentSync=1))))
         if mode!='missing':status('warning' if mode=='warning' else 'ok',mode!='nonquiescent')

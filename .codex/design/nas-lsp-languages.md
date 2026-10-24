@@ -273,7 +273,16 @@ variables) for the relevant child profile; never install a global environment.
 Require registered canonical real rustc: even inline projects invoke compiler
 introspection in the pinned RA. Set a clean env, fixed RUSTC/PATH, private
 HOME/CARGO_HOME/XDG_CONFIG_HOME/TMPDIR, offline policy and no wrappers/toolchain
-variables. The supporting process-real trace
+variables. Set Rust-only RAYON_NUM_THREADS=2 as well as numThreads:2: the pinned
+RA initializes a separate global Rayon pool from the environment before project
+configuration. Both pools must fit two live workers plus compiler helpers inside
+the unchanged 64-task cap. Set RUSTC_ICE to the private child tmp directory; pinned
+rustc appends its crash-report filename there instead of writing into a project.
+Crash reports remain ordinary inventory inputs if an unrelated tool creates
+them inside a project; no freshness exclusions are added. These controls follow
+the pinned [RA global pool initialization](https://github.com/rust-lang/rust-analyzer/blob/2026-10-19/crates/rust-analyzer/src/bin/main.rs#L187)
+and [compiler report-directory selection](https://github.com/rust-lang/rust/blob/88d9e12ae178fab0fb5cc050a94da85685d449ea/compiler/rustc_driver_impl/src/lib.rs#L1408).
+The supporting process-real trace
 `/tmp/codex-nav-languages/inline-rust-probe/execve.log` saw only RA plus four
 rustc version/target-cfg/layout commands, no Cargo/rustup/build/check despite
 hostile Cargo config/build.rs/rust-toolchain files. Final qualification repeats

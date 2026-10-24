@@ -158,7 +158,15 @@ impl ChildEnvironment {
             .env("LANG", "C.UTF-8")
             .env("CARGO_NET_OFFLINE", "true");
         if let Some(rustc) = &self.rustc {
-            command.env("RUSTC", rustc);
+            // RA's global Rayon pool is independent of its numThreads option.
+            // Bound both pools so two workers leave room for rustc helpers
+            // inside the broker's unchanged 64-task cgroup ceiling.
+            command
+                .env("RUSTC", rustc)
+                .env("RAYON_NUM_THREADS", "2")
+                // The pinned compiler treats this value as a report directory.
+                // Diagnostic crashes must not create new workspace inputs.
+                .env("RUSTC_ICE", self.scratch.path().join("tmp"));
         }
     }
 }

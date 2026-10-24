@@ -296,7 +296,11 @@ It invokes neither Cargo metadata nor repository build/check commands. Repositor
 `rust-analyzer.toml`/`.rust-analyzer.toml` settings are rejected; private user
 configuration directories and a clean environment prevent inherited toolchain,
 wrapper, and user settings from selecting commands. The pinned compiler performs
-fixed version/target introspection. Navigation covers the supported local graph;
+fixed version/target introspection.
+Both analyzer thread pools are capped at two threads so two workers and compiler
+helpers fit the 64-task budget. Compiler crash reports go to the private child
+temporary directory instead of creating saved project inputs.
+Navigation covers the supported local graph;
 standard-library/external dependency semantics, generated code, and proc-macro
 expansion are outside this profile. It does not qualify a dependency-heavy Cargo
 workspace such as Codex. The readiness barrier verifies admitted text, server
