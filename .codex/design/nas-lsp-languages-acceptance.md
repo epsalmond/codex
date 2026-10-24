@@ -219,3 +219,63 @@ TypeScript passing receipt:
 native supervisor `/home/eric/.local/state/agent-jobs/job-35oegr3y/receipt.json`.
 This head still fails the separate Python cancellation gate above and is not
 qualified as a complete multi-language delivery.
+
+### Assembled adapter and cancellation-fix build
+
+The assembled source is `bf3da3fbc5ad367b3f11aa1c34558b8df109b198`; build
+receipt `/home/eric/.local/state/agent-jobs/job-_9xlkuae/receipt.json`, log
+`/home/eric/.local/state/wait-for-build/build-y1ritr70/build.log`.
+Private copies in `/tmp/codex-nav-languages/artifacts-bf3da3fbc5/` preserve broker
+SHA-256 `6351a5670ba41e9675e1c8ea436d2af1e8d481ae92b9e622d64d23f9b6de1244`
+and driver SHA-256
+`a314cc5c89934bec218517929595c09d41348dd786914f2db400447117a8f7fc`.
+Native runs use harness checkout
+`84d56aaf94384b77857fa851812b727c5ec8646e`, language harness SHA-256
+`432dbea4fc8c1dfe85ede11264028e15f9f5513d212c0e4730712ba920abb7a0`,
+and unchanged Python harness SHA-256
+`9006c8600dc8020c3ad1c32d9f05cde9325b770499f7297a35bd0a6f06ebefc3`.
+
+Python completed **556/556**, including same-worker cancellation retention,
+with warm p95 9.015 ms, 4,107 / 18,162 response/baseline bytes, and 15.385 ms
+clean shutdown. Evidence:
+`/tmp/codex-nav-languages/runtime-python-bf3da3f-20261024-a/receipt.json`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-xp1xnw2o/receipt.json`.
+
+TypeScript at this assembled head passed **742/742**. Cold A/B declaration
+references were 1,131.519 / 1,692.197 ms, cold empty 1,624.276 ms, warm p95
+485.121 ms, bytes 4,500 / 21,452 (20.977%), peak 309,112,832 bytes, shutdown
+3.179 ms with exit zero. Receipt:
+`/tmp/codex-nav-languages/runtime-typescript-bf3da3f-20261024-a/receipt.json`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-f24bg401/receipt.json`.
+
+Rust completed **829/847**, so this assembled head is **not qualified**. All 18
+failed exact-query checks returned `stale` / `files_changed_during_query` after
+the allowed follow-ups: all 14 A changed-scenario tasks, the first A deleted
+reference query, model-deletion recovery, and both actual base91 source modes.
+Base cold/warm queries, shifted B isolation, other later deleted queries,
+cancellation/survivor identities, every safety negative, sentinel absence,
+executable pins, resource limits and shutdown passed. Warm p95 was 18.403 ms,
+bytes 4,488 / 19,922 (22.528%), peak 194,654,208 bytes, shutdown 113.564 ms exit
+zero. The actual base91 `src/lib.rs` remained hash-identical, but its navigation
+did not qualify.
+
+Read-only post-run diagnosis found actual saved-file changes: pinned rustc
+introspection crashed with `failed to create helper thread` (`Os` code 11,
+`WouldBlock`, `Resource temporarily unavailable`) under the 64-task service
+ceiling. It wrote 79 `rustc-ice-*.txt` reports in A and eight in the existing
+base91 root. The freshness guard correctly rejected the genuinely changing
+inventory. These new reports are preserved, including the source-root reports;
+no cleanup or inventory exclusion workaround was applied. Production needs to
+bound its Rust introspection concurrency and contain crash output before a
+justified rerun, while retaining the fixed kernel and exact-answer gates.
+
+The independent exec audit passed: 63 RA launches and 504 rustc introspections,
+no Cargo, rustup, build script or repository executable. Each rustc argv matched
+one of the four fixed version/cfg/target-spec introspection commands, verified by
+`/tmp/codex-nav-languages/audit-rust-adapter-execve.py` after terminal completion.
+
+Preserved Rust evidence:
+`/tmp/codex-nav-languages/runtime-rust-bf3da3f-20261024-a/receipt.json`,
+`/tmp/codex-nav-languages/runtime-rust-bf3da3f-20261024-a/execve.log`,
+`/tmp/codex-nav-languages/runtime-rust-bf3da3f-20261024-a/rustc-ice-evidence.json`,
+native supervisor `/home/eric/.local/state/agent-jobs/job-jsslh9gi/receipt.json`.
