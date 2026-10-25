@@ -100,6 +100,7 @@ impl Fixture {
             .expect("reserve cell");
         let completion = CellCompletion::new(
             reservation,
+            None,
             &session,
             turn,
             CancellationToken::new(),
@@ -146,6 +147,7 @@ async fn cell_completion_cancelled_initial_releases_without_a_close_or_owner_cyc
         .unwrap();
     let completion = CellCompletion::new(
         reservation,
+        None,
         &session,
         Arc::clone(&turn),
         CancellationToken::new(),
@@ -304,6 +306,7 @@ async fn cell_completion_unsupported_readiness_releases_at_admission() {
         .unwrap();
     let completion = CellCompletion::new(
         reservation,
+        None,
         &session,
         turn,
         CancellationToken::new(),
@@ -360,6 +363,7 @@ async fn watched_fixture(terminal: RuntimeResponse) -> Fixture {
         .expect("reserve cell");
     let completion = CellCompletion::new(
         reservation,
+        None,
         &session,
         turn,
         CancellationToken::new(),
@@ -421,4 +425,305 @@ fn cell_completion_watcher_tail_keeps_newest_bytes() {
     append_tail(&mut tail, &mut omitted, &long, 3);
     assert_eq!(tail, long);
     assert_eq!(omitted, "first\nsecond\n".len() + 3);
+}
+
+/// Uses the real delegate/native-close callback rather than releasing a completion reservation
+/// as a substitute for closing a cell.
+struct ClosingSession {
+    terminal: Result<RuntimeResponse, String>,
+    delegate: Arc<super::super::delegate::CodeModeCellDelegate>,
+    waits: std::sync::atomic::AtomicUsize,
+}
+
+impl CodeModeSession for ClosingSession {
+    fn execute<'a>(
+        &'a self,
+        _request: ExecuteRequest,
+        _delegate: Arc<dyn CodeModeSessionDelegate>,
+        _preempt: Option<CancellationToken>,
+    ) -> CodeModeSessionResultFuture<'a, StartedCell> {
+        Box::pin(async { Err("fixture starts through the native callback binding".to_owned()) })
+    }
+
+    fn wait<'a>(
+        &'a self,
+        request: WaitRequest,
+        _preempt: Option<CancellationToken>,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        Box::pin(async move {
+            self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.terminal.is_ok() {
+                self.delegate.cell_closed(&request.cell_id);
+            }
+            self.terminal.clone().map(WaitOutcome::LiveCell)
+        })
+    }
+
+    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        Box::pin(async move {
+            self.delegate.cell_closed(&cell_id);
+            Ok(WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                cell_id,
+                content_items: vec![text("cancelled-tail")],
+                code_mode_host_duration: None,
+            }))
+        })
+    }
+
+    fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct NativeFixture {
+    base: Fixture,
+    delegate: Arc<super::super::delegate::CodeModeCellDelegate>,
+    provider: Arc<ClosingSession>,
+}
+
+impl NativeFixture {
+    async fn yielded(
+        kind: crate::agent::control::WorkKind,
+        terminal: Result<RuntimeResponse, String>,
+        readiness: TerminalReadySupport,
+    ) -> Self {
+        use crate::session::step_context::StepContext;
+        use crate::tools::code_mode::delegate::CodeModeCellDelegate;
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let registration = session
+            .services
+            .local_agent_runtime
+            .reserve_owned_work(&session, &turn, "cell-call", kind, None)
+            .unwrap();
+        registration.mark_cell();
+        registration.mark_started();
+        let reservation = session
+            .services
+            .async_completions
+            .reserve_cell_with_lifecycle(session.thread_id(), &turn, "cell-call", &registration)
+            .unwrap();
+        let completion = CellCompletion::new(
+            reservation,
+            Some(registration.clone()),
+            &session,
+            Arc::clone(&turn),
+            CancellationToken::new(),
+            false,
+        );
+        let broker = Arc::clone(&session.services.code_mode_service.dispatch_broker);
+        let delegate = Arc::new(CodeModeCellDelegate {
+            broker: Arc::clone(&broker),
+            step_context: StepContext::for_test(turn),
+            tracker: Arc::new(tokio::sync::Mutex::new(
+                crate::turn_diff_tracker::TurnDiffTracker::new(),
+            )),
+            completion: Some(Arc::clone(&completion)),
+            work_registration: Mutex::new(Some(registration.clone())),
+        });
+        broker.attach_registration(&cell_id(), &delegate);
+        let provider = Arc::new(ClosingSession {
+            terminal,
+            delegate: Arc::clone(&delegate),
+            waits: Default::default(),
+        });
+        let dynamic_provider: Arc<dyn CodeModeSession> = provider.clone();
+        let mut started = started_cell();
+        started.terminal_ready_support = readiness;
+        completion.admit(&started, &dynamic_provider);
+        broker.attach_completion(&cell_id(), Arc::clone(&completion));
+        let automatic = completion.initial(&yielded());
+        if !automatic {
+            registration.mark_yielded(false);
+        }
+        drop(registration);
+        Self {
+            base: Fixture {
+                session,
+                completion,
+                _provider: dynamic_provider,
+            },
+            delegate,
+            provider,
+        }
+    }
+
+    fn live(&self) -> bool {
+        self.base
+            .session
+            .services
+            .local_agent_runtime
+            .has_live_owned_work(self.base.session.thread_id())
+    }
+}
+
+#[tokio::test]
+async fn compatibility_cell_reservation_release_keeps_native_registration_until_close() {
+    let fixture = NativeFixture::yielded(
+        crate::agent::control::WorkKind::Cell,
+        Ok(yielded()),
+        TerminalReadySupport::Unsupported,
+    )
+    .await;
+    assert!(!fixture.base.store().has_owned_work());
+    assert!(fixture.live());
+    let observation = fixture
+        .base
+        .session
+        .services
+        .local_agent_runtime
+        .work_observation();
+    let (snapshot, _updates) = observation.subscribe();
+    assert_eq!(snapshot.running_finite_work, 1);
+    assert!(!snapshot.quiescent);
+    let registration = fixture
+        .base
+        .session
+        .services
+        .code_mode_service
+        .work_registration(&cell_id())
+        .unwrap();
+    assert_eq!(registration.kind(), crate::agent::control::WorkKind::Cell);
+    drop(registration);
+    fixture.delegate.cell_closed(&cell_id());
+    fixture
+        .base
+        .session
+        .services
+        .code_mode_service
+        .mark_cell_ready_for_dispatch(&cell_id(), None);
+    assert!(
+        fixture
+            .base
+            .session
+            .services
+            .code_mode_service
+            .active_cell_ids()
+            .is_empty()
+    );
+    assert!(!fixture.live());
+    assert!(observation.snapshot().quiescent);
+    assert!(
+        fixture
+            .base
+            .session
+            .services
+            .code_mode_service
+            .work_registration(&cell_id())
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cell_native_close_and_repeated_readiness_keep_one_collector_and_retained_record() {
+    for error in [None, Some("script failed".to_owned())] {
+        let fixture = NativeFixture::yielded(
+            crate::agent::control::WorkKind::Cell,
+            Ok(RuntimeResponse::Result {
+                cell_id: cell_id(),
+                content_items: vec![text("retained-tail")],
+                error_text: error.clone(),
+                code_mode_host_duration: None,
+            }),
+            TerminalReadySupport::Supported,
+        )
+        .await;
+        fixture.base.completion.ready(ready(CellOutputKind::Text));
+        let published = fixture.base.published().await;
+        assert_eq!(published.len(), 1);
+        assert!(published[0].contains(if error.is_some() {
+            "status=error"
+        } else {
+            "status=completed"
+        }));
+        assert!(fixture.delegate.work_registration.lock().unwrap().is_none());
+        fixture.delegate.cell_closed(&cell_id());
+        fixture.base.completion.ready(ready(CellOutputKind::Text));
+        assert_eq!(
+            fixture
+                .provider
+                .waits
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(
+            fixture.live(),
+            "the automatic record retains the registration after native close"
+        );
+        fixture.base.session.services.async_completions.retire();
+        assert!(!fixture.live());
+    }
+}
+
+#[tokio::test]
+async fn service_cell_diagnostic_preserves_cell_identity_without_finite_weight() {
+    let fixture = NativeFixture::yielded(
+        crate::agent::control::WorkKind::Service,
+        Ok(RuntimeResponse::Result {
+            cell_id: cell_id(),
+            content_items: vec![text("service-tail")],
+            error_text: None,
+            code_mode_host_duration: None,
+        }),
+        TerminalReadySupport::Supported,
+    )
+    .await;
+    let observation = fixture
+        .base
+        .session
+        .services
+        .local_agent_runtime
+        .work_observation();
+    let (running, _updates) = observation.subscribe();
+    assert_eq!(running.running_finite_work, 0);
+    assert!(running.quiescent);
+    assert!(fixture.live(), "services remain session-owned");
+    fixture.base.completion.ready(ready(CellOutputKind::Text));
+    let published = fixture.base.published().await;
+    assert_eq!(published.len(), 1);
+    assert!(published[0].contains(&format!("kind=cell cell={CELL}")));
+    assert!(published[0].contains("work_kind=service"));
+    assert!(published[0].contains("call=cell-call"));
+    assert!(observation.snapshot().quiescent);
+    assert!(
+        fixture.live(),
+        "service diagnostics retain their exact native registration"
+    );
+    fixture.base.session.services.async_completions.retire();
+    assert!(!fixture.live());
+}
+
+#[tokio::test]
+async fn cell_cancel_and_collection_failure_keep_one_terminal_record_and_native_hold() {
+    for cancelled in [true, false] {
+        let fixture = NativeFixture::yielded(
+            crate::agent::control::WorkKind::Cell,
+            Err("terminal read failed".to_owned()),
+            TerminalReadySupport::Supported,
+        )
+        .await;
+        if cancelled {
+            fixture.base.completion.begin_interrupt();
+            let result = fixture.provider.terminate(cell_id()).await;
+            fixture.base.completion.interrupted(&result);
+            fixture.base.completion.interrupted(&result);
+        } else {
+            fixture.base.completion.ready(ready(CellOutputKind::Text));
+        }
+        let published = fixture.base.published().await;
+        assert_eq!(published.len(), 1);
+        assert!(published[0].contains(if cancelled {
+            "status=cancelled"
+        } else {
+            "status=collectionFailed"
+        }));
+        assert!(fixture.live());
+        if !cancelled {
+            assert!(fixture.delegate.work_registration.lock().unwrap().is_some());
+            fixture.delegate.cell_closed(&cell_id());
+        }
+        fixture.base.session.services.async_completions.retire();
+        assert!(!fixture.live());
+    }
 }

@@ -51,6 +51,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text_content_items_with_policy;
 use codex_utils_output_truncation::truncate_function_output_items_with_policy;
 
+use crate::agent::control::OwnedWorkRegistration;
 use cell_completion::CellCompletion;
 use delegate::CodeModeCellDelegate;
 use delegate::CodeModeDispatchBroker;
@@ -59,6 +60,7 @@ pub(crate) use execute_handler::CodeModeExecuteHandler;
 use output::CodeModeToolOutput;
 use response_adapter::into_function_call_output_content_items;
 pub(crate) use tool_definitions::prepare_code_mode_tool_definitions;
+use tracing::Instrument;
 pub(crate) use wait_handler::CodeModeWaitHandler;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
@@ -90,6 +92,7 @@ pub(crate) struct CodeModeService {
     dispatch_broker: Arc<CodeModeDispatchBroker>,
     default_exec_yield_time_ms: u64,
     shutdown_token: CancellationToken,
+    startups: tokio_util::task::TaskTracker,
     unavailable_warning_emitted: AtomicBool,
 }
 
@@ -109,6 +112,7 @@ impl CodeModeService {
             dispatch_broker,
             default_exec_yield_time_ms: config.default_exec_yield_time_ms,
             shutdown_token: CancellationToken::new(),
+            startups: tokio_util::task::TaskTracker::new(),
             unavailable_warning_emitted: AtomicBool::new(false),
         }
     }
@@ -152,31 +156,84 @@ impl CodeModeService {
     /// `/approvals` or permission changes do not apply to a cell that is already running.
     /// A supplied `completion` is bound to the started cell, or released when the provider
     /// cannot report its terminal readiness.
+    #[expect(clippy::too_many_arguments)]
     async fn execute(
         &self,
         mut request: codex_code_mode::ExecuteRequest,
         step_context: Arc<StepContext>,
         tracker: SharedTurnDiffTracker,
         completion: Option<Arc<CellCompletion>>,
-    ) -> Result<codex_code_mode::StartedCell, String> {
+        registration: OwnedWorkRegistration,
+        membership: crate::agent::control::AgentTreeMembership,
+        residency: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+        owner: Arc<Session>,
+    ) -> Result<
+        (
+            codex_code_mode::StartedCell,
+            execute_handler::InitialCellGuard,
+        ),
+        String,
+    > {
+        // Admission and shutdown share this fence. Once native execute starts, its owned task
+        // survives caller cancellation and settles publication/cleanup before shutdown proceeds.
+        let startup = self.startups.token();
+        if self.shutdown_token.is_cancelled() {
+            return Err("code mode session is shutting down".to_owned());
+        }
         request
             .yield_time_ms
             .get_or_insert(self.default_exec_yield_time_ms);
         let preempt = step_context.preempt.clone();
         let provider = self.session().await?;
-        let delegate = Arc::new(CodeModeCellDelegate {
-            broker: Arc::clone(&self.dispatch_broker),
-            step_context,
-            tracker,
-            completion: completion.clone(),
-        });
-        let started = provider.execute(request, delegate, preempt).await?;
-        if let Some(completion) = completion {
-            completion.admit(&started, &provider);
-            self.dispatch_broker
-                .attach_completion(&started.cell_id, completion);
-        }
-        Ok(started)
+        let broker = Arc::clone(&self.dispatch_broker);
+        let shutdown = self.shutdown_token.clone();
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let startup_teardown = membership
+            .clone()
+            .into_teardown_guard("code_mode_startup", Some(owner.thread_id()));
+        tokio::spawn(
+            async move {
+                let _startup = startup;
+                let delegate = Arc::new(CodeModeCellDelegate {
+                    broker: Arc::clone(&broker),
+                    step_context,
+                    tracker,
+                    completion: completion.clone(),
+                    work_registration: std::sync::Mutex::new(Some(registration.clone())),
+                });
+                let started = match provider.execute(request, delegate.clone(), preempt).await {
+                    Ok(started) => started,
+                    Err(error) => {
+                        let _ = response_tx.send(Err(error));
+                        startup_teardown.complete();
+                        return;
+                    }
+                };
+                registration.mark_started();
+                broker.attach_registration(&started.cell_id, &delegate);
+                if let Some(completion) = completion {
+                    completion.admit(&started, &provider);
+                    broker.attach_completion(&started.cell_id, completion);
+                }
+                let guard = execute_handler::InitialCellGuard::new(
+                    owner,
+                    started.cell_id.clone(),
+                    membership,
+                    residency,
+                );
+                if shutdown.is_cancelled() {
+                    guard.cleanup().await;
+                    let _ = response_tx.send(Err("code mode session is shutting down".to_owned()));
+                } else if let Err(Ok((_, guard))) = response_tx.send(Ok((started, guard))) {
+                    guard.cleanup().await;
+                }
+                startup_teardown.complete();
+            }
+            .instrument(tracing::Span::current()),
+        );
+        response_rx
+            .await
+            .map_err(|_| "code mode startup stopped".to_owned())?
     }
 
     /// Reads a cell under its observation lock; a final result read here is not delivered again.
@@ -227,7 +284,11 @@ impl CodeModeService {
         if let (Some(completion), TerminateCause::Interrupt) = (&completion, cause) {
             completion.begin_interrupt();
         }
-        let result = match self.session().await {
+        let provider = match self.session.get() {
+            Some(session) => Ok(Arc::clone(session)),
+            None => self.session().await,
+        };
+        let result = match provider {
             Ok(session) => session.terminate(cell_id).await,
             Err(error) => Err(error),
         };
@@ -267,6 +328,8 @@ impl CodeModeService {
 
     pub(crate) async fn shutdown(&self) -> Result<(), String> {
         self.shutdown_token.cancel();
+        self.startups.close();
+        self.startups.wait().await;
         self.dispatch_broker.shutdown().await;
         // Join any initialization already in progress without initializing an unused service.
         match self
@@ -290,6 +353,10 @@ impl CodeModeService {
     ) {
         self.dispatch_broker
             .mark_cell_ready_for_dispatch(cell_id, originating_call);
+    }
+
+    pub(crate) fn work_registration(&self, cell_id: &CellId) -> Option<OwnedWorkRegistration> {
+        self.dispatch_broker.work_registration(cell_id)
     }
 
     pub(crate) fn cell_originating_call(

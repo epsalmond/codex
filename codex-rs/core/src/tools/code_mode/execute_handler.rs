@@ -1,3 +1,4 @@
+use crate::agent::control::WorkKind;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -92,6 +93,22 @@ impl CodeModeExecuteHandler {
         )
         .map_err(|error| FunctionCallError::Fatal(error.to_string()))?
         .apply_code_mode(&mut enabled_tools);
+        let runtime = &exec.session.services.local_agent_runtime;
+        let membership = runtime
+            .admit_start()
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        let residency = runtime
+            .pin_owned_work_owner(&exec.session)
+            .await
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        let kind = match args.work_kind {
+            codex_code_mode::CodeModeWorkKind::Task => WorkKind::Cell,
+            codex_code_mode::CodeModeWorkKind::Service => WorkKind::Service,
+        };
+        let registration = runtime
+            .reserve_owned_work(&exec.session, &exec.turn, &call_id, kind, None)
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_owned()))?;
+        registration.mark_cell();
         // Reserve before the cell runs, so a full store rejects without side effects. Eligibility
         // matches the native process producer: the feature gate, then the store's owner checks.
         let completion = if exec
@@ -104,10 +121,16 @@ impl CodeModeExecuteHandler {
                 .session
                 .services
                 .async_completions
-                .reserve_cell(exec.session.thread_id(), &exec.turn, &call_id)
+                .reserve_cell_with_lifecycle(
+                    exec.session.thread_id(),
+                    &exec.turn,
+                    &call_id,
+                    &registration,
+                )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_owned()))?;
             Some(InitialCompletion(CellCompletion::new(
                 reservation,
+                Some(registration.clone()),
                 &exec.session,
                 Arc::clone(&exec.turn),
                 exec.session
@@ -121,7 +144,7 @@ impl CodeModeExecuteHandler {
             None
         };
         let started_at = std::time::Instant::now();
-        let started_cell = exec
+        let (started_cell, initial_guard) = exec
             .session
             .services
             .code_mode_service
@@ -136,6 +159,10 @@ impl CodeModeExecuteHandler {
                 Arc::clone(&step_context),
                 tracker,
                 completion.as_ref().map(|initial| Arc::clone(&initial.0)),
+                registration.clone(),
+                membership,
+                residency,
+                Arc::clone(&exec.session),
             )
             .await
             .map_err(FunctionCallError::RespondToModel)?;
@@ -185,9 +212,13 @@ impl CodeModeExecuteHandler {
         // is produced by `handle_runtime_response` and later linked through
         // `CodeCell.output_item_ids` in the reduced trace.
         code_cell_trace.record_initial_response(&response);
-        if let Some(completion) = &completion {
-            completion.0.initial(&response);
+        let automatic = completion
+            .as_ref()
+            .is_some_and(|completion| completion.0.initial(&response));
+        if matches!(response, codex_code_mode::RuntimeResponse::Yielded { .. }) && !automatic {
+            registration.mark_yielded(false);
         }
+        initial_guard.complete();
         // Yielded cells keep running, so terminal lifecycle is only emitted
         // here when the first response also ended the runtime.
         if !matches!(response, codex_code_mode::RuntimeResponse::Yielded { .. }) {
@@ -216,8 +247,85 @@ impl CodeModeExecuteHandler {
             wall_time,
             exec.turn.config.code_mode.experimental_show_cell_overhead,
             exec.turn.code_mode_automatic_completion(),
-        ))
+        )
+        .with_work_kind(kind))
     }
+}
+
+/// Cancellation before the initial disposition transfers exact-cell cleanup with its startup
+/// membership and residency pin; shutdown cannot pass that cleanup in flight.
+pub(super) struct InitialCellGuard {
+    session: Arc<crate::session::session::Session>,
+    pending: Option<(
+        codex_code_mode::CellId,
+        crate::agent::control::AgentTreeMembership,
+        Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    )>,
+}
+
+impl InitialCellGuard {
+    pub(super) fn new(
+        session: Arc<crate::session::session::Session>,
+        cell_id: codex_code_mode::CellId,
+        membership: crate::agent::control::AgentTreeMembership,
+        residency: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    ) -> Self {
+        Self {
+            session,
+            pending: Some((cell_id, membership, residency)),
+        }
+    }
+
+    pub(super) async fn cleanup(mut self) {
+        if let Some((cell_id, membership, residency)) = self.pending.take() {
+            let teardown =
+                membership.into_teardown_guard("code_mode_initial", Some(self.session.thread_id()));
+            cleanup_initial_cell(Arc::clone(&self.session), cell_id, teardown, residency).await;
+        }
+    }
+
+    fn complete(mut self) {
+        self.pending = None;
+    }
+}
+
+impl Drop for InitialCellGuard {
+    fn drop(&mut self) {
+        let Some((cell_id, membership, residency)) = self.pending.take() else {
+            return;
+        };
+        let session = Arc::clone(&self.session);
+        // Construct before spawning: cancellation before the cleanup task's first poll still
+        // records failure before releasing its tree membership.
+        let teardown =
+            membership.into_teardown_guard("code_mode_initial", Some(session.thread_id()));
+        self.session
+            .services
+            .code_mode_service
+            .startups
+            .spawn(async move {
+                cleanup_initial_cell(session, cell_id, teardown, residency).await;
+            });
+    }
+}
+
+async fn cleanup_initial_cell(
+    session: Arc<crate::session::session::Session>,
+    cell_id: codex_code_mode::CellId,
+    teardown: crate::agent::control::AgentTreeTeardownGuard,
+    residency: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+) {
+    let _residency = residency;
+    if let Err(error) = session
+        .services
+        .code_mode_service
+        .terminate_for(cell_id.clone(), super::TerminateCause::Interrupt)
+        .await
+    {
+        tracing::warn!(%cell_id, %error, "failed to terminate cancelled initial code-mode cell");
+        teardown.record_shutdown_failure("terminate_cell", "code_mode_termination_failed");
+    }
+    teardown.complete();
 }
 
 impl ToolExecutor<ToolInvocation> for CodeModeExecuteHandler {
@@ -326,3 +434,7 @@ impl CoreToolRuntime for CodeModeExecuteHandler {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "execute_handler_tests.rs"]
+mod tests;

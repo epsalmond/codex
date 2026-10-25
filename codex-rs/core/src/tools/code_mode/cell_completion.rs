@@ -21,6 +21,7 @@ use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::control::OwnedWorkRegistration;
 use crate::session::async_completion::CompletionPublisher;
 use crate::session::async_completion::CompletionReservation;
 use crate::session::async_completion::CompletionStatus;
@@ -47,6 +48,7 @@ pub(super) struct CellCompletion {
 }
 
 struct State {
+    lifecycle: Option<OwnedWorkRegistration>,
     reservation: Option<CompletionReservation>,
     publisher: Option<CompletionPublisher>,
     binding: Option<(CellId, Weak<dyn CodeModeSession>)>,
@@ -72,6 +74,7 @@ impl State {
         if let Some(reservation) = self.reservation.take() {
             reservation.release();
         }
+        self.lifecycle = None;
     }
 
     /// Publishes once and hands the record to the store for delivery.
@@ -81,6 +84,7 @@ impl State {
         }
         // Dropping a registered reservation marks the record deliverable.
         drop(self.reservation.take());
+        self.lifecycle = None;
     }
 }
 
@@ -100,6 +104,7 @@ impl Drop for InitialCompletion {
 impl CellCompletion {
     pub(super) fn new(
         reservation: CompletionReservation,
+        lifecycle: Option<OwnedWorkRegistration>,
         owner: &Arc<Session>,
         turn: Arc<TurnContext>,
         shutdown: CancellationToken,
@@ -107,6 +112,7 @@ impl CellCompletion {
     ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
+                lifecycle,
                 reservation: Some(reservation),
                 publisher: None,
                 binding: None,
@@ -163,7 +169,7 @@ impl CellCompletion {
     }
 
     /// Registers a publisher for a yielded cell; an inline result needs no delivery.
-    pub(super) fn initial(self: &Arc<Self>, response: &RuntimeResponse) {
+    pub(super) fn initial(self: &Arc<Self>, response: &RuntimeResponse) -> bool {
         {
             let mut state = self.state();
             let yielded = matches!(
@@ -179,6 +185,9 @@ impl CellCompletion {
             if publisher.is_some() {
                 state.publisher = publisher;
                 state.yielded = true;
+                if let Some(lifecycle) = &state.lifecycle {
+                    lifecycle.mark_yielded(true);
+                }
             } else {
                 state.release();
             }
@@ -190,10 +199,11 @@ impl CellCompletion {
                 tokio::spawn(async move {
                     completion.watch().await;
                 });
-                return;
+                return true;
             }
         }
         self.collect_if_ready();
+        self.state().yielded
     }
 
     /// Stops the fallback watcher before a model terminate takes the observation lock.
@@ -204,6 +214,7 @@ impl CellCompletion {
     /// Fallback for a cell whose provider cannot report readiness while `wait` is hidden: poll the
     /// cell under the observation lock and publish its final result with a bounded text tail.
     async fn watch(self: Arc<Self>) {
+        let _terminal_hold = self.state().lifecycle.clone();
         let mut tail = Vec::new();
         let mut omitted = 0usize;
         loop {
@@ -314,6 +325,12 @@ impl CellCompletion {
             let media_left_for_wait =
                 ready.output_kind == CellOutputKind::Media && !self.wait_hidden;
             if media_left_for_wait
+                && state.yielded
+                && let Some(lifecycle) = &state.lifecycle
+            {
+                lifecycle.mark_yielded(false);
+            }
+            if media_left_for_wait
                 || state
                     .binding
                     .as_ref()
@@ -377,6 +394,7 @@ impl CellCompletion {
     /// that result, so it is published (as `cancelled` when terminated) instead of released.
     pub(super) fn interrupted(&self, result: &Result<WaitOutcome, String>) {
         let mut state = self.state();
+        let _terminal_hold = state.lifecycle.clone();
         state.interrupting = false;
         // The collector already owns the terminal read and publishes it.
         if state.collecting || state.reservation.is_none() {
@@ -439,6 +457,7 @@ impl CellCompletion {
     }
 
     async fn collect(&self) {
+        let _terminal_hold = self.state().lifecycle.clone();
         let _permit = tokio::select! {
             _ = self.shutdown.cancelled() => {
                 self.state().release();

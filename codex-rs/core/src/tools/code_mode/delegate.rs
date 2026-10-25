@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 
+use crate::agent::control::OwnedWorkRegistration;
 use crate::tools::context::ToolCallOrigin;
 use codex_code_mode::CellId;
 use codex_code_mode::CodeModeNestedToolCall;
@@ -58,9 +59,11 @@ pub(super) struct CodeModeCellDelegate {
     pub(super) step_context: Arc<StepContext>,
     pub(super) tracker: SharedTurnDiffTracker,
     pub(super) completion: Option<Arc<CellCompletion>>,
+    pub(super) work_registration: Mutex<Option<OwnedWorkRegistration>>,
 }
 
 struct CellDispatchGate {
+    delegate: Weak<CodeModeCellDelegate>,
     ready: watch::Sender<bool>,
     // Callbacks may create the gate before exec attaches its origin. None means
     // no origin is attached; Some retains the original item and window across
@@ -85,6 +88,52 @@ impl CodeModeDispatchBroker {
             shutdown: CancellationToken::new(),
             completions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Bind the existing live gate before nested calls can be released for dispatch.
+    pub(super) fn attach_registration(
+        &self,
+        cell_id: &CellId,
+        delegate: &Arc<CodeModeCellDelegate>,
+    ) {
+        // Close takes these locks in the same order. A callback that closed during execute
+        // must not be resurrected when the provider returns its ID.
+        let registration = delegate
+            .work_registration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registration.is_none() {
+            return;
+        }
+        let mut gates = self
+            .dispatch_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let gate = gates
+            .entry(cell_id.clone())
+            .or_insert_with(|| CellDispatchGate {
+                delegate: Weak::new(),
+                ready: watch::channel(false).0,
+                originating_call: None,
+                worker: None,
+            });
+        gate.delegate = Arc::downgrade(delegate);
+    }
+
+    pub(super) fn work_registration(&self, cell_id: &CellId) -> Option<OwnedWorkRegistration> {
+        let delegate = self
+            .dispatch_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(cell_id)?
+            .delegate
+            .upgrade()?;
+        let registration = delegate
+            .work_registration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        registration
     }
 
     /// Makes the cell's completion observable to `wait` and `terminate` until the cell closes.
@@ -116,13 +165,11 @@ impl CodeModeDispatchBroker {
                 .dispatch_gates
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let gate = dispatch_gates
-                .entry(cell_id.clone())
-                .or_insert_with(|| CellDispatchGate {
-                    ready: watch::channel(false).0,
-                    originating_call: None,
-                    worker: None,
-                });
+            // execute attached the live delegate before returning its ID. Native close may
+            // already have removed that gate; an initial response cannot reopen it.
+            let Some(gate) = dispatch_gates.get_mut(cell_id) else {
+                return;
+            };
             gate.originating_call = originating_call;
             gate.ready.clone()
         };
@@ -203,6 +250,7 @@ fn dispatch_gate(
     dispatch_gates
         .entry(cell_id.clone())
         .or_insert_with(|| CellDispatchGate {
+            delegate: Weak::new(),
             ready: watch::channel(false).0,
             originating_call: None,
             worker: None,
@@ -356,6 +404,14 @@ impl CodeModeSessionDelegate for CodeModeCellDelegate {
     }
 
     fn cell_closed(&self, cell_id: &CellId) {
+        let registration = self
+            .work_registration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(registration) = &registration {
+            registration.mark_terminal();
+        }
         if let Some(completion) = &self.completion {
             completion.closed(cell_id);
         }
