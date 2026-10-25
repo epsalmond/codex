@@ -40,16 +40,46 @@ shell_quote() {
 need curl; need tar
 
 # Capture the installed baseline before current is repointed. The symlink is
-# installer-owned; no running session or mutable version output is consulted.
+# installer-owned. Read the executable's embedded build identity now, while it
+# still names the previous package (never a running session's version).
 previous_tag=""
+previous_version=""
 if [ -x "$home_dir/current/codex" ] && command -v readlink >/dev/null 2>&1; then
   previous_target=$(readlink "$home_dir/current" 2>/dev/null || true)
   previous_tag=${previous_target##*/}
+  previous_version=$("$home_dir/current/codex" --version 2>/dev/null || true)
 fi
 
-# Notes are advisory: use at most two bounded API lookups for the source range,
-# including skipped builds. Without a JSON parser, provide honest browser links
-# rather than trying to parse arbitrary JSON/release bodies as shell text.
+# Prefer the full immutable SHA embedded by both CI and local builds. Package
+# layout metadata has no source identity, and local build tags need not exist
+# on GitHub. Do not guess a SHA's offset in historical tag formats. For older
+# executables without this field, resolve a published tag to its commit instead.
+source_commit() {
+  source_sha=$(printf '%s\n' "$1" | awk '
+    /^Source commit: / { count++; value = substr($0, 16) }
+    END {
+      if (count == 1 && length(value) == 40 && value !~ /[^0-9a-fA-F]/)
+        print tolower(value)
+    }')
+  if [ -n "$source_sha" ]; then
+    printf '%s\n' "$source_sha"
+    return 0
+  fi
+  command -v jq >/dev/null 2>&1 || return 0
+  source_ref=$(printf '%s' "$2" | jq -sRr @uri) || return 0
+  if source_metadata=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+    -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$repo/commits/$source_ref" 2>/dev/null); then
+    printf '%s' "$source_metadata" | jq -er '
+      .sha | select(type == "string") |
+      select(test("^[0-9a-fA-F]{40}$")) | ascii_downcase' 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Notes are advisory: at most two bounded legacy identity lookups plus two
+# comparison lookups, including the newest page across skipped builds. Without
+# jq, validate comparison availability over HTTP before offering a browser link.
 show_update_notes() {
   notes_url="https://github.com/$repo/releases/tag/$tag"
   if [ "$previous_tag" = "$tag" ]; then
@@ -62,22 +92,50 @@ show_update_notes() {
     say "release notes: $notes_url"
     return 0
   fi
-  compare_url="https://github.com/$repo/compare/$previous_tag...$tag"
-  say "changes: $previous_tag -> $tag (including skipped builds)"
-  say "full comparison: $compare_url"
   say "target release notes: $notes_url"
+  previous_source=$(source_commit "$previous_version" "$previous_tag")
+  target_source=$(source_commit "$version" "$tag")
   if ! command -v jq >/dev/null 2>&1; then
+    if [ -z "$previous_source" ] || [ -z "$target_source" ]; then
+      # Legacy binaries need jq to resolve tags to immutable commits. A
+      # validated tag comparison still provides useful history without jq.
+      # Restrict fallback refs to URL-safe release tag characters.
+      case "$previous_tag" in *[!a-zA-Z0-9._-]*) previous_tag_ref="" ;; *) previous_tag_ref=$previous_tag ;; esac
+      case "$tag" in *[!a-zA-Z0-9._-]*) target_tag_ref="" ;; *) target_tag_ref=$tag ;; esac
+      if [ -z "$previous_tag_ref" ] || [ -z "$target_tag_ref" ]; then
+        say 'source identity unavailable without jq; installation succeeded; use the target release notes above'
+        return 0
+      fi
+      previous_source=$previous_tag_ref
+      target_source=$target_tag_ref
+    fi
+    compare_api="https://api.github.com/repos/$repo/compare/$previous_source...$target_source?per_page=100"
+    if ! curl -fsSL --connect-timeout 5 --max-time 15 -o /dev/null \
+      -H 'Accept: application/vnd.github+json' "$compare_api" 2>/dev/null; then
+      say 'comparison unavailable; installation succeeded; use the target release notes above'
+      return 0
+    fi
+    say "changes: $previous_tag -> $tag (including skipped builds)"
+    say "full comparison: https://github.com/$repo/compare/$previous_source...$target_source"
     say 'changelog summary unavailable without jq; use the comparison link above'
     return 0
   fi
-  # jq encodes URL path data; none of the returned text is evaluated as code.
-  previous_ref=$(printf '%s' "$previous_tag" | jq -sRr @uri) || return 0
-  target_ref=$(printf '%s' "$tag" | jq -sRr @uri) || return 0
-  compare_api="https://api.github.com/repos/$repo/compare/$previous_ref...$target_ref?per_page=100"
+  if [ -z "$previous_source" ]; then
+    say 'previous source baseline unavailable; installation succeeded; use the target release notes above'
+    return 0
+  fi
+  if [ -z "$target_source" ]; then
+    say 'target source identity unavailable; installation succeeded; use the target release notes above'
+    return 0
+  fi
+  compare_url="https://github.com/$repo/compare/$previous_source...$target_source"
+  # Both API and browser links use the same source commits. Offer the browser
+  # link only after GitHub confirms that the comparison exists and is valid.
+  compare_api="https://api.github.com/repos/$repo/compare/$previous_source...$target_source?per_page=100"
   if ! changes=$(curl -fsSL --connect-timeout 5 --max-time 15 \
     -H 'Accept: application/vnd.github+json' \
-    "$compare_api"); then
-    say 'changelog summary unavailable; installation succeeded; use the links above'
+    "$compare_api" 2>/dev/null); then
+    say 'comparison unavailable; installation succeeded; use the target release notes above'
     return 0
   fi
   if ! last_page=$(printf '%s' "$changes" | jq -er '
@@ -87,13 +145,15 @@ show_update_notes() {
       error("invalid comparison")
     elif .status == "ahead" then ([1, ((.total_commits + 99) / 100 | floor)] | max)
     else 1 end' 2>/dev/null); then
-    say 'changelog summary unavailable; installation succeeded; use the links above'
+    say 'comparison unavailable; installation succeeded; use the target release notes above'
     return 0
   fi
+  say "changes: $previous_tag -> $tag (including skipped builds)"
+  say "full comparison: $compare_url"
   total_commits=$(printf '%s' "$changes" | jq -r .total_commits)
   if [ "$last_page" -gt 1 ]; then
     if ! changes=$(curl -fsSL --connect-timeout 5 --max-time 15 \
-      -H 'Accept: application/vnd.github+json' "$compare_api&page=$last_page"); then
+      -H 'Accept: application/vnd.github+json' "$compare_api&page=$last_page" 2>/dev/null); then
       say 'newest changelog summary unavailable; installation succeeded; use the links above'
       return 0
     fi
@@ -282,6 +342,9 @@ else
   mv "$install_dir.partial" "$install_dir"
 fi
 
+# Capture the target's embedded identity from the package we just installed.
+version=$("$install_dir/codex" --version 2>/dev/null || true)
+
 # ---- point current + wrapper at it ------------------------------------------
 # -n replaces an existing symlink instead of descending into its target.
 ln -sfn "$tag" "$home_dir/current"
@@ -351,7 +414,6 @@ then
   rm -f "$estimator_wrapper"
 fi
 
-version=$("$home_dir/current/codex" --version 2>/dev/null || true)
 say "installed $tag -> $wrapper (${version:-version check failed})"
 case ":$PATH:" in
   *":$bin_dir:"*) ;;

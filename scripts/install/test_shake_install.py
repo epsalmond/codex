@@ -14,6 +14,9 @@ import unittest
 INSTALL_SCRIPT = Path(__file__).parents[2] / "install.sh"
 TAG = "local-features-v0.154.0-r202609131200.abcdef1"
 ASSET = "codex-aarch64-apple-darwin.tar.gz"
+PREVIOUS_SOURCE = "9eaf6d018de977d1e67475204e900ca79564a5d3"
+TARGET_SOURCE = "4f39ba3e322901fd202eeb85bd5fdad85cd0d994"
+SOURCE_RANGE = f"{PREVIOUS_SOURCE}...{TARGET_SOURCE}"
 
 
 class ShakeInstallTest(unittest.TestCase):
@@ -194,7 +197,7 @@ class ShakeInstallTest(unittest.TestCase):
             self.assertEqual(
                 [url for url in requests if "/compare/" in url],
                 [
-                    f"https://api.github.com/repos/owner/repo/compare/{previous}...{TAG}?per_page=100"
+                    f"https://api.github.com/repos/owner/repo/compare/{SOURCE_RANGE}?per_page=100"
                 ],
             )
 
@@ -214,10 +217,12 @@ class ShakeInstallTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(os.readlink(home_dir / "current"), TAG)
                 self.assertIn(
-                    "changelog summary unavailable; installation succeeded",
+                    "comparison unavailable; installation succeeded",
                     result.stderr,
                 )
-                self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
+                self.assertIn(f"/releases/tag/{TAG}", result.stderr)
+                self.assertNotIn("/compare/", result.stderr)
+                self.assertNotIn("curl:", result.stderr)
 
     @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
     def test_large_range_fetches_final_page_and_shows_newest_fork_fix(self) -> None:
@@ -294,7 +299,7 @@ class ShakeInstallTest(unittest.TestCase):
                 self.assertIn(
                     "summary unavailable; installation succeeded", result.stderr
                 )
-                self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
+                self.assertIn(f"/compare/{SOURCE_RANGE}", result.stderr)
                 self.assertNotIn("Old title", result.stderr)
                 self.assertNotIn("newest first", result.stderr)
 
@@ -326,8 +331,202 @@ class ShakeInstallTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(os.readlink(home_dir / "current"), TAG)
             self.assertIn("changelog summary unavailable without jq", result.stderr)
-            self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
-            self.assertNotIn("/compare/", (root / "requests.log").read_text())
+            self.assertIn(f"/compare/{SOURCE_RANGE}", result.stderr)
+            self.assertIn(
+                f"/compare/{SOURCE_RANGE}?per_page=100",
+                (root / "requests.log").read_text(),
+            )
+            self.assertNotIn('"commits"', result.stdout + result.stderr)
+
+    def test_inaccessible_source_comparison_never_emits_broken_link(self) -> None:
+        for without_jq in (False, True):
+            with (
+                self.subTest(without_jq=without_jq),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                root = Path(temp_dir)
+                result, home_dir, _, _ = run_installer(
+                    root,
+                    previous_tag="unpushed-local-build",
+                    without_jq=without_jq,
+                    comparison_failure=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(home_dir / "current"), TAG)
+                self.assertIn("comparison unavailable", result.stderr)
+                self.assertIn(f"/releases/tag/{TAG}", result.stderr)
+                self.assertNotIn("/compare/", result.stderr)
+                self.assertNotIn("curl:", result.stderr)
+                self.assertIn(
+                    f"/compare/{SOURCE_RANGE}?per_page=100",
+                    (root / "requests.log").read_text(),
+                )
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
+    def test_unpublished_local_build_compares_embedded_full_source_commits(self) -> None:
+        previous = (
+            "local-features-v0.163.0-main-r202610222029."
+            "00000000000029529eaf6d018de9000000000000000100000000"
+        )
+        target = (
+            "local-features-v0.163.0-main-r20261025061926."
+            "00000000000029514f39ba3e322900000000000000c900000001"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, _, _, _ = run_installer(
+                root,
+                previous_tag=previous,
+                tag=target,
+                previous_version=(
+                    f"codex-cli 0.163.0\nShake feature version: 0.4.0\nCLI build: local 1\n"
+                    f"Source commit: {PREVIOUS_SOURCE}\nRelease tag: {previous}\n"
+                ),
+                target_version=(
+                    f"codex-cli 0.163.0\nShake feature version: 0.4.0\nCLI build: 201.1\n"
+                    f"Source commit: {TARGET_SOURCE}\nRelease tag: {target}\n"
+                ),
+                comparison={
+                    "status": "ahead",
+                    "total_commits": 1,
+                    "commits": [{"commit": {"message": "Recovered local build history"}}],
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Recovered local build history", result.stderr)
+            self.assertIn(f"/compare/{SOURCE_RANGE}", result.stderr)
+            requests = (root / "requests.log").read_text().splitlines()
+            self.assertEqual(
+                [url for url in requests if "api.github.com" in url],
+                [
+                    f"https://api.github.com/repos/owner/repo/compare/{SOURCE_RANGE}?per_page=100"
+                ],
+            )
+            self.assertNotIn(f"/compare/{previous}", result.stderr)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for legacy identity lookup")
+    def test_legacy_binaries_resolve_published_tags_to_full_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result, _, _, _ = run_installer(
+                root,
+                previous_tag="legacy-build",
+                previous_version="codex-cli 0.154.0",
+                target_version="codex-cli 0.154.0",
+                commit_sources={
+                    "legacy-build": {"sha": PREVIOUS_SOURCE},
+                    TAG: {"sha": TARGET_SOURCE},
+                },
+                comparison={"status": "identical", "total_commits": 0, "commits": []},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("No source changes", result.stderr)
+            self.assertIn(f"/compare/{SOURCE_RANGE}", result.stderr)
+            requests = (root / "requests.log").read_text()
+            self.assertIn("/commits/legacy-build", requests)
+            self.assertIn(f"/commits/{TAG}", requests)
+            self.assertIn(f"/compare/{SOURCE_RANGE}?per_page=100", requests)
+            self.assertEqual(requests.count("api.github.com"), 3)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for legacy identity lookup")
+    def test_invalid_or_missing_baseline_is_honest_and_never_invents_compare_link(self) -> None:
+        for metadata in (
+            "",
+            "Source commit: unknown (legacy build)",
+            "Source commit: 9eaf6d018de9",
+            "Source commit: " + "z" * 40,
+            "Source commit: " + "a" * 64,
+            f"Source commit: {PREVIOUS_SOURCE}\nSource commit: {PREVIOUS_SOURCE}",
+            "Source commit: $(touch never-execute)",
+        ):
+            with (
+                self.subTest(metadata=metadata),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                root = Path(temp_dir)
+                result, home_dir, _, _ = run_installer(
+                    root, previous_tag="unpublished-build", previous_version=metadata
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(home_dir / "current"), TAG)
+                self.assertIn("previous source baseline unavailable", result.stderr)
+                self.assertIn(f"/releases/tag/{TAG}", result.stderr)
+                self.assertNotIn("/compare/", result.stderr)
+                self.assertNotIn("/compare/", (root / "requests.log").read_text())
+                self.assertNotIn("curl:", result.stderr)
+                self.assertFalse((root / "never-execute").exists())
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for legacy identity lookup")
+    def test_invalid_remote_identity_never_emits_compare_link(self) -> None:
+        for identity in (
+            {},
+            {"sha": None},
+            {"sha": PREVIOUS_SOURCE[:12]},
+            {"sha": "x" * 40},
+        ):
+            with (
+                self.subTest(identity=identity),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                result, _, _, _ = run_installer(
+                    Path(temp_dir),
+                    previous_tag="legacy-build",
+                    previous_version="codex-cli 0.154.0",
+                    commit_sources={"legacy-build": identity},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("previous source baseline unavailable", result.stderr)
+                self.assertNotIn("/compare/", result.stderr)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq needed for legacy identity lookup")
+    def test_unavailable_target_identity_keeps_release_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, _, _, _ = run_installer(
+                Path(temp_dir),
+                previous_tag="old-build",
+                target_version="codex-cli 0.154.0",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("target source identity unavailable", result.stderr)
+            self.assertIn(f"/releases/tag/{TAG}", result.stderr)
+            self.assertNotIn("/compare/", result.stderr)
+
+    def test_without_jq_legacy_tag_comparison_requires_http_success(self) -> None:
+        for failure in (False, True):
+            for target_version in (
+                f"codex-cli 0.163.0\nSource commit: {TARGET_SOURCE}\n",
+                "codex-cli 0.154.0",
+            ):
+                with (
+                    self.subTest(failure=failure, target_version=target_version),
+                    tempfile.TemporaryDirectory() as temp_dir,
+                ):
+                    root = Path(temp_dir)
+                    result, home_dir, _, _ = run_installer(
+                        root,
+                        previous_tag="old-build",
+                        previous_version="codex-cli 0.154.0",
+                        target_version=target_version,
+                        without_jq=True,
+                        comparison_failure=failure,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(os.readlink(home_dir / "current"), TAG)
+                    self.assertIn(f"/releases/tag/{TAG}", result.stderr)
+                    self.assertNotIn("curl:", result.stderr)
+                    requests = (root / "requests.log").read_text().splitlines()
+                    self.assertEqual(
+                        [url for url in requests if "/compare/" in url],
+                        [
+                            f"https://api.github.com/repos/owner/repo/compare/old-build...{TAG}?per_page=100"
+                        ],
+                    )
+                    if failure:
+                        self.assertIn("comparison unavailable", result.stderr)
+                        self.assertNotIn("/compare/", result.stderr)
+                    else:
+                        self.assertIn("summary unavailable without jq", result.stderr)
+                        self.assertIn(f"/compare/old-build...{TAG}", result.stderr)
 
     def test_update_helper_preserves_custom_paths_and_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -389,6 +588,9 @@ def run_installer(
     comparison_last_page: dict | None = None,
     comparison_last_page_failure: bool = False,
     without_jq: bool = False,
+    previous_version: str = f"codex-cli 0.163.0\nSource commit: {PREVIOUS_SOURCE}\n",
+    target_version: str = f"codex-cli 0.163.0\nSource commit: {TARGET_SOURCE}\n",
+    commit_sources: dict | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     fake_bin = root / "fake-bin"
     fake_bin.mkdir()
@@ -422,14 +624,29 @@ def run_installer(
             done
             printf '%s\\n' "$url" >> "$CODEX_TEST_REQUEST_LOG"
             case "$url" in
+              https://api.github.com/*/commits/*)
+                ref=${{url##*/}}
+                # Missing tag fixtures model unpublished local builds.
+                body=$(printf '%s' "$CODEX_TEST_COMMIT_SOURCES" | jq -er --arg ref "$ref" '.[$ref]') || {{
+                  printf 'curl: (22) The requested URL returned error: 404\\n' >&2
+                  exit 22
+                }}
+                printf '%s\\n' "$body"
+                ;;
               https://api.github.com/*/compare/*)
-                if [ "$CODEX_TEST_COMPARISON_FAILURE" = 1 ]; then exit 22; fi
+                if [ "$CODEX_TEST_COMPARISON_FAILURE" = 1 ]; then
+                  printf 'curl: (22) The requested URL returned error: 404\\n' >&2
+                  exit 22
+                fi
                 case "$url" in
                   *'&page='*)
-                    if [ "$CODEX_TEST_LAST_PAGE_FAILURE" = 1 ]; then exit 22; fi
-                    printf '%s\\n' "$CODEX_TEST_LAST_PAGE"
+                    if [ "$CODEX_TEST_LAST_PAGE_FAILURE" = 1 ]; then
+                      printf 'curl: (22) The requested URL returned error: 404\\n' >&2
+                      exit 22
+                    fi
+                    printf '%s\\n' "$CODEX_TEST_LAST_PAGE" > "${{output:-/dev/stdout}}"
                     ;;
-                  *) printf '%s\\n' "$CODEX_TEST_COMPARISON" ;;
+                  *) printf '%s\\n' "$CODEX_TEST_COMPARISON" > "${{output:-/dev/stdout}}" ;;
                 esac
                 ;;
               https://api.github.com/*/releases*)
@@ -473,7 +690,7 @@ def run_installer(
             cat > "$destination/codex" <<'CODEX'
             #!/bin/sh
             if [ "$1" = "--version" ]; then
-              printf 'codex-shake test\\n'
+              printf '%s\\n' "$CODEX_TEST_TARGET_VERSION"
             elif [ "$1" = "update" ]; then
               printf '%s\\n' "$CODEX_SHAKE_REPO" "$CODEX_SHAKE_HOME" "$CODEX_SHAKE_BIN_DIR" > "$CODEX_TEST_HELPER_ENV"
             fi
@@ -501,7 +718,10 @@ def run_installer(
         assert home_dir is not None
         previous_dir = home_dir / previous_tag
         previous_dir.mkdir(parents=True)
-        write_executable(previous_dir / "codex", "#!/bin/sh\nexit 0\n")
+        write_executable(
+            previous_dir / "codex",
+            '#!/bin/sh\nprintf "%s\\n" "$CODEX_TEST_PREVIOUS_VERSION"\n',
+        )
         (home_dir / "current").symlink_to(previous_tag)
 
     # A real PATH without jq exercises the POSIX fallback, even on hosts where
@@ -544,6 +764,9 @@ def run_installer(
             "CODEX_TEST_CHECKSUM": str(checksum),
             "CODEX_TEST_HELPER_ENV": str(helper_env),
             "CODEX_TEST_REQUEST_LOG": str(root / "requests.log"),
+            "CODEX_TEST_PREVIOUS_VERSION": previous_version,
+            "CODEX_TEST_TARGET_VERSION": target_version,
+            "CODEX_TEST_COMMIT_SOURCES": json.dumps(commit_sources or {}),
             "CODEX_TEST_COMPARISON": json.dumps(comparison or {}),
             "CODEX_TEST_COMPARISON_FAILURE": "1" if comparison_failure else "0",
             "CODEX_TEST_LAST_PAGE": json.dumps(comparison_last_page or {}),
