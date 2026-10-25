@@ -320,10 +320,11 @@ struct SocketGuard {
 }
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        if let Ok(metadata) = fs::symlink_metadata(&self.path) {
-            if metadata.dev() == self.device && metadata.ino() == self.inode {
-                let _ = fs::remove_file(&self.path);
-            }
+        if let Ok(metadata) = fs::symlink_metadata(&self.path)
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
