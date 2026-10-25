@@ -15,17 +15,18 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (6; hash=d142be2fef791ea4):
-    - custom/exec: Catalog exec instructions. Default yield: 1234 ms. `image(imageUrlOrItem: string | { image_url: s...; hash=c03e765b69db8101
+  tools (7; hash=35f8d8f86254b553):
+    - custom/exec: Catalog exec instructions. Default yield: 1234 ms. `image(imageUrlOrItem: string | { image_url: s...; hash=2400778c4edfb37d
     - function/wait: Catalog wait instructions: resume the yielded cell.; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=67bc0f04da3505b3
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/request_user_input_async: Ask the user one or more questions during ongoing work. Use this tool only to request missing inf...; args=[questions]; hash=d6d74f33db330162
-    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
       - function/followup_task
       - function/interrupt_agent
       - function/list_agents
       - function/send_message
       - function/spawn_agent
+    - function/close_agents: Close agents you spawned, and their descendants, once you no longer need them. Closing is permane...; args=[targets]; hash=e5bc72874d41d04b
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
 00:message/developer:
@@ -76,15 +77,15 @@ Settings:
 
     You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
     `send_message` calls may be read by a human, so ensure they are legible. Always put proper spaces between words and/or numbers.
-    <OMITTED 17 LINES; ~243 TOKENS; hash=6048934914270a67>
-    - All agents use the same current working directory.
-    - As a result, edits made by one agent are immediately visible to all other agents.
+    <OMITTED 19 LINES; ~277 TOKENS; hash=24027225ebb92d81>
 
     Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
 
+    Agents you spawn report to you only through `report_to_parent`: `FINAL_ANSWER` when done, `BLOCKED` when...one, if any, only when an agent genuinely needs that. [hash=1abc2bf4a9f489af]
+
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 
-    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d... so, set `fork_turns` to `"none"`.</multi_agent_role> [hash=d5928243dc643bcc]
+    Full-history forks (`fork_turns` set to `"all"`) inherit the parent model and reasoning effort and do no...ve `fork_turns` unset or `"none"`.</multi_agent_role> [hash=7634be108ccad4c6]
 03:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
 04:message/user:
@@ -103,6 +104,7 @@ Settings:
     text(result.tools[0].name);
     text(result.tools[0].description);
 07:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | mcp__codex_apps__calendar_timezone_option_99 | Plan events and manage your calendar.
@@ -118,6 +120,7 @@ Settings:
     text((await tools[name]({ timezone: "UTC" })).content[0].text);
     text('started'); yield_control(); text('finished');
 09:custom_tool_call_output:Script running with cell ID 2
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | called calendar_timezone_option_99 for  at  with | started

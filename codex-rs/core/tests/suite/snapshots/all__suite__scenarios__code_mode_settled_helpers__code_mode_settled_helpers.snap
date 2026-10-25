@@ -35,6 +35,7 @@ Scenario: Settlement helpers deliver fulfilled and rejected records with input i
 07:custom_tool_call/exec:for await (const result of as_settled([Promise.resolve("ready")])) text(result);
     await stream_settled(new Map([["failed", Promise.reject("unavailable")], ["completed", "done"]]), text);
 08:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | {"index":0,"status":"fulfilled","value":"ready"} | {"index":"failed","status":"rejected","reason":"unavailable"} | {"index":"completed","status":"fulfilled","value":"done"}

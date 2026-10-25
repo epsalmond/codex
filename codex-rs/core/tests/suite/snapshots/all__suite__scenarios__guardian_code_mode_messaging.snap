@@ -41,6 +41,7 @@ Scenario: A root uses Code Mode to send a confirmation and receives a real user 
 -- request 3 (turn) --
 08:custom_tool_call/exec:text(await tools.mcp__codex_apps__user_message_send_message({"text":"Should I deploy the reviewed production change?"}));
 09:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | {"content":[{"text":"Message sent.","type":"text"}]}

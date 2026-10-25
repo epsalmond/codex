@@ -102,6 +102,7 @@ Settings:
     text(await tools.list_mcp_resource_templates({"server":"resources"}));
     text(await tools.read_mcp_resource({"server":"resources","uri":"memo://codex/example-note"}));
 07:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | {"server":"resources","resources":[{"server":"resources","uri":"memo://codex/example-note","name":"examp...ed for integration tests.","mimeType":"text/plain"}]} [hash=75d187638a7af2d4] | {"server":"resources","resourceTemplates":[{"server":"resources","uriTemplate":"memo://codex/{slug}","na... resources used in tests.","mimeType":"text/plain"}]} [hash=b1c7082eb114fc9b] | {"server":"resources","uri":"memo://codex/example-note","contents":[{"uri":"memo://codex/example-note","...mple MCP resource served by the rmcp test server."}]} [hash=45385fc57640b555]
