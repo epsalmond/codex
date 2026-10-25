@@ -441,7 +441,7 @@ from pending work. The sole record remains the payload owner.
 
 ### Focused validation results
 
-* Affected core units: 394 distinct cases passed across agent control, completion
+* Affected core units: 396 distinct cases passed across agent control, completion
   store/acceptance, native processes, Cell bridge, handlers, schemas and output.
   The final shared-store/Cell refinement passed store 24 and Cell bridge 46
   again (job-xo3zg5jo). Parser work-kind cases: 5 passed (job-3p98xnft).
@@ -494,3 +494,33 @@ installation.
 The root-owned reviewer finalizes the same independent review against the final
 assembled head and manifest after these dispositions; no second full review or
 new transport is introduced.
+
+The final bounded review continuation found the same P1-B invariant on explicit
+model `exec_terminate`: a provider may return `Terminated` before native close.
+Fix `851bc54525` changes only `CellCompletion::observed` in
+`core/src/tools/code_mode/cell_completion.rs`. A successfully yielded, unpublished
+terminal result consumed by the model changes to nonautomatic ownership before
+its automatic record retires. Its delayed native close can then use the existing
+exact-generation finite hint; it produces no automatic payload or automatic-drop
+hint. Published collector records, inline results, failed reads and Service
+finite weight keep their previous behavior.
+
+`cell_model_terminal_read_delayed_close_settles_exact_assignment_without_payload`
+exercises actual `CodeModeService::terminate` and `wait`, Cell and Service, real
+child assignments and provider-controlled delayed callbacks. It verifies Cell
+Waiting -> existing hint -> Completed with no payload/extra hint, and Service
+completion with no finite hint. `cell_model_missing_read_preserves_published_fence_without_close_hint`
+checks the collector-owned branch through actual `wait`. The added fixture
+retirement helper was corrected to query its exact assignment (`379b0e4169`).
+Store 24, actual root 7, child 5 and existing Cell 29 passed the delta run
+(job-l0bpdt1c; `build-_lgkfdkm/build.log`); that job failed only the test helper's
+old unassigned-readiness assertion. Corrected Cell 48, full formatting and diff
+checks then passed job-i_m94b2t,
+`/home/eric/.local/state/wait-for-build/build-iuyfwcg8/build.log`. The unique core
+unit total above includes these two new regressions.
+
+Exact stack-proof attribution: unmodified-main baseline dispatcher test aborts
+with default stack in job-z0nl7ke6 (`build-ypu5nknx/build.log`). The same compiled
+baseline binary/test with `RUST_MIN_STACK=16777216` passes in job-ifvkbx_p
+(`/home/eric/.local/state/wait-for-build/build-_m1f2g5b/build.log`, 0.730 s); no
+source or build change separates that controlled comparison.
