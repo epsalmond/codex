@@ -373,6 +373,8 @@ Run `/subagents` to monitor child runs. Each row shows whether a child is mid-tu
 
 Press `1`–`9` to select a numbered row (`1` is Main), or use arrows and Enter. Press `/` to search names, paths, or IDs; Esc clears search before closing the picker. Ctrl+U clears the query while keeping search active (Cmd+Delete in Ghostty on macOS). Press `X` to close the selected child and its descendants: they leave the status-bar count and `list_agents`, and later messages to them are refused; the picker keeps the same row selected, clamped to the last remaining row. Press `c` to close every idle child the same way, skipping any child with a mid-turn or starting descendant.
 
+Press `q` outside search to hide inactive rows locally. Children awaiting their first turn stay visible. A hidden row returns when its child starts running or its parent contacts it, even while the parent's transcript is hidden. Parent contact alone leaves the child's running or closed status unchanged. These updates happen when notifications arrive; switching transcripts or replaying history preserves later local dismissals.
+
 With an empty prompt and no popup or overlay, Option/Alt+Left and Option/Alt+Right switch to the previous or next visible agent, including Main. Terminals that send Alt+b/f for these keys are supported, including macOS terminals connected over SSH; with text in the prompt, the keys retain word editing.
 
 ### Subagents on a different model provider

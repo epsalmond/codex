@@ -44,7 +44,9 @@ async fn status_line_subagents_updates_during_parent_streaming() -> Result<()> {
     let root = ThreadId::new();
     let child = ThreadId::new();
     app.primary_thread_id = Some(root);
-    app.active_thread_id = Some(root);
+    app.ensure_thread_channel(root);
+    app.activate_thread_channel(root).await;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
     app.chat_widget.setup_status_line(
         vec![StatusLineItem::ActiveSubagents],
         /*use_theme_colors*/ false,
@@ -57,16 +59,22 @@ async fn status_line_subagents_updates_during_parent_streaming() -> Result<()> {
     )));
     assert!(app.chat_widget.has_active_agent_stream());
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        root,
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
-    )));
+    )
+    .await?;
+    app.drain_active_thread_events(&mut tui).await?;
     let started = rendered_count(&app);
     assert_eq!(started, "SubAgents: 1/1");
     assert!(app.chat_widget.has_active_agent_stream());
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        root,
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Completed),
-    )));
+    )
+    .await?;
+    app.drain_active_thread_events(&mut tui).await?;
     let completed = rendered_count(&app);
     assert_eq!(completed, "SubAgents: 0/1");
     assert!(app.chat_widget.has_active_agent_stream());
@@ -89,9 +97,11 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
         vec![StatusLineItem::ActiveSubagents],
         /*use_theme_colors*/ false,
     );
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        root,
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
-    )));
+    )
+    .await?;
     app.enqueue_thread_notification(child, turn_started_notification(child, "turn-1"))
         .await?;
     app.enqueue_thread_notification(
@@ -102,26 +112,30 @@ async fn status_line_subagents_follows_restart_failure_and_close() -> Result<()>
     assert_eq!(rendered_count(&app), "SubAgents: 0/1");
 
     // The same Interacted item accompanies trigger-turn followups and messages to idle agents.
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        root,
         activity_notification(
             root,
             child,
             "/root/worker",
             SubAgentActivityKind::Interacted,
         ),
-    )));
+    )
+    .await?;
     assert_eq!(rendered_count(&app), "SubAgents: 0/1");
     app.enqueue_thread_notification(child, turn_started_notification(child, "turn-2"))
         .await?;
     assert_eq!(rendered_count(&app), "SubAgents: 1/1");
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        root,
         activity_notification(
             root,
             child,
             "/root/worker",
             SubAgentActivityKind::Interacted,
         ),
-    )));
+    )
+    .await?;
     assert_eq!(rendered_count(&app), "SubAgents: 1/1");
 
     // Failed child turns need not publish a Completed activity item to the parent.
@@ -162,9 +176,11 @@ async fn status_line_subagents_keeps_root_counts_when_viewing_child() -> Result<
         (grandchild, "/root/worker/nested"),
         (sibling, "/root/worker_other"),
     ] {
-        app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        app.enqueue_thread_notification(
+            root,
             activity_notification(root, thread_id, path, SubAgentActivityKind::Started),
-        )));
+        )
+        .await?;
     }
     assert_eq!(rendered_count(&app), "SubAgents: 3/3");
     app.active_thread_id = Some(child);
