@@ -1,6 +1,7 @@
 # Issue 93: Task, Cell and Service lifecycle and exec drain
 
-Status: independent source plan review GO; implementation in progress. Audited base:
+Status: implementation and focused validation complete; independent code review
+awaits final verdict. Audited base:
 `84ec4a4d2e` (`origin/main`); worktree `codex-93-task-service`, branch
 `agent/issue-93-task-service`. Audit date: 2026-10-24. Implementation progress and
 validation are recorded below. Issue text: `/tmp/codex-parallel-237-93/issue-93.md`.
@@ -438,25 +439,30 @@ from deliverability: a stored terminal payload remains `ready=false` and cannot
 be claimed until that reservation releases. Inline results/errors stay absent
 from pending work. The sole record remains the payload owner.
 
-### Focused validation progress
+### Focused validation results
 
-* Prior affected units: 390 passed across agent control, store/acceptance, native
-  processes, Cell bridge, handlers, schema and output. After the final Cell
-  visibility refinement, store 24 and Cell bridge 46 passed again (job-xo3zg5jo).
-* The same job passed all five actual child cases: TTY Task, compatibility Cell,
-  native Service, Cell Service and retained Cell launching a native Task after
-  its original final answer, including replacement-generation isolation.
-* Existing Cell completion integration: 29 passed. Native completion integration:
-  30/31 passed; the corrected late-steering fixture now explicitly ends the old
-  assignment before testing cross-generation recovery. Original policy capture
-  remains unchanged. Root
-  observer/provider acceptance: 6/7 passed in that run; the remaining assertion
-  used a stale quiescent revision, so its guarded-close helper now retries only
-  a returned still-quiescent revision. Native/Event automatic-delivery settlement
-  and real Cell cleanup regressions passed the focused unit gates.
-* Exec lifecycle, app-server stdio and model schema snapshot gates remain in
-  progress. Final qualification requires their terminal receipts, corrected
-  focused acceptance, full formatting and the independent code-review verdict.
+* Affected core units: 394 distinct cases passed across agent control, completion
+  store/acceptance, native processes, Cell bridge, handlers, schemas and output.
+  The final shared-store/Cell refinement passed store 24 and Cell bridge 46
+  again (job-xo3zg5jo). Parser work-kind cases: 5 passed (job-3p98xnft).
+* Real public-observer/provider producer cases: 7 passed. They cover default and
+  explicit finite native work, nonzero exit, cancellation, finite Cells and
+  native/Cell Service exclusion with confirmed owned shutdown. Both corrected
+  late-steering cross-generation recovery cases and the public admission test
+  passed also (job-4eq7qoel; build-zkdms2f3/build.log). The revision-guarded close
+  helper retries only a returned still-quiescent revision; any reactivation fails.
+* Actual task-child cases: all 5 passed (job-xo3zg5jo): TTY Task, compatibility
+  Cell, native Service, Cell Service and retained Cell launching a native Task
+  after its original final answer, including replacement-generation isolation.
+* Existing automatic completion compatibility: native 31 and Cell 29 cases
+  passed. Native 30 plus Cell 29 passed job-xo3zg5jo; the two late-steering
+  parameter cases passed job-4eq7qoel after the fixture explicitly retired its
+  old idle assignment, preserving the original zero/one delivery expectations.
+* Exec lifecycle: 4 passed; external app-server stdio: 1 passed
+  (job-nd0oyy9z; build-it6bp2jg/build.log). Representative Code Mode catalog
+  snapshots: 2 passed without updating (job-z0ep5j1r). Full formatting passed
+  at assembled head2388895a50 (job-3lzr55gb); diff checks passed. Subsequent
+  changes only record this evidence in documentation.
 
 The broader 105-case schema scenario run passed 97 and failed eight child/fork
 cases. Seven failures reproduced at the same assertions on unmodified main
@@ -465,6 +471,14 @@ helper binary used by the feature run and then reproduced its prefix assertion
 also (job-tiwcqnuv). These are baseline failures, left outside #93. All generated
 snapshots were saved in `/tmp/codex-parallel-237-93/93-schema-generated`; only
 classification output lines and two representative Code Mode catalog snapshots
-were retained. The two catalog cases passed without snapshot updating
-(job-z0ep5j1r). Existing unrelated role/tool-catalog snapshot drift was excluded
-from the other snapshots.
+were retained. Existing unrelated role/tool-catalog snapshot drift was excluded
+from the other snapshots. No full-suite or CI success is claimed.
+
+Independent full review found two material automatic-settlement bugs: native
+publication could precede end-event ownership release; Cell collection failure
+could discard its cleanup gate before native close. Fixes `614c990e59` and
+`52a9f2ad0a` enforce terminal settlement before deliverability and recoverable
+confirmed Cell cleanup. Final production refinement `7708ec5ee9` preserves live
+Cell status visibility while retaining that fence. All use the existing record
+and acceptance path. Root owns the final review verdict, publication and NAS-only
+installation.
