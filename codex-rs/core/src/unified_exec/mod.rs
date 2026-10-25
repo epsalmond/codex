@@ -46,7 +46,7 @@ use crate::shell::ShellInvocation;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use codex_core_plugins::PluginMetricsSidecar;
 
-mod async_watcher;
+pub(crate) mod async_watcher;
 mod errors;
 mod head_tail_buffer;
 mod oneshot;

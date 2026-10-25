@@ -23,16 +23,35 @@ use pretty_assertions::assert_eq;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
-struct StreamingOutputHarness {
-    process: Arc<UnifiedExecProcess>,
-    stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    exit_tx: tokio::sync::oneshot::Sender<i32>,
-    output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
-    context: UnifiedExecContext,
-    rx_event: async_channel::Receiver<Event>,
+pub(crate) struct StreamingOutputHarness {
+    pub(crate) process: Arc<UnifiedExecProcess>,
+    pub(crate) stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) exit_tx: tokio::sync::oneshot::Sender<i32>,
+    pub(crate) output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
+    pub(crate) context: UnifiedExecContext,
+    pub(crate) rx_event: async_channel::Receiver<Event>,
+}
+
+/// Call after the terminal event gate is entered, when the watcher owns this lock.
+pub(crate) async fn wait_for_exit_watcher(process: &UnifiedExecProcess) {
+    let _guard = process.interaction_lock().lock_owned().await;
 }
 
 async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
+    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+    let context = UnifiedExecContext::new(
+        session,
+        crate::session::step_context::StepContext::for_test(turn),
+        tokio_util::sync::CancellationToken::new(),
+        "streaming-output-test".to_string(),
+    );
+    streaming_output_harness_with_context(context, rx_event).await
+}
+
+pub(crate) async fn streaming_output_harness_with_context(
+    context: UnifiedExecContext,
+    rx_event: async_channel::Receiver<Event>,
+) -> anyhow::Result<StreamingOutputHarness> {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let (stdout_tx, stdout_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
@@ -48,13 +67,6 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         tty: false,
     });
     let process = Arc::new(UnifiedExecProcess::from_spawned(spawned, SandboxType::None).await?);
-    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
-    let context = UnifiedExecContext::new(
-        session,
-        crate::session::step_context::StepContext::for_test(turn),
-        tokio_util::sync::CancellationToken::new(),
-        "streaming-output-test".to_string(),
-    );
     let output_buffer = Arc::clone(&process.output_handles().output_buffer);
 
     Ok(StreamingOutputHarness {

@@ -653,7 +653,7 @@ async fn finite_lifecycle_holds_drain_through_recording_and_model_acceptance(
 }
 
 #[tokio::test]
-async fn acceptance_does_not_release_native_terminal_event_hold() {
+async fn automatic_record_retains_lifecycle_until_native_close_then_acceptance() {
     let (session, turn) = make_session_and_context().await;
     let session = Arc::new(session);
     let runtime = &session.services.local_agent_runtime;
@@ -669,19 +669,248 @@ async fn acceptance_does_not_release_native_terminal_event_hold() {
         .reserve_cell_with_lifecycle(session.thread_id(), &turn, "event-held", &work)
         .unwrap();
     reservation.bind_cell("native-cell").unwrap();
-    reservation
-        .register()
-        .publish(CompletionStatus::CellCompleted, b"done", 0);
+    let publisher = reservation.register();
     drop(reservation);
+    assert!(current_items(&store, &session, &turn).1.is_empty());
+    assert!(runtime.has_live_owned_work(session.thread_id()));
     work.mark_terminal();
+    drop(work);
+    // The record remains authoritative during the native-close to publication handoff.
+    assert!(runtime.has_live_owned_work(session.thread_id()));
+    assert!(!observation.snapshot().quiescent);
+    publisher.publish(CompletionStatus::CellCompleted, b"done", 0);
     let (claim, items) = current_items(&store, &session, &turn);
     claim.recorded();
     store.accept(&[items[0].item.id().unwrap().clone()]);
-    assert!(runtime.has_live_owned_work(session.thread_id()));
-    assert!(!observation.snapshot().quiescent);
-    drop(work);
     assert!(!runtime.has_live_owned_work(session.thread_id()));
     assert!(observation.snapshot().quiescent);
+}
+
+#[derive(Default)]
+struct NativeTerminalEventGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl codex_extension_api::TurnLifecycleContributor for NativeTerminalEventGate {
+    fn on_item_completed<'a>(
+        &'a self,
+        _thread_store: &'a codex_extension_api::ExtensionData,
+        _turn_store: &'a codex_extension_api::ExtensionData,
+        item: &'a codex_protocol::items::TurnItem,
+    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if matches!(item, codex_protocol::items::TurnItem::CommandExecution(_)) {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+        })
+    }
+}
+
+#[test_case::test_case(0; "success")]
+#[test_case::test_case(17; "nonzero")]
+#[tokio::test]
+async fn native_watcher_closes_terminal_events_before_child_acceptance(
+    exit_code: i32,
+) -> anyhow::Result<()> {
+    use crate::agent::control::AssignmentPhase;
+    use crate::agent::control::TurnEndDisposition;
+    use crate::unified_exec::UnifiedExecContext;
+    use crate::unified_exec::async_watcher::spawn_exit_watcher;
+    use crate::unified_exec::async_watcher::start_streaming_output;
+    use crate::unified_exec::async_watcher::tests::StreamingOutputHarness;
+    use crate::unified_exec::async_watcher::tests::streaming_output_harness_with_context;
+    use crate::unified_exec::async_watcher::tests::wait_for_exit_watcher;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+    use tokio::time::Duration;
+    use tokio::time::Instant;
+    use tokio::time::timeout;
+
+    timeout(Duration::from_secs(5), async {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let gate = Arc::new(NativeTerminalEventGate::default());
+        let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+        extensions.turn_lifecycle_contributor(gate.clone());
+        session.services.extensions = Arc::new(extensions.build());
+        let (tx_event, rx_event) = async_channel::unbounded();
+        session.tx_event = tx_event;
+        let runtime = &session.services.local_agent_runtime;
+        runtime.enable_wake_mode();
+        let parent_thread_id = ThreadId::new();
+        runtime
+            .begin_wake_assignment_for_turn(
+                parent_thread_id,
+                &SessionSource::Cli,
+                "parent-turn",
+                true,
+            )
+            .unwrap();
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        });
+        let assignment = runtime
+            .begin_wake_assignment_for_turn(
+                session.thread_id(),
+                &turn.session_source,
+                &turn.sub_id,
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        turn.agent_assignment.set(assignment.clone()).unwrap();
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let context = UnifiedExecContext::new(
+            Arc::clone(&session),
+            crate::session::step_context::StepContext::for_test(Arc::clone(&turn)),
+            tokio_util::sync::CancellationToken::new(),
+            "native-event-held".to_owned(),
+        );
+        let StreamingOutputHarness {
+            process,
+            stdout_tx,
+            exit_tx,
+            output_buffer,
+            context,
+            rx_event,
+        } = streaming_output_harness_with_context(context, rx_event).await?;
+        let runtime = &session.services.local_agent_runtime;
+        let work = runtime
+            .reserve_owned_work(&session, &turn, &context.call_id, WorkKind::Task, None)
+            .unwrap();
+        work.mark_started();
+        work.mark_yielded(true);
+        let store = Arc::clone(&session.services.async_completions);
+        let mut reservation = store
+            .reserve_with_lifecycle(
+                session.thread_id(),
+                &turn,
+                &context.call_id,
+                123,
+                None,
+                &work,
+            )
+            .unwrap();
+        let publisher = reservation.register();
+        drop(reservation);
+        assert_eq!(
+            runtime
+                .classify_wake_turn_end(&assignment, &turn.sub_id, TurnEndDisposition::Succeeded)
+                .await,
+            Ok(AssignmentPhase::Waiting)
+        );
+        start_streaming_output(&process, &context);
+        #[allow(deprecated)]
+        let cwd = turn.cwd.clone().into();
+        spawn_exit_watcher(
+            Arc::clone(&process),
+            &context,
+            vec!["native-event-held".to_owned()],
+            cwd,
+            123,
+            None,
+            output_buffer,
+            Instant::now(),
+            None,
+            None,
+            Some(publisher),
+            Some(work),
+        );
+        stdout_tx.send(b"terminal tail".to_vec())?;
+        drop(stdout_tx);
+        exit_tx.send(exit_code).expect("send native exit");
+        gate.entered.notified().await;
+        // This barrier is inside the actual awaited terminal event path. The old
+        // watcher had already published its result here and could strand Waiting.
+        assert!(runtime.has_live_owned_work(session.thread_id()));
+        assert!(!store.has_ready(session.thread_id(), Some(&assignment)));
+        assert!(current_items(&store, &session, &turn).1.is_empty());
+        assert!(
+            store
+                .candidates(
+                    session.thread_id(),
+                    &turn,
+                    CompletionDrain::ExactAssignment,
+                    &[]
+                )
+                .is_empty()
+        );
+        assert!(
+            runtime
+                .continue_owned_completion(&assignment, "premature")
+                .is_err()
+        );
+        gate.release.notify_one();
+        loop {
+            if let EventMsg::ItemCompleted(completed) = rx_event.recv().await?.msg
+                && let TurnItem::CommandExecution(item) = completed.item
+            {
+                assert_eq!(item.exit_code, Some(exit_code));
+                assert_eq!(item.aggregated_output.as_deref(), Some("terminal tail"));
+                break;
+            }
+        }
+        // The interaction lock is held across terminal forwarding and publication.
+        // Its release confirms the real watcher has finished every awaited event.
+        wait_for_exit_watcher(&process).await;
+        assert!(store.has_ready(session.thread_id(), Some(&assignment)));
+        runtime
+            .continue_owned_completion(&assignment, "automatic")
+            .unwrap();
+        let (claim, items) = current_items(&store, &session, &turn);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            header_field(&fragment_text(&items[0]), "status"),
+            format!("exited({exit_code})")
+        );
+        assert!(fragment_text(&items[0]).ends_with("\nterminal tail"));
+        claim.recorded();
+        let input = items
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect::<Vec<_>>();
+        let accepted = store.candidates(
+            session.thread_id(),
+            &turn,
+            CompletionDrain::ExactAssignment,
+            &input,
+        );
+        assert_eq!(accepted.len(), 1);
+        store.accept(&accepted);
+        assert!(!runtime.has_live_owned_work(session.thread_id()));
+        assert_eq!(
+            runtime
+                .classify_wake_turn_end(&assignment, "automatic", TurnEndDisposition::Succeeded)
+                .await,
+            Ok(AssignmentPhase::Completed)
+        );
+        assert!(!store.has_ready(session.thread_id(), Some(&assignment)));
+        assert!(!runtime.has_ready_owned_completions(&assignment));
+        assert!(
+            runtime
+                .continue_owned_completion(&assignment, "extra")
+                .is_err()
+        );
+        assert!(current_items(&store, &session, &turn).1.is_empty());
+        // ItemCompleted can also emit its normal legacy terminal event.
+        let remaining_events = std::iter::from_fn(|| rx_event.try_recv().ok()).collect::<Vec<_>>();
+        assert!(remaining_events.len() <= 1);
+        assert!(
+            remaining_events
+                .iter()
+                .all(|event| matches!(event.msg, EventMsg::ExecCommandEnd(_)))
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
 }
 
 #[tokio::test]
