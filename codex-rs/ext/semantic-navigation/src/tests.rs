@@ -1,3 +1,8 @@
+#![allow(
+    clippy::expect_used,
+    reason = "Test helpers fail the test on invalid fixture setup or output"
+)]
+
 //! Native executor safety tests. See the [design](../../../../.codex/design/nas-lsp-broker.md).
 use super::*;
 use codex_exec_server::LocalFileSystem;

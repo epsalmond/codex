@@ -102,6 +102,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for NavigationTool {
         true
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "The navigation input schema is a valid static JSON literal"
+    )]
     fn spec(&self) -> ToolSpec {
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.to_owned(),

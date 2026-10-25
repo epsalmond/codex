@@ -10,10 +10,17 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::io::AsyncBufRead;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::Notify;
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio::time::timeout_at;
@@ -67,6 +74,10 @@ async fn frame<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
     Ok(body)
 }
 
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "Serialize each complete LSP frame across async writes to the same pipe"
+)]
 async fn send(
     writer: &Arc<AsyncMutex<ChildStdin>>,
     message: Value,
@@ -257,13 +268,10 @@ impl Session {
                         {
                             json!({"jsonrpc":"2.0", "id":id, "result":null})
                         } else if method == "workspace/configuration"
-                            && message["params"]["items"]
-                                .as_array()
-                                .is_some_and(|items| items.len() <= 64)
+                            && let Some(items) = message["params"]["items"].as_array()
+                            && items.len() <= 64
                         {
-                            let values: Vec<Value> = message["params"]["items"]
-                                .as_array()
-                                .expect("checked items")
+                            let values: Vec<Value> = items
                                 .iter()
                                 .map(|item| {
                                     let section = item["section"].as_str().unwrap_or("");
@@ -303,7 +311,9 @@ impl Session {
                             .get("token")
                             .map(Value::to_string)
                             .unwrap_or_default();
-                        let mut state = reader_readiness.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut state = reader_readiness
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         match params["value"]["kind"].as_str() {
                             Some("begin") if token.len() <= 256 && state.progress.len() < 64 => {
                                 state.progress.insert(token);
@@ -336,7 +346,9 @@ impl Session {
                                 break;
                             }
                         };
-                        let mut state = reader_readiness.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut state = reader_readiness
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         if state.server_status != Some(next) {
                             state.epoch = state.epoch.wrapping_add(1);
                         }
@@ -394,28 +406,32 @@ impl Session {
     pub fn invalidate(&self) {
         self.healthy.store(false, Ordering::Release);
     }
+    #[cfg(test)]
     pub fn indexing(&self) -> bool {
         !self
             .readiness
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .progress
             .is_empty()
     }
     pub(crate) fn readiness_epoch(&self) -> u64 {
         self.readiness
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .epoch
     }
     pub(crate) fn server_status(&self) -> Option<ServerStatus> {
         self.readiness
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .server_status
     }
     pub(crate) fn permit_valid(&self, permit: ReadinessPermit, require_status: bool) -> bool {
-        let state = self.readiness.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self
+            .readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.healthy()
             && state.progress.is_empty()
             && permit.epoch.is_none_or(|epoch| epoch == state.epoch)

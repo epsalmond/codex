@@ -1,6 +1,10 @@
 //! Worker-only real and adversarial tests; see `.codex/design/nas-lsp-broker.md`.
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    reason = "Integration fixture helpers fail the test on invalid setup or oracle data"
+)]
 
 use codex_lsp_protocol::Location;
 use codex_lsp_protocol::NavigationResponse;

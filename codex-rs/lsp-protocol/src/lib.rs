@@ -106,10 +106,10 @@ pub fn fit_response(
     budget: usize,
 ) -> Result<NavigationResponse, BudgetTooSmall> {
     let budget = budget.min(MAX_RESPONSE_BYTES);
-    if let Some(reason) = &mut response.reason {
-        if reason.len() > MAX_REASON_BYTES || !reason.is_ascii() {
-            *reason = "invalid_reason".to_owned();
-        }
+    if let Some(reason) = &mut response.reason
+        && (reason.len() > MAX_REASON_BYTES || !reason.is_ascii())
+    {
+        *reason = "invalid_reason".to_owned();
     }
     let count = response.locations.len();
     response.locations.retain(|location| {
