@@ -422,3 +422,11 @@ decision; no build/install occurs in this workstream.
 3. Confirm existing snapshot counters can add producer units without new wire
    fields, and 64 total/16 Service admission limits are acceptable. Do not inherit
    superseded hard-token claims from the historical shared-design proposal.
+
+### Delivery settlement contract
+
+Automatic delivery becomes eligible only after native/output terminal holds settle. Native watchers finish measurements and terminal event forwarding, mark terminal and drop their shared registration, then publish through the existing record, which still retains the registration until ordinary model acceptance. This ordering avoids retaining an assignment after its accepted payload has already been consumed and does not create automatic-drop hints or extra model turns.
+
+For Cells, the existing registered reservation is the delivery fence. The collector can store its bounded payload in that same record while native close is pending; no second queue stores the result. Delegate ownership and dispatch cleanup settle before `CellCompletion::closed` releases the fence. Collector and fallback-watcher read failures terminate the exact cell and bound termination plus close confirmation to 30 seconds. Failure or timeout retains the live dispatch gate and fenced diagnostic for a later interrupt or owned shutdown; a delayed callback releases that one record. Model wait errors preserve this cleanup authority.
+
+The initial `dev-small` dispatcher stack overflow also reproduces on unmodified merged main `f4de69bc0c` and the exact baseline test passes with a 16 MiB test stack; focused validation uses that stack. This is a baseline-supported test execution setting. The failure-cleanup fixture must establish an actual admitted Cell before marking it ready, since readiness never creates a missing native dispatch gate.
