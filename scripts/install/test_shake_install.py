@@ -363,7 +363,9 @@ class ShakeInstallTest(unittest.TestCase):
                 )
 
     @unittest.skipUnless(shutil.which("jq"), "jq needed for structured summary checks")
-    def test_unpublished_local_build_compares_embedded_full_source_commits(self) -> None:
+    def test_unpublished_local_build_compares_embedded_full_source_commits(
+        self,
+    ) -> None:
         previous = (
             "local-features-v0.163.0-main-r202610222029."
             "00000000000029529eaf6d018de9000000000000000100000000"
@@ -389,7 +391,9 @@ class ShakeInstallTest(unittest.TestCase):
                 comparison={
                     "status": "ahead",
                     "total_commits": 1,
-                    "commits": [{"commit": {"message": "Recovered local build history"}}],
+                    "commits": [
+                        {"commit": {"message": "Recovered local build history"}}
+                    ],
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -429,7 +433,9 @@ class ShakeInstallTest(unittest.TestCase):
             self.assertEqual(requests.count("api.github.com"), 3)
 
     @unittest.skipUnless(shutil.which("jq"), "jq needed for legacy identity lookup")
-    def test_invalid_or_missing_baseline_is_honest_and_never_invents_compare_link(self) -> None:
+    def test_invalid_or_missing_baseline_is_honest_and_never_invents_compare_link(
+        self,
+    ) -> None:
         for metadata in (
             "",
             "Source commit: unknown (legacy build)",
