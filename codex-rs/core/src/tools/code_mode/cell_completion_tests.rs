@@ -731,11 +731,10 @@ impl NativeFixture {
     }
 
     fn retire_ready_record(&self) {
-        assert!(
-            self.base
-                .store()
-                .has_ready(self.base.session.thread_id(), None)
-        );
+        assert!(self.base.store().has_ready(
+            self.base.session.thread_id(),
+            self.base.completion.turn.agent_assignment.get(),
+        ));
         assert!(self.delegate.work_registration.lock().unwrap().is_none());
         // Actual request acceptance is covered at the session handler boundary. Here retirement
         // proves the existing record is the only remaining registration owner after native close.
