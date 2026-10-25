@@ -1,11 +1,22 @@
 //! Worker-only real and adversarial tests; see `.codex/design/nas-lsp-broker.md`.
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    reason = "Integration fixture helpers fail the test on invalid setup or oracle data"
+)]
 
-use codex_lsp_protocol::{Location, NavigationResponse, Operation, Position, Status};
-use codex_nas_lsp::config::{Readiness, WorkspaceConfig};
-use codex_nas_lsp::worker::{Worker, WorkerQuery};
-use std::path::{Path, PathBuf};
+use codex_lsp_protocol::Location;
+use codex_lsp_protocol::NavigationResponse;
+use codex_lsp_protocol::Operation;
+use codex_lsp_protocol::Position;
+use codex_lsp_protocol::Status;
+use codex_nas_lsp::config::Readiness;
+use codex_nas_lsp::config::WorkspaceConfig;
+use codex_nas_lsp::worker::Worker;
+use codex_nas_lsp::worker::WorkerQuery;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;

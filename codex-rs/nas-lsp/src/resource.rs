@@ -138,15 +138,14 @@ pub fn process_tree_rss(root_pid: u32) -> io::Result<u64> {
     }
     let mut bytes = 0u64;
     for pid in descendants {
-        if let Ok(status) = fs::read_to_string(format!("/proc/{pid}/status")) {
-            if let Some(kib) = status
+        if let Ok(status) = fs::read_to_string(format!("/proc/{pid}/status"))
+            && let Some(kib) = status
                 .lines()
                 .find_map(|s| s.strip_prefix("VmRSS:"))
                 .and_then(|s| s.split_whitespace().next())
                 .and_then(|s| s.parse::<u64>().ok())
-            {
-                bytes = bytes.saturating_add(kib.saturating_mul(1024));
-            }
+        {
+            bytes = bytes.saturating_add(kib.saturating_mul(1024));
         }
     }
     Ok(bytes)

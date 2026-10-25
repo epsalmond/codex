@@ -1,16 +1,20 @@
 //! Read-only saved-file worker. See `.codex/design/nas-lsp-broker.md`.
 
 use crate::config::WorkspaceConfig;
-use crate::freshness::{self, Snapshot};
+use crate::freshness::Snapshot;
+use crate::freshness::{self};
 use crate::language::Adapter;
-use crate::lsp::{RequestError, Session};
+use crate::lsp::RequestError;
+use crate::lsp::Session;
 use codex_lsp_protocol::Location;
+use codex_lsp_protocol::MAX_PATH_BYTES;
+use codex_lsp_protocol::MAX_RESULTS;
 use codex_lsp_protocol::NavigationResponse;
 use codex_lsp_protocol::Operation;
 use codex_lsp_protocol::Position;
 use codex_lsp_protocol::Status;
-use codex_lsp_protocol::{MAX_PATH_BYTES, MAX_RESULTS};
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;

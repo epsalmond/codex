@@ -4,9 +4,12 @@ mod python;
 mod rust;
 mod typescript;
 
-use crate::config::{Readiness, WorkspaceConfig};
+use crate::config::Readiness;
+use crate::config::WorkspaceConfig;
 use crate::freshness::Snapshot;
-use crate::lsp::{ReadinessPermit, RequestError, Session};
+use crate::lsp::ReadinessPermit;
+use crate::lsp::RequestError;
+use crate::lsp::Session;
 use serde_json::Value;
 use std::path::Path;
 use tokio::time::Instant;

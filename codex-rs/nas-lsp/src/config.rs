@@ -366,6 +366,10 @@ impl RootIdentity {
     }
 }
 impl WorkspaceConfig {
+    #[expect(
+        clippy::expect_used,
+        reason = "Validated registry paths and strings have infallible JSON serialization"
+    )]
     pub(crate) fn key(&self, identity: &RootIdentity) -> String {
         let mut hash = Sha256::new();
         // Length-delimited JSON prevents argument/policy concatenation collisions.
