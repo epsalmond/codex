@@ -1,7 +1,7 @@
 # Issue 93: Task, Cell and Service lifecycle and exec drain
 
-Status: implementation and focused validation complete; independent code review
-awaits final verdict. Audited base:
+Status: implementation and focused validation complete; independent full review
+and bounded correction check PASS at `148dd63fd24618d6ce65c563e42961c62373b2a6`. Audited base:
 `84ec4a4d2e` (`origin/main`); worktree `codex-93-task-service`, branch
 `agent/issue-93-task-service`. Audit date: 2026-10-24. Implementation progress and
 validation are recorded below. Issue text: `/tmp/codex-parallel-237-93/issue-93.md`.
@@ -524,3 +524,12 @@ with default stack in job-z0nl7ke6 (`build-ypu5nknx/build.log`). The same compil
 baseline binary/test with `RUST_MIN_STACK=16777216` passes in job-ifvkbx_p
 (`/home/eric/.local/state/wait-for-build/build-_m1f2g5b/build.log`, 0.730 s); no
 source or build change separates that controlled comparison.
+
+Final independent-review verdict: **PASS** at clean assembled
+`148dd63fd24618d6ce65c563e42961c62373b2a6`, with both P1 findings resolved and no
+remaining confirmed blockers. The reviewer checked every final-manifest file and
+the terminal receipts above. Durable review ledger:
+`/tmp/issue-93-full-review-final.md`; checked manifest:
+`/tmp/issue-93-full-review-final-manifest.json`. This final verdict record changes
+documentation only; reviewed/tested Rust source is unchanged. Publication, merge,
+NAS installation and post-install behavior remain root-owned delivery gates.
