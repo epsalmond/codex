@@ -19,8 +19,8 @@ finite hint gate/acknowledgement contract. Shared lifecycle API production commi
 producers follow. Actual API uses `reserve_owned_work`,
 `pin_owned_work_owner`, `reserve_with_lifecycle` and
 `reserve_cell_with_lifecycle`; Service cells mark their retained-cell authority
-explicitly with `OwnedWorkRegistration::mark_cell`. No production runtime tests
-have passed yet; this is implementation status, not acceptance evidence.
+explicitly with `OwnedWorkRegistration::mark_cell`. Focused runtime evidence and
+remaining gates are recorded in the settlement/validation sections below.
 
 ## Outcome and scope
 
@@ -41,7 +41,7 @@ boundary, and idle wake scheduler. Lifecycle bookkeeping contains no output or
 second delivery queue. Do not change default activation twice, add model waits,
 replace the agent assignment system, or change #237's TUI arrival bookkeeping.
 
-## Requirement status against current source
+## Requirement status at the audited base
 
 | Issue criterion | Current implementation/evidence | Remaining work |
 | --- | --- | --- |
@@ -403,11 +403,12 @@ user authorized merge without CI wait. Record exact reviewed/tested head and
 actual runtime receipt separately. Final build/install belongs to root only,
 after both #93 and #237 merge.
 
-Installed-source preservation is coordinated by root: NAS/MBP currently include
-unmerged queue wake commit `4cc6293763` (PR #243) at installed head
-`9eaf6d018de9`. This issue does not import that unrelated patch. The final
-combined install must account for it explicitly through root's preservation
-decision; no build/install occurs in this workstream.
+Installed-source preservation is coordinated by root. Merged main `f4de69bc0c`
+now contains queue fixes `4cc6293763` and `98181e1127` directly, plus #237; this
+branch merged that base and requires no queue overlay. User steering allowed
+#237 to ship independently. Future #93 build/install work is NAS-only; no new
+MBP build, rebuild or retry is allowed for this session. Root owns publication,
+merge and installation; this workstream does not mutate installed state.
 
 ## Review questions to resolve before production implementation
 
@@ -430,3 +431,27 @@ Automatic delivery becomes eligible only after native/output terminal holds sett
 For Cells, the existing registered reservation is the delivery fence. The collector can store its bounded payload in that same record while native close is pending; no second queue stores the result. Delegate ownership and dispatch cleanup settle before `CellCompletion::closed` releases the fence. Collector and fallback-watcher read failures terminate the exact cell and bound termination plus close confirmation to 30 seconds. Failure or timeout retains the live dispatch gate and fenced diagnostic for a later interrupt or owned shutdown; a delayed callback releases that one record. Model wait errors preserve this cleanup authority.
 
 The initial `dev-small` dispatcher stack overflow also reproduces on unmodified merged main `f4de69bc0c` and the exact baseline test passes with a 16 MiB test stack; focused validation uses that stack. This is a baseline-supported test execution setting. The failure-cleanup fixture must establish an actual admitted Cell before marking it ready, since readiness never creates a missing native dispatch gate.
+
+A yielded automatic Cell remains visible in pending work while its existing
+reservation fences native close. The per-record visibility marker is separate
+from deliverability: a stored terminal payload remains `ready=false` and cannot
+be claimed until that reservation releases. Inline results/errors stay absent
+from pending work. The sole record remains the payload owner.
+
+### Focused validation progress
+
+* Prior affected units: 390 passed across agent control, store/acceptance, native
+  processes, Cell bridge, handlers, schema and output. After the final Cell
+  visibility refinement, store 24 and Cell bridge 46 passed again (job-xo3zg5jo).
+* The same job passed all five actual child cases: TTY Task, compatibility Cell,
+  native Service, Cell Service and retained Cell launching a native Task after
+  its original final answer, including replacement-generation isolation.
+* Existing Cell completion integration: 29 passed. Native completion integration:
+  30/31 passed; late-steering authority is under source investigation. Root
+  observer/provider acceptance: 6/7 passed in that run; the remaining assertion
+  used a stale quiescent revision, so its guarded-close helper now retries only
+  a returned still-quiescent revision. Native/Event automatic-delivery settlement
+  and real Cell cleanup regressions passed the focused unit gates.
+* Exec lifecycle, app-server stdio and model schema snapshot gates remain in
+  progress. Final qualification requires their terminal receipts, corrected
+  focused acceptance, full formatting and the independent code-review verdict.

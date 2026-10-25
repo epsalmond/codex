@@ -345,6 +345,24 @@ fn assert_close_rejected(observation: &WorkObservation) -> WorkObservationSnapsh
     }
 }
 
+// Quiescence is observed independently of the atomic close. Unrelated coordinator epoch
+// updates can invalidate that revision while leaving the tree drained; use the returned
+// snapshot to retry the guarded operation, as the host must, without accepting new work.
+fn close_drained_tree(observation: &WorkObservation, mut drained: WorkObservationSnapshot) {
+    for _ in 0..16 {
+        assert!(
+            drained.quiescent,
+            "tree became active before close: {drained:?}"
+        );
+        match observation.shutdown_if_quiescent(&drained.revision) {
+            GuardedShutdownOutcome::Closed(_) => return,
+            GuardedShutdownOutcome::StaleRevision(current) => drained = current,
+            outcome => panic!("expected drained tree to close: {outcome:?}"),
+        }
+    }
+    panic!("drained tree revision did not settle: {drained:?}");
+}
+
 async fn requests(server: &StreamingSseServer) -> Result<Vec<Value>> {
     server
         .requests()
@@ -579,10 +597,7 @@ async fn finite_acceptance(
         .note_root_turn_output_forwarded(&automatic.turn_id);
     let drained = observe(&mut updates, |snapshot| snapshot.quiescent).await?;
     assert_eq!(drained.outstanding_work, 0);
-    assert!(matches!(
-        observation.shutdown_if_quiescent(&drained.revision),
-        GuardedShutdownOutcome::Closed(_)
-    ));
+    close_drained_tree(&observation, drained);
     test.codex.shutdown_and_wait().await?;
     assert_eq!(
         requests(&server).await?.len(),
@@ -670,10 +685,7 @@ async fn service_is_excluded_but_owned_shutdown_terminates_it(producer: Producer
         );
         None
     };
-    assert!(matches!(
-        observation.shutdown_if_quiescent(&drained.revision),
-        GuardedShutdownOutcome::Closed(_)
-    ));
+    close_drained_tree(&observation, drained);
     tokio::time::timeout(DEADLINE, test.codex.shutdown_and_wait()).await??;
     let mut terminal = Vec::new();
     tokio::time::timeout(DEADLINE, stream.read_to_end(&mut terminal)).await??;
