@@ -1,6 +1,4 @@
 use crate::function_tool::FunctionCallError;
-use codex_features::Feature;
-
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -118,18 +116,7 @@ impl WriteStdinHandler {
                 Some(true),
             )));
         }
-        if turn
-            .config
-            .features
-            .get()
-            .enabled(Feature::StableEnvironmentTools)
-        {
-            resolve_tool_environment(
-                &step_context,
-                /*environment_id*/ None,
-                "unified exec is unavailable in this session",
-            )?;
-        }
+        resolve_tool_environment(&step_context.environments, /*environment_id*/ None)?;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
         let response = session

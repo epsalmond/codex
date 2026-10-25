@@ -31,6 +31,7 @@ use crate::tasks::TaskStartOutcome;
 use crate::tasks::TurnReservation;
 use crate::tasks::TurnStartHoldPoint;
 use crate::tasks::wait_if_turn_start_held;
+use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_history::SenderUserMessages;
@@ -50,6 +51,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::AnnotatedResponseItem;
 use codex_protocol::turn_input::NotSubmittedReason;
+use codex_protocol::turn_input::ResponsesApiClientMetadataUpdate;
 use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
@@ -58,7 +60,6 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -568,7 +569,7 @@ async fn start_or_steer(
                 settings: settings.take_for_start(),
                 submission_id: &submission_id,
                 origin,
-                responsesapi_client_metadata: responsesapi_client_metadata.as_ref(),
+                responsesapi_client_metadata: &responsesapi_client_metadata,
             },
             &mut input,
         )
@@ -596,7 +597,7 @@ struct ReservedExplicitStart<'a, 's> {
     settings: PreparedTurnInputSettings,
     submission_id: &'a str,
     origin: UserInputOrigin,
-    responsesapi_client_metadata: Option<&'a HashMap<String, String>>,
+    responsesapi_client_metadata: &'a ResponsesApiClientMetadataUpdate,
 }
 
 enum ReservedStart<'s> {
@@ -663,11 +664,9 @@ async fn start_reserved<'s>(
             },
         ));
     }
-    if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
-        turn_context
-            .turn_metadata_state
-            .set_responsesapi_client_metadata(responsesapi_client_metadata.clone());
-    }
+    turn_context
+        .turn_metadata_state
+        .update_responsesapi_client_metadata(responsesapi_client_metadata.clone());
     session
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
@@ -904,11 +903,9 @@ async fn start_if_idle(
             reason: not_submitted_reason(&error),
         });
     }
-    if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
-        turn_context
-            .turn_metadata_state
-            .set_responsesapi_client_metadata(responsesapi_client_metadata);
-    }
+    turn_context
+        .turn_metadata_state
+        .update_responsesapi_client_metadata(responsesapi_client_metadata);
     session
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
@@ -1032,7 +1029,7 @@ async fn steer(
 }
 
 impl Session {
-    /// Called under the active-turn lock before running any task or lifecycle callback.
+    /// Called under the active-turn lock when registering a task (or a realtime transcript turn).
     pub(crate) async fn record_started_turn(
         &self,
         turn_id: &str,
@@ -1055,6 +1052,20 @@ impl Session {
             .as_ref()
             .map(codex_history::TurnAttribution::start_options)
             .unwrap_or_default()
+    }
+
+    pub(crate) async fn should_wake_on_agent_messages(&self) -> bool {
+        if !self.features.enabled(Feature::WakeOnAgentMessages)
+            || self.is_interrupted()
+            || !self.input_queue.has_pending_mailbox_items().await
+        {
+            return false;
+        }
+
+        let state = self.state.lock().await;
+        let config = &state.session_configuration;
+        !config.session_source.is_non_root_agent()
+            && TurnStartKind::Automatic.permits_mode(config.step_settings.collaboration_mode.mode)
     }
 
     pub(crate) async fn route_realtime_text_input(
@@ -1151,7 +1162,7 @@ impl Session {
         input: &mut ExplicitInput,
         expected_turn_id: Option<&str>,
         required_final_output_json_schema: Option<&Value>,
-        responsesapi_client_metadata: Option<HashMap<String, String>>,
+        responsesapi_client_metadata: ResponsesApiClientMetadataUpdate,
         origin: UserInputOrigin,
     ) -> Result<(String, String), NotSubmittedReason> {
         let mut active = self.active_turn.lock().await;
@@ -1211,12 +1222,10 @@ impl Session {
             return Err(NotSubmittedReason::ActiveTurnOutputSchemaMismatch);
         }
 
-        if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
-            active_task
-                .turn_context
-                .turn_metadata_state
-                .set_responsesapi_client_metadata(responsesapi_client_metadata);
-        }
+        active_task
+            .turn_context
+            .turn_metadata_state
+            .update_responsesapi_client_metadata(responsesapi_client_metadata);
 
         let (pending_input, is_user_input) = match input {
             ExplicitInput::Submitted {
@@ -1350,7 +1359,7 @@ async fn pending_turn_input(
                 let mut messages = SenderUserMessages {
                     receiver_turn_id: turn_id.to_owned(),
                     receiver_message_id: fragment.delivery.clone(),
-                    text: fragment.render(),
+                    text: fragment.render().into_text().unwrap_or_default(),
                 };
                 messages.bound();
                 Some(CodexHarnessMetadata {
@@ -1368,7 +1377,7 @@ async fn pending_turn_input(
             TurnInput::ResponseItem(item.into())
         }
         SubmittedTurnInput::InterAgentCommunication(communication) => {
-            TurnInput::InterAgentCommunication(communication)
+            TurnInput::InterAgentCommunication(communication.into())
         }
     };
     if retain

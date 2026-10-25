@@ -31,6 +31,10 @@ impl Session {
 }
 
 /// Applies standalone thread settings. The caller holds the persistence permit through notification.
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the active-turn guard makes continuation invalidation atomic with turn admission"
+)]
 pub(super) async fn update(
     session: &Session,
     overrides: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
@@ -45,8 +49,14 @@ pub(super) async fn update(
         };
     let updates = prepare_update(overrides, &session.services.selected_capability_roots);
     let commit = session.update_settings(updates).await?;
-    // Standalone settings changes supersede a pending automatic continuation.
-    if !context_only {
+    let active_turn = session.active_turn.lock().await;
+    // A registered running task retains its lineage so it can be recovered after a daemon
+    // restart. Reservations and finishing turns have no interrupted work to continue.
+    if !context_only
+        && active_turn
+            .as_ref()
+            .is_none_or(|active_turn| active_turn.task.is_none())
+    {
         session.state.lock().await.last_started_turn_id = None;
     }
     Ok(commit.snapshot)

@@ -148,6 +148,7 @@ fn text_response(
         content_items: vec![FunctionCallOutputContentItem::InputText {
             text: value.to_string(),
         }],
+        result_buffered_for: Duration::ZERO,
         error_text: None,
     }
 }
@@ -237,6 +238,7 @@ async fn tcp_session_persists_values_and_forwards_tools_notifications_and_closur
             code_mode_host_duration: actual.code_mode_host_duration(),
             cell_id: cell_id("1"),
             content_items: Vec::new(),
+            result_buffered_for: Duration::ZERO,
             error_text: None,
         }
     );
@@ -361,6 +363,7 @@ async fn grpc_early_yield_preserves_cell_and_later_waits() -> Result<()> {
             content_items: vec![FunctionCallOutputContentItem::InputText {
                 text: "done".to_string(),
             }],
+            result_buffered_for: response.result_buffered_for().unwrap(),
             error_text: None,
         })
     );
@@ -990,6 +993,7 @@ async fn large_unary_tool_completion_does_not_block_an_independent_session() -> 
             content_items: vec![FunctionCallOutputContentItem::InputText {
                 text: "8388608".to_string(),
             }],
+            result_buffered_for: Duration::ZERO,
             error_text: None,
         }
     );
@@ -1045,6 +1049,7 @@ async fn single_subscription_processes_slow_and_fast_tools_concurrently() -> Res
             content_items: vec![FunctionCallOutputContentItem::InputText {
                 text: "8388608".to_string(),
             }],
+            result_buffered_for: Duration::ZERO,
             error_text: None,
         }
     );

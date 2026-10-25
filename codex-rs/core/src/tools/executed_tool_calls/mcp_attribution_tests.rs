@@ -66,7 +66,7 @@ fn restores_cumulative_item_and_compaction_checkpoints() {
     };
     let history = InitialHistory::Forked(vec![
         RolloutItem::ResponseItem(envelope(Some(initial))),
-        RolloutItem::Compacted(CompactedItem {
+        RolloutItem::Compacted(Box::new(CompactedItem {
             message: "summary".to_string(),
             replacement_history: Some(vec![envelope(Some(cumulative.clone()))]),
             guardian_history: None,
@@ -80,7 +80,7 @@ fn restores_cumulative_item_and_compaction_checkpoints() {
             latest_token_usage_record: None,
             shake_history_state: None,
             resume_metadata: None,
-        }),
+        })),
     ]);
 
     assert_eq!(McpAttributionRecorder::new(&history).snapshot(), cumulative);
@@ -136,7 +136,7 @@ fn first_error_reason_survives_checkpoints_and_later_sources() {
     compacted.replacement_history = Some(vec![checkpoint.clone()]);
     for item in [
         RolloutItem::ResponseItem(checkpoint),
-        RolloutItem::Compacted(compacted),
+        RolloutItem::Compacted(Box::new(compacted)),
     ] {
         let restored = McpAttributionRecorder::new(&InitialHistory::Forked(vec![item]));
         restored.record(source("", "turn_3"));

@@ -37,7 +37,10 @@ pub(crate) fn format_inter_agent_completion_message(
         AgentStatus::NotFound => "Agent was not found.".to_string(),
         AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Waiting => return None,
     };
-    let message = InterAgentCompletionMessage::new(task_name, sender, payload).render();
+    let message = InterAgentCompletionMessage::new(task_name, sender, payload)
+        .render()
+        .into_text()
+        .unwrap_or_default();
     if approx_token_count(&message) > COMPLETION_MESSAGE_MAX_TOKENS {
         Some(truncate_text(
             &message,
@@ -64,6 +67,8 @@ pub(crate) fn format_inter_agent_blocked_message(
         format!("{message}\n\n{BLOCKED_NEXT_ACTION}"),
     )
     .render()
+    .into_text()
+    .unwrap_or_default()
 }
 
 /// Explains why a child that was interrupted for its waiting parent has no result.
@@ -78,6 +83,8 @@ pub(crate) fn format_inter_agent_interruption_message(
 ) -> String {
     InterAgentCompletionMessage::new(task_name, sender, format!("Agent was interrupted. {note}"))
         .render()
+        .into_text()
+        .unwrap_or_default()
 }
 
 pub(crate) fn format_guardian_interruption_message(
@@ -87,7 +94,10 @@ pub(crate) fn format_guardian_interruption_message(
 ) -> String {
     let error = truncate_text(error, TruncationPolicy::Tokens(ERROR_MAX_TOKENS));
     let payload = format!("Agent interrupted by Guardian: {error}\n\n{GUARDIAN_NEXT_ACTION}");
-    InterAgentCompletionMessage::new(task_name, sender, payload).render()
+    InterAgentCompletionMessage::new(task_name, sender, payload)
+        .render()
+        .into_text()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
