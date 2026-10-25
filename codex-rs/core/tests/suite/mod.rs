@@ -275,6 +275,8 @@ mod web_search_system_proxy;
 mod websocket_fallback;
 mod window_headers;
 mod work_lifecycle_admission;
+#[cfg(unix)]
+mod work_lifecycle_producers;
 mod workspace_roots;
 mod worktree_trust;
 

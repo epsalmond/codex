@@ -50,6 +50,7 @@ Settings:
     }
     text(JSON.stringify(results));
 08:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | []
@@ -65,6 +66,7 @@ Settings:
     }
     text(JSON.stringify(results));
 11:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | [{"name":"mcp__environment__lookup","result":"called lookup for  at  with "}]
@@ -80,6 +82,7 @@ Settings:
     }
     text(JSON.stringify(results));
 14:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | [{"name":"mcp__environment__resolve","result":"called resolve for  at  with "},{"name":"mcp__environment__search","result":"called search for  at  with "}]
@@ -95,6 +98,7 @@ Settings:
     }
     text(JSON.stringify(results));
 17:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | []

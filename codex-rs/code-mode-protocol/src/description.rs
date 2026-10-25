@@ -30,6 +30,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
 - `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to {{ default_exec_yield_time_ms }} ms.
 - `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
+- `work_kind` optionally declares `"task"` (the default finite cell) or `"service"` (session-owned work excluded from exec drain). A service cell's nested commands remain finite unless separately declared services.
 - When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
 
 - Global helpers:
@@ -159,9 +160,20 @@ pub struct ToolNamespaceDescription {
     pub description: String,
 }
 
+/// Host-side declaration; the producer's identity remains a cell for either kind.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeModeWorkKind {
+    #[default]
+    Task,
+    Service,
+}
+
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct CodeModeExecPragma {
+    #[serde(default)]
+    work_kind: CodeModeWorkKind,
     #[serde(default)]
     yield_time_ms: Option<u64>,
     #[serde(default)]
@@ -170,6 +182,7 @@ struct CodeModeExecPragma {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParsedExecSource {
+    pub work_kind: CodeModeWorkKind,
     pub code: String,
     pub yield_time_ms: Option<u64>,
     pub max_output_tokens: Option<usize>,
@@ -183,6 +196,7 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
     }
 
     let mut args = ParsedExecSource {
+        work_kind: CodeModeWorkKind::Task,
         code: input.to_string(),
         yield_time_ms: None,
         max_output_tokens: None,
@@ -205,29 +219,36 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
     let directive = pragma.trim();
     if directive.is_empty() {
         return Err(
-            "exec pragma must be a JSON object with supported fields `yield_time_ms` and `max_output_tokens`"
+            "exec pragma must be a JSON object with supported fields `yield_time_ms`, `max_output_tokens`, and `work_kind`"
                 .to_string(),
         );
     }
 
     let value: serde_json::Value = serde_json::from_str(directive).map_err(|err| {
         format!(
-            "exec pragma must be valid JSON with supported fields `yield_time_ms` and `max_output_tokens`: {err}"
+            "exec pragma must be valid JSON with supported fields `yield_time_ms`, `max_output_tokens`, and `work_kind`: {err}"
         )
     })?;
     let object = value.as_object().ok_or_else(|| {
-        "exec pragma must be a JSON object with supported fields `yield_time_ms` and `max_output_tokens`"
+        "exec pragma must be a JSON object with supported fields `yield_time_ms`, `max_output_tokens`, and `work_kind`"
             .to_string()
     })?;
     for key in object.keys() {
         match key.as_str() {
-            "yield_time_ms" | "max_output_tokens" => {}
+            "yield_time_ms" | "max_output_tokens" | "work_kind" => {}
             _ => {
                 return Err(format!(
-                    "exec pragma only supports `yield_time_ms` and `max_output_tokens`; got `{key}`"
+                    "exec pragma only supports `yield_time_ms`, `max_output_tokens`, and `work_kind`; got `{key}`"
                 ));
             }
         }
+    }
+
+    if object
+        .get("work_kind")
+        .is_some_and(|kind| !matches!(kind.as_str(), Some("task" | "service")))
+    {
+        return Err("exec pragma field `work_kind` must be `task` or `service`".to_string());
     }
 
     let pragma: CodeModeExecPragma = serde_json::from_value(value).map_err(|err| {
@@ -254,6 +275,7 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
     }
 
     args.code = rest.to_string();
+    args.work_kind = pragma.work_kind;
     args.yield_time_ms = pragma.yield_time_ms;
     args.max_output_tokens = pragma.max_output_tokens;
     Ok(args)
@@ -582,6 +604,7 @@ mod description_override_tests;
 #[cfg(test)]
 mod tests {
     use super::CodeModeToolKind;
+    use super::CodeModeWorkKind;
     use super::DeferredToolDiscovery;
     use super::ImageDetailVisibility;
     use super::ParsedExecSource;
@@ -621,6 +644,7 @@ mod tests {
         assert_eq!(
             parse_exec_source("text('hi')").unwrap(),
             ParsedExecSource {
+                work_kind: CodeModeWorkKind::Task,
                 code: "text('hi')".to_string(),
                 yield_time_ms: None,
                 max_output_tokens: None,
@@ -633,11 +657,56 @@ mod tests {
         assert_eq!(
             parse_exec_source("// @exec: {\"yield_time_ms\": 10}\ntext('hi')").unwrap(),
             ParsedExecSource {
+                work_kind: CodeModeWorkKind::Task,
                 code: "text('hi')".to_string(),
                 yield_time_ms: Some(10),
                 max_output_tokens: None,
             }
         );
+    }
+
+    #[test]
+    fn parse_exec_source_work_kind_preserves_limits() {
+        for (declaration, expected) in [
+            ("task", CodeModeWorkKind::Task),
+            ("service", CodeModeWorkKind::Service),
+        ] {
+            let input = format!(
+                "// @exec: {{\"work_kind\":\"{declaration}\",\"yield_time_ms\":0,\"max_output_tokens\":17}}\ntext('hi')"
+            );
+            assert_eq!(
+                parse_exec_source(&input).unwrap(),
+                ParsedExecSource {
+                    code: "text('hi')".to_string(),
+                    work_kind: expected,
+                    yield_time_ms: Some(0),
+                    max_output_tokens: Some(17),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn parse_exec_source_rejects_invalid_work_kind() {
+        for value in ["\"cell\"", "\"invalid\"", "null", "17", "true", "{}"] {
+            assert_eq!(
+                parse_exec_source(&format!("// @exec: {{\"work_kind\":{value}}}\ntext('hi')"))
+                    .unwrap_err(),
+                "exec pragma field `work_kind` must be `task` or `service`"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_exec_source_work_kind_preserves_numeric_validation() {
+        for field in ["yield_time_ms", "max_output_tokens"] {
+            for value in ["-1", "1.5", "9007199254740992"] {
+                let input = format!(
+                    "// @exec: {{\"work_kind\":\"service\",\"{field}\":{value}}}\ntext('hi')"
+                );
+                assert!(parse_exec_source(&input).is_err());
+            }
+        }
     }
 
     #[test]

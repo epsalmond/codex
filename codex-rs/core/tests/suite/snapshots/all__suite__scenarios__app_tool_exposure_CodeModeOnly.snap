@@ -59,6 +59,7 @@ Settings:
 -- request 2 (turn) --
 06:custom_tool_call/exec:text((await tools.mcp__codex_apps__calendar__lookup({})).content[0].text);
 07:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | calendar-lookup-ok

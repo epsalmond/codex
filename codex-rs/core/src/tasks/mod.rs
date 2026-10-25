@@ -796,10 +796,18 @@ impl Session {
                 }
                 PendingWorkCause::OwnedCompletion(assignment) => {
                     let still_ready = !self.input_queue.wakeups_paused()
-                        && self
-                            .services
-                            .async_completions
-                            .has_ready(self.thread_id(), assignment.as_ref())
+                        && assignment.as_ref().map_or_else(
+                            || {
+                                self.services
+                                    .async_completions
+                                    .has_ready(self.thread_id(), None)
+                            },
+                            |assignment| {
+                                self.services
+                                    .local_agent_runtime
+                                    .has_ready_owned_completions(assignment)
+                            },
+                        )
                         && self
                             .services
                             .local_agent_runtime

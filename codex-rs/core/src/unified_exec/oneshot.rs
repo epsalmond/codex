@@ -43,12 +43,27 @@ impl UnifiedExecProcessManager {
         context: &UnifiedExecContext,
         timeout: Duration,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-        let context = UnifiedExecContext::new(
+        if request.work_kind == super::NativeWorkKind::Service {
+            context
+                .session
+                .services
+                .unified_exec_manager
+                .release_process_id(request.process_id)
+                .await;
+            return Err(UnifiedExecError::process_failed(
+                "one-shot exec_command cannot own a service".into(),
+            ));
+        }
+        let mut copied_context = UnifiedExecContext::new(
             Arc::clone(&context.session),
             Arc::clone(&context.step_context),
             context.cancellation_token.child_token(),
             context.call_id.clone(),
         );
+        copied_context.originating_cell_id = context.originating_cell_id.clone();
+        copied_context.originating_cell_registration =
+            context.originating_cell_registration.clone();
+        let context = copied_context;
         let _cancel_on_drop = context.cancellation_token.clone().drop_guard();
         let task = async move {
             let manager = &context.session.services.unified_exec_manager;
@@ -63,6 +78,11 @@ impl UnifiedExecProcessManager {
                 );
             }
 
+            let (registration, residency) =
+                match manager.admit_native_work(&request, &context).await {
+                    Ok(admitted) => admitted,
+                    Err(error) => return (Err(error), "failed"),
+                };
             let process = OnceLock::new();
             let mut completion = Completion {
                 timeout,
@@ -75,6 +95,8 @@ impl UnifiedExecProcessManager {
                     &context,
                     Some(&mut completion),
                     /*reservation*/ None,
+                    registration,
+                    residency,
                 ));
                 tokio::select! {
                     biased;

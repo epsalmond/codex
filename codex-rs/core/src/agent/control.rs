@@ -67,6 +67,8 @@ pub(crate) use self::runtime::AgentTreeShutdownState;
 pub(crate) use self::runtime::AgentTreeTeardownGuard;
 pub(crate) use self::runtime::LocalAgentRuntime;
 pub(crate) use self::watch::StatusSubscription;
+pub(crate) use self::work_lifecycle::OwnedWorkRegistration;
+pub(crate) use self::work_lifecycle::WorkKind;
 
 mod api;
 #[cfg(test)]

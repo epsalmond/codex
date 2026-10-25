@@ -63,3 +63,17 @@ fn completed_timing_preserves_content_and_distinguishes_zero_from_unavailable() 
         assert_eq!(output.success_for_logging(), false);
     }
 }
+
+#[test]
+fn service_classification_survives_completed_timing_update() {
+    let mut output = CodeModeToolOutput::new(
+        FunctionToolOutput::from_text("service-tail".to_owned(), Some(true)),
+        "Script running with cell ID service-cell".to_owned(),
+        Duration::from_secs(1),
+        Some(Duration::from_secs(1)),
+    )
+    .with_work_kind(crate::agent::control::WorkKind::Service);
+    output.set_handler_duration_ms(1_200);
+    assert!(output.log_output().contains("work_kind=service"));
+    assert!(output.log_output().ends_with("service-tail"));
+}

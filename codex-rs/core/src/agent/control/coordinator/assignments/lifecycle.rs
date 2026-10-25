@@ -148,10 +148,16 @@ impl AgentWakeCoordinator {
             ActiveTurnOrigin::Waiting => {
                 assignment.active_turn_id = None;
                 assignment.phase = AssignmentPhase::Waiting;
-                let has_ready_completions = assignment
-                    .owned_completions
-                    .upgrade()
-                    .is_some_and(|store| store.has_ready(thread_id, Some(&current)));
+                if let Some((previous, captured)) = assignment.bound_finite_hint.take()
+                    && assignment.acknowledged_finite_terminal_revision == captured
+                {
+                    assignment.acknowledged_finite_terminal_revision = previous;
+                }
+                let has_ready_completions = assignment.has_finite_terminal_hint()
+                    || assignment
+                        .owned_completions
+                        .upgrade()
+                        .is_some_and(|store| store.has_ready(thread_id, Some(&current)));
                 // Any pending report needs the wake this turn would have been: one still in the
                 // mailbox (Enqueued) is as unrecorded as one never claimed.
                 let has_pending_reports = state
@@ -280,6 +286,10 @@ impl AgentWakeCoordinator {
         state.assignments.insert(
             id.clone(),
             Assignment {
+                finite_owned_producers: 0,
+                finite_terminal_revision: 0,
+                acknowledged_finite_terminal_revision: 0,
+                bound_finite_hint: None,
                 owned_completions: Default::default(),
                 parent: Some(parent.clone()),
                 phase: AssignmentPhase::Reserved,
@@ -377,6 +387,8 @@ impl AgentWakeCoordinator {
         assignment.phase = match disposition {
             TurnEndDisposition::Succeeded
                 if !assignment.direct_children.is_empty()
+                    || assignment.finite_owned_producers != 0
+                    || assignment.has_finite_terminal_hint()
                     || assignment
                         .owned_completions
                         .upgrade()
@@ -391,6 +403,8 @@ impl AgentWakeCoordinator {
         };
         let phase = assignment.phase;
         assignment.last_classified_phase = Some(phase);
+        let wake_finite_hint =
+            phase == AssignmentPhase::Waiting && assignment.has_finite_terminal_hint();
         let wake_recorded_reports = phase == AssignmentPhase::Waiting
             && state.pending_by_parent.get(id).is_some_and(|report_ids| {
                 report_ids.iter().any(|report_id| {
@@ -458,7 +472,7 @@ impl AgentWakeCoordinator {
             state.signal_wake_event();
         }
         drop(state);
-        if wake_recorded_reports {
+        if wake_recorded_reports || wake_finite_hint {
             self.request_wake(id.clone());
         }
         Ok(TurnEndClassification {
@@ -502,6 +516,10 @@ impl AgentWakeCoordinator {
         state.assignments.insert(
             id.clone(),
             Assignment {
+                finite_owned_producers: 0,
+                finite_terminal_revision: 0,
+                acknowledged_finite_terminal_revision: 0,
+                bound_finite_hint: None,
                 owned_completions: Default::default(),
                 parent: parent.clone(),
                 phase: AssignmentPhase::Running,

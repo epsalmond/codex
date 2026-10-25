@@ -17,6 +17,23 @@ pub(super) struct CodeModeToolOutput {
 }
 
 impl CodeModeToolOutput {
+    pub(super) fn with_work_kind(mut self, kind: crate::agent::control::WorkKind) -> Self {
+        let kind = match kind {
+            crate::agent::control::WorkKind::Task => "task",
+            crate::agent::control::WorkKind::Cell => "cell",
+            crate::agent::control::WorkKind::Service => "service",
+        };
+        let classification = format!("work_kind={kind}");
+        self.status = format!("{}\n{classification}", self.status);
+        if let FunctionCallOutputContentItem::InputText { text } = &mut self.output.body[0] {
+            let status_end = text
+                .find("\nWall time ")
+                .expect("constructor owns the output header");
+            text.insert_str(status_end, &format!("\n{classification}"));
+        }
+        self
+    }
+
     pub(super) fn new(
         mut output: FunctionToolOutput,
         status: String,

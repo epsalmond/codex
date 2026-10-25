@@ -901,3 +901,75 @@ async fn clear_active_turn(thread: &CodexThread) {
     // The fixture has no task runner to clear the turn after the terminal event.
     *thread.session.active_turn.lock().await = None;
 }
+
+#[test_case::test_case(crate::agent::control::WorkKind::Task; "tty_task_without_completion_record")]
+#[test_case::test_case(crate::agent::control::WorkKind::Cell; "compatibility_cell_without_completion_record")]
+#[test_case::test_case(crate::agent::control::WorkKind::Service; "service_without_completion_record")]
+#[tokio::test]
+async fn exclusive_eviction_recheck_retains_live_registration_and_startup_pin(
+    kind: crate::agent::control::WorkKind,
+) {
+    let mut config = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    let temp_home = tempfile::tempdir().unwrap();
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .unwrap();
+    let control = manager.agent_control();
+    let state = control.runtime.upgrade().unwrap();
+    let membership = control.runtime.admit_start().unwrap();
+    let child = spawn_v2_subagent(&control, &state, config, root.thread_id, "work-owner").await;
+    mark_thread_completed(child.thread.as_ref()).await;
+    assert!(super::is_unloadable(&child.thread).await);
+    let session = &child.thread.session;
+    let turn = session.new_default_turn().await;
+    let pin = control.runtime.pin_owned_work_owner(session).await.unwrap();
+    assert!(pin.is_some());
+    assert_eq!(
+        state
+            .try_evict_v2_thread(Arc::clone(&child.thread), &membership)
+            .await
+            .unwrap(),
+        super::ThreadEvictionOutcome::Busy
+    );
+    let work = control
+        .runtime
+        .reserve_owned_work(session, &turn, "owned-start", kind, None)
+        .unwrap();
+    work.mark_started();
+    drop(pin);
+    assert!(!session.services.async_completions.has_owned_work());
+    assert_eq!(
+        state
+            .try_evict_v2_thread(Arc::clone(&child.thread), &membership)
+            .await
+            .unwrap(),
+        super::ThreadEvictionOutcome::Busy
+    );
+    work.mark_terminal();
+    drop(work);
+    assert!(super::is_unloadable(&child.thread).await);
+    // A writer already holding the gate is rejected immediately, rather than awaited by a
+    // nested producer whose originating dispatch may hold another read pin.
+    let exclusive = Arc::clone(&child.thread.residency_gate)
+        .try_write_owned()
+        .unwrap();
+    assert!(control.runtime.pin_owned_work_owner(session).await.is_err());
+    drop(exclusive);
+    assert_eq!(
+        state
+            .try_evict_v2_thread(Arc::clone(&child.thread), &membership)
+            .await
+            .unwrap(),
+        super::ThreadEvictionOutcome::Evicted
+    );
+}

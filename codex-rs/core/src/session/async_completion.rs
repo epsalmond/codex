@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 use std::sync::Weak;
 
 use crate::agent::control::AgentAssignmentId;
+use crate::agent::control::OwnedWorkRegistration;
+use crate::agent::control::WorkKind;
 use crate::context::AsyncToolCompletion;
 use crate::context::ContextualUserFragment;
 use crate::session::TurnInput;
@@ -89,12 +91,17 @@ struct CompletionState {
 }
 
 struct Record {
+    lifecycle: Option<OwnedWorkRegistration>,
+    work_kind: WorkKind,
     owner: ThreadId,
     turn_id: String,
     create_time: serde_json::Number,
     call_id: String,
     producer: Producer,
     assignment: Option<AgentAssignmentId>,
+    /// A Cell's initial call yielded, even while its native-close delivery fence is retained.
+    cell_yielded_for_visibility: bool,
+    /// The initial call's delivery fence was released; Cells wait for native close.
     yielded: bool,
     claimed: bool,
     terminal: Option<AsyncToolCompletion>,
@@ -210,7 +217,7 @@ impl AsyncCompletions {
         self.state()
             .records
             .iter()
-            .filter(|(_, record)| record.yielded)
+            .filter(|(_, record)| record.yielded || record.cell_yielded_for_visibility)
             .map(|(id, record)| {
                 let (process_id, cell_id) = match &record.producer {
                     Producer::Process {
@@ -230,7 +237,7 @@ impl AsyncCompletions {
                     cell_id,
                     command: record.command.clone(),
                     created_at: record.create_time.as_f64().map_or(0, |time| time as i64),
-                    ready: record.terminal.is_some(),
+                    ready: record.yielded && record.terminal.is_some(),
                     wakes_owner,
                 }
             })
@@ -239,7 +246,9 @@ impl AsyncCompletions {
 
     pub(crate) fn owns_assignment(&self, assignment: &AgentAssignmentId) -> bool {
         self.state().records.values().any(|record| {
-            record.owner == assignment.thread_id && record.assignment.as_ref() == Some(assignment)
+            record.owner == assignment.thread_id
+                && record.assignment.as_ref() == Some(assignment)
+                && record.work_kind.is_finite()
         })
     }
 
@@ -296,6 +305,7 @@ impl AsyncCompletions {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve(
         self: &Arc<Self>,
         owner: ThreadId,
@@ -312,18 +322,58 @@ impl AsyncCompletions {
                 process_id,
                 cell_id: cell_id.map(str::to_owned),
             },
+            None,
+        )
+    }
+
+    /// Reserve using an already-admitted lifecycle identity, including retained Cell calls.
+    pub(crate) fn reserve_with_lifecycle(
+        self: &Arc<Self>,
+        owner: ThreadId,
+        turn: &TurnContext,
+        call_id: &str,
+        process_id: i32,
+        cell_id: Option<&str>,
+        lifecycle: &OwnedWorkRegistration,
+    ) -> Result<CompletionReservation, &'static str> {
+        self.reserve_producer(
+            owner,
+            turn,
+            call_id,
+            Producer::Process {
+                process_id,
+                cell_id: cell_id.map(str::to_owned),
+            },
+            Some(lifecycle),
+        )
+    }
+
+    pub(crate) fn reserve_cell_with_lifecycle(
+        self: &Arc<Self>,
+        owner: ThreadId,
+        turn: &TurnContext,
+        call_id: &str,
+        lifecycle: &OwnedWorkRegistration,
+    ) -> Result<CompletionReservation, &'static str> {
+        self.reserve_producer(
+            owner,
+            turn,
+            call_id,
+            Producer::Cell { cell_id: None },
+            Some(lifecycle),
         )
     }
 
     /// Reserves capacity for a Code Mode cell before it starts; bind the provider's cell ID with
     /// [`CompletionReservation::bind_cell`] before publishing.
+    #[cfg(test)]
     pub(crate) fn reserve_cell(
         self: &Arc<Self>,
         owner: ThreadId,
         turn: &TurnContext,
         call_id: &str,
     ) -> Result<CompletionReservation, &'static str> {
-        self.reserve_producer(owner, turn, call_id, Producer::Cell { cell_id: None })
+        self.reserve_producer(owner, turn, call_id, Producer::Cell { cell_id: None }, None)
     }
 
     fn reserve_producer(
@@ -332,7 +382,13 @@ impl AsyncCompletions {
         turn: &TurnContext,
         call_id: &str,
         producer: Producer,
+        lifecycle: Option<&OwnedWorkRegistration>,
     ) -> Result<CompletionReservation, &'static str> {
+        if lifecycle.is_some_and(|registration| {
+            !registration.matches(owner, &turn.sub_id, call_id, turn.agent_assignment.get())
+        }) {
+            return Err("async completion lifecycle identity does not match its record");
+        }
         let cell_id = match &producer {
             Producer::Process { cell_id, .. } | Producer::Cell { cell_id } => cell_id.as_deref(),
         };
@@ -368,13 +424,16 @@ impl AsyncCompletions {
                 );
             }
             let id = ResponseItemId::new("msg");
-            let record = Record {
+            let mut record = Record {
+                lifecycle: None,
+                work_kind: lifecycle.map_or(WorkKind::Task, OwnedWorkRegistration::kind),
                 owner,
                 turn_id: turn.sub_id.clone(),
                 create_time: Session::response_item_create_time(),
                 call_id: call_id.to_owned(),
                 producer,
                 assignment: turn.agent_assignment.get().cloned(),
+                cell_yielded_for_visibility: false,
                 yielded: false,
                 claimed: false,
                 terminal: None,
@@ -385,6 +444,8 @@ impl AsyncCompletions {
             if !record.metadata_fits(&id) {
                 return Err("async completion metadata exceeds the encoded fragment limit");
             }
+            // No fallible path or replacement may drop a registration under the store lock.
+            record.lifecycle = lifecycle.cloned();
             records.insert(id.clone(), record);
             drop(state);
             Ok(CompletionReservation {
@@ -393,7 +454,9 @@ impl AsyncCompletions {
                 registered: false,
             })
         };
-        let reservation = if let Some(assignment) = turn.agent_assignment.get()
+        let reservation = if let Some(lifecycle) = lifecycle {
+            lifecycle.admit_completion(self, admit)?
+        } else if let Some(assignment) = turn.agent_assignment.get()
             && let Some(session) = self.owner.get().and_then(Weak::upgrade)
         {
             session
@@ -494,18 +557,21 @@ impl AsyncCompletions {
 
     pub(super) fn accept(self: &Arc<Self>, ids: &[ResponseItemId]) {
         let mut state = self.state();
-        for id in ids {
-            state.records.remove(id);
-        }
+        let removed = ids
+            .iter()
+            .filter_map(|id| state.records.remove(id))
+            .collect::<Vec<_>>();
         drop(state);
+        drop(removed);
         self.changed();
     }
 
     pub(crate) fn retire(self: &Arc<Self>) {
         let mut state = self.state();
         state.closed = true;
-        state.records.clear();
+        let removed = std::mem::take(&mut state.records);
         drop(state);
+        drop(removed);
         self.changed();
     }
 }
@@ -527,6 +593,37 @@ impl CompletionWake {
 }
 
 impl CompletionReservation {
+    /// Shares the producer's one registration with ordinary result acceptance.
+    #[cfg(test)]
+    pub(crate) fn attach_lifecycle(
+        &mut self,
+        lifecycle: &OwnedWorkRegistration,
+    ) -> Result<(), &'static str> {
+        let mut state = self.store.state();
+        let record = state
+            .records
+            .get_mut(&self.id)
+            .ok_or("async completion reservation is no longer held")?;
+        if record.lifecycle.is_some()
+            || !lifecycle.matches(
+                record.owner,
+                &record.turn_id,
+                &record.call_id,
+                record.assignment.as_ref(),
+            )
+        {
+            return Err("async completion lifecycle identity does not match its record");
+        }
+        let previous = record.work_kind;
+        record.work_kind = lifecycle.kind();
+        if !record.metadata_fits(&self.id) {
+            record.work_kind = previous;
+            return Err("async completion metadata exceeds the encoded fragment limit");
+        }
+        record.lifecycle = Some(lifecycle.clone());
+        Ok(())
+    }
+
     /// Binds the provider's cell ID to an unbound cell reservation. Rejects IDs over 128 bytes,
     /// non-cell or already-bound reservations, and IDs whose escaped metadata cannot fit; a
     /// rejected reservation stays unbound.
@@ -568,6 +665,19 @@ impl CompletionReservation {
         }
     }
 
+    /// Exposes an actually yielded Cell in status views without releasing its delivery fence.
+    /// Call only after registering automatic delivery for the initial yielded response.
+    pub(crate) fn mark_cell_yielded_for_visibility(&self) {
+        if !self.registered {
+            return;
+        }
+        if let Some(record) = self.store.state().records.get_mut(&self.id)
+            && matches!(record.producer, Producer::Cell { cell_id: Some(_) })
+        {
+            record.cell_yielded_for_visibility = true;
+        }
+    }
+
     pub(crate) fn release(mut self) {
         self.registered = false;
     }
@@ -577,14 +687,16 @@ impl Drop for CompletionReservation {
     fn drop(&mut self) {
         let mut state = self.store.state();
         let records = &mut state.records;
-        if self.registered {
+        let removed = if self.registered {
             if let Some(record) = records.get_mut(&self.id) {
                 record.yielded = true;
             }
+            None
         } else {
-            records.remove(&self.id);
-        }
+            records.remove(&self.id)
+        };
         drop(state);
+        drop(removed);
         self.store.changed();
     }
 }
@@ -699,11 +811,16 @@ impl Record {
                 format!("kind=cell cell={}", cell_id.as_deref().unwrap_or("unbound"))
             }
         };
+        let classification = if self.work_kind == WorkKind::Service {
+            " work_kind=service"
+        } else {
+            ""
+        };
         // `truncated` is always present so the header shape is stable; it counts output bytes
         // omitted before the tail, including any the producer dropped before publication.
         AsyncToolCompletion {
             text: format!(
-                "id={id} owner={} turn={} call={} {producer} assignment={generation} status={status} truncated={omitted}\n{tail}",
+                "id={id} owner={} turn={} call={} {producer}{classification} assignment={generation} status={status} truncated={omitted}\n{tail}",
                 self.owner, self.turn_id, self.call_id,
             ),
         }
@@ -746,6 +863,11 @@ pub(super) async fn record_ready(
     drain: CompletionDrain,
     model: &ModelInfo,
 ) -> bool {
+    if let Some(assignment) = turn.agent_assignment.get() {
+        sess.services
+            .local_agent_runtime
+            .acknowledge_finite_terminal_hint(assignment, &turn.sub_id);
+    }
     if !turn
         .config
         .features

@@ -9,6 +9,7 @@ mod session;
 pub use description::AUTOMATIC_DELIVERY_EXEC_GUIDANCE;
 pub use description::CODE_MODE_PRAGMA_PREFIX;
 pub use description::CodeModeToolKind;
+pub use description::CodeModeWorkKind;
 pub use description::DeferredToolDiscovery;
 pub use description::EnabledToolMetadata;
 pub use description::ImageDetailVisibility;

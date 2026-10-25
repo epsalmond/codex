@@ -378,6 +378,8 @@ impl ToolOutput for AbortedToolOutput {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecCommandToolOutput {
+    /// Classification is present only for commands managed by unified exec.
+    pub work_kind: Option<crate::unified_exec::NativeWorkKind>,
     pub event_call_id: String,
     pub chunk_id: String,
     pub wall_time: Duration,
@@ -449,6 +451,8 @@ impl ToolOutput for ExecCommandToolOutput {
         #[derive(Serialize)]
         struct UnifiedExecCodeModeResult {
             #[serde(skip_serializing_if = "Option::is_none")]
+            work_kind: Option<crate::unified_exec::NativeWorkKind>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             chunk_id: Option<String>,
             wall_time_seconds: f64,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -461,6 +465,7 @@ impl ToolOutput for ExecCommandToolOutput {
         }
 
         let result = UnifiedExecCodeModeResult {
+            work_kind: self.work_kind,
             chunk_id: (!self.chunk_id.is_empty()).then(|| self.chunk_id.clone()),
             wall_time_seconds: self.wall_time.as_secs_f64(),
             exit_code: self.exit_code,
@@ -536,6 +541,9 @@ impl ExecCommandToolOutput {
         }
 
         if let Some(process_id) = &self.process_id {
+            if let Some(kind) = self.work_kind {
+                sections.push(format!("Work kind: {}", kind.as_str()));
+            }
             sections.push(format!("Process running with session ID {process_id}"));
         }
 

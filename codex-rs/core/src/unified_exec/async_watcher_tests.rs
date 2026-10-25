@@ -23,16 +23,35 @@ use pretty_assertions::assert_eq;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
-struct StreamingOutputHarness {
-    process: Arc<UnifiedExecProcess>,
-    stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    exit_tx: tokio::sync::oneshot::Sender<i32>,
-    output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
-    context: UnifiedExecContext,
-    rx_event: async_channel::Receiver<Event>,
+pub(crate) struct StreamingOutputHarness {
+    pub(crate) process: Arc<UnifiedExecProcess>,
+    pub(crate) stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) exit_tx: tokio::sync::oneshot::Sender<i32>,
+    pub(crate) output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
+    pub(crate) context: UnifiedExecContext,
+    pub(crate) rx_event: async_channel::Receiver<Event>,
+}
+
+/// Call after the terminal event gate is entered, when the watcher owns this lock.
+pub(crate) async fn wait_for_exit_watcher(process: &UnifiedExecProcess) {
+    let _guard = process.interaction_lock().lock_owned().await;
 }
 
 async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
+    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+    let context = UnifiedExecContext::new(
+        session,
+        crate::session::step_context::StepContext::for_test(turn),
+        tokio_util::sync::CancellationToken::new(),
+        "streaming-output-test".to_string(),
+    );
+    streaming_output_harness_with_context(context, rx_event).await
+}
+
+pub(crate) async fn streaming_output_harness_with_context(
+    context: UnifiedExecContext,
+    rx_event: async_channel::Receiver<Event>,
+) -> anyhow::Result<StreamingOutputHarness> {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let (stdout_tx, stdout_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
@@ -48,13 +67,6 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         tty: false,
     });
     let process = Arc::new(UnifiedExecProcess::from_spawned(spawned, SandboxType::None).await?);
-    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
-    let context = UnifiedExecContext::new(
-        session,
-        crate::session::step_context::StepContext::for_test(turn),
-        tokio_util::sync::CancellationToken::new(),
-        "streaming-output-test".to_string(),
-    );
     let output_buffer = Arc::clone(&process.output_handles().output_buffer);
 
     Ok(StreamingOutputHarness {
@@ -111,6 +123,7 @@ async fn completed_output_preserves_bytes_before_subscription(
         /*network_denial_monitor*/ None,
         /*plugin_metrics_sidecar*/ None,
         /*completion_publisher*/ None,
+        /*registration*/ None,
     );
     stdout_tx.send(late_output.to_vec())?;
     drop(stdout_tx);
@@ -328,6 +341,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         Some(network_denial_monitor),
         /*plugin_metrics_sidecar*/ None,
         /*completion_publisher*/ None,
+        /*registration*/ None,
     );
 
     let exited_at = Instant::now();
@@ -395,7 +409,7 @@ async fn streaming_output_bounds_invalid_bytes() {
         pending: Vec::new(),
         emitter: Emitter {
             remaining_deltas: 2,
-            session,
+            session: Arc::downgrade(&session),
             turn,
             call_id: "bounded-output-test".to_string(),
         },
@@ -421,4 +435,110 @@ async fn streaming_output_bounds_invalid_bytes() {
             b"\xf0\x9f\x98\x80\xff\xff\xff".to_vec(),
         ]
     );
+}
+
+#[tokio::test]
+async fn native_watcher_retains_registration_through_terminal_output_and_end_event()
+-> anyhow::Result<()> {
+    use crate::agent::control::WorkKind;
+    for kind in [WorkKind::Task, WorkKind::Service] {
+        let StreamingOutputHarness {
+            process,
+            stdout_tx,
+            exit_tx,
+            output_buffer,
+            context,
+            rx_event,
+        } = streaming_output_harness().await?;
+        let runtime = &context.session.services.local_agent_runtime;
+        let observation = runtime.work_observation();
+        let (_, mut changes) = observation.subscribe();
+        let registration = runtime
+            .reserve_owned_work(
+                &context.session,
+                &context.step_context.turn,
+                &context.call_id,
+                kind,
+                None,
+            )
+            .expect("registration");
+        registration.mark_started();
+        registration.mark_yielded(false);
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let terminal_monitor = tokio::spawn(async move {
+            let _ = finish_rx.await;
+        });
+        start_streaming_output(&process, &context);
+        #[allow(deprecated)]
+        let cwd = context.step_context.turn.cwd.clone().into();
+        spawn_exit_watcher(
+            Arc::clone(&process),
+            &context,
+            vec!["registered-process".into()],
+            cwd,
+            123,
+            None,
+            output_buffer,
+            Instant::now(),
+            Some(terminal_monitor),
+            None,
+            None,
+            Some(registration),
+        );
+        stdout_tx.send(b"LAST-TERMINAL-OUTPUT".to_vec())?;
+        drop(stdout_tx);
+        exit_tx.send(0).expect("native exit");
+        process.cancellation_token().cancelled().await;
+        let output = rx_event.recv().await?;
+        assert!(matches!(output.msg, EventMsg::ExecCommandOutputDelta(_)));
+        // Terminal event classification remains behind the explicit monitor gate.
+        assert!(runtime.has_live_owned_work(context.session.thread_id()));
+        assert_eq!(
+            observation.snapshot().running_finite_work,
+            usize::from(kind == WorkKind::Task)
+        );
+        finish_tx.send(()).expect("finish terminal event work");
+        let end = rx_event.recv().await?;
+        assert!(matches!(end.msg, EventMsg::ItemCompleted(_)));
+        while runtime.has_live_owned_work(context.session.thread_id()) {
+            changes.changed().await?;
+        }
+        assert_eq!(observation.snapshot().running_finite_work, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_observers_do_not_pin_session_while_service_is_running() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        output_buffer,
+        context,
+        ..
+    } = streaming_output_harness().await?;
+    let session = Arc::downgrade(&context.session);
+    start_streaming_output(&process, &context);
+    #[allow(deprecated)]
+    let cwd = context.step_context.turn.cwd.clone().into();
+    spawn_exit_watcher(
+        Arc::clone(&process),
+        &context,
+        vec!["service".into()],
+        cwd,
+        123,
+        None,
+        output_buffer,
+        Instant::now(),
+        None,
+        None,
+        None,
+        None,
+    );
+    drop(context);
+    assert!(session.upgrade().is_none());
+    drop(stdout_tx);
+    exit_tx.send(0).expect("service native exit");
+    Ok(())
 }

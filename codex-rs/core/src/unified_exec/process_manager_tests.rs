@@ -461,6 +461,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         "call-unified-denied".to_string(),
     );
     let request = ExecCommandRequest {
+        work_kind: crate::unified_exec::NativeWorkKind::Task,
         command: vec![
             "sh".to_string(),
             "-lc".to_string(),
@@ -640,6 +641,8 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
         store.processes.insert(
             process_id,
             ProcessEntry {
+                work_kind: crate::unified_exec::NativeWorkKind::Task,
+                membership: None,
                 process: if is_exited {
                     Arc::clone(&exited_process)
                 } else {
@@ -682,4 +685,192 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
         (pruned.map(|entry| entry.process_id), store.processes.len()),
         (None, MAX_UNIFIED_EXEC_PROCESSES)
     );
+}
+
+#[cfg(unix)]
+async fn shutdown_entry(
+    process: Arc<UnifiedExecProcess>,
+    session: &Arc<crate::session::session::Session>,
+    turn: &crate::session::turn_context::TurnContext,
+) -> ProcessEntry {
+    ProcessEntry {
+        work_kind: crate::unified_exec::NativeWorkKind::Service,
+        membership: Some(
+            session
+                .services
+                .local_agent_runtime
+                .admit_start()
+                .expect("tree membership"),
+        ),
+        process,
+        plugin_metrics_sidecar: None,
+        call_id: "shutdown-service".into(),
+        process_id: 1000,
+        cwd: PathUri::parse("file:///tmp").expect("cwd"),
+        initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+        hook_command: "service".into(),
+        tty: false,
+        completion_registered: false,
+        environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+        permissions: super::super::TerminalPermissions::for_launch(
+            turn.initial_environments
+                .primary()
+                .expect("primary environment"),
+            turn,
+            super::super::TerminalSandboxSource::Native,
+            crate::sandboxing::SandboxPermissions::UseDefault,
+            None,
+            None,
+        ),
+        network_approval: None,
+        session: Arc::downgrade(session),
+        last_used: Instant::now(),
+        started_at_unix: 0,
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_service_shutdown_waits_for_confirmation_and_reports_failure() {
+    for error in [None, Some("remote termination rejected".to_string())] {
+        let (session, turn) = crate::session::tests::make_session_and_context().await;
+        let session = Arc::new(session);
+        let (process, gate) =
+            crate::unified_exec::process_tests::gated_remote_process(error.clone()).await;
+        let manager = UnifiedExecProcessManager::default();
+        manager
+            .publish_process_entry(
+                1000,
+                shutdown_entry(Arc::clone(&process), &session, &turn).await,
+            )
+            .await
+            .expect("publish");
+        let shutdown_state = session.services.local_agent_runtime.request_shutdown();
+        let shutdown = manager.terminate_all_processes();
+        tokio::pin!(shutdown);
+        assert!(futures::poll!(&mut shutdown).is_pending());
+        gate.called.notified().await;
+        assert!(futures::poll!(&mut shutdown).is_pending());
+        let detailed = shutdown_state.wait_detailed();
+        tokio::pin!(detailed);
+        assert!(futures::poll!(&mut detailed).is_pending());
+        gate.acknowledged.add_permits(1);
+        shutdown.await;
+        let report = detailed.await;
+        assert_eq!(report.is_err(), error.is_some());
+        assert_eq!(process.has_exited(), error.is_none());
+        if let Err(report) = report {
+            assert_eq!(report.failures.len(), 1);
+            assert!(format!("{:?}", report.failures[0]).contains("terminate_process"));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelled_startup_and_publication_fence_keep_shutdown_pending_until_confirmation() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    let (process, gate) = crate::unified_exec::process_tests::gated_remote_process(None).await;
+    let manager = UnifiedExecProcessManager::default();
+    let entry = shutdown_entry(Arc::clone(&process), &session, &turn).await;
+    // Represents a start paused after native spawn and before publication.
+    let startup = ProcessStartupGuard {
+        process: Some(Arc::clone(&process)),
+        membership: Some(
+            session
+                .services
+                .local_agent_runtime
+                .admit_start()
+                .expect("membership"),
+        ),
+        startup: Some(manager.startups.token()),
+        thread_id: session.thread_id(),
+        residency: None,
+        registration: None,
+        network_approval: None,
+        session: Arc::downgrade(&session),
+    };
+    let shutdown_state = session.services.local_agent_runtime.request_shutdown();
+    let shutdown = manager.terminate_all_processes();
+    tokio::pin!(shutdown);
+    assert!(futures::poll!(&mut shutdown).is_pending());
+    assert!(manager.process_store.lock().await.closed);
+    assert!(manager.publish_process_entry(1000, entry).await.is_err());
+    // Cancellation transfers the exact handle and both memberships to cleanup.
+    drop(startup);
+    gate.called.notified().await;
+    assert!(futures::poll!(&mut shutdown).is_pending());
+    let detailed = shutdown_state.wait_detailed();
+    tokio::pin!(detailed);
+    assert!(futures::poll!(&mut detailed).is_pending());
+    gate.acknowledged.add_permits(1);
+    shutdown.await;
+    detailed
+        .await
+        .expect("tracked cleanup completes without abandoned guard");
+    assert!(process.has_exited());
+    assert!(manager.process_store.lock().await.processes.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelled_shutdown_keeps_remote_cleanup_and_failure_membership() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    let (process, gate) =
+        crate::unified_exec::process_tests::gated_remote_process(Some("remote refused".into()))
+            .await;
+    let manager = UnifiedExecProcessManager::default();
+    manager
+        .publish_process_entry(1000, shutdown_entry(process, &session, &turn).await)
+        .await
+        .expect("publish");
+    let shutdown_state = session.services.local_agent_runtime.request_shutdown();
+    let mut shutdown = Box::pin(manager.terminate_all_processes());
+    assert!(futures::poll!(&mut shutdown).is_pending());
+    gate.called.notified().await;
+    drop(shutdown);
+    let report = shutdown_state.wait_detailed();
+    tokio::pin!(report);
+    assert!(futures::poll!(&mut report).is_pending());
+    gate.acknowledged.add_permits(1);
+    let failure = report
+        .await
+        .expect_err("remote refusal is a detailed failure");
+    assert_eq!(failure.failures.len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn service_and_task_polling_capabilities_preserve_tty_and_compatibility_exceptions() {
+    use crate::unified_exec::NativeWorkKind;
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    for kind in [NativeWorkKind::Task, NativeWorkKind::Service] {
+        for (tty, automatic) in [(false, true), (false, false), (true, false)] {
+            let process = Arc::new(
+                crate::unified_exec::process_tests::remote_process(
+                    codex_exec_server::WriteStatus::Accepted,
+                    None,
+                    None,
+                )
+                .await,
+            );
+            let manager = UnifiedExecProcessManager::default();
+            let mut entry = shutdown_entry(Arc::clone(&process), &session, &turn).await;
+            entry.work_kind = kind;
+            entry.tty = tty;
+            entry.completion_registered = automatic;
+            manager
+                .publish_process_entry(1000, entry)
+                .await
+                .expect("publish");
+            assert_eq!(manager.has_automatic_completion(1000).await, automatic);
+            // A terminal result no longer owns the automatic live-poll exception.
+            process.terminate_confirmed().await.expect("termination");
+            assert!(!manager.has_automatic_completion(1000).await);
+            manager.terminate_all_processes().await;
+        }
+    }
 }

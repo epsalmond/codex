@@ -10,6 +10,10 @@ use core_test_support::ThreadIdle;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
+#[cfg(unix)]
+#[path = "finite_lifecycle_tests.rs"]
+mod finite_lifecycle_tests;
+
 const START_PROMPT: &str = "start typed report regression";
 const WORKER_TASK: &str = "typed report worker task";
 const WORKER_FOLLOWUP: &str = "typed report worker followup";

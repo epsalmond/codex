@@ -138,6 +138,12 @@ enum ReportDeliveryState {
 }
 
 struct Assignment {
+    /// Derived from the authoritative lifecycle map, updated under lifecycle -> wake locks.
+    finite_owned_producers: usize,
+    finite_terminal_revision: u64,
+    acknowledged_finite_terminal_revision: u64,
+    /// A bound wake that never starts restores the acknowledgement it took.
+    bound_finite_hint: Option<(u64, u64)>,
     owned_completions: std::sync::Weak<crate::session::async_completion::AsyncCompletions>,
     parent: Option<AgentAssignmentId>,
     phase: AssignmentPhase,

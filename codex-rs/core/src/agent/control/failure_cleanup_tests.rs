@@ -2,10 +2,18 @@ use super::*;
 use crate::agent::control::spawn_guard::PendingSpawn;
 use crate::session::TurnInput;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskResult;
+use crate::tools::code_mode::CodeModeExecuteHandler;
+use crate::tools::code_mode::execute_spec::create_code_mode_tool;
+use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolPayload;
+use crate::tools::registry::ToolExecutor;
+use crate::turn_diff_tracker::TurnDiffTracker;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;
 
@@ -17,6 +25,7 @@ struct CommittedSpawn {
     held: tokio::sync::Notify,
     fail: tokio::sync::Notify,
     task_token: tokio::sync::Mutex<Option<CancellationToken>>,
+    delegate: tokio::sync::Mutex<Option<Arc<dyn codex_code_mode::CodeModeSessionDelegate>>>,
 }
 
 struct HoldCommittedSpawn(Arc<CommittedSpawn>, FailureSource);
@@ -45,10 +54,23 @@ impl codex_code_mode::CodeModeSession for CleanupCell {
     fn execute<'a>(
         &'a self,
         _request: codex_code_mode::ExecuteRequest,
-        _delegate: Arc<dyn codex_code_mode::CodeModeSessionDelegate>,
+        delegate: Arc<dyn codex_code_mode::CodeModeSessionDelegate>,
         _preempt: Option<CancellationToken>,
     ) -> codex_code_mode::CodeModeSessionResultFuture<'a, codex_code_mode::StartedCell> {
-        Box::pin(async { Err("cell already yielded".to_owned()) })
+        Box::pin(async move {
+            assert!(self.0.delegate.lock().await.replace(delegate).is_none());
+            let cell_id = codex_code_mode::CellId::new("nested-spawn".to_owned());
+            Ok(codex_code_mode::StartedCell::from_future(
+                cell_id.clone(),
+                async move {
+                    Ok(codex_code_mode::RuntimeResponse::Yielded {
+                        cell_id,
+                        content_items: Vec::new(),
+                        code_mode_host_duration: None,
+                    })
+                },
+            ))
+        })
     }
     fn wait<'a>(
         &'a self,
@@ -75,6 +97,13 @@ impl codex_code_mode::CodeModeSession for CleanupCell {
             drop(self.0.pending.lock().await.take());
             let child = Arc::clone(self.0.child.lock().await.as_ref().expect("started child"));
             child.wait_until_terminated().await;
+            self.0
+                .delegate
+                .lock()
+                .await
+                .take()
+                .expect("started cleanup cell")
+                .cell_closed(&cell_id);
             Ok(codex_code_mode::WaitOutcome::LiveCell(
                 codex_code_mode::RuntimeResponse::Terminated {
                     cell_id,
@@ -303,25 +332,34 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
         .unwrap();
     if matches!(source, FailureSource::Natural) {
         let cell_id = codex_code_mode::CellId::new("nested-spawn".to_owned());
-        // The broker only tracks dispatch; install the controlled runtime session as well.
+        // Start through the handler so the live gate and registration belong to the delegate.
+        CodeModeExecuteHandler::new(create_code_mode_tool(String::new()), Vec::new())
+            .handle(ToolInvocation {
+                session: Arc::clone(&root.session),
+                turn: Arc::clone(&context),
+                step_context: StepContext::for_test(Arc::clone(&context)),
+                cancellation_token: CancellationToken::new(),
+                tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+                call_id: "cleanup-cell".to_owned(),
+                tool_name: codex_tools::ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME),
+                source: ToolCallSource::Direct,
+                payload: ToolPayload::Custom {
+                    input: "text('hold committed spawn')".to_owned(),
+                },
+            })
+            .await
+            .expect("start cleanup cell");
+        assert_eq!(
+            root.session.services.code_mode_service.active_cell_ids(),
+            vec![cell_id.clone()]
+        );
         assert!(
             root.session
                 .services
                 .code_mode_service
-                .wait(
-                    codex_code_mode::WaitRequest {
-                        cell_id: cell_id.clone(),
-                        yield_time_ms: 0,
-                    },
-                    /*preempt*/ None
-                )
-                .await
-                .is_err()
+                .work_registration(&cell_id)
+                .is_some()
         );
-        root.session
-            .services
-            .code_mode_service
-            .mark_cell_ready_for_dispatch(&cell_id, /*originating_call*/ None);
         held.fail.notify_one();
         timeout(Duration::from_secs(10), async {
             loop {
@@ -335,6 +373,14 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
         })
         .await
         .unwrap();
+        assert!(held.delegate.lock().await.is_none());
+        assert!(
+            root.session
+                .services
+                .code_mode_service
+                .active_cell_ids()
+                .is_empty()
+        );
     } else {
         root.session
             .fail_turn_if_active(

@@ -139,6 +139,7 @@ async fn detached_code_mode_callback_keeps_thread_id_on_dispatch_span() -> anyho
         /*executed_tool_calls*/ Default::default(),
     ));
     let cell_id = CellId::new("audit-cell".to_string());
+    super::dispatch_gate(&broker.dispatch_gates, &cell_id);
     broker.mark_cell_ready_for_dispatch(&cell_id, /*originating_call*/ None);
     let records = DispatchRecords::default();
     let subscriber = tracing_subscriber::registry().with(DispatchCapture(Arc::clone(&records)));
@@ -150,6 +151,7 @@ async fn detached_code_mode_callback_keeps_thread_id_on_dispatch_span() -> anyho
         step_context: Arc::clone(&step),
         tracker: Arc::clone(&tracker),
         completion: None,
+        work_registration: Mutex::new(None),
     };
     let session = Arc::new(session);
     let _worker = broker.start_worker(&session);
@@ -199,6 +201,7 @@ async fn dropped_tool_callbacks_release_the_origin_before_dispatch() {
         step_context: StepContext::for_test(Arc::clone(&turn)),
         tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
         completion: None,
+        work_registration: Mutex::new(None),
     };
     let origin = Arc::downgrade(&delegate.step_context);
     let cell_id = CellId::new("queued-cell".to_string());
@@ -234,6 +237,7 @@ async fn dropped_tool_callbacks_release_the_origin_before_dispatch() {
     };
     *queued_response = response_tx;
     broker.dispatch_tx.send(message).await.unwrap();
+    super::dispatch_gate(&broker.dispatch_gates, &cell_id);
     broker.mark_cell_ready_for_dispatch(&cell_id, /*originating_call*/ None);
     let _worker = broker.start_worker(&session);
     let response = response_rx.await;
@@ -266,11 +270,13 @@ async fn worker_lease_outlives_turn_and_releases_on_cell_close() -> anyhow::Resu
         step_context: StepContext::for_test(Arc::clone(&turn)).with_tool_router_for_test(router),
         tracker: Arc::clone(&tracker),
         completion: None,
+        work_registration: Mutex::new(None),
     };
     let cell_id = CellId::new("idle-cell".to_string());
 
     // The sampling step's lease, then the cell's own lease once it is admitted.
     let turn_worker = broker.start_worker(&session);
+    super::dispatch_gate(&broker.dispatch_gates, &cell_id);
     broker.mark_cell_ready_for_dispatch(&cell_id, /*originating_call*/ None);
     broker.retain_worker_for_cell(&cell_id, broker.start_worker(&session));
     drop(turn_worker);
@@ -294,6 +300,7 @@ async fn worker_lease_outlives_turn_and_releases_on_cell_close() -> anyhow::Resu
         "closing the last live cell releases the receiver"
     );
     let later_cell = CellId::new("later-cell".to_string());
+    super::dispatch_gate(&broker.dispatch_gates, &later_cell);
     broker.mark_cell_ready_for_dispatch(&later_cell, /*originating_call*/ None);
     let pending = tokio::time::timeout(
         Duration::from_millis(200),

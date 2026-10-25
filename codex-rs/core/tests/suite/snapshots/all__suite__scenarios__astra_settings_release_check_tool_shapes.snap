@@ -108,6 +108,7 @@ Settings:
     text(`diagnostics:\\n${log.output}`);
     text(`MCP: ${ping.structuredContent?.echo ?? "missing"}`);
 10:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | diagnostics:
@@ -130,6 +131,7 @@ Settings:
 -- request 4 (turn) --
 11:custom_tool_call/exec:image(await tools.view_image({ path: "release/settings.png", detail: "original" }));
 12:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | <input_image>
@@ -144,12 +146,14 @@ Settings:
     *** End Patch
     `));
 14:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | {}
 -- request 6 (turn) --
 15:custom_tool_call/exec:text((await tools.exec_command({ cmd: "cat release/status.md", login: false })).output);
 16:custom_tool_call_output:Script completed
+    work_kind=cell
     Wall time <DURATION> seconds
     Output:
      | Status: blocked

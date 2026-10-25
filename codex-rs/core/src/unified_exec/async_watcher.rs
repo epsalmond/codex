@@ -45,7 +45,7 @@ const UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES: usize = 8192;
 
 struct Emitter {
     remaining_deltas: usize,
-    session: Arc<Session>,
+    session: std::sync::Weak<Session>,
     turn: Arc<TurnContext>,
     call_id: String,
 }
@@ -68,7 +68,7 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
 
     let emitter = Emitter {
         remaining_deltas: MAX_EXEC_OUTPUT_DELTAS_PER_CALL,
-        session: Arc::clone(&context.session),
+        session: Arc::downgrade(&context.session),
         turn: Arc::clone(&context.step_context.turn),
         call_id: context.call_id.clone(),
     };
@@ -169,8 +169,9 @@ pub(crate) fn spawn_exit_watcher(
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     completion_publisher: Option<CompletionPublisher>,
+    registration: Option<crate::agent::control::OwnedWorkRegistration>,
 ) {
-    let session_ref = Arc::clone(&context.session);
+    let session_ref = Arc::downgrade(&context.session);
     let turn_ref = Arc::clone(&context.step_context.turn);
     let model_info = Arc::clone(&context.step_context.settings.model_info);
     let model_context = context.step_context.model_context();
@@ -190,7 +191,7 @@ pub(crate) fn spawn_exit_watcher(
         }
         let _interaction_guard = interaction_lock.lock_owned().await;
 
-        if let Some(publisher) = completion_publisher {
+        let completion = if let Some(publisher) = completion_publisher {
             let failure = process.failure_message();
             let status = if failure.is_some() {
                 CompletionStatus::Failed
@@ -206,59 +207,78 @@ pub(crate) fn spawn_exit_watcher(
             if let Some(message) = failure {
                 output.extend_from_slice(message.as_bytes());
             }
-            publisher.publish(status, &output, buffers.transcript.omitted_bytes());
-        }
-        let duration = Instant::now().saturating_duration_since(started_at);
-        let plugin_metrics_sidecar = plugin_metrics_sidecar
-            .as_ref()
-            .and_then(take_plugin_metrics_sidecar);
-        if let Some(message) = process.failure_message() {
-            drop(plugin_metrics_sidecar);
-            emit_failed_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                session_ref,
-                turn_ref,
-                model_info,
-                call_id,
-                command,
-                cwd,
-                Some(process_id.to_string()),
-                plugin_attribution,
-                output_buffer,
-                String::new(),
-                message,
-                duration,
-            )
-            .await;
+            Some((
+                publisher,
+                status,
+                output,
+                buffers.transcript.omitted_bytes(),
+            ))
         } else {
-            let exit_code = process.exit_code().unwrap_or(-1);
-            let timed_out = process.timed_out();
-            finish_and_track_measurements(
-                plugin_metrics_sidecar,
-                exit_code,
-                &session_ref,
-                &turn_ref,
-                &model_context,
-                &call_id,
-            )
-            .await;
-            emit_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                session_ref,
-                turn_ref,
-                model_info,
-                call_id,
-                command,
-                cwd,
-                Some(process_id.to_string()),
-                plugin_attribution,
-                output_buffer,
-                String::new(),
-                exit_code,
-                duration,
-                timed_out,
-            )
-            .await;
+            None
+        };
+        if let Some(session_ref) = session_ref.upgrade() {
+            let duration = Instant::now().saturating_duration_since(started_at);
+            let plugin_metrics_sidecar = plugin_metrics_sidecar
+                .as_ref()
+                .and_then(take_plugin_metrics_sidecar);
+            if let Some(message) = process.failure_message() {
+                drop(plugin_metrics_sidecar);
+                emit_failed_exec_end_for_unified_exec(
+                    process.sandbox_type(),
+                    session_ref,
+                    turn_ref,
+                    model_info,
+                    call_id,
+                    command,
+                    cwd,
+                    Some(process_id.to_string()),
+                    plugin_attribution,
+                    output_buffer,
+                    String::new(),
+                    message,
+                    duration,
+                )
+                .await;
+            } else {
+                let exit_code = process.exit_code().unwrap_or(-1);
+                let timed_out = process.timed_out();
+                finish_and_track_measurements(
+                    plugin_metrics_sidecar,
+                    exit_code,
+                    &session_ref,
+                    &turn_ref,
+                    &model_context,
+                    &call_id,
+                )
+                .await;
+                emit_exec_end_for_unified_exec(
+                    process.sandbox_type(),
+                    session_ref,
+                    turn_ref,
+                    model_info,
+                    call_id,
+                    command,
+                    cwd,
+                    Some(process_id.to_string()),
+                    plugin_attribution,
+                    output_buffer,
+                    String::new(),
+                    exit_code,
+                    duration,
+                    timed_out,
+                )
+                .await;
+            }
+        }
+        // The result record retains the registration while terminal output and events
+        // finish. Release the watcher's clone before making that result deliverable:
+        // acceptance can then finalize the owner without stranding it in Waiting.
+        if let Some(registration) = registration {
+            registration.mark_terminal();
+            drop(registration);
+        }
+        if let Some((publisher, status, output, omitted_bytes)) = completion {
+            publisher.publish(status, &output, omitted_bytes);
         }
     });
 }
@@ -335,6 +355,9 @@ impl Emitter {
                 call_id: call_id.clone(),
                 stream: ExecOutputStream::Stdout,
                 chunk,
+            };
+            let Some(session) = session.upgrade() else {
+                return false;
             };
             session
                 .send_event(turn.as_ref(), EventMsg::ExecCommandOutputDelta(event))
@@ -491,4 +514,4 @@ async fn resolve_aggregated_output(
 
 #[cfg(test)]
 #[path = "async_watcher_tests.rs"]
-mod tests;
+pub(crate) mod tests;

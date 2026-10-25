@@ -21,6 +21,7 @@ use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::control::OwnedWorkRegistration;
 use crate::session::async_completion::CompletionPublisher;
 use crate::session::async_completion::CompletionReservation;
 use crate::session::async_completion::CompletionStatus;
@@ -44,9 +45,12 @@ pub(super) struct CellCompletion {
     wait_hidden: bool,
     /// Stops the fallback watcher; `exec_terminate` triggers it before taking the observation lock.
     watch_cancel: CancellationToken,
+    /// Native close has released the delegate, dispatch and event holds.
+    native_closed: CancellationToken,
 }
 
 struct State {
+    lifecycle: Option<OwnedWorkRegistration>,
     reservation: Option<CompletionReservation>,
     publisher: Option<CompletionPublisher>,
     binding: Option<(CellId, Weak<dyn CodeModeSession>)>,
@@ -59,6 +63,8 @@ struct State {
     closed: bool,
     /// The provider could not report readiness, so a core watcher polls the cell instead.
     watched: bool,
+    /// The existing store has the terminal payload, still fenced by our reservation.
+    published: bool,
 }
 
 impl State {
@@ -72,6 +78,8 @@ impl State {
         if let Some(reservation) = self.reservation.take() {
             reservation.release();
         }
+        self.lifecycle = None;
+        self.published = false;
     }
 
     /// Publishes once and hands the record to the store for delivery.
@@ -79,8 +87,12 @@ impl State {
         if let Some(publisher) = self.publisher.take() {
             publisher.publish(status, tail, omitted);
         }
-        // Dropping a registered reservation marks the record deliverable.
-        drop(self.reservation.take());
+        self.published = true;
+        // The store owns the remaining registration before ordinary acceptance can run.
+        self.lifecycle = None;
+        if self.closed {
+            drop(self.reservation.take());
+        }
     }
 }
 
@@ -100,6 +112,7 @@ impl Drop for InitialCompletion {
 impl CellCompletion {
     pub(super) fn new(
         reservation: CompletionReservation,
+        lifecycle: Option<OwnedWorkRegistration>,
         owner: &Arc<Session>,
         turn: Arc<TurnContext>,
         shutdown: CancellationToken,
@@ -107,6 +120,7 @@ impl CellCompletion {
     ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
+                lifecycle,
                 reservation: Some(reservation),
                 publisher: None,
                 binding: None,
@@ -117,6 +131,7 @@ impl CellCompletion {
                 interrupting: false,
                 closed: false,
                 watched: false,
+                published: false,
             }),
             observation: Arc::new(tokio::sync::Mutex::new(())),
             owner: Arc::downgrade(owner),
@@ -124,6 +139,7 @@ impl CellCompletion {
             shutdown,
             wait_hidden,
             watch_cancel: CancellationToken::new(),
+            native_closed: CancellationToken::new(),
         })
     }
 
@@ -163,7 +179,7 @@ impl CellCompletion {
     }
 
     /// Registers a publisher for a yielded cell; an inline result needs no delivery.
-    pub(super) fn initial(self: &Arc<Self>, response: &RuntimeResponse) {
+    pub(super) fn initial(self: &Arc<Self>, response: &RuntimeResponse) -> bool {
         {
             let mut state = self.state();
             let yielded = matches!(
@@ -175,10 +191,17 @@ impl CellCompletion {
                 .reservation
                 .as_mut()
                 .filter(|_| yielded)
-                .map(CompletionReservation::register);
+                .map(|reservation| {
+                    let publisher = reservation.register();
+                    reservation.mark_cell_yielded_for_visibility();
+                    publisher
+                });
             if publisher.is_some() {
                 state.publisher = publisher;
                 state.yielded = true;
+                if let Some(lifecycle) = &state.lifecycle {
+                    lifecycle.mark_yielded(true);
+                }
             } else {
                 state.release();
             }
@@ -190,10 +213,11 @@ impl CellCompletion {
                 tokio::spawn(async move {
                     completion.watch().await;
                 });
-                return;
+                return true;
             }
         }
         self.collect_if_ready();
+        self.state().yielded
     }
 
     /// Stops the fallback watcher before a model terminate takes the observation lock.
@@ -285,6 +309,10 @@ impl CellCompletion {
                     CompletionStatus::CollectionFailed
                 }
             };
+            if matches!(status, CompletionStatus::CollectionFailed) {
+                self.close_after_collection_failure(&cell_id, provider.upgrade())
+                    .await;
+            }
             {
                 let mut state = self.state();
                 state.publish(status, &tail, omitted);
@@ -311,8 +339,17 @@ impl CellCompletion {
     pub(super) fn ready(self: &Arc<Self>, ready: CellTerminalReady) {
         {
             let mut state = self.state();
+            if state.published {
+                return;
+            }
             let media_left_for_wait =
                 ready.output_kind == CellOutputKind::Media && !self.wait_hidden;
+            if media_left_for_wait
+                && state.yielded
+                && let Some(lifecycle) = &state.lifecycle
+            {
+                lifecycle.mark_yielded(false);
+            }
             if media_left_for_wait
                 || state
                     .binding
@@ -339,10 +376,15 @@ impl CellCompletion {
             return;
         }
         state.closed = true;
-        // The collector's read or the interrupt's terminate closes the cell before it returns.
-        if !state.settling() {
+        if state.published {
+            // Native callback cleanup is complete. Release the last local lifecycle hold before
+            // the registered reservation makes the existing terminal record deliverable.
+            state.lifecycle = None;
+            drop(state.reservation.take());
+        } else if !state.settling() {
             state.release();
         }
+        self.native_closed.cancel();
     }
 
     pub(super) fn is_closed(&self) -> bool {
@@ -356,11 +398,27 @@ impl CellCompletion {
     /// Called under the observation lock after a model `wait` or `terminate`. A final result read
     /// by the model is never delivered again.
     pub(super) fn observed(self: &Arc<Self>, result: &Result<WaitOutcome, String>) {
-        if !matches!(
+        if matches!(
             result,
-            Ok(WaitOutcome::LiveCell(RuntimeResponse::Yielded { .. }))
+            Ok(WaitOutcome::MissingCell(_)
+                | WaitOutcome::LiveCell(
+                    RuntimeResponse::Result { .. } | RuntimeResponse::Terminated { .. }
+                ))
         ) {
-            self.state().release();
+            let mut state = self.state();
+            // The collector already observed the terminal result. A queued model read may only
+            // see MissingCell; it must not remove that collector's still-fenced terminal record.
+            if !state.published {
+                // An explicit terminal read transfers delivery to the model. Retire the automatic
+                // record only after restoring the existing nonautomatic close hint, so a delayed
+                // native close can still settle the yielded finite work's waiting assignment.
+                if state.yielded
+                    && let Some(lifecycle) = &state.lifecycle
+                {
+                    lifecycle.mark_yielded(false);
+                }
+                state.release();
+            }
         }
         self.collect_if_ready();
     }
@@ -383,7 +441,9 @@ impl CellCompletion {
             return;
         }
         if state.publisher.is_none() {
-            state.release();
+            if !state.published {
+                state.release();
+            }
             return;
         }
         match result {
@@ -402,15 +462,18 @@ impl CellCompletion {
             // The cell may still be live; its readiness or close settles the reservation.
             Err(_) => {
                 if state.closed {
-                    state.release();
+                    state.publish(
+                        CompletionStatus::CollectionFailed,
+                        b"terminal output could not be collected",
+                        0,
+                    );
                 }
             }
-            Ok(
-                WaitOutcome::MissingCell(_)
-                | WaitOutcome::LiveCell(RuntimeResponse::Yielded { .. }),
-            ) => {
-                state.release();
+            Ok(WaitOutcome::MissingCell(_)) => {
+                state.publish(CompletionStatus::Cancelled, &[], 0);
             }
+            // An ineffective terminate leaves the existing gate and publisher recoverable.
+            Ok(WaitOutcome::LiveCell(RuntimeResponse::Yielded { .. })) => {}
         }
     }
 
@@ -422,6 +485,7 @@ impl CellCompletion {
                 None => false,
             };
             if state.elected
+                || state.published
                 || state.interrupting
                 || state.closed
                 || !state.yielded
@@ -469,7 +533,7 @@ impl CellCompletion {
                 return;
             }
             result = async {
-                let provider = provider.ok_or_else(|| "terminal provider unavailable".to_owned())?;
+                let provider = provider.as_ref().ok_or_else(|| "terminal provider unavailable".to_owned())?;
                 tokio::time::timeout(
                     COLLECTION_TIMEOUT,
                     provider.wait(
@@ -497,13 +561,25 @@ impl CellCompletion {
                 let (tail, omitted) = text_tail(content_items, error_text.as_deref());
                 (terminal_status(error_text.as_deref()), tail, omitted)
             }
+            Ok(WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                cell_id: actual,
+                content_items,
+                ..
+            })) if actual == &cell_id => {
+                let (tail, omitted) = text_tail(content_items, None);
+                (CompletionStatus::Cancelled, tail, omitted)
+            }
             _ => (
                 CompletionStatus::CollectionFailed,
                 b"terminal output could not be collected".to_vec(),
                 0,
             ),
         };
-        // Publication precedes permit release, so a queued model terminate sees no live result.
+        if matches!(status, CompletionStatus::CollectionFailed) {
+            self.close_after_collection_failure(&cell_id, provider)
+                .await;
+        }
+        // Publication remains fenced until native close, even when terminate returned first.
         {
             let mut state = self.state();
             state.publish(status, &tail, omitted);
@@ -514,6 +590,35 @@ impl CellCompletion {
                 .services
                 .code_mode_service
                 .finish_cell_dispatch(&cell_id);
+        }
+    }
+
+    /// A failed terminal read does not close a buffered native cell. Terminate that exact cell
+    /// and bound confirmation; on error its gate and fenced record remain available to interrupt
+    /// or session shutdown. The callback token remembers close even if it precedes this wait.
+    async fn close_after_collection_failure(
+        &self,
+        cell_id: &CellId,
+        provider: Option<Arc<dyn CodeModeSession>>,
+    ) {
+        let result = tokio::time::timeout(COLLECTION_TIMEOUT, async {
+            if !self.is_closed() {
+                let provider =
+                    provider.ok_or_else(|| "terminal provider unavailable".to_owned())?;
+                provider.terminate(cell_id.clone()).await?;
+            }
+            self.native_closed.cancelled().await;
+            Ok::<(), String>(())
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%cell_id, %error, "failed to close code-mode cell after collection failure");
+            }
+            Err(_) => {
+                tracing::warn!(%cell_id, "code-mode cell close confirmation timed out after collection failure");
+            }
         }
     }
 
