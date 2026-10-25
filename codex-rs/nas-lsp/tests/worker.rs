@@ -28,6 +28,8 @@ fn config(root: &Path, executable: PathBuf, args: Vec<String>) -> Arc<WorkspaceC
         source_extensions: vec!["py".into()],
         exclude_dirs: vec![],
         readiness: Readiness::PyreflyLazyBlocking,
+        typescript_tsserver: None,
+        rustc: None,
     })
 }
 
@@ -286,6 +288,66 @@ async fn cancelled_request_drains_and_preserves_pid() {
     assert_eq!(worker.process_id(), pid);
     worker.shutdown().await;
     assert_eq!(worker.process_id(), None);
+}
+
+#[test]
+fn cancellation_during_warm_inventory_preserves_healthy_generation() {
+    // Hold the only blocking thread so cancellation occurs after query's entry
+    // check but before its saved inventory completes and input validation runs.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.py"), "x = 1\n").unwrap();
+        let mut worker = Worker::start(
+            fake(dir.path(), "exact"),
+            deadline(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let before = query(&mut worker, dir.path(), Operation::References, 1, 1).await;
+        assert_eq!(before.status, Status::Ok, "{before:?}");
+        let pid = worker.process_id();
+        let (occupied_tx, occupied_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let occupied = tokio::task::spawn_blocking(move || {
+            occupied_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        occupied_rx.await.unwrap();
+        let cancel = CancellationToken::new();
+        let mut requested = Box::pin(worker.query(
+            WorkerQuery {
+                operation: Operation::References,
+                path: dir.path().join("main.py"),
+                position: Position { line: 1, column: 1 },
+                max_results: 100,
+            },
+            deadline(),
+            cancel.clone(),
+        ));
+        let first_poll = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(requested.as_mut(), cx))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+        cancel.cancel();
+        release_tx.send(()).unwrap();
+        let cancelled = requested.await;
+        occupied.await.unwrap();
+        assert_eq!(cancelled.status, Status::Cancelled, "{cancelled:?}");
+        assert!(cancelled.locations.is_empty());
+        assert_eq!(worker.process_id(), pid);
+        let survivor = query(&mut worker, dir.path(), Operation::References, 1, 1).await;
+        assert_eq!(survivor.status, Status::Ok, "{survivor:?}");
+        assert_eq!(survivor.locations, before.locations);
+        assert_eq!(worker.process_id(), pid);
+        worker.shutdown().await;
+    });
 }
 
 #[tokio::test]

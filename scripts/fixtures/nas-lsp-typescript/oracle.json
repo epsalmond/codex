@@ -1,0 +1,397 @@
+{
+  "version": 1,
+  "language": "typescript",
+  "extension": "ts",
+  "positions": {
+    "human": "One-based line and Unicode scalar column; end_column is exclusive.",
+    "utf8": "One-based byte columns; ends exclusive.",
+    "lsp": "Zero-based line and UTF-16 character; ends exclusive.",
+    "reference_declarations": true
+  },
+  "variants": {
+    "base": {
+      "line_offset": 0,
+      "source_prefix": ""
+    },
+    "shifted": {
+      "line_offset": 2,
+      "source_prefix": "// Independent linked worktree B.\n\n"
+    }
+  },
+  "locations": {
+    "primary_definition": {
+      "path": "src/primary.ts",
+      "line": 2,
+      "column": 17,
+      "end_column": 23,
+      "utf8_column": 17,
+      "utf8_end_column": 23,
+      "lsp": {
+        "start": {
+          "line": 1,
+          "character": 16
+        },
+        "end": {
+          "line": 1,
+          "character": 22
+        }
+      }
+    },
+    "secondary_definition": {
+      "path": "src/secondary.ts",
+      "line": 2,
+      "column": 17,
+      "end_column": 23,
+      "utf8_column": 17,
+      "utf8_end_column": 23,
+      "lsp": {
+        "start": {
+          "line": 1,
+          "character": 16
+        },
+        "end": {
+          "line": 1,
+          "character": 22
+        }
+      }
+    },
+    "first_primary": {
+      "path": "src/consumer.ts",
+      "line": 4,
+      "column": 30,
+      "end_column": 36,
+      "utf8_column": 30,
+      "utf8_end_column": 36,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 29
+        },
+        "end": {
+          "line": 3,
+          "character": 35
+        }
+      }
+    },
+    "first_secondary": {
+      "path": "src/consumer.ts",
+      "line": 4,
+      "column": 32,
+      "end_column": 38,
+      "utf8_column": 32,
+      "utf8_end_column": 38,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 31
+        },
+        "end": {
+          "line": 3,
+          "character": 37
+        }
+      }
+    },
+    "repeated_left": {
+      "path": "src/consumer.ts",
+      "line": 5,
+      "column": 33,
+      "end_column": 39,
+      "utf8_column": 33,
+      "utf8_end_column": 39,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 32
+        },
+        "end": {
+          "line": 4,
+          "character": 38
+        }
+      }
+    },
+    "repeated_middle": {
+      "path": "src/consumer.ts",
+      "line": 5,
+      "column": 53,
+      "end_column": 59,
+      "utf8_column": 53,
+      "utf8_end_column": 59,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 52
+        },
+        "end": {
+          "line": 4,
+          "character": 58
+        }
+      }
+    },
+    "repeated_right": {
+      "path": "src/consumer.ts",
+      "line": 5,
+      "column": 73,
+      "end_column": 79,
+      "utf8_column": 73,
+      "utf8_end_column": 79,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 72
+        },
+        "end": {
+          "line": 4,
+          "character": 78
+        }
+      }
+    },
+    "astral_primary": {
+      "path": "src/consumer.ts",
+      "line": 6,
+      "column": 60,
+      "end_column": 66,
+      "utf8_column": 65,
+      "utf8_end_column": 71,
+      "lsp": {
+        "start": {
+          "line": 5,
+          "character": 60
+        },
+        "end": {
+          "line": 5,
+          "character": 66
+        }
+      }
+    },
+    "other_secondary": {
+      "path": "src/consumer.ts",
+      "line": 7,
+      "column": 32,
+      "end_column": 38,
+      "utf8_column": 32,
+      "utf8_end_column": 38,
+      "lsp": {
+        "start": {
+          "line": 6,
+          "character": 31
+        },
+        "end": {
+          "line": 6,
+          "character": 37
+        }
+      }
+    },
+    "helper_primary": {
+      "path": "src/helper.ts",
+      "line": 3,
+      "column": 31,
+      "end_column": 37,
+      "utf8_column": 31,
+      "utf8_end_column": 37,
+      "lsp": {
+        "start": {
+          "line": 2,
+          "character": 30
+        },
+        "end": {
+          "line": 2,
+          "character": 36
+        }
+      }
+    },
+    "transient_primary": {
+      "path": "src/transient.ts",
+      "line": 3,
+      "column": 34,
+      "end_column": 40,
+      "utf8_column": 34,
+      "utf8_end_column": 40,
+      "lsp": {
+        "start": {
+          "line": 2,
+          "character": 33
+        },
+        "end": {
+          "line": 2,
+          "character": 39
+        }
+      }
+    },
+    "no_symbol": {
+      "path": "src/consumer.ts",
+      "line": 8,
+      "column": 4,
+      "end_column": 18,
+      "utf8_column": 4,
+      "utf8_end_column": 18,
+      "lsp": {
+        "start": {
+          "line": 7,
+          "character": 3
+        },
+        "end": {
+          "line": 7,
+          "character": 17
+        }
+      }
+    }
+  },
+  "symbols": {
+    "primary.render": {
+      "definition": "primary_definition"
+    },
+    "secondary.render": {
+      "definition": "secondary_definition"
+    }
+  },
+  "scenarios": {
+    "base": {
+      "references": {
+        "primary.render": [
+          "primary_definition",
+          "first_primary",
+          "repeated_left",
+          "repeated_middle",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary",
+          "transient_primary"
+        ],
+        "secondary.render": [
+          "secondary_definition",
+          "other_secondary"
+        ]
+      }
+    },
+    "changed": {
+      "replace": {
+        "src/consumer.ts": "variants/changed-consumer.ts"
+      },
+      "references": {
+        "primary.render": [
+          "primary_definition",
+          "repeated_left",
+          "repeated_middle",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary",
+          "transient_primary"
+        ],
+        "secondary.render": [
+          "secondary_definition",
+          "other_secondary",
+          "first_secondary"
+        ]
+      }
+    },
+    "deleted": {
+      "replace": {
+        "src/consumer.ts": "variants/changed-consumer.ts"
+      },
+      "delete": [
+        "src/transient.ts"
+      ],
+      "references": {
+        "primary.render": [
+          "primary_definition",
+          "repeated_left",
+          "repeated_middle",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary"
+        ],
+        "secondary.render": [
+          "secondary_definition",
+          "other_secondary",
+          "first_secondary"
+        ]
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "cold_primary_references",
+      "operation": "references",
+      "at": "primary_definition",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "cold_secondary_references",
+      "operation": "references",
+      "at": "secondary_definition",
+      "symbol": "secondary.render"
+    },
+    {
+      "id": "cross_file_definition",
+      "operation": "definition",
+      "at": "helper_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "same_name_secondary_definition",
+      "operation": "definition",
+      "at": "other_secondary",
+      "symbol": "secondary.render"
+    },
+    {
+      "id": "repeated_left_definition",
+      "operation": "definition",
+      "at": "repeated_left",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "repeated_middle_definition",
+      "operation": "definition",
+      "at": "repeated_middle",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "repeated_right_definition",
+      "operation": "definition",
+      "at": "repeated_right",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "astral_definition",
+      "operation": "definition",
+      "at": "astral_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "use_references",
+      "operation": "references",
+      "at": "helper_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "repeated_references",
+      "operation": "references",
+      "at": "repeated_middle",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "astral_references",
+      "operation": "references",
+      "at": "astral_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "secondary_use_references",
+      "operation": "references",
+      "at": "other_secondary",
+      "symbol": "secondary.render"
+    },
+    {
+      "id": "comment_definition",
+      "operation": "definition",
+      "at": "no_symbol",
+      "symbol": null
+    },
+    {
+      "id": "comment_references",
+      "operation": "references",
+      "at": "no_symbol",
+      "symbol": null
+    }
+  ]
+}

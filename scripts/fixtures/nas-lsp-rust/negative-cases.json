@@ -1,0 +1,40 @@
+{
+  "note": "Recipes, not claimed broker test results. Apply one case to a fresh materialized root. No external sentinel execution is authorized by this helper.",
+  "cases": [
+    {
+      "id": "orphan_source",
+      "write": {
+        "src/orphan.rs": "pub fn orphan() -> i32 { crate::primary::render(9) }\n"
+      },
+      "purpose": "A saved source absent from the crate graph must not yield a successful incomplete/empty answer. Exact rejection/indexing status is adapter-owned."
+    },
+    {
+      "id": "module_path_escape",
+      "write": {
+        "src/escape.rs": "#[path = \"../../outside.rs\"]\nmod escaped;\n"
+      },
+      "purpose": "Unsafe path directive must fail preflight even in an otherwise orphan saved source."
+    },
+    {
+      "id": "include_escape",
+      "write": {
+        "src/escape.rs": "include!(\"../../outside.rs\");\n"
+      },
+      "purpose": "Reject include directive; do not expand file contents."
+    },
+    {
+      "id": "environment_macro",
+      "write": {
+        "src/escape.rs": "const SECRET: &str = env!(\"PRIVATE_SECRET\");\n"
+      },
+      "purpose": "Reject environment expansion before spawn."
+    },
+    {
+      "id": "cfg_attr_path",
+      "write": {
+        "src/escape.rs": "#[cfg_attr(any(), path = \"../../outside.rs\")]\nmod escaped;\n"
+      },
+      "purpose": "Reject conditional external module directives before spawn."
+    }
+  ]
+}

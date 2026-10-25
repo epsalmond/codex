@@ -1,0 +1,398 @@
+{
+  "version": 1,
+  "language": "rust",
+  "extension": "rs",
+  "positions": {
+    "human": "One-based line and Unicode scalar column; end_column is exclusive.",
+    "utf8": "One-based byte columns; ends exclusive.",
+    "lsp": "Zero-based line and UTF-16 character; ends exclusive.",
+    "reference_declarations": true
+  },
+  "variants": {
+    "base": {
+      "line_offset": 0,
+      "source_prefix": ""
+    },
+    "shifted": {
+      "line_offset": 2,
+      "source_prefix": "// Independent linked worktree B.\n\n"
+    }
+  },
+  "locations": {
+    "primary_definition": {
+      "path": "src/primary.rs",
+      "line": 2,
+      "column": 8,
+      "end_column": 14,
+      "utf8_column": 8,
+      "utf8_end_column": 14,
+      "lsp": {
+        "start": {
+          "line": 1,
+          "character": 7
+        },
+        "end": {
+          "line": 1,
+          "character": 13
+        }
+      }
+    },
+    "secondary_definition": {
+      "path": "src/secondary.rs",
+      "line": 2,
+      "column": 8,
+      "end_column": 14,
+      "utf8_column": 8,
+      "utf8_end_column": 14,
+      "lsp": {
+        "start": {
+          "line": 1,
+          "character": 7
+        },
+        "end": {
+          "line": 1,
+          "character": 13
+        }
+      }
+    },
+    "first_primary": {
+      "path": "src/consumer.rs",
+      "line": 3,
+      "column": 34,
+      "end_column": 40,
+      "utf8_column": 34,
+      "utf8_end_column": 40,
+      "lsp": {
+        "start": {
+          "line": 2,
+          "character": 33
+        },
+        "end": {
+          "line": 2,
+          "character": 39
+        }
+      }
+    },
+    "first_secondary": {
+      "path": "src/consumer.rs",
+      "line": 3,
+      "column": 36,
+      "end_column": 42,
+      "utf8_column": 36,
+      "utf8_end_column": 42,
+      "lsp": {
+        "start": {
+          "line": 2,
+          "character": 35
+        },
+        "end": {
+          "line": 2,
+          "character": 41
+        }
+      }
+    },
+    "repeated_left": {
+      "path": "src/consumer.rs",
+      "line": 4,
+      "column": 37,
+      "end_column": 43,
+      "utf8_column": 37,
+      "utf8_end_column": 43,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 36
+        },
+        "end": {
+          "line": 3,
+          "character": 42
+        }
+      }
+    },
+    "repeated_middle": {
+      "path": "src/consumer.rs",
+      "line": 4,
+      "column": 58,
+      "end_column": 64,
+      "utf8_column": 58,
+      "utf8_end_column": 64,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 57
+        },
+        "end": {
+          "line": 3,
+          "character": 63
+        }
+      }
+    },
+    "repeated_right": {
+      "path": "src/consumer.rs",
+      "line": 4,
+      "column": 79,
+      "end_column": 85,
+      "utf8_column": 79,
+      "utf8_end_column": 85,
+      "lsp": {
+        "start": {
+          "line": 3,
+          "character": 78
+        },
+        "end": {
+          "line": 3,
+          "character": 84
+        }
+      }
+    },
+    "astral_primary": {
+      "path": "src/consumer.rs",
+      "line": 5,
+      "column": 56,
+      "end_column": 62,
+      "utf8_column": 61,
+      "utf8_end_column": 67,
+      "lsp": {
+        "start": {
+          "line": 4,
+          "character": 56
+        },
+        "end": {
+          "line": 4,
+          "character": 62
+        }
+      }
+    },
+    "other_secondary": {
+      "path": "src/consumer.rs",
+      "line": 6,
+      "column": 36,
+      "end_column": 42,
+      "utf8_column": 36,
+      "utf8_end_column": 42,
+      "lsp": {
+        "start": {
+          "line": 5,
+          "character": 35
+        },
+        "end": {
+          "line": 5,
+          "character": 41
+        }
+      }
+    },
+    "helper_primary": {
+      "path": "src/helper.rs",
+      "line": 3,
+      "column": 35,
+      "end_column": 41,
+      "utf8_column": 35,
+      "utf8_end_column": 41,
+      "lsp": {
+        "start": {
+          "line": 2,
+          "character": 34
+        },
+        "end": {
+          "line": 2,
+          "character": 40
+        }
+      }
+    },
+    "transient_primary": {
+      "path": "src/transient.rs",
+      "line": 3,
+      "column": 38,
+      "end_column": 44,
+      "utf8_column": 38,
+      "utf8_end_column": 44,
+      "lsp": {
+        "start": {
+          "line": 2,
+          "character": 37
+        },
+        "end": {
+          "line": 2,
+          "character": 43
+        }
+      }
+    },
+    "no_symbol": {
+      "path": "src/consumer.rs",
+      "line": 7,
+      "column": 4,
+      "end_column": 18,
+      "utf8_column": 4,
+      "utf8_end_column": 18,
+      "lsp": {
+        "start": {
+          "line": 6,
+          "character": 3
+        },
+        "end": {
+          "line": 6,
+          "character": 17
+        }
+      }
+    }
+  },
+  "symbols": {
+    "primary.render": {
+      "definition": "primary_definition"
+    },
+    "secondary.render": {
+      "definition": "secondary_definition"
+    }
+  },
+  "scenarios": {
+    "base": {
+      "references": {
+        "primary.render": [
+          "primary_definition",
+          "first_primary",
+          "repeated_left",
+          "repeated_middle",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary",
+          "transient_primary"
+        ],
+        "secondary.render": [
+          "secondary_definition",
+          "other_secondary"
+        ]
+      }
+    },
+    "changed": {
+      "replace": {
+        "src/consumer.rs": "variants/changed-consumer.rs"
+      },
+      "references": {
+        "primary.render": [
+          "primary_definition",
+          "repeated_left",
+          "repeated_middle",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary",
+          "transient_primary"
+        ],
+        "secondary.render": [
+          "secondary_definition",
+          "other_secondary",
+          "first_secondary"
+        ]
+      }
+    },
+    "deleted": {
+      "replace": {
+        "src/consumer.rs": "variants/changed-consumer.rs",
+        "src/lib.rs": "variants/deleted-lib.rs"
+      },
+      "delete": [
+        "src/transient.rs"
+      ],
+      "references": {
+        "primary.render": [
+          "primary_definition",
+          "repeated_left",
+          "repeated_middle",
+          "repeated_right",
+          "astral_primary",
+          "helper_primary"
+        ],
+        "secondary.render": [
+          "secondary_definition",
+          "other_secondary",
+          "first_secondary"
+        ]
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "cold_primary_references",
+      "operation": "references",
+      "at": "primary_definition",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "cold_secondary_references",
+      "operation": "references",
+      "at": "secondary_definition",
+      "symbol": "secondary.render"
+    },
+    {
+      "id": "cross_file_definition",
+      "operation": "definition",
+      "at": "helper_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "same_name_secondary_definition",
+      "operation": "definition",
+      "at": "other_secondary",
+      "symbol": "secondary.render"
+    },
+    {
+      "id": "repeated_left_definition",
+      "operation": "definition",
+      "at": "repeated_left",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "repeated_middle_definition",
+      "operation": "definition",
+      "at": "repeated_middle",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "repeated_right_definition",
+      "operation": "definition",
+      "at": "repeated_right",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "astral_definition",
+      "operation": "definition",
+      "at": "astral_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "use_references",
+      "operation": "references",
+      "at": "helper_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "repeated_references",
+      "operation": "references",
+      "at": "repeated_middle",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "astral_references",
+      "operation": "references",
+      "at": "astral_primary",
+      "symbol": "primary.render"
+    },
+    {
+      "id": "secondary_use_references",
+      "operation": "references",
+      "at": "other_secondary",
+      "symbol": "secondary.render"
+    },
+    {
+      "id": "comment_definition",
+      "operation": "definition",
+      "at": "no_symbol",
+      "symbol": null
+    },
+    {
+      "id": "comment_references",
+      "operation": "references",
+      "at": "no_symbol",
+      "symbol": null
+    }
+  ]
+}

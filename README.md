@@ -143,6 +143,10 @@ push build.
 For prompts that put these to work, see
 [Getting the most out of codex-shake](RELEASE_NOTES.md#getting-the-most-out-of-codex-shake).
 
+For operator-managed saved-file definition and reference lookup, see
+[Native semantic navigation](docs/semantic-navigation.md), including server
+registration, Linux service setup, limits, and service-down behavior.
+
 ### Statusline items
 
 The default TUI status line uses `model` (a short model label when the catalog

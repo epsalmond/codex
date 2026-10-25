@@ -7,6 +7,7 @@
 pub mod broker;
 pub mod config;
 pub mod freshness;
+mod language;
 pub mod lsp;
 pub mod pool;
 pub mod resource;

@@ -1,0 +1,33 @@
+{
+  "note": "Recipes, not claimed broker test results. Apply one case to a fresh materialized root. No external sentinel execution is authorized by this helper.",
+  "cases": [
+    {
+      "id": "jsdoc_path_escape",
+      "write": {
+        "src/escape.ts": "/** @import {Payload} from \"../../outside\" */\nexport const harmless = 1;\n"
+      },
+      "purpose": "Pinned compiler preprocessing must detect JSDoc import root escape before spawn."
+    },
+    {
+      "id": "triple_slash_path_escape",
+      "write": {
+        "src/escape.ts": "/// <reference path=\"../../outside.d.ts\" />\nexport const harmless = 1;\n"
+      },
+      "purpose": "Reject unsafe triple-slash reference before spawn."
+    },
+    {
+      "id": "nested_plugin",
+      "write": {
+        "src/nested/tsconfig.json": "{\"compilerOptions\":{\"plugins\":[{\"name\":\"hostile-plugin\"}]}}\n"
+      },
+      "purpose": "Reject nonempty plugins in every discoverable nested config before spawn."
+    },
+    {
+      "id": "inherited_escape",
+      "write": {
+        "tsconfig.json": "{\"extends\":\"../outside.json\",\"include\":[\"src/**/*.ts\"]}\n"
+      },
+      "purpose": "Reject configuration inheritance outside registered root before spawn."
+    }
+  ]
+}

@@ -10,16 +10,10 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::io::AsyncBufRead;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
-use tokio::process::Child;
-use tokio::process::ChildStdin;
-use tokio::process::Command;
-use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::mpsc;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio::time::timeout_at;
@@ -101,6 +95,84 @@ pub(crate) enum RequestError {
     Timeout,
     Cancelled,
     Server(i64),
+    Indexing(&'static str),
+    Stale(&'static str),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReadinessPermit {
+    pub(crate) epoch: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ServerStatus {
+    pub(crate) healthy: bool,
+    pub(crate) quiescent: bool,
+}
+
+#[derive(Default)]
+struct ReadinessState {
+    progress: HashSet<String>,
+    epoch: u64,
+    server_status: Option<ServerStatus>,
+}
+
+/// Clean child-only environment for pinned TypeScript/Rust runtimes. The scratch
+/// directory lives as long as its child; no host/user configuration is imported.
+pub(crate) struct ChildEnvironment {
+    scratch: tempfile::TempDir,
+    path: std::ffi::OsString,
+    rustc: Option<std::path::PathBuf>,
+}
+impl ChildEnvironment {
+    pub(crate) fn new(config: &crate::config::WorkspaceConfig) -> Result<Self, &'static str> {
+        let scratch = tempfile::Builder::new()
+            .prefix("codex-lsp-child-")
+            .tempdir()
+            .map_err(|_| "child_environment")?;
+        for name in ["cargo", "config", "tmp"] {
+            std::fs::create_dir(scratch.path().join(name)).map_err(|_| "child_environment")?;
+        }
+        let runtime = if config.language == "rust" {
+            config.rustc.as_deref().ok_or("rustc_unavailable")?
+        } else {
+            config.executable.as_path()
+        };
+        let parent = runtime.parent().ok_or("runtime_unavailable")?;
+        let path = std::env::join_paths([
+            parent,
+            std::path::Path::new("/usr/bin"),
+            std::path::Path::new("/bin"),
+        ])
+        .map_err(|_| "child_environment")?;
+        Ok(Self {
+            scratch,
+            path,
+            rustc: config.rustc.clone(),
+        })
+    }
+    pub(crate) fn apply(&self, command: &mut Command) {
+        command
+            .env_clear()
+            .env("PATH", &self.path)
+            .env("HOME", self.scratch.path())
+            .env("CARGO_HOME", self.scratch.path().join("cargo"))
+            .env("XDG_CONFIG_HOME", self.scratch.path().join("config"))
+            .env("TMPDIR", self.scratch.path().join("tmp"))
+            .env("LANG", "C.UTF-8")
+            .env("CARGO_NET_OFFLINE", "true");
+        if let Some(rustc) = &self.rustc {
+            // RA's global Rayon pool is independent of its numThreads option.
+            // Bound both pools so two workers leave room for rustc helpers
+            // inside the broker's unchanged 64-task cgroup ceiling.
+            command
+                .env("RUSTC", rustc)
+                .env("RAYON_NUM_THREADS", "2")
+                // The pinned compiler treats this value as a report directory.
+                // Diagnostic crashes must not create new workspace inputs.
+                .env("RUSTC_ICE", self.scratch.path().join("tmp"));
+        }
+    }
 }
 
 pub(crate) struct Session {
@@ -111,13 +183,25 @@ pub(crate) struct Session {
     reader: JoinHandle<()>,
     stderr: JoinHandle<()>,
     healthy: Arc<AtomicBool>,
-    progress: Arc<Mutex<HashSet<String>>>,
+    readiness: Arc<Mutex<ReadinessState>>,
+    changed: Arc<Notify>,
+    _environment: Option<ChildEnvironment>,
     next_id: u64,
 }
 
 impl Session {
-    pub fn spawn(config: &crate::config::WorkspaceConfig) -> Result<Self, &'static str> {
+    pub fn spawn(
+        config: &crate::config::WorkspaceConfig,
+        options: Value,
+    ) -> Result<Self, &'static str> {
         let mut command = Command::new(&config.executable);
+        let environment = if config.language == "python" {
+            None
+        } else {
+            let environment = ChildEnvironment::new(config)?;
+            environment.apply(&mut command);
+            Some(environment)
+        };
         command
             .args(&config.args)
             .current_dir(&config.root)
@@ -134,11 +218,14 @@ impl Session {
         let stdout = child.stdout.take().ok_or("server_unavailable")?;
         let mut stderr_pipe = child.stderr.take().ok_or("server_unavailable")?;
         let healthy = Arc::new(AtomicBool::new(true));
-        let progress = Arc::new(Mutex::new(HashSet::new()));
+        let readiness = Arc::new(Mutex::new(ReadinessState::default()));
+        let changed = Arc::new(Notify::new());
         let (tx, responses) = mpsc::channel(8);
         let reader_writer = writer.clone();
         let reader_health = healthy.clone();
-        let reader_progress = progress.clone();
+        let reader_readiness = readiness.clone();
+        let reader_changed = changed.clone();
+        let language = config.language.clone();
         let reader = tokio::spawn(async move {
             let mut stdout = BufReader::new(stdout);
             loop {
@@ -161,6 +248,41 @@ impl Session {
                     if let Some(id) = message.get("id") {
                         let reply = if method == "workspace/applyEdit" {
                             json!({"jsonrpc":"2.0", "id":id, "result":{"applied":false}})
+                        } else if method == "window/workDoneProgress/create"
+                            && message["params"]["token"].to_string().len() <= 256
+                            && matches!(
+                                message["params"]["token"],
+                                Value::String(_) | Value::Number(_)
+                            )
+                        {
+                            json!({"jsonrpc":"2.0", "id":id, "result":null})
+                        } else if method == "workspace/configuration"
+                            && message["params"]["items"]
+                                .as_array()
+                                .is_some_and(|items| items.len() <= 64)
+                        {
+                            let values: Vec<Value> = message["params"]["items"]
+                                .as_array()
+                                .expect("checked items")
+                                .iter()
+                                .map(|item| {
+                                    let section = item["section"].as_str().unwrap_or("");
+                                    if language == "rust" && section == "rust-analyzer" {
+                                        options.clone()
+                                    } else if language == "rust"
+                                        && section.starts_with("rust-analyzer.")
+                                    {
+                                        section
+                                            .trim_start_matches("rust-analyzer.")
+                                            .split('.')
+                                            .fold(&options, |value, key| &value[key])
+                                            .clone()
+                                    } else {
+                                        Value::Null
+                                    }
+                                })
+                                .collect();
+                            json!({"jsonrpc":"2.0", "id":id, "result":values})
                         } else {
                             json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32601,"message":"Method not allowed"}})
                         };
@@ -181,13 +303,15 @@ impl Session {
                             .get("token")
                             .map(Value::to_string)
                             .unwrap_or_default();
-                        let mut active = reader_progress.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut state = reader_readiness.lock().unwrap_or_else(|e| e.into_inner());
                         match params["value"]["kind"].as_str() {
-                            Some("begin") if token.len() <= 256 && active.len() < 64 => {
-                                active.insert(token);
+                            Some("begin") if token.len() <= 256 && state.progress.len() < 64 => {
+                                state.progress.insert(token);
+                                state.epoch = state.epoch.wrapping_add(1);
                             }
                             Some("end") => {
-                                active.remove(&token);
+                                state.progress.remove(&token);
+                                state.epoch = state.epoch.wrapping_add(1);
                             }
                             Some("begin") => {
                                 reader_health.store(false, Ordering::Release);
@@ -195,6 +319,30 @@ impl Session {
                             }
                             _ => {}
                         }
+                        drop(state);
+                        reader_changed.notify_waiters();
+                    } else if method == "experimental/serverStatus" && language == "rust" {
+                        let params = &message["params"];
+                        let next = match (params["health"].as_str(), params["quiescent"].as_bool())
+                        {
+                            (Some(health @ ("ok" | "warning" | "error")), Some(quiescent)) => {
+                                ServerStatus {
+                                    healthy: health == "ok",
+                                    quiescent,
+                                }
+                            }
+                            _ => {
+                                reader_health.store(false, Ordering::Release);
+                                break;
+                            }
+                        };
+                        let mut state = reader_readiness.lock().unwrap_or_else(|e| e.into_inner());
+                        if state.server_status != Some(next) {
+                            state.epoch = state.epoch.wrapping_add(1);
+                        }
+                        state.server_status = Some(next);
+                        drop(state);
+                        reader_changed.notify_waiters();
                     }
                     // Diagnostics, log messages and every other notification are discarded.
                 } else if message.get("id").is_some() {
@@ -207,6 +355,7 @@ impl Session {
                     break;
                 }
             }
+            reader_changed.notify_waiters();
         });
         let stderr = tokio::spawn(async move {
             let mut tail = Vec::with_capacity(STDERR_TAIL);
@@ -229,7 +378,9 @@ impl Session {
             reader,
             stderr,
             healthy,
-            progress,
+            readiness,
+            changed,
+            _environment: environment,
             next_id: 1,
         })
     }
@@ -245,10 +396,72 @@ impl Session {
     }
     pub fn indexing(&self) -> bool {
         !self
-            .progress
+            .readiness
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .progress
             .is_empty()
+    }
+    pub(crate) fn readiness_epoch(&self) -> u64 {
+        self.readiness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .epoch
+    }
+    pub(crate) fn server_status(&self) -> Option<ServerStatus> {
+        self.readiness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .server_status
+    }
+    pub(crate) fn permit_valid(&self, permit: ReadinessPermit, require_status: bool) -> bool {
+        let state = self.readiness.lock().unwrap_or_else(|e| e.into_inner());
+        self.healthy()
+            && state.progress.is_empty()
+            && permit.epoch.is_none_or(|epoch| epoch == state.epoch)
+            && (!require_status
+                || state
+                    .server_status
+                    .is_some_and(|status| status.healthy && status.quiescent))
+    }
+    pub(crate) fn navigation_permit(
+        &self,
+        require_status: bool,
+    ) -> Result<ReadinessPermit, RequestError> {
+        let permit = ReadinessPermit {
+            epoch: Some(self.readiness_epoch()),
+        };
+        if self.permit_valid(permit, require_status) {
+            Ok(permit)
+        } else if !self.healthy() {
+            Err(RequestError::Failure("lsp_io"))
+        } else if require_status && self.server_status().is_some_and(|status| !status.healthy) {
+            Err(RequestError::Failure("server_health"))
+        } else {
+            Err(RequestError::Indexing("indexing"))
+        }
+    }
+    pub(crate) async fn wait_rust_ready(
+        &self,
+        deadline: Instant,
+        cancel: CancellationToken,
+    ) -> Result<ReadinessPermit, RequestError> {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match self.navigation_permit(true) {
+                Ok(permit) => return Ok(permit),
+                Err(RequestError::Indexing(_)) => {}
+                Err(error) => return Err(error),
+            }
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(RequestError::Cancelled),
+                _ = tokio::time::sleep_until(deadline) => return Err(RequestError::Indexing("server_not_ready")),
+                _ = changed => {}
+            }
+        }
     }
 
     pub async fn notify(
@@ -359,6 +572,64 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn completed_indexing_cycle_invalidates_permit() {
+        let root = tempfile::tempdir().expect("root");
+        let config = crate::config::WorkspaceConfig {
+            id: "epoch".into(), root: root.path().to_owned(), language: "python".into(),
+            executable: "/usr/bin/python3".into(),
+            args: vec!["-u".into(), "-c".into(), r#"
+import json,sys
+def send(value):
+ data=json.dumps(dict(jsonrpc='2.0',**value)).encode()
+ sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(data)).encode()+data);sys.stdout.buffer.flush()
+def read():
+ headers={}
+ while True:
+  line=sys.stdin.buffer.readline()
+  if not line: sys.exit(0)
+  if line==b'\r\n':break
+  key,value=line.decode().split(':',1);headers[key.lower()]=value.strip()
+ return json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+while True:
+ msg=read()
+ if msg.get('method')=='exit':sys.exit(0)
+ if 'id' not in msg:continue
+ if msg.get('method')=='cycle':
+  send(dict(id=900,method='window/workDoneProgress/create',params=dict(token='index')))
+  reply=read()
+  assert reply['id']==900 and 'result' in reply and reply['result'] is None
+  send(dict(method='$/progress',params=dict(token='index',value=dict(kind='begin'))))
+  send(dict(method='$/progress',params=dict(token='index',value=dict(kind='end'))))
+ send(dict(id=msg['id'],result=None))
+"#.into()],
+            source_extensions: vec!["py".into()], exclude_dirs: vec![],
+            readiness: crate::config::Readiness::PyreflyLazyBlocking,
+            typescript_tsserver: None, rustc: None,
+        };
+        let mut session = Session::spawn(&config, Value::Null).expect("spawn");
+        let permit = session.navigation_permit(false).expect("initial idle");
+        session
+            .request(
+                "cycle",
+                Value::Null,
+                Instant::now() + Duration::from_secs(2),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("cycle");
+        assert!(!session.indexing(), "progress ended before response");
+        assert!(
+            !session.permit_valid(permit, false),
+            "the completed cycle must still invalidate the response"
+        );
+        assert!(
+            session.navigation_permit(false).is_ok(),
+            "later requests can use the surviving idle session"
+        );
+        session.shutdown().await;
+    }
 
     #[tokio::test]
     async fn framing_is_bounded_before_allocation() {
