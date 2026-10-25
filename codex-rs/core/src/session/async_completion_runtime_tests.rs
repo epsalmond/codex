@@ -91,7 +91,7 @@ async fn history_append_is_retained_until_model_acceptance(producer: Producer) {
     let store = &session.services.async_completions;
     let cell = matches!(producer, Producer::Cell { .. });
     let mut yielded = store
-        .reserve_producer(session.thread_id(), &turn, "yielded", producer)
+        .reserve_producer(session.thread_id(), &turn, "yielded", producer, None)
         .unwrap();
     if cell {
         yielded.bind_cell("generation:exact-cell").unwrap();

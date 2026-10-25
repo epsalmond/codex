@@ -271,6 +271,22 @@ for its measurements.
 
 ### Automatic process and cell completion
 
+Commands and Code Mode scripts are finite tasks by default. `codex exec` keeps
+draining while they run and while an automatic result awaits acceptance by the
+agent. For a persistent process, declare `exec_command({cmd: "...",
+work_kind: "service"})`. A persistent Code Mode script uses a first-line
+`// @exec: {"work_kind":"service"}` directive. Both also accept `"task"`
+explicitly. A service stays owned by its session, but does not keep exec's drain
+open; closing the session stops it. A one-shot command cannot declare a service.
+TTY allocation alone does not declare a service.
+
+Service declarations apply to the individual command or script. Commands
+launched by a service script still default to finite tasks unless they declare
+themselves services. A service's terminal diagnostic uses the same bounded
+completion path and originating assignment as other results. It cannot reopen a
+closed agent or inject into a newer assignment; retained root diagnostics can
+be recovered by an explicit user turn.
+
 When a background command started with `exec_command` or a Code Mode `exec`
 script is still running at the end of its tool call, its result is delivered
 to the agent automatically once it finishes. An idle agent wakes with a new
@@ -290,8 +306,8 @@ does not poll:
 Each result is a single bounded message: a header with the call, the
 `kind=process` or `kind=cell` producer, its status (`exited(N)`, `completed`,
 `error`, `cancelled`, `timedOut`), and `truncated=<bytes>`, followed by the
-output's tail. The whole message, including the tail and its metadata, is at
-most 3072 bytes; `truncated` counts the tail bytes omitted. Write large results to a file or `store()` them for a later `exec`. A
+output's tail. Service results also identify `work_kind=service`. The whole
+message, including the tail and its metadata, is at most 3072 bytes; `truncated` counts the tail bytes omitted. Write large results to a file or `store()` them for a later `exec`. A
 script's images and audio are not delivered; the message notes how many were
 omitted.
 

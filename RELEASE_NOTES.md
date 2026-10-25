@@ -16,6 +16,14 @@ Closing a subagent in `/subagents` (or archiving/deleting it from the agents ove
 
 ## Automatic process and cell completion
 
+A command or Code Mode script can now declare `work_kind: "service"` for
+persistent work. Finite tasks remain the default and hold exec's drain through
+completion delivery. Services allow the drain to finish while retaining owned
+session shutdown and bounded terminal diagnostics. Code Mode uses its existing
+`// @exec: {"work_kind":"service"}` directive. See
+[Task and Service behavior](README.md#automatic-process-and-cell-completion)
+([#93](https://github.com/epsalmond/codex/issues/93)).
+
 A background command or running Code Mode script now reports its result to the agent once it finishes, so the model stops spending requests on checks. Code Mode's `wait` is replaced by `exec_terminate`, and empty `write_stdin` polls of non-TTY sessions are refused. See [automatic process and cell completion](README.md#automatic-process-and-cell-completion) and the [release notes](releases/2026-10-14-automatic-cell-completion.md) ([#79](https://github.com/epsalmond/codex/issues/79)).
 
 ## Recorded child reports after compaction

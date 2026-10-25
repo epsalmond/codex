@@ -187,7 +187,7 @@ impl ExecCommandHandler {
             context.originating_cell_registration = session
                 .services
                 .code_mode_service
-                .work_registration(&codex_code_mode_protocol::CellId::new(cell_id.clone()));
+                .work_registration(&codex_code_mode::CellId::new(cell_id.clone()));
             context.originating_cell_id = Some(cell_id);
         }
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;

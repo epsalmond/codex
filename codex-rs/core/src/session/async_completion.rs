@@ -302,6 +302,7 @@ impl AsyncCompletions {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve(
         self: &Arc<Self>,
         owner: ThreadId,
@@ -362,6 +363,7 @@ impl AsyncCompletions {
 
     /// Reserves capacity for a Code Mode cell before it starts; bind the provider's cell ID with
     /// [`CompletionReservation::bind_cell`] before publishing.
+    #[cfg(test)]
     pub(crate) fn reserve_cell(
         self: &Arc<Self>,
         owner: ThreadId,
@@ -588,6 +590,7 @@ impl CompletionWake {
 
 impl CompletionReservation {
     /// Shares the producer's one registration with ordinary result acceptance.
+    #[cfg(test)]
     pub(crate) fn attach_lifecycle(
         &mut self,
         lifecycle: &OwnedWorkRegistration,
