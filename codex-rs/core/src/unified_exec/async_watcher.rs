@@ -45,7 +45,7 @@ const UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES: usize = 8192;
 
 struct Emitter {
     remaining_deltas: usize,
-    session: Arc<Session>,
+    session: std::sync::Weak<Session>,
     turn: Arc<TurnContext>,
     call_id: String,
 }
@@ -68,7 +68,7 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
 
     let emitter = Emitter {
         remaining_deltas: MAX_EXEC_OUTPUT_DELTAS_PER_CALL,
-        session: Arc::clone(&context.session),
+        session: Arc::downgrade(&context.session),
         turn: Arc::clone(&context.step_context.turn),
         call_id: context.call_id.clone(),
     };
@@ -169,8 +169,9 @@ pub(crate) fn spawn_exit_watcher(
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     completion_publisher: Option<CompletionPublisher>,
+    registration: Option<crate::agent::control::OwnedWorkRegistration>,
 ) {
-    let session_ref = Arc::clone(&context.session);
+    let session_ref = Arc::downgrade(&context.session);
     let turn_ref = Arc::clone(&context.step_context.turn);
     let model_info = Arc::clone(&context.step_context.settings.model_info);
     let model_context = context.step_context.model_context();
@@ -208,6 +209,12 @@ pub(crate) fn spawn_exit_watcher(
             }
             publisher.publish(status, &output, buffers.transcript.omitted_bytes());
         }
+        let Some(session_ref) = session_ref.upgrade() else {
+            if let Some(registration) = registration {
+                registration.mark_terminal();
+            }
+            return;
+        };
         let duration = Instant::now().saturating_duration_since(started_at);
         let plugin_metrics_sidecar = plugin_metrics_sidecar
             .as_ref()
@@ -259,6 +266,11 @@ pub(crate) fn spawn_exit_watcher(
                 timed_out,
             )
             .await;
+        }
+        // Retain the producer clone through output forwarding AND the end event.
+        // Ordinary model acceptance independently owns the automatic-record clone.
+        if let Some(registration) = registration {
+            registration.mark_terminal();
         }
     });
 }
@@ -335,6 +347,9 @@ impl Emitter {
                 call_id: call_id.clone(),
                 stream: ExecOutputStream::Stdout,
                 chunk,
+            };
+            let Some(session) = session.upgrade() else {
+                return false;
             };
             session
                 .send_event(turn.as_ref(), EventMsg::ExecCommandOutputDelta(event))

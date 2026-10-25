@@ -82,12 +82,38 @@ fn trace_id(id: &str) -> Option<&str> {
     (!id.is_empty() && id.len() <= MAX_TRACE_ID_BYTES).then_some(id)
 }
 
+/// Model declarations are separate from host-assigned Cell producer identity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeWorkKind {
+    #[default]
+    Task,
+    Service,
+}
+
+impl NativeWorkKind {
+    pub(crate) fn lifecycle_kind(self) -> crate::agent::control::WorkKind {
+        match self {
+            Self::Task => crate::agent::control::WorkKind::Task,
+            Self::Service => crate::agent::control::WorkKind::Service,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Service => "service",
+        }
+    }
+}
+
 pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
     pub step_context: Arc<StepContext>,
     pub cancellation_token: CancellationToken,
     pub call_id: String,
     pub originating_cell_id: Option<String>,
+    pub originating_cell_registration: Option<crate::agent::control::OwnedWorkRegistration>,
 }
 
 impl UnifiedExecContext {
@@ -103,12 +129,14 @@ impl UnifiedExecContext {
             cancellation_token,
             call_id,
             originating_cell_id: None,
+            originating_cell_registration: None,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ExecCommandRequest {
+    pub work_kind: NativeWorkKind,
     pub command: Vec<String>,
     pub shell: ShellInvocation,
     pub hook_command: String,
@@ -152,6 +180,7 @@ impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
     reserved_process_ids: HashSet<i32>,
+    closed: bool,
 }
 
 impl ProcessStore {
@@ -166,12 +195,14 @@ impl ProcessStore {
 pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
     max_write_stdin_yield_time_ms: u64,
+    startups: tokio_util::task::TaskTracker,
 }
 
 impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
+            startups: tokio_util::task::TaskTracker::new(),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
@@ -185,6 +216,8 @@ impl Default for UnifiedExecProcessManager {
 }
 
 struct ProcessEntry {
+    work_kind: NativeWorkKind,
+    membership: Option<crate::agent::control::AgentTreeMembership>,
     process: Arc<UnifiedExecProcess>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     call_id: String,

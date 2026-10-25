@@ -301,8 +301,15 @@ impl Drop for InitialExecCommandGuard {
 }
 
 async fn unregister_network_approval_for_entry(entry: &ProcessEntry) {
-    if let Some(network_approval) = entry.network_approval.as_ref()
-        && let Some(session) = entry.session.upgrade()
+    unregister_network_approval(entry.network_approval.as_ref(), &entry.session).await;
+}
+
+async fn unregister_network_approval(
+    network_approval: Option<&DeferredNetworkApproval>,
+    session: &std::sync::Weak<crate::session::session::Session>,
+) {
+    if let Some(network_approval) = network_approval
+        && let Some(session) = session.upgrade()
     {
         session
             .services
@@ -450,7 +457,109 @@ fn terminate_process_on_network_denial(
     })
 }
 
+/// Holds an admitted start until publication or confirmed cleanup. Dropping the
+/// initiating tool future transfers cleanup, including its tree membership, to
+/// one owned task; no integer process ID is used to find the process again.
+struct ProcessStartupGuard {
+    process: Option<Arc<UnifiedExecProcess>>,
+    membership: Option<crate::agent::control::AgentTreeMembership>,
+    startup: Option<tokio_util::task::task_tracker::TaskTrackerToken>,
+    thread_id: codex_protocol::ThreadId,
+    residency: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    registration: Option<crate::agent::control::OwnedWorkRegistration>,
+    network_approval: Option<DeferredNetworkApproval>,
+    session: std::sync::Weak<crate::session::session::Session>,
+}
+
+impl ProcessStartupGuard {
+    fn publish(&mut self) {
+        self.process.take();
+        self.startup.take();
+        self.residency.take();
+        self.registration.take();
+        self.network_approval.take();
+    }
+}
+
+impl Drop for ProcessStartupGuard {
+    fn drop(&mut self) {
+        let Some(process) = self.process.take() else {
+            return;
+        };
+        let membership = self.membership.take();
+        let startup = self.startup.take();
+        let residency = self.residency.take();
+        let thread_id = self.thread_id;
+        let registration = self.registration.take();
+        let network_approval = self.network_approval.take();
+        let session = self.session.clone();
+        let teardown = membership.map(|membership| {
+            membership.into_teardown_guard("native_process_startup", Some(thread_id))
+        });
+        tokio::spawn(async move {
+            let _startup = startup;
+            let _residency = residency;
+            unregister_network_approval(network_approval.as_ref(), &session).await;
+            confirm_process_cleanup(process, teardown).await;
+            if let Some(registration) = registration {
+                registration.mark_terminal();
+            }
+        });
+    }
+}
+
+async fn confirm_process_cleanup(
+    process: Arc<UnifiedExecProcess>,
+    teardown: Option<crate::agent::control::AgentTreeTeardownGuard>,
+) {
+    if let Err(error) = process.terminate_confirmed().await {
+        if let Some(teardown) = &teardown {
+            teardown.record_shutdown_failure("terminate_process", "unified_exec_error");
+        }
+        tracing::warn!(%error, "failed to confirm owned native process termination");
+        process.finish_failed_termination(error.to_string());
+    }
+    if let Some(teardown) = teardown {
+        teardown.complete();
+    }
+}
+
 impl UnifiedExecProcessManager {
+    pub(super) async fn admit_native_work(
+        &self,
+        request: &ExecCommandRequest,
+        context: &UnifiedExecContext,
+    ) -> Result<
+        (
+            crate::agent::control::OwnedWorkRegistration,
+            Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+        ),
+        UnifiedExecError,
+    > {
+        let runtime = &context.session.services.local_agent_runtime;
+        let admitted = async {
+            let residency = runtime
+                .pin_owned_work_owner(&context.session)
+                .await
+                .map_err(|error| UnifiedExecError::process_failed(error.to_string()))?;
+            let registration = runtime
+                .reserve_owned_work(
+                    &context.session,
+                    &context.step_context.turn,
+                    &context.call_id,
+                    request.work_kind.lifecycle_kind(),
+                    context.originating_cell_registration.as_ref(),
+                )
+                .map_err(|error| UnifiedExecError::process_failed(error.to_string()))?;
+            Ok((registration, residency))
+        }
+        .await;
+        if admitted.is_err() {
+            self.release_process_id(request.process_id).await;
+        }
+        admitted
+    }
+
     pub(crate) async fn allocate_process_id(&self) -> i32 {
         loop {
             let mut store = self.process_store.lock().await;
@@ -510,6 +619,7 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+        let (registration, residency) = self.admit_native_work(&request, context).await?;
         // A live cell can keep calling tools after its turn ends. That turn can no longer own
         // new automatic completions, so the cell observes such a process itself, as with TTY.
         let cell_outlived_turn = context.originating_cell_id.is_some()
@@ -526,13 +636,18 @@ impl UnifiedExecProcessManager {
             && !request.tty
             && !cell_outlived_turn
         {
-            match context.session.services.async_completions.reserve(
-                context.session.thread_id(),
-                &context.step_context.turn,
-                &context.call_id,
-                request.process_id,
-                context.originating_cell_id.as_deref(),
-            ) {
+            match context
+                .session
+                .services
+                .async_completions
+                .reserve_with_lifecycle(
+                    context.session.thread_id(),
+                    &context.step_context.turn,
+                    &context.call_id,
+                    request.process_id,
+                    context.originating_cell_id.as_deref(),
+                    &registration,
+                ) {
                 Ok(mut reservation) => {
                     reservation.set_command(&request.hook_command);
                     Some(reservation)
@@ -551,6 +666,8 @@ impl UnifiedExecProcessManager {
                 context,
                 /*completion*/ None,
                 reservation.as_mut(),
+                registration,
+                residency,
             )
             .await;
         if !matches!(&result, Ok(output) if output.process_id.is_some())
@@ -574,25 +691,88 @@ impl UnifiedExecProcessManager {
         context: &UnifiedExecContext,
         mut completion: Option<&mut Completion<'_>>,
         reservation: Option<&mut CompletionReservation>,
+        registration: crate::agent::control::OwnedWorkRegistration,
+        residency: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+        let automatic = reservation.is_some();
         let cwd = request.cwd.clone();
-        let process = self
-            .open_session_with_sandbox(&request, cwd.clone(), context)
-            .await;
-
-        let (attempt, mut deferred_network_approval) = match process {
-            Ok((attempt, deferred_network_approval)) => (attempt, deferred_network_approval),
-            Err(err) => {
+        let membership = match context.session.services.local_agent_runtime.admit_start() {
+            Ok(membership) => membership,
+            Err(error) => {
                 self.release_process_id(request.process_id).await;
-                return Err(err);
+                return Err(UnifiedExecError::process_failed(error.to_string()));
             }
         };
-        let UnifiedExecAttempt {
-            process,
-            metrics_sidecar,
-            permissions,
-        } = attempt;
-        let process = Arc::new(process);
+        let startup = {
+            let store = self.process_store.lock().await;
+            if store.closed {
+                drop(store);
+                self.release_process_id(request.process_id).await;
+                return Err(UnifiedExecError::process_failed(
+                    "native process manager is shutting down".into(),
+                ));
+            }
+            self.startups.token()
+        };
+        let startup = ProcessStartupGuard {
+            process: None,
+            membership: Some(membership),
+            startup: Some(startup),
+            thread_id: context.session.thread_id(),
+            residency,
+            registration: Some(registration.clone()),
+            network_approval: None,
+            session: Arc::downgrade(&context.session),
+        };
+        // Acquisition must survive cancellation: a remote start can already have
+        // succeeded while its acknowledgement is still in flight.
+        let launch_context = UnifiedExecContext::new(
+            Arc::clone(&context.session),
+            Arc::clone(&context.step_context),
+            context.cancellation_token.clone(),
+            context.call_id.clone(),
+        );
+        let launch_request = request.clone();
+        let launch = tokio::spawn(async move {
+            let mut startup = startup;
+            let result = launch_context
+                .session
+                .services
+                .unified_exec_manager
+                .open_session_with_sandbox(
+                    &launch_request,
+                    launch_request.cwd.clone(),
+                    &launch_context,
+                )
+                .await;
+            result.map(|(mut attempt, deferred)| {
+                let process = Arc::new(attempt.process);
+                startup.process = Some(Arc::clone(&process));
+                startup.network_approval = deferred.clone();
+                if let Some(registration) = &startup.registration {
+                    registration.mark_started();
+                }
+                (
+                    process,
+                    attempt.metrics_sidecar.take(),
+                    attempt.permissions,
+                    deferred,
+                    startup,
+                )
+            })
+        });
+        let (process, metrics_sidecar, permissions, mut deferred_network_approval, mut startup) =
+            match launch.await {
+                Ok(Ok(result)) => result,
+                result => {
+                    self.release_process_id(request.process_id).await;
+                    return Err(match result {
+                        Ok(Err(error)) => error,
+                        Err(error) => UnifiedExecError::process_failed(error.to_string()),
+                        _ => unreachable!(),
+                    });
+                }
+            };
         if let Some(completion) = completion.as_ref() {
             let _ = completion.process.set(Arc::clone(&process));
         }
@@ -678,14 +858,17 @@ impl UnifiedExecProcessManager {
                 start,
                 request.process_id,
                 request.tty,
+                request.work_kind,
                 deferred_network_approval.clone(),
                 network_denial_monitor,
                 initial_exec_command_guard.metrics_sidecar.take(),
                 Arc::clone(&output_buffer),
                 Arc::clone(&initial_exec_command_active),
                 reservation,
+                &mut startup,
+                &registration,
             )
-            .await;
+            .await?;
         }
 
         let yield_time_ms = clamp_yield_time(request.yield_time_ms);
@@ -890,6 +1073,7 @@ impl UnifiedExecProcessManager {
         };
 
         let response = ExecCommandToolOutput {
+            work_kind: Some(request.work_kind),
             event_call_id: context.call_id.clone(),
             chunk_id,
             wall_time,
@@ -908,6 +1092,12 @@ impl UnifiedExecProcessManager {
             hook_command: Some(request.hook_command.clone()),
         };
 
+        if response.process_id.is_some() {
+            registration.mark_yielded(automatic);
+        } else if !process_stored {
+            registration.mark_terminal();
+        }
+        startup.publish();
         Ok(response)
     }
 
@@ -951,7 +1141,7 @@ impl UnifiedExecProcessManager {
         // Different terminal sessions can be polled concurrently, but reads and
         // writes against one terminal must not overlap because they share a
         // draining output buffer and process lifecycle.
-        let locked_process = {
+        let (locked_process, work_kind) = {
             let store = self.process_store.lock().await;
             let entry = store
                 .processes
@@ -961,7 +1151,7 @@ impl UnifiedExecProcessManager {
             if let Some(call_id) = trace_id(&entry.call_id) {
                 tracing::Span::current().record("original_exec_call_id", call_id);
             }
-            Arc::clone(&entry.process)
+            (Arc::clone(&entry.process), entry.work_kind)
         };
         let _interaction_guard = locked_process.interaction_lock().lock_owned().await;
         // A queued write must observe strict review enabled while it was waiting.
@@ -1152,6 +1342,7 @@ impl UnifiedExecProcessManager {
         };
 
         let response = ExecCommandToolOutput {
+            work_kind: Some(work_kind),
             event_call_id,
             chunk_id,
             wall_time,
@@ -1267,6 +1458,22 @@ impl UnifiedExecProcessManager {
         })
     }
 
+    async fn publish_process_entry(
+        &self,
+        process_id: i32,
+        entry: ProcessEntry,
+    ) -> Result<Option<ProcessEntry>, UnifiedExecError> {
+        let mut store = self.process_store.lock().await;
+        if store.closed {
+            return Err(UnifiedExecError::process_failed(
+                "native process manager is shutting down".into(),
+            ));
+        }
+        let pruned = Self::prune_processes_if_needed(&mut store);
+        store.processes.insert(process_id, entry);
+        Ok(pruned)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn store_process(
         &self,
@@ -1281,16 +1488,21 @@ impl UnifiedExecProcessManager {
         started_at: Instant,
         process_id: i32,
         tty: bool,
+        work_kind: super::NativeWorkKind,
         network_approval: Option<DeferredNetworkApproval>,
         network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
         metrics_sidecar: Option<PluginMetricsSidecar>,
         output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
         initial_exec_command_active: Arc<AtomicBool>,
         reservation: Option<&mut CompletionReservation>,
-    ) {
+        startup: &mut ProcessStartupGuard,
+        registration: &crate::agent::control::OwnedWorkRegistration,
+    ) -> Result<(), UnifiedExecError> {
         let plugin_metrics_sidecar =
             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
         let entry = ProcessEntry {
+            work_kind,
+            membership: startup.membership.clone(),
             process: Arc::clone(&process),
             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
             call_id: context.call_id.clone(),
@@ -1312,12 +1524,7 @@ impl UnifiedExecProcessManager {
                     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
                 }),
         };
-        let pruned_entry = {
-            let mut store = self.process_store.lock().await;
-            let pruned_entry = Self::prune_processes_if_needed(&mut store);
-            store.processes.insert(process_id, entry);
-            pruned_entry
-        };
+        let pruned_entry = self.publish_process_entry(process_id, entry).await?;
         spawn_exit_watcher(
             Arc::clone(&process),
             context,
@@ -1330,12 +1537,30 @@ impl UnifiedExecProcessManager {
             network_denial_monitor,
             plugin_metrics_sidecar,
             reservation.map(CompletionReservation::register),
+            Some(registration.clone()),
         );
+        let prune_pending = pruned_entry.as_ref().map(|_| self.startups.token());
+        startup.publish();
         // Install the watcher before cancellable cleanup, and outside the process-store lock.
         if let Some(pruned_entry) = pruned_entry {
-            unregister_network_approval_for_entry(&pruned_entry).await;
-            pruned_entry.process.terminate();
+            // Transfer before awaiting so cancellation cannot abandon the victim.
+            let pending = prune_pending;
+            let teardown = pruned_entry.membership.clone().map(|membership| {
+                membership.into_teardown_guard(
+                    "native_process_prune",
+                    pruned_entry
+                        .session
+                        .upgrade()
+                        .map(|session| session.thread_id()),
+                )
+            });
+            tokio::spawn(async move {
+                let _pending = pending;
+                unregister_network_approval_for_entry(&pruned_entry).await;
+                confirm_process_cleanup(pruned_entry.process, teardown).await;
+            });
         }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1878,21 +2103,47 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_all_processes(&self) {
-        let entries: Vec<ProcessEntry> = {
+        let (entries, pending) = {
             let mut processes = self.process_store.lock().await;
+            // Publication and admission share this lock with the drain snapshot.
+            processes.closed = true;
+            self.startups.close();
             let entries: Vec<ProcessEntry> = processes
                 .processes
                 .drain()
                 .map(|(_, entry)| entry)
                 .collect();
             processes.reserved_process_ids.clear();
-            entries
+            (entries, self.startups.token())
         };
 
-        for entry in entries {
-            unregister_network_approval_for_entry(&entry).await;
-            entry.process.terminate();
-        }
+        // Transfer the entire drain before the first await. Cancellation of the
+        // shutdown caller cannot abandon entries later in the snapshot.
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                let teardown = entry.membership.clone().map(|membership| {
+                    membership.into_teardown_guard(
+                        "native_process_shutdown",
+                        entry.session.upgrade().map(|session| session.thread_id()),
+                    )
+                });
+                (entry, teardown)
+            })
+            .collect::<Vec<_>>();
+        let cleanup = tokio::spawn(async move {
+            let _pending = pending;
+            let mut cleanups = tokio::task::JoinSet::new();
+            for (entry, teardown) in entries {
+                cleanups.spawn(async move {
+                    unregister_network_approval_for_entry(&entry).await;
+                    confirm_process_cleanup(entry.process, teardown).await;
+                });
+            }
+            while cleanups.join_next().await.is_some() {}
+        });
+        self.startups.wait().await;
+        let _ = cleanup.await;
     }
 
     /// Resolves stdin's target from the host-owned terminal, not model-supplied metadata.

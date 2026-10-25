@@ -54,6 +54,13 @@ fn exec_command_tool_matches_expected_spec() {
                 )),
         ),
         (
+            "work_kind".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("task"), json!("service")],
+                Some("Defaults to task. A service stays owned until session shutdown but does not hold exec drain open. TTY allocation does not change the kind.".to_string()),
+            ),
+        ),
+        (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(yield_time_ms_description.to_string())),
         ),

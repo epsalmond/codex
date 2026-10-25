@@ -52,6 +52,13 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             )),
         ),
         (
+            "work_kind".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("task"), json!("service")],
+                Some("Defaults to task. A service stays owned until session shutdown but does not hold exec drain open. TTY allocation does not change the kind.".to_string()),
+            ),
+        ),
+        (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(yield_time_ms_description.to_string())),
         ),
@@ -215,6 +222,11 @@ fn unified_exec_output_schema() -> Value {
             "exit_code": {
                 "type": "number",
                 "description": "Process exit code when the command finished during this call."
+            },
+            "work_kind": {
+                "type": "string",
+                "enum": ["task", "service"],
+                "description": "Owned command classification."
             },
             "session_id": {
                 "type": "number",

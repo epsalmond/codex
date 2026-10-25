@@ -109,6 +109,9 @@ pub(crate) struct UnifiedExecProcess {
     timed_out: AtomicBool,
     /// Explicit termination overrides retention of remote output after exit.
     pub(super) termination_requested: AtomicBool,
+    termination_settled: AtomicBool,
+    termination_confirmed: AtomicBool,
+    termination_lock: Mutex<()>,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
 }
@@ -154,6 +157,9 @@ impl UnifiedExecProcess {
             sandbox_type,
             timed_out: AtomicBool::new(false),
             termination_requested: AtomicBool::new(false),
+            termination_settled: AtomicBool::new(false),
+            termination_confirmed: AtomicBool::new(false),
+            termination_lock: Mutex::new(()),
             _shell_snapshot: None,
         }
     }
@@ -245,6 +251,10 @@ impl UnifiedExecProcess {
     }
 
     pub(super) fn terminate(&self) {
+        if self.termination_settled.load(Ordering::Acquire) {
+            self.finish_termination();
+            return;
+        }
         if !self.has_exited() {
             self.termination_requested.store(true, Ordering::Release);
         }
@@ -261,11 +271,31 @@ impl UnifiedExecProcess {
     }
 
     pub(super) async fn terminate_confirmed(&self) -> Result<(), UnifiedExecError> {
+        let _termination = self.termination_lock.lock().await;
+        if self.termination_confirmed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.termination_settled.load(Ordering::Acquire) {
+            return self.failure_message().map_or(Ok(()), |message| {
+                Err(UnifiedExecError::process_failed(message))
+            });
+        }
         if !self.has_exited() {
             self.termination_requested.store(true, Ordering::Release);
         }
         match &self.process_handle {
-            ProcessHandle::Local(process_handle) => process_handle.terminate(),
+            ProcessHandle::Local(process_handle) => {
+                let mut state = self.state_rx.clone();
+                process_handle.terminate();
+                // Wait for the native waiter, rather than synthesizing a successful
+                // exit immediately after requesting termination.
+                while !process_handle.has_exited() {
+                    state
+                        .changed()
+                        .await
+                        .map_err(|error| UnifiedExecError::process_failed(error.to_string()))?;
+                }
+            }
             ProcessHandle::ExecServer(process_handle) => {
                 process_handle
                     .terminate()
@@ -273,9 +303,20 @@ impl UnifiedExecProcess {
                     .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?;
             }
         }
+        self.termination_confirmed.store(true, Ordering::Release);
+        self.termination_settled.store(true, Ordering::Release);
         self.signal_exit(self.exit_code());
         self.finish_termination();
         Ok(())
+    }
+
+    pub(super) fn finish_failed_termination(&self, message: String) {
+        self.termination_settled.store(true, Ordering::Release);
+        let mut state = self.state_rx.borrow().clone();
+        state.failure_message = Some(message);
+        let _ = self.state_tx.send_replace(state);
+        // Stop observation without claiming that remote termination succeeded.
+        self.finish_termination();
     }
 
     pub(super) async fn interrupt(&self) -> Result<(), UnifiedExecError> {

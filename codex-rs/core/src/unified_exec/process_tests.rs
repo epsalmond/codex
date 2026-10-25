@@ -22,6 +22,7 @@ struct MockExecProcess {
     write_response: WriteResponse,
     read_responses: Mutex<VecDeque<ReadResponse>>,
     terminate_error: Option<String>,
+    termination_gate: Option<Arc<TerminationGate>>,
     wake_tx: watch::Sender<u64>,
 }
 
@@ -44,6 +45,14 @@ impl MockExecProcess {
     }
 
     async fn terminate(&self) -> Result<(), ExecServerError> {
+        if let Some(gate) = &self.termination_gate {
+            gate.called.notify_one();
+            gate.acknowledged
+                .acquire()
+                .await
+                .expect("acknowledgement gate")
+                .forget();
+        }
         if let Some(message) = &self.terminate_error {
             return Err(ExecServerError::Protocol(message.clone()));
         }
@@ -100,6 +109,7 @@ pub(super) async fn remote_process(
             },
             read_responses: Mutex::new(VecDeque::new()),
             terminate_error,
+            termination_gate: None,
             wake_tx,
         }),
         sandbox_type: sandbox_type.into(),
@@ -213,4 +223,68 @@ async fn remote_process_preserves_executor_sandbox_type() {
         .await;
         assert_eq!(process.sandbox_type(), sandbox_type);
     }
+}
+
+/// Explicit remote acknowledgement gate: these tests never infer completion
+/// from a local PID disappearing or a timer elapsing.
+pub(super) struct TerminationGate {
+    pub(super) called: tokio::sync::Notify,
+    pub(super) acknowledged: tokio::sync::Semaphore,
+}
+
+pub(super) async fn gated_remote_process(
+    terminate_error: Option<String>,
+) -> (Arc<UnifiedExecProcess>, Arc<TerminationGate>) {
+    let gate = Arc::new(TerminationGate {
+        called: tokio::sync::Notify::new(),
+        acknowledged: tokio::sync::Semaphore::new(0),
+    });
+    let (wake_tx, _wake_rx) = watch::channel(0);
+    let process = UnifiedExecProcess::from_exec_server_started(
+        StartedExecProcess {
+            process: Arc::new(MockExecProcess {
+                process_id: "gated-remote".to_string().into(),
+                write_response: WriteResponse {
+                    status: WriteStatus::Accepted,
+                },
+                read_responses: Mutex::new(VecDeque::new()),
+                terminate_error,
+                termination_gate: Some(Arc::clone(&gate)),
+                wake_tx,
+            }),
+            sandbox_type: None,
+        },
+        OutputDrainPolicy::WaitForOutputClosure,
+    )
+    .await
+    .expect("remote process");
+    (Arc::new(process), gate)
+}
+
+#[tokio::test]
+async fn local_confirmed_termination_waits_for_native_exit() {
+    let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel(1);
+    let (_stdout_tx, stdout_rx) = tokio::sync::broadcast::channel(1);
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+    let spawned = codex_utils_pty::spawn_from_driver(codex_utils_pty::ProcessDriver {
+        writer_tx,
+        stdout_rx,
+        stderr_rx: None,
+        exit_rx,
+        terminator: None,
+        writer_handle: None,
+        resizer: None,
+        #[cfg(windows)]
+        tty: false,
+    });
+    let process = UnifiedExecProcess::from_spawned(spawned, codex_sandboxing::SandboxType::None)
+        .await
+        .expect("driver process");
+    let termination = process.terminate_confirmed();
+    tokio::pin!(termination);
+    assert!(futures::poll!(&mut termination).is_pending());
+    assert!(!process.has_exited());
+    exit_tx.send(0).expect("native exit acknowledgement");
+    termination.await.expect("termination confirmed");
+    assert!(process.has_exited());
 }

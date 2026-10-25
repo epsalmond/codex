@@ -413,6 +413,7 @@ fn exec_command_tool_output_formats_truncated_response() {
         arguments: "{}".to_string(),
     };
     let output = ExecCommandToolOutput {
+        work_kind: None,
         event_call_id: "call-42".to_string(),
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(1250),
@@ -470,6 +471,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
         (TruncationPolicy::Tokens(50), "tokens truncated"),
     ] {
         let response = ExecCommandToolOutput {
+            work_kind: None,
             event_call_id: "call-42".to_string(),
             chunk_id: "abc123".to_string(),
             wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
@@ -514,6 +516,7 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     )
     .into_bytes();
     let mut output = ExecCommandToolOutput {
+        work_kind: None,
         event_call_id: "call-omitted".to_string(),
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
@@ -553,4 +556,39 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     assert!(text.contains("Original token count: 42000"));
     assert!(text.contains("Warning: truncated output (original token count: 42000)"));
     assert_eq!(text.matches(&marker).count(), 1);
+}
+
+#[test]
+fn unified_exec_work_kind_is_returned_in_yielded_header_and_code_mode_result() {
+    for kind in [
+        crate::unified_exec::NativeWorkKind::Task,
+        crate::unified_exec::NativeWorkKind::Service,
+    ] {
+        let output = ExecCommandToolOutput {
+            work_kind: Some(kind),
+            event_call_id: "classification".into(),
+            chunk_id: "chunk".into(),
+            wall_time: std::time::Duration::ZERO,
+            raw_output: Vec::new(),
+            truncation_policy: TruncationPolicy::Tokens(1000),
+            max_output_tokens: None,
+            process_id: Some(123),
+            exit_code: None,
+            original_token_count: None,
+            output_omitted_bytes: None,
+            hook_command: Some("command".into()),
+        };
+        assert!(
+            output
+                .log_output()
+                .contains(&format!("Work kind: {}", kind.as_str()))
+        );
+        let payload = ToolPayload::Function {
+            arguments: "{}".into(),
+        };
+        assert_eq!(
+            output.code_mode_result(&payload)["work_kind"],
+            kind.as_str()
+        );
+    }
 }

@@ -184,6 +184,10 @@ impl ExecCommandHandler {
             call_id.clone(),
         );
         if let crate::tools::context::ToolCallSource::CodeMode { cell_id, .. } = source {
+            context.originating_cell_registration = session
+                .services
+                .code_mode_service
+                .work_registration(&codex_code_mode_protocol::CellId::new(cell_id.clone()));
             context.originating_cell_id = Some(cell_id);
         }
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
@@ -243,6 +247,7 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
+        validate_work_kind(self.lifetime, args.work_kind)?;
         if args.tty && !session.features().enabled(Feature::UnifiedExecTty) {
             return Err(FunctionCallError::RespondToModel(
                 "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
@@ -291,6 +296,7 @@ impl ExecCommandHandler {
                 .map_err(FunctionCallError::RespondToModel)?;
         let command = resolved_command.command;
         let ExecCommandArgs {
+            work_kind,
             mut tty,
             yield_time_ms,
             timeout_ms,
@@ -381,6 +387,7 @@ impl ExecCommandHandler {
         .await;
         if let Some(output) = intercepted_patch? {
             return Ok(boxed_tool_output(ExecCommandToolOutput {
+                work_kind: None,
                 event_call_id: String::new(),
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
@@ -408,6 +415,7 @@ impl ExecCommandHandler {
         // Preparation can be cancelled. Reserve a process only once it is done.
         let process_id = manager.allocate_process_id().await;
         let request = ExecCommandRequest {
+            work_kind,
             command,
             shell: resolved_command.shell,
             hook_command: hook_command.clone(),
@@ -445,6 +453,7 @@ impl ExecCommandHandler {
                 let original_token_count =
                     original_token_count.unwrap_or_else(|| approx_token_count(&output_text));
                 Ok(boxed_tool_output(ExecCommandToolOutput {
+                    work_kind: None,
                     event_call_id: context.call_id.clone(),
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
@@ -471,6 +480,20 @@ impl ExecCommandHandler {
     }
 }
 
+fn validate_work_kind(
+    lifetime: ExecCommandLifetime,
+    kind: crate::unified_exec::NativeWorkKind,
+) -> Result<(), FunctionCallError> {
+    if matches!(lifetime, ExecCommandLifetime::OneShot)
+        && kind == crate::unified_exec::NativeWorkKind::Service
+    {
+        return Err(FunctionCallError::RespondToModel(
+            "one-shot exec_command cannot own a service; use resumable exec_command".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
     let ToolSpec::Function(mut spec) = spec else {
         unreachable!("exec_command has a function schema");
@@ -481,6 +504,7 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
         1,
     );
     let properties = spec.parameters.properties.get_or_insert_default();
+    properties.remove("work_kind");
     properties.remove("tty");
     properties.remove("yield_time_ms");
     properties.insert(
