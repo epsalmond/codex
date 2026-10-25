@@ -557,6 +557,12 @@ impl NativeFixture {
             .unwrap();
         registration.mark_cell();
         registration.mark_started();
+        // Quiescence is meaningful only after a host subscribes to output forwarding.
+        let _ = session
+            .services
+            .local_agent_runtime
+            .work_observation()
+            .subscribe();
         let reservation = session
             .services
             .async_completions

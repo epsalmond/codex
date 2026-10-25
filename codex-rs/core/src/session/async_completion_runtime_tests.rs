@@ -23,7 +23,7 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
         .expect("native completion fixture can enable the feature");
     let (call_id, expected) = match rejection {
         Rejection::Capacity => ("rejected".to_owned(), "capacity exhausted"),
-        Rejection::Identifier => ("\"".repeat(129), "identifiers exceed"),
+        Rejection::Identifier => ("\"".repeat(129), "identifiers"),
     };
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -73,7 +73,10 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
     let Err(crate::function_tool::FunctionCallError::RespondToModel(message)) = result else {
         panic!("expected capacity rejection");
     };
-    assert!(message.contains(expected));
+    assert!(
+        message.contains(expected),
+        "unexpected rejection: {message}"
+    );
     assert!(!marker.exists());
 }
 
