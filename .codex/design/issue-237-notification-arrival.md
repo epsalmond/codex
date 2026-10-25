@@ -1,7 +1,7 @@
 # Issue #237: apply subagent visibility at notification arrival
 
-Status: implementation integrated; focused validation passed; independent code
-review in progress.
+Status: implementation integrated; focused validation, formatting, and independent
+code review passed. Ready for root's publication/merge gate.
 Source baseline: `84ec4a4d2e2b64a177477b2ad42d603d7348b71d` (`origin/main`).
 Owner/worktree: `agent/issue-237-visibility`,
 `/home/eric/worktrees/review/codex-237-visibility`.
@@ -219,4 +219,15 @@ same command and target. Terminal receipt
 `/home/eric/.local/state/agent-jobs/job-8ltg126m/receipt.json` records exit zero;
 detailed log `/home/eric/.local/state/wait-for-build/build-rxevkj8b/build.log`
 records the 12.897-second test run (21.528-second supervised command).
-`git diff --check` passes. Independent code-review disposition remains pending.
+`git diff --check` passes.
+
+Independent full code review: `/root/visibility_code_review`, **PASS, no confirmed
+findings**, reviewed owner head `16ddfaff6c38948edc1b1bcbaf58ec4f5dc72785`.
+The reviewer verified all four Rust blobs match tested `4974ee4600`, read the
+terminal test receipt/log and reviewed README/design integration. No delta review
+is required for this documentation-only disposition update.
+
+Formatting: `cargo fmt --all -- --check` completed with exit zero in native
+session `82822`; stable rustfmt reported the repository's existing nightly-only
+`imports_granularity = Item` warnings. No files changed. Merge and combined
+build/install belong to root.
