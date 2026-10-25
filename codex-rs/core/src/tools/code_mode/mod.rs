@@ -367,7 +367,8 @@ impl CodeModeService {
     }
 
     pub(crate) fn finish_cell_dispatch(&self, cell_id: &CellId) {
-        self.dispatch_broker.close_cell(cell_id);
+        // Only the native delegate callback can remove a live dispatch/registration gate.
+        self.dispatch_broker.forget_closed_completion(cell_id);
     }
 
     /// Keeps nested calls from a live cell dispatching after its turn ends, until it closes.

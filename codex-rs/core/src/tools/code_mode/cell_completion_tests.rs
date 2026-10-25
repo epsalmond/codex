@@ -9,7 +9,20 @@ use pretty_assertions::assert_eq;
 const CELL: &str = "generation:cell-1";
 
 /// Returns one fixed terminal result to the collector's read.
-struct FixedSession(RuntimeResponse);
+struct FixedSession {
+    response: RuntimeResponse,
+    completion: Weak<CellCompletion>,
+}
+
+fn fixed_session(
+    response: RuntimeResponse,
+    completion: &Arc<CellCompletion>,
+) -> Arc<dyn CodeModeSession> {
+    Arc::new(FixedSession {
+        response,
+        completion: Arc::downgrade(completion),
+    })
+}
 
 impl CodeModeSession for FixedSession {
     fn execute<'a>(
@@ -26,8 +39,15 @@ impl CodeModeSession for FixedSession {
         _request: WaitRequest,
         _preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
-        let response = self.0.clone();
-        Box::pin(async move { Ok(WaitOutcome::LiveCell(response)) })
+        Box::pin(async move {
+            let response = self.response.clone();
+            if !matches!(response, RuntimeResponse::Yielded { .. })
+                && let Some(completion) = self.completion.upgrade()
+            {
+                completion.closed(&cell_id());
+            }
+            Ok(WaitOutcome::LiveCell(response))
+        })
     }
 
     fn terminate<'a>(&'a self, _cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
@@ -106,7 +126,7 @@ impl Fixture {
             CancellationToken::new(),
             wait_hidden,
         );
-        let provider: Arc<dyn CodeModeSession> = Arc::new(FixedSession(terminal));
+        let provider: Arc<dyn CodeModeSession> = fixed_session(terminal, &completion);
         completion.admit(&started_cell(), &provider);
         completion.initial(&yielded());
         Self {
@@ -116,7 +136,7 @@ impl Fixture {
         }
     }
 
-    fn store(&self) -> &crate::session::async_completion::AsyncCompletions {
+    fn store(&self) -> &Arc<crate::session::async_completion::AsyncCompletions> {
         &self.session.services.async_completions
     }
 
@@ -312,7 +332,7 @@ async fn cell_completion_unsupported_readiness_releases_at_admission() {
         CancellationToken::new(),
         /*wait_hidden*/ false,
     );
-    let provider: Arc<dyn CodeModeSession> = Arc::new(FixedSession(yielded()));
+    let provider: Arc<dyn CodeModeSession> = fixed_session(yielded(), &completion);
     let mut started = started_cell();
     started.terminal_ready_support = TerminalReadySupport::Unsupported;
     completion.admit(&started, &provider);
@@ -369,7 +389,7 @@ async fn watched_fixture(terminal: RuntimeResponse) -> Fixture {
         CancellationToken::new(),
         /*wait_hidden*/ true,
     );
-    let provider: Arc<dyn CodeModeSession> = Arc::new(FixedSession(terminal));
+    let provider: Arc<dyn CodeModeSession> = fixed_session(terminal, &completion);
     let mut started = started_cell();
     started.terminal_ready_support = TerminalReadySupport::Unsupported;
     completion.admit(&started, &provider);
@@ -433,6 +453,25 @@ struct ClosingSession {
     terminal: Result<RuntimeResponse, String>,
     delegate: Arc<super::super::delegate::CodeModeCellDelegate>,
     waits: std::sync::atomic::AtomicUsize,
+    terminations: std::sync::atomic::AtomicUsize,
+    fail_termination: std::sync::atomic::AtomicBool,
+    /// A provider may return its response before the native close notification arrives.
+    close_gate: Option<CancellationToken>,
+}
+
+impl ClosingSession {
+    fn close(&self, cell_id: CellId) {
+        if let Some(gate) = &self.close_gate {
+            let gate = gate.clone();
+            let delegate = Arc::clone(&self.delegate);
+            tokio::spawn(async move {
+                gate.cancelled().await;
+                delegate.cell_closed(&cell_id);
+            });
+        } else {
+            self.delegate.cell_closed(&cell_id);
+        }
+    }
 }
 
 impl CodeModeSession for ClosingSession {
@@ -453,7 +492,7 @@ impl CodeModeSession for ClosingSession {
         Box::pin(async move {
             self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.terminal.is_ok() {
-                self.delegate.cell_closed(&request.cell_id);
+                self.close(request.cell_id);
             }
             self.terminal.clone().map(WaitOutcome::LiveCell)
         })
@@ -461,7 +500,15 @@ impl CodeModeSession for ClosingSession {
 
     fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(async move {
-            self.delegate.cell_closed(&cell_id);
+            self.terminations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .fail_termination
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("fixture termination failed".to_owned());
+            }
+            self.close(cell_id.clone());
             Ok(WaitOutcome::LiveCell(RuntimeResponse::Terminated {
                 cell_id,
                 content_items: vec![text("cancelled-tail")],
@@ -487,6 +534,17 @@ impl NativeFixture {
         terminal: Result<RuntimeResponse, String>,
         readiness: TerminalReadySupport,
     ) -> Self {
+        Self::with_options(kind, terminal, readiness, false, None, false).await
+    }
+
+    async fn with_options(
+        kind: crate::agent::control::WorkKind,
+        terminal: Result<RuntimeResponse, String>,
+        readiness: TerminalReadySupport,
+        wait_hidden: bool,
+        close_gate: Option<CancellationToken>,
+        fail_termination: bool,
+    ) -> Self {
         use crate::session::step_context::StepContext;
         use crate::tools::code_mode::delegate::CodeModeCellDelegate;
         let (session, turn) = make_session_and_context().await;
@@ -510,7 +568,7 @@ impl NativeFixture {
             &session,
             Arc::clone(&turn),
             CancellationToken::new(),
-            false,
+            wait_hidden,
         );
         let broker = Arc::clone(&session.services.code_mode_service.dispatch_broker);
         let delegate = Arc::new(CodeModeCellDelegate {
@@ -527,8 +585,17 @@ impl NativeFixture {
             terminal,
             delegate: Arc::clone(&delegate),
             waits: Default::default(),
+            terminations: Default::default(),
+            fail_termination: std::sync::atomic::AtomicBool::new(fail_termination),
+            close_gate,
         });
         let dynamic_provider: Arc<dyn CodeModeSession> = provider.clone();
+        session
+            .services
+            .code_mode_service
+            .session
+            .set(Arc::clone(&dynamic_provider))
+            .unwrap_or_else(|_| panic!("fixture provider already initialized"));
         let mut started = started_cell();
         started.terminal_ready_support = readiness;
         completion.admit(&started, &dynamic_provider);
@@ -547,6 +614,18 @@ impl NativeFixture {
             delegate,
             provider,
         }
+    }
+
+    fn retire_ready_record(&self) {
+        assert!(
+            self.base
+                .store()
+                .has_ready(self.base.session.thread_id(), None)
+        );
+        assert!(self.delegate.work_registration.lock().unwrap().is_none());
+        // Actual request acceptance is covered at the session handler boundary. Here retirement
+        // proves the existing record is the only remaining registration owner after native close.
+        self.base.store().retire();
     }
 
     fn live(&self) -> bool {
@@ -719,11 +798,320 @@ async fn cell_cancel_and_collection_failure_keep_one_terminal_record_and_native_
             "status=collectionFailed"
         }));
         assert!(fixture.live());
-        if !cancelled {
-            assert!(fixture.delegate.work_registration.lock().unwrap().is_some());
-            fixture.delegate.cell_closed(&cell_id());
-        }
-        fixture.base.session.services.async_completions.retire();
+        assert!(fixture.delegate.work_registration.lock().unwrap().is_none());
+        assert_eq!(
+            fixture
+                .provider
+                .terminations
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        fixture.retire_ready_record();
         assert!(!fixture.live());
     }
+}
+
+#[tokio::test]
+async fn cell_collection_failure_closes_provider_before_acceptance_in_collector_and_watcher() {
+    for readiness in [
+        TerminalReadySupport::Supported,
+        TerminalReadySupport::Unsupported,
+    ] {
+        let fixture = NativeFixture::with_options(
+            crate::agent::control::WorkKind::Cell,
+            Err("provider wait failed without closing the native cell".to_owned()),
+            readiness,
+            true,
+            None,
+            false,
+        )
+        .await;
+        fixture.base.completion.ready(ready(CellOutputKind::Text));
+        let published = fixture.base.published().await;
+        assert_eq!(published.len(), 1);
+        assert!(published[0].contains("status=collectionFailed"));
+        assert_eq!(
+            fixture
+                .provider
+                .waits
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            fixture
+                .provider
+                .terminations
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(fixture.base.completion.is_closed());
+        assert!(fixture.delegate.work_registration.lock().unwrap().is_none());
+        assert!(
+            fixture
+                .base
+                .session
+                .services
+                .code_mode_service
+                .active_cell_ids()
+                .is_empty()
+        );
+        assert!(
+            fixture.live(),
+            "the existing terminal record owns the only hold"
+        );
+        fixture.retire_ready_record();
+        assert!(
+            !fixture.live(),
+            "removing the existing result must settle finite work without another turn"
+        );
+        assert!(
+            fixture
+                .base
+                .session
+                .services
+                .local_agent_runtime
+                .work_observation()
+                .snapshot()
+                .quiescent
+        );
+    }
+}
+
+#[tokio::test]
+async fn cell_collection_cleanup_failure_keeps_active_gate_and_fenced_record_for_interrupt() {
+    let fixture = NativeFixture::with_options(
+        crate::agent::control::WorkKind::Cell,
+        Err("provider wait failed".to_owned()),
+        TerminalReadySupport::Supported,
+        false,
+        None,
+        true,
+    )
+    .await;
+    fixture.base.completion.ready(ready(CellOutputKind::Text));
+    let published = fixture.base.published().await;
+    assert_eq!(published.len(), 1);
+    assert!(published[0].contains("status=collectionFailed"));
+    assert!(
+        !fixture
+            .base
+            .store()
+            .has_ready(fixture.base.session.thread_id(), None)
+    );
+    assert_eq!(
+        fixture
+            .base
+            .session
+            .services
+            .code_mode_service
+            .active_cell_ids(),
+        vec![cell_id()]
+    );
+    assert!(fixture.delegate.work_registration.lock().unwrap().is_some());
+    assert!(fixture.live());
+    fixture
+        .provider
+        .fail_termination
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    fixture
+        .base
+        .session
+        .services
+        .code_mode_service
+        .interrupt_active_cells()
+        .await;
+    assert_eq!(
+        fixture
+            .provider
+            .terminations
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    assert_eq!(fixture.base.store().published_texts(), published);
+    fixture.retire_ready_record();
+    assert!(!fixture.live());
+}
+
+#[tokio::test]
+async fn cell_terminal_record_waits_for_delayed_native_close_in_collector_watcher_and_interrupt() {
+    // Each provider returns a terminal result before delivering its close callback.
+    for path in ["collector", "watcher", "interrupt"] {
+        let gate = CancellationToken::new();
+        let fixture = NativeFixture::with_options(
+            crate::agent::control::WorkKind::Cell,
+            Ok(RuntimeResponse::Result {
+                cell_id: cell_id(),
+                content_items: vec![text("terminal before native close")],
+                error_text: None,
+                code_mode_host_duration: None,
+            }),
+            if path == "watcher" {
+                TerminalReadySupport::Unsupported
+            } else {
+                TerminalReadySupport::Supported
+            },
+            true,
+            Some(gate.clone()),
+            false,
+        )
+        .await;
+        if path == "interrupt" {
+            fixture
+                .base
+                .session
+                .services
+                .code_mode_service
+                .interrupt_active_cells()
+                .await;
+        } else {
+            fixture.base.completion.ready(ready(CellOutputKind::Text));
+        }
+        let published = fixture.base.published().await;
+        assert_eq!(published.len(), 1);
+        assert!(fixture.delegate.work_registration.lock().unwrap().is_some());
+        assert_eq!(
+            fixture
+                .base
+                .session
+                .services
+                .code_mode_service
+                .active_cell_ids(),
+            vec![cell_id()]
+        );
+        assert!(
+            !fixture
+                .base
+                .store()
+                .has_ready(fixture.base.session.thread_id(), None)
+        );
+        let permit = fixture.base.completion.observe().await;
+        fixture
+            .base
+            .completion
+            .observed(&Ok(WaitOutcome::MissingCell(RuntimeResponse::Terminated {
+                cell_id: cell_id(),
+                content_items: vec![],
+                code_mode_host_duration: None,
+            })));
+        drop(permit);
+        fixture.base.completion.ready(ready(CellOutputKind::Media));
+        assert_eq!(fixture.base.store().published_texts(), published);
+        assert!(fixture.base.store().has_owned_work());
+        gate.cancel();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            fixture.base.completion.native_closed.cancelled(),
+        )
+        .await
+        .expect("provider native close callback");
+        assert!(fixture.delegate.work_registration.lock().unwrap().is_none());
+        assert!(
+            fixture
+                .base
+                .session
+                .services
+                .code_mode_service
+                .active_cell_ids()
+                .is_empty()
+        );
+        fixture.retire_ready_record();
+        assert!(
+            !fixture.live(),
+            "the existing result owns the final hold: {path}"
+        );
+        assert!(
+            fixture
+                .base
+                .session
+                .services
+                .local_agent_runtime
+                .work_observation()
+                .snapshot()
+                .quiescent
+        );
+        assert!(
+            !fixture
+                .base
+                .store()
+                .has_ready(fixture.base.session.thread_id(), None)
+        );
+    }
+}
+
+#[tokio::test]
+async fn cell_model_wait_error_preserves_automatic_collection_and_native_gate() {
+    let fixture = NativeFixture::yielded(
+        crate::agent::control::WorkKind::Cell,
+        Err("provider wait failed".to_owned()),
+        TerminalReadySupport::Supported,
+    )
+    .await;
+    let result = fixture
+        .base
+        .session
+        .services
+        .code_mode_service
+        .wait(
+            WaitRequest {
+                cell_id: cell_id(),
+                yield_time_ms: 1,
+            },
+            None,
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(fixture.base.store().has_owned_work());
+    assert_eq!(
+        fixture
+            .base
+            .session
+            .services
+            .code_mode_service
+            .active_cell_ids(),
+        vec![cell_id()]
+    );
+    fixture.base.completion.ready(ready(CellOutputKind::Text));
+    assert_eq!(fixture.base.published().await.len(), 1);
+    fixture.retire_ready_record();
+    assert!(!fixture.live());
+}
+
+#[tokio::test(start_paused = true)]
+async fn cell_collection_close_timeout_keeps_native_cleanup_authority_until_delayed_callback() {
+    let gate = CancellationToken::new();
+    let fixture = NativeFixture::with_options(
+        crate::agent::control::WorkKind::Cell,
+        Err("provider wait failed".to_owned()),
+        TerminalReadySupport::Supported,
+        false,
+        Some(gate.clone()),
+        false,
+    )
+    .await;
+    // Drive the real collector directly so the paused clock can advance while it awaits close.
+    fixture.base.completion.collect().await;
+    let published = fixture.base.store().published_texts();
+    assert_eq!(published.len(), 1);
+    assert!(published[0].contains("status=collectionFailed"));
+    assert!(
+        !fixture
+            .base
+            .store()
+            .has_ready(fixture.base.session.thread_id(), None)
+    );
+    assert_eq!(
+        fixture
+            .base
+            .session
+            .services
+            .code_mode_service
+            .active_cell_ids(),
+        vec![cell_id()]
+    );
+    assert!(fixture.delegate.work_registration.lock().unwrap().is_some());
+    gate.cancel();
+    fixture.base.completion.native_closed.cancelled().await;
+    assert_eq!(fixture.base.store().published_texts(), published);
+    fixture.retire_ready_record();
+    assert!(!fixture.live());
 }

@@ -206,20 +206,20 @@ impl CodeModeDispatchBroker {
         // Dropping the gate releases the cell's worker lease.
         dispatch_gates.remove(cell_id);
         drop(dispatch_gates);
-        {
-            let mut completions = self
-                .completions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // A collector's own read closes the cell; keep it observable until it publishes.
-            if let Some(completion) = completions.get(cell_id) {
-                completion.closed(cell_id);
-                if !completion.collecting() {
-                    completions.remove(cell_id);
-                }
-            }
-        }
         self.executed_tool_calls.finish_cell_recording(cell_id);
+    }
+
+    pub(super) fn forget_closed_completion(&self, cell_id: &CellId) {
+        let mut completions = self
+            .completions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if completions
+            .get(cell_id)
+            .is_some_and(|completion| completion.is_closed() && !completion.collecting())
+        {
+            completions.remove(cell_id);
+        }
     }
 
     pub(super) fn active_cell_ids(&self) -> Vec<CellId> {
@@ -412,10 +412,13 @@ impl CodeModeSessionDelegate for CodeModeCellDelegate {
         if let Some(registration) = &registration {
             registration.mark_terminal();
         }
+        drop(registration);
+        self.broker.close_cell(cell_id);
+        // Deliverability follows delegate, dispatch-worker and event-recording cleanup.
         if let Some(completion) = &self.completion {
             completion.closed(cell_id);
         }
-        self.broker.close_cell(cell_id);
+        self.broker.forget_closed_completion(cell_id);
     }
 }
 
