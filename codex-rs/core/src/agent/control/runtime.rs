@@ -598,6 +598,46 @@ impl LocalAgentRuntime {
         self.wake_coordinator.current_assignment(thread_id)
     }
 
+    pub(crate) fn reserve_owned_work(
+        &self,
+        owner: &Arc<crate::session::session::Session>,
+        turn: &crate::session::turn_context::TurnContext,
+        call_id: &str,
+        kind: super::WorkKind,
+        retained_cell: Option<&super::OwnedWorkRegistration>,
+    ) -> Result<super::OwnedWorkRegistration, &'static str> {
+        if self.shutdown.is_cancelled() || self.ensure_agent_not_closed(owner.thread_id()).is_err()
+        {
+            return Err("work owner is shutting down");
+        }
+        self.work_lifecycle.reserve_producer(
+            owner.thread_id(),
+            &turn.sub_id,
+            call_id,
+            turn.agent_assignment.get(),
+            kind,
+            retained_cell,
+        )
+    }
+
+    pub(crate) fn has_live_owned_work(&self, owner: ThreadId) -> bool {
+        self.work_lifecycle.has_live_registrations(owner)
+    }
+
+    pub(crate) fn has_ready_owned_completions(&self, assignment: &AgentAssignmentId) -> bool {
+        self.wake_coordinator
+            .has_ready_owned_completions(assignment)
+    }
+
+    pub(crate) fn acknowledge_finite_terminal_hint(
+        &self,
+        assignment: &AgentAssignmentId,
+        turn_id: &str,
+    ) {
+        self.wake_coordinator
+            .acknowledge_finite_terminal_hint(assignment, turn_id);
+    }
+
     pub(crate) fn continue_owned_completion(
         &self,
         id: &AgentAssignmentId,

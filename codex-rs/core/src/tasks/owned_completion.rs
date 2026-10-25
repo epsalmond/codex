@@ -41,9 +41,14 @@ impl Session {
         {
             return None;
         }
-        self.services
-            .async_completions
-            .has_ready(self.thread_id(), assignment.as_ref())
-            .then_some(PendingWorkCause::OwnedCompletion(assignment))
+        let ready = assignment.as_ref().map_or_else(
+            || {
+                self.services
+                    .async_completions
+                    .has_ready(self.thread_id(), None)
+            },
+            |assignment| runtime.has_ready_owned_completions(assignment),
+        );
+        ready.then_some(PendingWorkCause::OwnedCompletion(assignment))
     }
 }

@@ -1,7 +1,9 @@
 //! Root-turn tracking and guarded shutdown for one agent tree, layered on the wake coordinator.
 
+use super::coordinator::AgentAssignmentId;
 use super::coordinator::AgentWakeCoordinator;
 use super::coordinator::TreeWorkSummary;
+use codex_protocol::ThreadId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,6 +14,141 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const MAX_TRACKED_ROOT_TURNS: usize = 32;
+const MAX_OWNED_REGISTRATIONS: usize = 64;
+const MAX_OWNED_SERVICES: usize = 16;
+
+/// Finite commands and cells hold drain; services remain owned but have zero drain weight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkKind {
+    Task,
+    Cell,
+    Service,
+}
+
+impl WorkKind {
+    pub(crate) fn is_finite(self) -> bool {
+        self != Self::Service
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkIdentity {
+    owner: ThreadId,
+    turn_id: String,
+    call_id: String,
+    assignment: Option<AgentAssignmentId>,
+    kind: WorkKind,
+}
+
+struct ProducerRegistration {
+    identity: WorkIdentity,
+    terminal: bool,
+    started: bool,
+    yielded_nonautomatic: bool,
+    cell_authority: bool,
+}
+
+struct RegistrationHandle {
+    id: Uuid,
+    identity: WorkIdentity,
+    coordinator: Weak<WorkCoordinator>,
+}
+
+/// One authoritative producer registration shared by its native owner and existing result record.
+/// No output, Session or coordinator is retained by this handle.
+#[derive(Clone)]
+pub(crate) struct OwnedWorkRegistration(Arc<RegistrationHandle>);
+
+impl std::fmt::Debug for OwnedWorkRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedWorkRegistration")
+            .field("id", &self.0.id)
+            .field("identity", &self.0.identity)
+            .finish()
+    }
+}
+
+impl OwnedWorkRegistration {
+    pub(crate) fn id(&self) -> Uuid {
+        self.0.id
+    }
+
+    pub(crate) fn kind(&self) -> WorkKind {
+        self.0.identity.kind
+    }
+
+    pub(crate) fn matches(
+        &self,
+        owner: ThreadId,
+        turn_id: &str,
+        call_id: &str,
+        assignment: Option<&AgentAssignmentId>,
+    ) -> bool {
+        let identity = &self.0.identity;
+        identity.owner == owner
+            && identity.turn_id == turn_id
+            && identity.call_id == call_id
+            && identity.assignment.as_ref() == assignment
+    }
+
+    fn update(&self, update: impl FnOnce(&mut ProducerRegistration)) {
+        if let Some(coordinator) = self.0.coordinator.upgrade() {
+            coordinator.update(|state| {
+                if let Some(record) = state.producers.get_mut(&self.0.id) {
+                    update(record);
+                    state.advance_generation();
+                }
+            });
+        }
+    }
+
+    /// Call only after native launch succeeds. Failed startup and inline results never hint.
+    pub(crate) fn mark_started(&self) {
+        self.update(|record| record.started = true);
+    }
+
+    /// The producer returned a live handle; automatic records already supply wake authority.
+    pub(crate) fn mark_yielded(&self, automatic: bool) {
+        self.update(|record| record.yielded_nonautomatic = !automatic);
+    }
+
+    /// Service cells also need retained dispatch authority; native processes never call this.
+    pub(crate) fn mark_cell(&self) {
+        self.update(|record| record.cell_authority = true);
+    }
+
+    /// Mark native close, retaining the hold until event/output processing and acceptance finish.
+    pub(crate) fn mark_terminal(&self) {
+        self.update(|record| record.terminal = true);
+    }
+
+    pub(crate) fn admit_completion<T>(
+        &self,
+        store: &Arc<crate::session::async_completion::AsyncCompletions>,
+        admit: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        let coordinator = self.0.coordinator.upgrade().ok_or("work owner is closed")?;
+        let state = coordinator.lock_state();
+        if state.closed || !state.producers.contains_key(&self.0.id) {
+            return Err("work owner is closed");
+        }
+        if let Some(assignment) = &self.0.identity.assignment {
+            coordinator
+                .wake
+                .admit_registered_completion(assignment, store, admit)
+        } else {
+            admit()
+        }
+    }
+}
+
+impl Drop for RegistrationHandle {
+    fn drop(&mut self) {
+        if let Some(coordinator) = self.coordinator.upgrade() {
+            coordinator.release_producer(self.id);
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WorkAdmissionError {
@@ -28,10 +165,10 @@ pub struct WorkObservationSnapshot {
     pub revision: String,
     /// Finite work that has not been fully delivered, including open agent assignments.
     pub outstanding_work: usize,
-    /// Running finite work. Open agent assignments count here, including the root while it
-    /// runs or waits on children.
+    /// Running finite work. Open assignments and running producer registrations are additive
+    /// units, including the root while it runs or waits on children.
     pub running_finite_work: usize,
-    /// Undelivered child reports and queued agent wakes.
+    /// Undelivered child reports, queued agent wakes and terminal finite registrations.
     pub pending_notifications: usize,
     pub active_root_turns: usize,
     pub pending_terminal_outputs: usize,
@@ -92,6 +229,7 @@ struct CoordinatorState {
     /// once per event cannot wrap back to an observed value within any real process lifetime.
     generation: u64,
     root_turns: HashMap<String, RootTurnState>,
+    producers: HashMap<Uuid, ProducerRegistration>,
     output_forwarding_observed: bool,
     forwarder_started: bool,
     closed: bool,
@@ -114,11 +252,22 @@ impl CoordinatorState {
             .filter(|state| **state == RootTurnState::Active)
             .count();
         let pending_terminal_outputs = self.root_turns.len() - active_root_turns;
-        let running_finite_work = tree.open_assignments;
-        let pending_notifications = tree.undelivered_reports + tree.queued_wakes;
+        let finite = self
+            .producers
+            .values()
+            .filter(|record| record.identity.kind.is_finite());
+        let running_producers = finite.clone().filter(|record| !record.terminal).count();
+        let terminal_producers = finite.filter(|record| record.terminal).count();
+        // Assignment and producer counts are additive units, not distinct sessions.
+        let running_finite_work = tree.open_assignments + running_producers;
+        let pending_notifications =
+            tree.undelivered_reports + tree.queued_wakes + terminal_producers;
         WorkObservationSnapshot {
             revision: format!("{incarnation}:{}:{epoch}", self.generation),
-            outstanding_work: tree.open_assignments + tree.undelivered_reports,
+            outstanding_work: tree.open_assignments
+                + tree.undelivered_reports
+                + running_producers
+                + terminal_producers,
             running_finite_work,
             pending_notifications,
             active_root_turns,
@@ -151,6 +300,7 @@ impl WorkCoordinator {
         let state = CoordinatorState {
             generation: 0,
             root_turns: HashMap::new(),
+            producers: HashMap::new(),
             output_forwarding_observed: false,
             forwarder_started: false,
             closed: false,
@@ -243,6 +393,113 @@ impl WorkCoordinator {
             }
         });
         Some(epoch)
+    }
+
+    pub(crate) fn reserve_producer(
+        self: &Arc<Self>,
+        owner: ThreadId,
+        turn_id: &str,
+        call_id: &str,
+        assignment: Option<&AgentAssignmentId>,
+        kind: WorkKind,
+        retained_cell: Option<&OwnedWorkRegistration>,
+    ) -> Result<OwnedWorkRegistration, &'static str> {
+        if turn_id.is_empty()
+            || turn_id.len() > 128
+            || call_id.len() > 128
+            || assignment.is_some_and(|assignment| assignment.thread_id != owner)
+        {
+            return Err("work registration identifiers do not match their bounded owner");
+        }
+        self.update(|state| {
+            if state.closed {
+                return Err("agent work coordinator is closed");
+            }
+            let owned = state
+                .producers
+                .values()
+                .filter(|record| record.identity.owner == owner);
+            if owned.clone().count() >= MAX_OWNED_REGISTRATIONS
+                || (kind == WorkKind::Service
+                    && owned
+                        .filter(|record| record.identity.kind == WorkKind::Service)
+                        .count()
+                        >= MAX_OWNED_SERVICES)
+            {
+                return Err("owned work registration capacity exhausted");
+            }
+            let retained = retained_cell.is_some_and(|cell| {
+                cell.0.coordinator.ptr_eq(&Arc::downgrade(self))
+                    && state.producers.get(&cell.id()).is_some_and(|record| {
+                        record.cell_authority
+                            && record.started
+                            && !record.terminal
+                            && record.identity.owner == owner
+                            && record.identity.turn_id == turn_id
+                            && record.identity.assignment.as_ref() == assignment
+                    })
+            });
+            if retained_cell.is_some() && !retained {
+                return Err("originating cell no longer authorizes this producer");
+            }
+            if let Some(assignment) = assignment {
+                self.wake
+                    .admit_finite_producer(assignment, turn_id, retained, kind.is_finite())?;
+            }
+            let id = Uuid::now_v7();
+            let identity = WorkIdentity {
+                owner,
+                turn_id: turn_id.to_owned(),
+                call_id: call_id.to_owned(),
+                assignment: assignment.cloned(),
+                kind,
+            };
+            state.producers.insert(
+                id,
+                ProducerRegistration {
+                    identity: identity.clone(),
+                    terminal: false,
+                    started: false,
+                    yielded_nonautomatic: false,
+                    cell_authority: kind == WorkKind::Cell,
+                },
+            );
+            state.advance_generation();
+            Ok(OwnedWorkRegistration(Arc::new(RegistrationHandle {
+                id,
+                identity,
+                coordinator: Arc::downgrade(self),
+            })))
+        })
+    }
+
+    fn release_producer(&self, id: Uuid) {
+        let wake_assignment = self.update(|state| {
+            let record = state.producers.remove(&id)?;
+            state.advance_generation();
+            let assignment = record.identity.assignment?;
+            if record.identity.kind.is_finite() {
+                self.wake
+                    .release_finite_producer(
+                        &assignment,
+                        record.terminal && record.started && record.yielded_nonautomatic,
+                    )
+                    .then_some(assignment)
+            } else {
+                None
+            }
+        });
+        // No lifecycle lock is held while requesting the existing scheduler.
+        if let Some(assignment) = wake_assignment {
+            self.wake.request_wake(assignment);
+        }
+    }
+
+    pub(crate) fn has_live_registrations(&self, owner: ThreadId) -> bool {
+        self.lock_state()
+            .producers
+            .values()
+            .any(|record| record.identity.owner == owner)
     }
 
     pub(crate) fn root_turn_started(&self, turn_id: &str) -> Result<(), WorkAdmissionError> {

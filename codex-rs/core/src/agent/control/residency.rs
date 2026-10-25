@@ -170,6 +170,37 @@ impl LocalAgentControl {
 }
 
 impl LocalAgentRuntime {
+    /// Retained-cell starts acquire this before admission and hold it through publication/cleanup.
+    /// Read pins compose with normal dispatch's read pin; eviction alone holds the writer.
+    pub(crate) async fn pin_owned_work_owner(
+        &self,
+        owner: &Arc<crate::session::session::Session>,
+    ) -> CodexResult<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        let Some(state) = self.manager.upgrade() else {
+            return Ok(None);
+        };
+        let thread = state.get_thread(owner.thread_id()).await?;
+        if !Arc::ptr_eq(&thread.session, owner) {
+            return Err(CodexErr::ThreadNotFound(owner.thread_id()));
+        }
+        if !is_resident_candidate(&thread) {
+            return Ok(None);
+        }
+        // Never queue behind a writer while a normal dispatch may already hold a read pin.
+        let guard = Arc::clone(&thread.residency_gate)
+            .try_read_owned()
+            .map_err(|_| {
+                CodexErr::InvalidRequest("work owner is closing or unloading".to_owned())
+            })?;
+        self.ensure_agent_not_closed(owner.thread_id())?;
+        if !Arc::ptr_eq(&thread, &state.get_thread(owner.thread_id()).await?) {
+            return Err(CodexErr::ThreadNotFound(owner.thread_id()));
+        }
+        self.residency.touch(owner.thread_id());
+        self.wake_coordinator.notify_residency_available();
+        Ok(Some(guard))
+    }
+
     /// Pins and touches the registered runtime without waiting for unrelated eviction.
     pub(crate) async fn pin_v2_residency(
         &self,
@@ -339,6 +370,15 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
 }
 
 async fn is_unloadable(thread: &CodexThread) -> bool {
+    // Read lifecycle before any wake/store checks, including the exclusive-gate final recheck.
+    if thread
+        .session
+        .services
+        .local_agent_runtime
+        .has_live_owned_work(thread.session.thread_id())
+    {
+        return false;
+    }
     matches!(
         thread.agent_status().await,
         AgentStatus::PendingInit
