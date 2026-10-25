@@ -1215,6 +1215,7 @@ impl App {
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
         }
+        self.cache_collab_receiver_threads_for_notification(&notification);
         self.cache_agent_picker_notification(thread_id, &notification);
         if self.current_displayed_thread_id() == Some(thread_id)
             && let ServerNotification::TurnCompleted(notification) = &notification
@@ -1430,12 +1431,6 @@ impl App {
         Ok(())
     }
 
-    /// Locally remembers receiver threads referenced by a collab notification.
-    ///
-    /// This intentionally avoids app-server reads on the active-thread rendering path. During large
-    /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
-    /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
-    /// names and roles later; until then, rendering falls back to the thread id.
     /// Explains wake mode the first time the root ends a turn while only children are working.
     fn show_wake_mode_hint_once(&mut self) {
         if self.wake_mode_hint_shown
@@ -1462,6 +1457,8 @@ impl App {
         }
     }
 
+    /// Applies local receiver visibility at notification arrival, without app-server reads.
+    /// Thread-start notifications and explicit picker refreshes fill in names and roles later.
     pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
         notification: &ServerNotification,
@@ -2188,7 +2185,6 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
-                self.cache_collab_receiver_threads_for_notification(notification.as_ref());
                 let tip_ready = self.turn_tips.observe(&notification, Instant::now());
                 self.chat_widget
                     .handle_server_notification(*notification, /*replay_kind*/ None);
