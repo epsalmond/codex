@@ -482,3 +482,15 @@ confirmed Cell cleanup. Final production refinement `7708ec5ee9` preserves live
 Cell status visibility while retaining that fence. All use the existing record
 and acceptance path. Root owns the final review verdict, publication and NAS-only
 installation.
+
+### Independent-review finding dispositions
+
+| Finding | Production correction | Regression and terminal receipt |
+| --- | --- | --- |
+| P1 Cell wait failure discarded its cleanup gate before native close | `core/src/tools/code_mode/cell_completion.rs` (`collect`, `watch`, `close_after_collection_failure`) and `delegate.rs` retain recoverable ownership and fence deliverability until confirmed close; fix `52a9f2ad0a` | `cell_collection_failure_closes_provider_before_acceptance_in_collector_and_watcher`, `cell_collection_cleanup_failure_keeps_active_gate_and_fenced_record_for_interrupt` and `cell_terminal_record_waits_for_delayed_native_close_in_collector_watcher_and_interrupt` in `cell_completion_tests.rs`; Cell 46 PASS, job-xo3zg5jo, `/home/eric/.local/state/wait-for-build/build-zipq6qfl/build.log` |
+| P1 automatic result acceptance could overtake native/end-event ownership | `core/src/unified_exec/async_watcher.rs` finishes native/event work and releases its registration before publishing via the retained existing record; fix `614c990e59`. Cell closure uses the same deliverability invariant above | `native_watcher_closes_terminal_events_before_child_acceptance` in `core/src/session/async_completion_tests.rs` exercises both exit outcomes with a gated actual watcher and ordinary claim/record/candidates/accept; store 24 PASS, job-xo3zg5jo, same log |
+| Acceptance exposed live Cell hidden by the retained close fence | `core/src/session/async_completion.rs` adds only a Cell visibility marker on its existing record; `CellCompletion::initial` marks actual yield; fix `7708ec5ee9` | `yielded_cell_is_visible_but_not_deliverable_until_native_close_then_acceptance` plus all 5 actual child cases PASS, job-xo3zg5jo, same log. Native/cell real producer cases 7 PASS, job-4eq7qoel, `/home/eric/.local/state/wait-for-build/build-zkdms2f3/build.log` |
+
+The root-owned reviewer finalizes the same independent review against the final
+assembled head and manifest after these dispositions; no second full review or
+new transport is introduced.
