@@ -1,6 +1,7 @@
 # Issue #237: apply subagent visibility at notification arrival
 
-Status: independent plan review approved; implementation in progress.
+Status: implementation integrated; focused validation passed; independent code
+review in progress.
 Source baseline: `84ec4a4d2e2b64a177477b2ad42d603d7348b71d` (`origin/main`).
 Owner/worktree: `agent/issue-237-visibility`,
 `/home/eric/worktrees/review/codex-237-visibility`.
@@ -188,3 +189,34 @@ router arrivals; and closed review-row restoration distinguished from backend
 archive exclusion. Final reviewer verdict: GO at `84ec4a4d`, with no remaining
 blocking plan findings. Preserve the #227 stopped/turn-observed guards and keep
 contact effects limited to local visibility.
+
+## Implementation and validation evidence
+
+Implementation commit: `4974ee460098230067f0a8f41c99612bd80e24e3` in the
+isolated helper worktree `/home/eric/worktrees/review/codex-237-implementation`.
+Integrated as `fc809cf881e0435bdaecbe0a771b723adc987502`; the four Rust file
+blobs are identical. Production changes are confined to `thread_routing.rs`:
+receiver bookkeeping moved to enqueue and its display-side invocation removed.
+No liveness/pending guards or protocol/runtime files changed.
+
+The focused suite covers actual top-level-router hidden-parent V2 and legacy
+arrivals with an open picker, pending first turns, contact without liveness,
+stable order, closed review rows and archive exclusions, rejected unrelated and
+temporary/abandoned parent arrivals, full-channel backpressure, stale active
+queue draining, repeated snapshot replay, and preserved streaming/status counts.
+
+Recovered initial terminal result: **105 passed, 5,785 skipped**, zero failures,
+from `just test -p codex-tui --lib -E 'test(agent_picker) | test(agent_navigation)
+| test(status_line_subagents) | test(thread_event) | test(thread_routing) |
+test(thread_ownership) | test(collab_receiver)'` with the helper's unique Cargo
+target and `CARGO_BUILD_JOBS=4`. Supervisor receipt:
+`/home/eric/.local/state/agent-jobs/job-6i5gu60p/receipt.json`; detailed test log:
+`/home/eric/.local/state/wait-for-build/build-fe1kh9qi/build.log`.
+The native completion handoff was interrupted; the owner recovered that terminal
+receipt and launched one repeat from committed source to confirm provenance.
+Committed-source repeat: **105 passed, 5,785 skipped**, zero failures, with the
+same command and target. Terminal receipt
+`/home/eric/.local/state/agent-jobs/job-8ltg126m/receipt.json` records exit zero;
+detailed log `/home/eric/.local/state/wait-for-build/build-rxevkj8b/build.log`
+records the 12.897-second test run (21.528-second supervised command).
+`git diff --check` passes. Independent code-review disposition remains pending.
