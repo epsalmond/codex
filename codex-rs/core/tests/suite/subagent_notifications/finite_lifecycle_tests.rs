@@ -7,6 +7,7 @@ use core_test_support::code_mode_host::CodeModeHostRecorder;
 use core_test_support::process::process_is_alive;
 use core_test_support::responses::ev_custom_tool_call;
 use pretty_assertions::assert_eq;
+use test_case::test_case;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
