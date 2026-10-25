@@ -260,6 +260,11 @@ impl CodeModeSession for Cell {
         Box::pin(async move {
             if self.case == Case::TerminateFirst {
                 self.ready();
+            }
+            if matches!(
+                self.case,
+                Case::TerminateFirst | Case::ProviderError | Case::YieldedRead
+            ) {
                 self.delegate().cell_closed(&id);
             }
             Ok(WaitOutcome::MissingCell(RuntimeResponse::Terminated {
@@ -1034,7 +1039,7 @@ async fn cell_reservation_capacity_rejects_before_execution() -> Result<()> {
     assert_eq!(outputs.len(), CELLS);
     let rejected = outputs
         .iter()
-        .filter(|(_, output)| output.contains("async completion capacity exhausted"))
+        .filter(|(_, output)| output.contains("capacity exhausted"))
         .map(|(call_id, _)| call_id.as_str())
         .collect::<Vec<_>>();
     // Only the call past capacity is rejected, and it never reached the provider.

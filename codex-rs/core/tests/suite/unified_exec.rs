@@ -98,6 +98,7 @@ fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
             r#"(?s)^(?:Warning: truncated output \(original token count: \d+\)\n)?(?:Total output lines: \d+\n\n)?"#,
             r#"(?:Chunk ID: (?P<chunk_id>[^\n]+)\n)?"#,
             r#"Wall time: (?P<wall_time>-?\d+(?:\.\d+)?) seconds\n"#,
+            r#"(?:Work kind: (?:task|service)\n)?"#,
             r#"(?:Process exited with code (?P<exit_code>-?\d+)\n)?"#,
             r#"(?:Process running with session ID (?P<process_id>-?\d+)\n)?"#,
             r#"(?:Original token count: (?P<original_token_count>\d+)\n)?"#,
