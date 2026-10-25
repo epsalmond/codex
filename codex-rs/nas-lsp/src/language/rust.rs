@@ -4,16 +4,25 @@
 
 use crate::config::WorkspaceConfig;
 use crate::freshness::Snapshot;
-use crate::lsp::{ReadinessPermit, RequestError, Session};
-use proc_macro2::{TokenStream, TokenTree};
+use crate::lsp::ReadinessPermit;
+use crate::lsp::RequestError;
+use crate::lsp::Session;
+use proc_macro2::TokenStream;
+use proc_macro2::TokenTree;
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use serde_json::Value;
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use syn::visit::Visit;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct Adapter {
@@ -345,7 +354,7 @@ fn cargo_project(files: &BTreeMap<PathBuf, Arc<Vec<u8>>>) -> Result<Vec<Crate>> 
         match key.as_str() {
             "package" | "lib" | "bin" => {}
             "dependencies" | "dev-dependencies" | "build-dependencies"
-                if value.as_table().is_some_and(|v| v.is_empty()) => {}
+                if value.as_table().is_some_and(toml::map::Map::is_empty) => {}
             _ => return Err("unsupported_cargo_project"),
         }
     }
@@ -393,7 +402,7 @@ fn cargo_project(files: &BTreeMap<PathBuf, Arc<Vec<u8>>>) -> Result<Vec<Crate>> 
         lib_name = target_name.clone();
         crates.push(make(path, target_name, vec![]));
     } else if files.contains_key(Path::new("src/lib.rs"))
-        && package.get("autolib").and_then(|v| v.as_bool()) != Some(false)
+        && package.get("autolib").and_then(toml::Value::as_bool) != Some(false)
     {
         crates.push(make("src/lib.rs".into(), name.clone(), vec![]));
     }
@@ -405,10 +414,10 @@ fn cargo_project(files: &BTreeMap<PathBuf, Arc<Vec<u8>>>) -> Result<Vec<Crate>> 
         }
     }
     if files.contains_key(Path::new("src/main.rs"))
-        && package.get("autobins").and_then(|v| v.as_bool()) != Some(false)
+        && package.get("autobins").and_then(toml::Value::as_bool) != Some(false)
         && !bins.iter().any(|(p, _)| p == "src/main.rs")
     {
-        bins.push(("src/main.rs".into(), name.clone()));
+        bins.push(("src/main.rs".into(), name));
     }
     // Auto integration tests/examples/benches and src/bin need separate cfg and
     // dependency contexts. This profile rejects them instead of losing users.

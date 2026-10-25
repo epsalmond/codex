@@ -173,7 +173,8 @@ async fn picker_dismissal_keeps_main_when_every_child_is_inactive() -> Result<()
 }
 
 #[tokio::test]
-async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_legacy_subagents() {
+async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_legacy_subagents()
+-> Result<()> {
     let mut app = make_test_app().await;
     let root = ThreadId::new();
     let side = ThreadId::new();
@@ -187,8 +188,9 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
             id, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
         );
     }
-    app.cache_collab_receiver_threads_for_notification(&ServerNotification::ItemStarted(
-        ItemStartedNotification {
+    app.enqueue_thread_notification(
+        root,
+        ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: root.to_string(),
             turn_id: "spawn-turn".into(),
             started_at_ms: 0,
@@ -203,8 +205,9 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
-        },
-    ));
+        }),
+    )
+    .await?;
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
@@ -238,6 +241,7 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
             total: 1
         }
     );
+    Ok(())
 }
 
 #[tokio::test]
@@ -355,8 +359,15 @@ fn active_status() -> ThreadStatus {
     }
 }
 
-fn parent_event(app: &mut App, notification: ServerNotification) {
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(notification)));
+async fn parent_event(app: &mut App, notification: ServerNotification) {
+    let parent = match &notification {
+        ServerNotification::ItemStarted(item) => &item.thread_id,
+        ServerNotification::ItemCompleted(item) => &item.thread_id,
+        _ => panic!("expected parent activity"),
+    };
+    app.enqueue_thread_notification(ThreadId::from_string(parent).unwrap(), notification)
+        .await
+        .unwrap();
 }
 
 fn press_q(app: &mut App, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
@@ -387,7 +398,8 @@ async fn picker_dismissal_keeps_spawned_child_until_its_first_turn_ends() -> Res
     parent_event(
         &mut app,
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
-    );
+    )
+    .await;
     // The new child reports idle before its first turn starts.
     app.enqueue_thread_notification(child, status_notification(child, ThreadStatus::Idle))
         .await?;
@@ -431,7 +443,8 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
     parent_event(
         &mut app,
         activity_notification(root, child, path, SubAgentActivityKind::Started),
-    );
+    )
+    .await;
     for notification in [
         status_notification(child, active_status()),
         turn_started_notification(child, "first"),
@@ -443,7 +456,8 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
     parent_event(
         &mut app,
         activity_notification(root, child, path, SubAgentActivityKind::Completed),
-    );
+    )
+    .await;
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
 
@@ -453,7 +467,8 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
     parent_event(
         &mut app,
         activity_notification(root, child, path, SubAgentActivityKind::Interacted),
-    );
+    )
+    .await;
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
@@ -498,7 +513,7 @@ async fn late_spawn_hints_do_not_pin_a_child_that_already_ran() -> Result<()> {
     app.agent_navigation
         .set_agent_path(root, Some("/root".to_string()));
 
-    // The child's stream is routed immediately; the parent's buffered spawn hints drain later.
+    // The child stream can arrive before either producer form reports the spawn.
     for notification in [
         turn_started_notification(child, "first"),
         turn_completed_notification(child, "first", TurnStatus::Failed),
@@ -509,10 +524,496 @@ async fn late_spawn_hints_do_not_pin_a_child_that_already_ran() -> Result<()> {
     parent_event(
         &mut app,
         activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
-    );
-    app.agent_navigation.mark_spawned(child);
+    )
+    .await;
+    parent_event(
+        &mut app,
+        legacy_spawn_notification(root, vec![child.to_string()]),
+    )
+    .await;
+    assert!(!app.agent_navigation.get(&child).unwrap().is_running);
+    assert_eq!(app.agent_navigation.idle_close_targets(root), vec![child]);
 
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+    Ok(())
+}
+
+fn seed_hidden_parent(app: &mut App, root: ThreadId, parent: ThreadId) {
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    for (id, path) in [(root, "/root"), (parent, "/root/parent")] {
+        app.upsert_agent_picker_thread(
+            id, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+        app.agent_navigation.set_agent_path(id, Some(path.into()));
+    }
+    app.agent_navigation.mark_running(parent);
+    app.ensure_thread_channel(parent);
+}
+
+async fn route_notification(
+    app: &mut App,
+    server: &AppServerSession,
+    notification: ServerNotification,
+) {
+    app.handle_app_server_event(
+        server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(notification)),
+    )
+    .await;
+}
+
+fn legacy_spawn_notification(parent: ThreadId, receivers: Vec<String>) -> ServerNotification {
+    ServerNotification::ItemCompleted(ItemCompletedNotification {
+        thread_id: parent.to_string(),
+        turn_id: "parent-turn".into(),
+        completed_at_ms: 0,
+        item: ThreadItem::CollabAgentToolCall {
+            id: "spawn".into(),
+            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+            status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+            sender_thread_id: parent.to_string(),
+            receiver_thread_ids: receivers,
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        },
+    })
+}
+
+#[tokio::test]
+async fn hidden_parent_arrival_updates_live_picker_and_protects_pending_grandchild() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, parent, child] = [700, 701, 702].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(None));
+    assert!(!render_bottom_popup(&app.chat_widget, 120).contains("/root/parent/grandchild"));
+
+    route_notification(
+        &mut app,
+        &server,
+        activity_notification(
+            parent,
+            child,
+            "/root/parent/grandchild",
+            SubAgentActivityKind::Started,
+        ),
+    )
+    .await;
+    assert_eq!(app.current_displayed_thread_id(), Some(root));
+    assert!(
+        app.active_thread_rx.is_none(),
+        "hidden parent was never displayed"
+    );
+    assert!(render_bottom_popup(&app.chat_widget, 120).contains("/root/parent/grandchild"));
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)),
+        SubagentCounts {
+            running: 2,
+            total: 2
+        }
+    );
+
+    route_notification(
+        &mut app,
+        &server,
+        status_notification(child, ThreadStatus::Idle),
+    )
+    .await;
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)),
+        SubagentCounts {
+            running: 1,
+            total: 2
+        }
+    );
+    assert!(app.agent_navigation.idle_close_targets(root).is_empty());
+    press_q(&mut app, &mut rx);
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    for notification in [
+        turn_started_notification(child, "first"),
+        turn_completed_notification(child, "first", TurnStatus::Completed),
+    ] {
+        route_notification(&mut app, &server, notification).await;
+    }
+    assert_eq!(app.agent_navigation.idle_close_targets(root), vec![child]);
+    press_q(&mut app, &mut rx);
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn hidden_parent_contact_restores_order_without_liveness_and_snapshot_cannot_restore_again()
+-> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, parent, child, sibling] = [710, 711, 712, 713].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    for (id, path) in [
+        (child, "/root/parent/grandchild"),
+        (sibling, "/root/sibling"),
+    ] {
+        parent_event(
+            &mut app,
+            activity_notification(parent, id, path, SubAgentActivityKind::Started),
+        )
+        .await;
+        app.enqueue_thread_notification(id, turn_started_notification(id, "first"))
+            .await?;
+        app.enqueue_thread_notification(
+            id,
+            turn_completed_notification(id, "first", TurnStatus::Completed),
+        )
+        .await?;
+    }
+    let counts = app.agent_navigation.subagent_counts(Some(root));
+    let child_state = app.agent_navigation.get(&child).unwrap().clone();
+    press_q(&mut app, &mut rx);
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent]
+    );
+    route_notification(
+        &mut app,
+        &server,
+        activity_notification(
+            parent,
+            child,
+            "/root/parent/grandchild",
+            SubAgentActivityKind::Interacted,
+        ),
+    )
+    .await;
+    assert_eq!(app.current_displayed_thread_id(), Some(root));
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    assert_eq!(app.agent_navigation.get(&child), Some(&child_state));
+    assert_eq!(app.agent_navigation.subagent_counts(Some(root)), counts);
+    assert!(render_bottom_popup(&app.chat_widget, 120).contains("/root/parent/grandchild"));
+    // Restoring the older sibling proves the first-seen order survives dismissal/contact.
+    route_notification(
+        &mut app,
+        &server,
+        activity_notification(
+            parent,
+            sibling,
+            "/root/sibling",
+            SubAgentActivityKind::Interacted,
+        ),
+    )
+    .await;
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child, sibling]
+    );
+    press_q(&mut app, &mut rx);
+    for _ in 0..2 {
+        let snapshot = app.thread_event_channels[&parent]
+            .store
+            .lock()
+            .await
+            .snapshot();
+        assert!(!snapshot.events.is_empty());
+        app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+        assert_eq!(
+            app.agent_navigation.tracked_thread_ids(),
+            vec![root, parent]
+        );
+        assert_eq!(app.agent_navigation.get(&child), Some(&child_state));
+        assert_eq!(app.agent_navigation.subagent_counts(Some(root)), counts);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_parent_stale_queue_drain_cannot_undo_later_dismissal() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let [root, parent, child] = [720, 721, 722].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    parent_event(
+        &mut app,
+        activity_notification(
+            parent,
+            child,
+            "/root/parent/grandchild",
+            SubAgentActivityKind::Started,
+        ),
+    )
+    .await;
+    for notification in [
+        turn_started_notification(child, "first"),
+        turn_completed_notification(child, "first", TurnStatus::Completed),
+    ] {
+        app.enqueue_thread_notification(child, notification).await?;
+    }
+    press_q(&mut app, &mut rx);
+    app.active_thread_id = None;
+    app.activate_thread_channel(parent).await;
+    parent_event(
+        &mut app,
+        activity_notification(
+            parent,
+            child,
+            "/root/parent/grandchild",
+            SubAgentActivityKind::Interacted,
+        ),
+    )
+    .await;
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    assert!(!app.active_thread_rx.as_ref().unwrap().is_empty());
+    press_q(&mut app, &mut rx);
+    let counts = app.agent_navigation.subagent_counts(Some(root));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.drain_active_thread_events_until(&mut tui, Instant::now() + Duration::from_secs(1))
+        .await?;
+    assert!(app.active_thread_rx.as_ref().unwrap().is_empty());
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent]
+    );
+    assert_eq!(app.agent_navigation.subagent_counts(Some(root)), counts);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hidden_parent_legacy_spawn_is_pending_and_rejects_invalid_or_not_found_receivers()
+-> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, parent, child, missing] = [730, 731, 732, 733].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    let mut notification = legacy_spawn_notification(
+        parent,
+        vec![child.to_string(), "invalid-id".into(), missing.to_string()],
+    );
+    if let ServerNotification::ItemCompleted(item) = &mut notification
+        && let ThreadItem::CollabAgentToolCall { agents_states, .. } = &mut item.item
+    {
+        agents_states.insert(
+            missing.to_string(),
+            codex_app_server_protocol::CollabAgentState {
+                status: codex_app_server_protocol::CollabAgentStatus::NotFound,
+                message: None,
+            },
+        );
+    }
+    route_notification(&mut app, &server, notification).await;
+    assert_eq!(app.current_displayed_thread_id(), Some(root));
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    assert_eq!(app.agent_navigation.get(&child).unwrap().agent_path, None);
+    assert!(!app.agent_navigation.get(&child).unwrap().is_running);
+    assert_eq!(app.agent_navigation.get(&missing), None);
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)),
+        SubagentCounts {
+            running: 1,
+            total: 2
+        }
+    );
+    assert!(app.agent_navigation.idle_close_targets(root).is_empty());
+    press_q(&mut app, &mut rx);
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn parent_contact_preserves_closed_review_rows_and_backend_archive_exclusion() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, parent, closed, archived] = [740, 741, 742, 743].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    for (id, path) in [(closed, "/root/closed"), (archived, "/root/archived")] {
+        parent_event(
+            &mut app,
+            activity_notification(parent, id, path, SubAgentActivityKind::Started),
+        )
+        .await;
+        app.mark_agent_picker_thread_closed(id);
+    }
+    app.set_agent_picker_thread_visibility(archived, AgentPickerThreadVisibility::Hidden);
+    press_q(&mut app, &mut rx);
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent]
+    );
+    let counts = app.agent_navigation.subagent_counts(Some(root));
+    for (id, path) in [(closed, "/root/closed"), (archived, "/root/archived")] {
+        route_notification(
+            &mut app,
+            &server,
+            activity_notification(parent, id, path, SubAgentActivityKind::Interacted),
+        )
+        .await;
+        assert!(app.agent_navigation.get(&id).unwrap().is_closed);
+        assert!(!app.agent_navigation.get(&id).unwrap().is_running);
+    }
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, closed]
+    );
+    for notification in [
+        activity_notification(
+            parent,
+            archived,
+            "/root/archived",
+            SubAgentActivityKind::Started,
+        ),
+        legacy_spawn_notification(parent, vec![archived.to_string()]),
+    ] {
+        route_notification(&mut app, &server, notification).await;
+        assert_eq!(
+            app.agent_navigation.tracked_thread_ids(),
+            vec![root, parent, closed]
+        );
+        assert_eq!(app.agent_navigation.subagent_counts(Some(root)), counts);
+    }
+    press_q(&mut app, &mut rx);
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_parent_router_arrivals_cannot_create_or_restore_receivers() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [
+        root,
+        parent,
+        dismissed,
+        unrelated,
+        structured,
+        abandoned,
+        new_child,
+    ] = [750, 751, 752, 753, 754, 755, 756].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    parent_event(
+        &mut app,
+        activity_notification(
+            parent,
+            dismissed,
+            "/root/dismissed",
+            SubAgentActivityKind::Completed,
+        ),
+    )
+    .await;
+    press_q(&mut app, &mut rx);
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    app.temporary_structured_requests.insert(structured, sender);
+    for id in [structured, abandoned] {
+        app.ensure_thread_channel(id);
+    }
+    app.abandoned_side_threads.insert(abandoned);
+    let ids = app.agent_navigation.tracked_thread_ids();
+    let state = app.agent_navigation.get(&dismissed).unwrap().clone();
+    let counts = app.agent_navigation.subagent_counts(Some(root));
+    for rejected in [unrelated, structured, abandoned] {
+        for notification in [
+            activity_notification(
+                rejected,
+                new_child,
+                "/root/new",
+                SubAgentActivityKind::Started,
+            ),
+            activity_notification(
+                rejected,
+                dismissed,
+                "/root/dismissed",
+                SubAgentActivityKind::Interacted,
+            ),
+            legacy_spawn_notification(rejected, vec![new_child.to_string(), dismissed.to_string()]),
+        ] {
+            route_notification(&mut app, &server, notification).await;
+            assert_eq!(app.agent_navigation.tracked_thread_ids(), ids);
+            assert_eq!(app.agent_navigation.get(&dismissed), Some(&state));
+            assert_eq!(app.agent_navigation.get(&new_child), None);
+            assert_eq!(app.agent_navigation.subagent_counts(Some(root)), counts);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_parent_channel_applies_receiver_visibility_before_display_capacity_returns()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let [root, parent, child] = [760, 761, 762].map(ThreadId::from_u128);
+    seed_hidden_parent(&mut app, root, parent);
+    app.thread_event_channels
+        .insert(parent, ThreadEventChannel::new(1));
+    app.set_thread_active(parent, /*active*/ true).await;
+    parent_event(
+        &mut app,
+        activity_notification(
+            parent,
+            child,
+            "/root/parent/grandchild",
+            SubAgentActivityKind::Completed,
+        ),
+    )
+    .await;
+    app.dismiss_inactive_subagents();
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent]
+    );
+    time::timeout(
+        Duration::from_millis(50),
+        parent_event(
+            &mut app,
+            activity_notification(
+                parent,
+                child,
+                "/root/parent/grandchild",
+                SubAgentActivityKind::Interacted,
+            ),
+        ),
+    )
+    .await
+    .expect("receiver visibility must not wait for channel capacity");
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids(),
+        vec![root, parent, child]
+    );
+    let mut receiver = app
+        .thread_event_channels
+        .get_mut(&parent)
+        .unwrap()
+        .receiver
+        .take()
+        .unwrap();
+    // Free the slot and consume the deferred send so this test leaves no sender task waiting.
+    for _ in 0..2 {
+        time::timeout(Duration::from_secs(1), receiver.recv())
+            .await?
+            .expect("queued parent event");
+    }
     Ok(())
 }

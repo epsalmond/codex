@@ -4,12 +4,25 @@
 //! cargo test -p codex-nas-lsp --test typescript -- --ignored --nocapture
 //! These tests do not qualify the broker/cgroup/native/model transport.
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "Integration fixture helpers fail the test on invalid setup or oracle data"
+)]
 
-use codex_lsp_protocol::{Location, NavigationResponse, Operation, Position, Status};
-use codex_nas_lsp::config::{Readiness, WorkspaceConfig};
-use codex_nas_lsp::worker::{Worker, WorkerQuery};
-use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use codex_lsp_protocol::Location;
+use codex_lsp_protocol::NavigationResponse;
+use codex_lsp_protocol::Operation;
+use codex_lsp_protocol::Position;
+use codex_lsp_protocol::Status;
+use codex_nas_lsp::config::Readiness;
+use codex_nas_lsp::config::WorkspaceConfig;
+use codex_nas_lsp::worker::Worker;
+use codex_nas_lsp::worker::WorkerQuery;
+use serde_json::Value;
+use serde_json::json;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;

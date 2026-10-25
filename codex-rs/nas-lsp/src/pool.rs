@@ -53,7 +53,11 @@ struct Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        *self.state.last_used.lock().expect("last-used lock") = Instant::now();
+        *self
+            .state
+            .last_used
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
         self.state.leases.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -76,6 +80,10 @@ impl Pool {
 
     /// A full leased pool returns Busy. Idle replacement waits for broker-owned
     /// retirement within this caller's deadline and cancellation token.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "The slots guard is explicitly dropped before the retirement wait"
+    )]
     pub(crate) async fn submit(
         &self,
         config: Arc<WorkspaceConfig>,
@@ -96,10 +104,10 @@ impl Pool {
             // A slot owns its actor even after retirement starts. Only finished
             // actors (whose workers have been reaped) release process capacity.
             slots.retain(|_, slot| !slot.task.is_finished());
-            if slots.get(&key).is_some_and(|slot| slot.sender.is_closed()) {
-                if let Some(slot) = slots.get_mut(&key) {
-                    slot.retire();
-                }
+            if let Some(slot) = slots.get_mut(&key)
+                && slot.sender.is_closed()
+            {
+                slot.retire();
             }
             let stopped = if let Some(slot) = slots.get(&key).filter(|slot| slot.retiring) {
                 Some(slot.state.stopped.clone())
@@ -113,14 +121,20 @@ impl Pool {
                     .min_by_key(|(_, slot)| {
                         (
                             !slot.retiring,
-                            *slot.state.last_used.lock().expect("last-used lock"),
+                            *slot
+                                .state
+                                .last_used
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
                         )
                     })
                     .map(|(key, _)| key.clone());
                 let Some(victim) = victim else {
                     return Err(status(Status::Busy, "pool_full"));
                 };
-                let slot = slots.get_mut(&victim).expect("selected victim");
+                let slot = slots
+                    .get_mut(&victim)
+                    .ok_or_else(|| status(Status::Busy, "pool_full"))?;
                 slot.retire();
                 Some(slot.state.stopped.clone())
             } else {
@@ -150,7 +164,9 @@ impl Pool {
                 ),
             );
         }
-        let slot = slots.get(&key).expect("inserted slot");
+        let slot = slots
+            .get(&key)
+            .ok_or_else(|| status(Status::Busy, "pool_full"))?;
         let worker_permit = slot
             .state
             .capacity
@@ -182,6 +198,10 @@ impl Pool {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "The slots guard is explicitly dropped before shutdown notifications"
+    )]
     pub(crate) async fn maintain(&self, resources: Option<&ResourceLimits>) {
         let mut slots = self.slots.lock().await;
         slots.retain(|_, slot| !slot.task.is_finished());
@@ -195,7 +215,7 @@ impl Pool {
                             .state
                             .last_used
                             .lock()
-                            .expect("last-used lock")
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .elapsed()
                             >= self.limits.idle_ttl)
             })
@@ -213,10 +233,10 @@ impl Pool {
             .collect();
         for slot in slots.values() {
             let pid = slot.state.pid.load(Ordering::Relaxed);
-            if pid != 0 {
-                if let Ok(rss) = crate::resource::process_tree_rss(pid) {
-                    tracing::debug!(pid, rss_bytes = rss, "navigation worker process tree");
-                }
+            if pid != 0
+                && let Ok(rss) = crate::resource::process_tree_rss(pid)
+            {
+                tracing::debug!(pid, rss_bytes = rss, "navigation worker process tree");
             }
         }
         // No global map lock during worker shutdown. Dropping maintenance only
@@ -231,6 +251,10 @@ impl Pool {
             .retain(|_, slot| !slot.task.is_finished());
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "Shutdown exclusively owns the slot map until all worker tasks are reaped"
+    )]
     pub(crate) async fn shutdown(&self) {
         self.cancel.cancel();
         let mut slots = self.slots.lock().await;

@@ -2,14 +2,21 @@
 
 use crate::config::WorkspaceConfig;
 use crate::freshness::Snapshot;
-use crate::lsp::{ChildEnvironment, ReadinessPermit, RequestError, Session};
-use serde_json::{Value, json};
+use crate::lsp::ChildEnvironment;
+use crate::lsp::ReadinessPermit;
+use crate::lsp::RequestError;
+use crate::lsp::Session;
+use serde_json::Value;
+use serde_json::json;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 use tokio_util::sync::CancellationToken;
 
 const MAX_INPUT: usize = 64 * 1024 * 1024;

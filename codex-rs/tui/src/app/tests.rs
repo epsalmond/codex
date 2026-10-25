@@ -2134,7 +2134,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
     let receiver_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        ThreadId::new(),
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: ThreadId::new().to_string(),
             turn_id: "turn-1".to_string(),
@@ -2151,7 +2152,9 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 agents_states: HashMap::new(),
             },
         }),
-    )));
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         app.agent_navigation.get(&receiver_thread_id),
@@ -2171,7 +2174,8 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
     let receiver_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+    app.enqueue_thread_notification(
+        ThreadId::new(),
         ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
             thread_id: ThreadId::new().to_string(),
             turn_id: "turn-1".to_string(),
@@ -2194,7 +2198,9 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 )]),
             },
         }),
-    )));
+    )
+    .await
+    .unwrap();
 
     assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
 }
