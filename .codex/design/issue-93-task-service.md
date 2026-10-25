@@ -447,7 +447,9 @@ from pending work. The sole record remains the payload owner.
   native Service, Cell Service and retained Cell launching a native Task after
   its original final answer, including replacement-generation isolation.
 * Existing Cell completion integration: 29 passed. Native completion integration:
-  30/31 passed; late-steering authority is under source investigation. Root
+  30/31 passed; the corrected late-steering fixture now explicitly ends the old
+  assignment before testing cross-generation recovery. Original policy capture
+  remains unchanged. Root
   observer/provider acceptance: 6/7 passed in that run; the remaining assertion
   used a stale quiescent revision, so its guarded-close helper now retries only
   a returned still-quiescent revision. Native/Event automatic-delivery settlement
@@ -455,3 +457,14 @@ from pending work. The sole record remains the payload owner.
 * Exec lifecycle, app-server stdio and model schema snapshot gates remain in
   progress. Final qualification requires their terminal receipts, corrected
   focused acceptance, full formatting and the independent code-review verdict.
+
+The broader 105-case schema scenario run passed 97 and failed eight child/fork
+cases. Seven failures reproduced at the same assertions on unmodified main
+`f4de69bc0c` (job-x9iigws1); the baseline Code Mode fork case required the same
+helper binary used by the feature run and then reproduced its prefix assertion
+also (job-tiwcqnuv). These are baseline failures, left outside #93. All generated
+snapshots were saved in `/tmp/codex-parallel-237-93/93-schema-generated`; only
+classification output lines and two representative Code Mode catalog snapshots
+were retained. The two catalog cases passed without snapshot updating
+(job-z0ep5j1r). Existing unrelated role/tool-catalog snapshot drift was excluded
+from the other snapshots.
