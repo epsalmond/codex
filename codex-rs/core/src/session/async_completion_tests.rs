@@ -599,3 +599,182 @@ async fn bind_cell_rejects_identifiers_over_128_bytes() {
     assert_eq!(header_field(&text, "cell"), bound);
     assert!(text.ends_with("status=collectionFailed truncated=0\nbound"));
 }
+
+#[test_case::test_case(CompletionStatus::Exited(0); "success")]
+#[test_case::test_case(CompletionStatus::Exited(17); "nonzero")]
+#[test_case::test_case(CompletionStatus::Cancelled; "cancelled")]
+#[tokio::test]
+async fn finite_lifecycle_holds_drain_through_recording_and_model_acceptance(
+    status: CompletionStatus,
+) {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let runtime = &session.services.local_agent_runtime;
+    let observation = runtime.work_observation();
+    observation.subscribe();
+    let work = runtime
+        .reserve_owned_work(&session, &turn, "finite", WorkKind::Task, None)
+        .unwrap();
+    work.mark_started();
+    let store = Arc::clone(&session.services.async_completions);
+    let mut reservation = store
+        .reserve_with_lifecycle(session.thread_id(), &turn, "finite", 41, None, &work)
+        .unwrap();
+    let publisher = reservation.register();
+    work.mark_yielded(true);
+    drop(reservation);
+    assert_eq!(observation.snapshot().running_finite_work, 1);
+    publisher.publish(status, b"terminal tail", 0);
+    work.mark_terminal();
+    drop(work);
+    let terminal = observation.snapshot();
+    assert_eq!(terminal.running_finite_work, 0);
+    assert_eq!(terminal.pending_notifications, 1);
+    assert!(!terminal.quiescent);
+    let (claim, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
+    claim.recorded();
+    assert!(!observation.snapshot().quiescent);
+    let input = items
+        .into_iter()
+        .map(ResponseItemEnvelope::into_item)
+        .collect::<Vec<_>>();
+    let accepted = store.candidates(
+        session.thread_id(),
+        &turn,
+        CompletionDrain::ExactAssignment,
+        &input,
+    );
+    assert_eq!(accepted.len(), 1);
+    store.accept(&accepted);
+    assert!(observation.snapshot().quiescent);
+    assert!(!runtime.has_live_owned_work(session.thread_id()));
+    assert!(current_items(&store, &session, &turn).1.is_empty());
+}
+
+#[tokio::test]
+async fn acceptance_does_not_release_native_terminal_event_hold() {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let runtime = &session.services.local_agent_runtime;
+    let observation = runtime.work_observation();
+    observation.subscribe();
+    let work = runtime
+        .reserve_owned_work(&session, &turn, "event-held", WorkKind::Cell, None)
+        .unwrap();
+    work.mark_started();
+    work.mark_yielded(true);
+    let store = Arc::clone(&session.services.async_completions);
+    let mut reservation = store
+        .reserve_cell_with_lifecycle(session.thread_id(), &turn, "event-held", &work)
+        .unwrap();
+    reservation.bind_cell("native-cell").unwrap();
+    reservation
+        .register()
+        .publish(CompletionStatus::CellCompleted, b"done", 0);
+    drop(reservation);
+    work.mark_terminal();
+    let (claim, items) = current_items(&store, &session, &turn);
+    claim.recorded();
+    store.accept(&[items[0].item.id().unwrap().clone()]);
+    assert!(runtime.has_live_owned_work(session.thread_id()));
+    assert!(!observation.snapshot().quiescent);
+    drop(work);
+    assert!(!runtime.has_live_owned_work(session.thread_id()));
+    assert!(observation.snapshot().quiescent);
+}
+
+#[tokio::test]
+async fn service_result_is_bounded_and_retained_without_finite_assignment_ownership() {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let runtime = &session.services.local_agent_runtime;
+    let observation = runtime.work_observation();
+    observation.subscribe();
+    let service = runtime
+        .reserve_owned_work(&session, &turn, "service", WorkKind::Service, None)
+        .unwrap();
+    service.mark_started();
+    service.mark_yielded(true);
+    let store = Arc::clone(&session.services.async_completions);
+    let mut reservation = store
+        .reserve_with_lifecycle(session.thread_id(), &turn, "service", 77, None, &service)
+        .unwrap();
+    reservation
+        .register()
+        .publish(CompletionStatus::Failed, &vec![b'x'; 10_000], 0);
+    drop(reservation);
+    service.mark_terminal();
+    drop(service);
+    assert!(runtime.has_live_owned_work(session.thread_id()));
+    assert!(observation.snapshot().quiescent);
+    let (claim, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        header_field(&fragment_text(&items[0]), "work_kind"),
+        "service"
+    );
+    assert!(serde_json::to_vec(&items[0].item).unwrap().len() <= MAX_FRAGMENT_BYTES);
+    claim.recorded();
+    store.accept(&[items[0].item.id().unwrap().clone()]);
+    assert!(!runtime.has_live_owned_work(session.thread_id()));
+}
+
+#[tokio::test]
+async fn release_and_retire_drop_attached_registrations_after_extracting_records() {
+    for retire in [false, true] {
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let runtime = &session.services.local_agent_runtime;
+        let work = runtime
+            .reserve_owned_work(&session, &turn, "release", WorkKind::Task, None)
+            .unwrap();
+        let store = Arc::clone(&session.services.async_completions);
+        let mut reservation = reserve(&store, &session, &turn, "release").unwrap();
+        reservation.attach_lifecycle(&work).unwrap();
+        assert!(reservation.attach_lifecycle(&work).is_err());
+        drop(work);
+        assert!(runtime.has_live_owned_work(session.thread_id()));
+        if retire {
+            store.retire();
+            drop(reservation);
+        } else {
+            reservation.release();
+        }
+        assert!(!runtime.has_live_owned_work(session.thread_id()));
+        assert!(!store.has_owned_work());
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_attachment_rejects_different_call_and_owner_before_reservation() {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let work = session
+        .services
+        .local_agent_runtime
+        .reserve_owned_work(&session, &turn, "exact", WorkKind::Task, None)
+        .unwrap();
+    let store = Arc::clone(&session.services.async_completions);
+    assert!(
+        store
+            .reserve_with_lifecycle(session.thread_id(), &turn, "other-call", 1, None, &work)
+            .is_err()
+    );
+    assert!(
+        store
+            .reserve_with_lifecycle(ThreadId::new(), &turn, "exact", 1, None, &work)
+            .is_err()
+    );
+    assert!(!store.has_owned_work());
+    let mut wrong = reserve(&store, &session, &turn, "other-call").unwrap();
+    assert!(wrong.attach_lifecycle(&work).is_err());
+    wrong.release();
+    drop(work);
+    assert!(
+        !session
+            .services
+            .local_agent_runtime
+            .has_live_owned_work(session.thread_id())
+    );
+}

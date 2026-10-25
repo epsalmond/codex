@@ -339,3 +339,441 @@ async fn forwarder_publishes_agent_tree_changes() {
     .expect("forwarder should publish the released assignment");
     assert_eq!(drained, coordinator.observation().snapshot());
 }
+
+fn reserve_work(
+    coordinator: &Arc<WorkCoordinator>,
+    owner: ThreadId,
+    assignment: Option<&AgentAssignmentId>,
+    kind: super::WorkKind,
+) -> super::OwnedWorkRegistration {
+    coordinator
+        .reserve_producer(
+            owner,
+            "producer-turn",
+            "producer-call",
+            assignment,
+            kind,
+            None,
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn finite_registration_is_shared_until_last_terminal_holder_releases() {
+    let (coordinator, _) = coordinator();
+    let observation = coordinator.observation();
+    let (before, _) = observation.subscribe();
+    let owner = ThreadId::new();
+    let work = reserve_work(&coordinator, owner, None, super::WorkKind::Task);
+    work.mark_started();
+    let accepted_result_hold = work.clone();
+    let running = observation.snapshot();
+    assert_eq!(running.outstanding_work, 1);
+    assert_eq!(running.running_finite_work, 1);
+    assert_ne!(running.revision, before.revision);
+    assert!(matches!(
+        observation.shutdown_if_quiescent(&before.revision),
+        GuardedShutdownOutcome::StaleRevision(_)
+    ));
+    work.mark_terminal();
+    drop(work);
+    let terminal = observation.snapshot();
+    assert_eq!(terminal.running_finite_work, 0);
+    assert_eq!(terminal.pending_notifications, 1);
+    assert_eq!(terminal.outstanding_work, 1);
+    assert!(coordinator.has_live_registrations(owner));
+    assert!(matches!(
+        observation.shutdown_if_quiescent(&terminal.revision),
+        GuardedShutdownOutcome::NotQuiescent(_)
+    ));
+    drop(accepted_result_hold);
+    let drained = observation.snapshot();
+    assert!(drained.quiescent);
+    assert!(!coordinator.has_live_registrations(owner));
+    assert!(matches!(
+        observation.shutdown_if_quiescent(&drained.revision),
+        GuardedShutdownOutcome::Closed(_)
+    ));
+}
+
+#[tokio::test]
+async fn registration_admission_and_guarded_close_share_one_fence_including_services() {
+    for kind in [
+        super::WorkKind::Task,
+        super::WorkKind::Cell,
+        super::WorkKind::Service,
+    ] {
+        let (coordinator, _) = coordinator();
+        let observation = coordinator.observation();
+        let (before, _) = observation.subscribe();
+        let work = reserve_work(&coordinator, ThreadId::new(), None, kind);
+        // Even zero-weight services invalidate an earlier close observation before launch.
+        assert!(matches!(
+            observation.shutdown_if_quiescent(&before.revision),
+            GuardedShutdownOutcome::StaleRevision(_)
+        ));
+        if kind == super::WorkKind::Service {
+            assert!(observation.snapshot().quiescent);
+        } else {
+            assert!(!observation.snapshot().quiescent);
+        }
+        drop(work);
+        let drained = observation.snapshot();
+        assert!(matches!(
+            observation.shutdown_if_quiescent(&drained.revision),
+            GuardedShutdownOutcome::Closed(_)
+        ));
+        assert!(
+            coordinator
+                .reserve_producer(ThreadId::new(), "producer-turn", "late", None, kind, None)
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn finite_admission_racing_close_either_holds_scope_or_rejects_before_launch() {
+    let (coordinator, _) = coordinator();
+    let observation = coordinator.observation();
+    let (before, _) = observation.subscribe();
+    let barrier = Arc::new(Barrier::new(2));
+    let launching = Arc::clone(&coordinator);
+    let starting = Arc::clone(&barrier);
+    let start = tokio::spawn(async move {
+        starting.wait().await;
+        launching.reserve_producer(
+            ThreadId::new(),
+            "producer-turn",
+            "race",
+            None,
+            super::WorkKind::Task,
+            None,
+        )
+    });
+    barrier.wait().await;
+    let closed = observation.shutdown_if_quiescent(&before.revision);
+    let admitted = start.await.unwrap();
+    match closed {
+        GuardedShutdownOutcome::Closed(_) => assert!(admitted.is_err()),
+        GuardedShutdownOutcome::StaleRevision(_) => {
+            assert!(admitted.is_ok());
+            assert!(!observation.snapshot().quiescent);
+        }
+        other => panic!("unexpected close outcome: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn registration_limits_are_per_owner_and_failed_start_releases_capacity() {
+    let (coordinator, _) = coordinator();
+    let owner = ThreadId::new();
+    let other_owner = ThreadId::new();
+    let mut services = (0..16)
+        .map(|_| reserve_work(&coordinator, owner, None, super::WorkKind::Service))
+        .collect::<Vec<_>>();
+    assert!(
+        coordinator
+            .reserve_producer(
+                owner,
+                "producer-turn",
+                "service-overflow",
+                None,
+                super::WorkKind::Service,
+                None
+            )
+            .is_err()
+    );
+    let tasks = (16..64)
+        .map(|_| reserve_work(&coordinator, owner, None, super::WorkKind::Task))
+        .collect::<Vec<_>>();
+    assert!(
+        coordinator
+            .reserve_producer(
+                owner,
+                "producer-turn",
+                "total-overflow",
+                None,
+                super::WorkKind::Cell,
+                None
+            )
+            .is_err()
+    );
+    let unrelated = reserve_work(&coordinator, other_owner, None, super::WorkKind::Service);
+    drop(services.pop());
+    let replacement = reserve_work(&coordinator, owner, None, super::WorkKind::Service);
+    drop((services, tasks, replacement));
+    assert!(!coordinator.has_live_registrations(owner));
+    assert!(coordinator.has_live_registrations(other_owner));
+    drop(unrelated);
+    assert_eq!(coordinator.observation().snapshot().outstanding_work, 0);
+}
+
+fn producer_assignment(wake: &AgentWakeCoordinator) -> AgentAssignmentId {
+    wake.begin_or_continue_assignment(ThreadId::new(), None, "producer-turn", true)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn nonautomatic_terminal_hint_binds_once_and_unstarted_bind_restores_it() {
+    let (coordinator, wake) = coordinator();
+    let assignment = producer_assignment(&wake);
+    let work = reserve_work(
+        &coordinator,
+        assignment.thread_id,
+        Some(&assignment),
+        super::WorkKind::Task,
+    );
+    work.mark_started();
+    work.mark_yielded(false);
+    assert_eq!(
+        wake.classify_turn_end(&assignment, "producer-turn", TurnEndDisposition::Succeeded),
+        Ok(super::super::coordinator::AssignmentPhase::Waiting)
+    );
+    assert!(!wake.has_ready_owned_completions(&assignment));
+    work.mark_terminal();
+    drop(work);
+    assert!(wake.has_ready_owned_completions(&assignment));
+    wake.continue_owned_completion(&assignment, "unstarted")
+        .unwrap();
+    assert!(!wake.has_ready_owned_completions(&assignment));
+    assert_eq!(
+        wake.release_unstarted_turn(assignment.thread_id, "unstarted"),
+        None
+    );
+    assert!(wake.has_ready_owned_completions(&assignment));
+    wake.continue_owned_completion(&assignment, "started")
+        .unwrap();
+    wake.acknowledge_finite_terminal_hint(&assignment, "started");
+    assert!(!wake.has_ready_owned_completions(&assignment));
+    assert_eq!(
+        wake.classify_turn_end(&assignment, "started", TurnEndDisposition::Succeeded),
+        Ok(super::super::coordinator::AssignmentPhase::Completed)
+    );
+    assert!(
+        wake.continue_owned_completion(&assignment, "extra")
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn final_boundary_retains_new_hint_but_prepared_active_request_coalesces_it() {
+    for observed in [false, true] {
+        let (coordinator, wake) = coordinator();
+        let assignment = producer_assignment(&wake);
+        let work = reserve_work(
+            &coordinator,
+            assignment.thread_id,
+            Some(&assignment),
+            super::WorkKind::Task,
+        );
+        work.mark_started();
+        work.mark_yielded(false);
+        work.mark_terminal();
+        drop(work);
+        if observed {
+            wake.acknowledge_finite_terminal_hint(&assignment, "producer-turn");
+        }
+        let phase = wake
+            .classify_turn_end(&assignment, "producer-turn", TurnEndDisposition::Succeeded)
+            .unwrap();
+        assert_eq!(
+            phase,
+            if observed {
+                super::super::coordinator::AssignmentPhase::Completed
+            } else {
+                super::super::coordinator::AssignmentPhase::Waiting
+            }
+        );
+        assert_eq!(wake.has_ready_owned_completions(&assignment), !observed);
+    }
+}
+
+#[tokio::test]
+async fn newer_terminal_revision_survives_bind_and_generation_replacement_fences_old_hint() {
+    let (coordinator, wake) = coordinator();
+    let assignment = producer_assignment(&wake);
+    let first = reserve_work(
+        &coordinator,
+        assignment.thread_id,
+        Some(&assignment),
+        super::WorkKind::Task,
+    );
+    let second = reserve_work(
+        &coordinator,
+        assignment.thread_id,
+        Some(&assignment),
+        super::WorkKind::Task,
+    );
+    for work in [&first, &second] {
+        work.mark_started();
+        work.mark_yielded(false);
+    }
+    wake.classify_turn_end(&assignment, "producer-turn", TurnEndDisposition::Succeeded)
+        .unwrap();
+    first.mark_terminal();
+    drop(first);
+    wake.continue_owned_completion(&assignment, "bound")
+        .unwrap();
+    second.mark_terminal();
+    drop(second);
+    assert!(wake.has_ready_owned_completions(&assignment));
+    // A stale abort cannot consume either this turn's or the newer revision's authority.
+    wake.release_unstarted_turn(assignment.thread_id, "another-turn");
+    assert!(wake.has_ready_owned_completions(&assignment));
+    wake.release_unstarted_turn(assignment.thread_id, "bound");
+    assert!(wake.has_ready_owned_completions(&assignment));
+    wake.cancel_assignment(&assignment);
+    let replacement = wake
+        .begin_or_continue_assignment(assignment.thread_id, None, "replacement", true)
+        .unwrap();
+    assert!(!wake.has_ready_owned_completions(&assignment));
+    assert!(!wake.has_ready_owned_completions(&replacement));
+    assert!(wake.continue_owned_completion(&assignment, "late").is_err());
+}
+
+#[tokio::test]
+async fn failed_inline_automatic_and_service_releases_do_not_create_terminal_hints() {
+    for (kind, started, yielded, automatic) in [
+        (super::WorkKind::Task, false, true, false),
+        (super::WorkKind::Task, true, false, false),
+        (super::WorkKind::Task, true, true, true),
+        (super::WorkKind::Service, true, true, false),
+    ] {
+        let (coordinator, wake) = coordinator();
+        let assignment = producer_assignment(&wake);
+        let keep_waiting = reserve_work(
+            &coordinator,
+            assignment.thread_id,
+            Some(&assignment),
+            super::WorkKind::Cell,
+        );
+        let work = reserve_work(&coordinator, assignment.thread_id, Some(&assignment), kind);
+        if started {
+            work.mark_started();
+        }
+        if yielded {
+            work.mark_yielded(automatic);
+        }
+        wake.classify_turn_end(&assignment, "producer-turn", TurnEndDisposition::Succeeded)
+            .unwrap();
+        work.mark_terminal();
+        drop(work);
+        assert!(!wake.has_ready_owned_completions(&assignment));
+        assert!(
+            wake.continue_owned_completion(&assignment, "unwanted")
+                .is_err()
+        );
+        drop(keep_waiting);
+        assert!(!wake.has_ready_owned_completions(&assignment));
+    }
+}
+
+#[tokio::test]
+async fn retained_cell_authorizes_original_generation_after_yield_and_rejects_replacement() {
+    let (coordinator, wake) = coordinator();
+    let assignment = producer_assignment(&wake);
+    let cell = reserve_work(
+        &coordinator,
+        assignment.thread_id,
+        Some(&assignment),
+        super::WorkKind::Cell,
+    );
+    cell.mark_started();
+    cell.mark_yielded(false);
+    wake.classify_turn_end(&assignment, "producer-turn", TurnEndDisposition::Succeeded)
+        .unwrap();
+    assert!(
+        coordinator
+            .reserve_producer(
+                assignment.thread_id,
+                "producer-turn",
+                "no-authority",
+                Some(&assignment),
+                super::WorkKind::Task,
+                None
+            )
+            .is_err()
+    );
+    let nested = coordinator
+        .reserve_producer(
+            assignment.thread_id,
+            "producer-turn",
+            "nested",
+            Some(&assignment),
+            super::WorkKind::Task,
+            Some(&cell),
+        )
+        .unwrap();
+    assert!(nested.matches(
+        assignment.thread_id,
+        "producer-turn",
+        "nested",
+        Some(&assignment)
+    ));
+    assert!(
+        coordinator
+            .reserve_producer(
+                assignment.thread_id,
+                "different-turn",
+                "wrong-origin",
+                Some(&assignment),
+                super::WorkKind::Task,
+                Some(&cell)
+            )
+            .is_err()
+    );
+    wake.cancel_assignment(&assignment);
+    let replacement = wake
+        .begin_or_continue_assignment(assignment.thread_id, None, "replacement", true)
+        .unwrap();
+    assert!(
+        coordinator
+            .reserve_producer(
+                assignment.thread_id,
+                "producer-turn",
+                "stale",
+                Some(&assignment),
+                super::WorkKind::Task,
+                Some(&cell)
+            )
+            .is_err()
+    );
+    assert!(
+        coordinator
+            .reserve_producer(
+                assignment.thread_id,
+                "replacement",
+                "donated",
+                Some(&replacement),
+                super::WorkKind::Task,
+                Some(&cell)
+            )
+            .is_err()
+    );
+    drop((cell, nested));
+    assert!(!wake.has_ready_owned_completions(&replacement));
+}
+
+#[tokio::test]
+async fn service_registration_remains_live_without_retaining_successful_assignment() {
+    let (coordinator, wake) = coordinator();
+    let assignment = producer_assignment(&wake);
+    let service = reserve_work(
+        &coordinator,
+        assignment.thread_id,
+        Some(&assignment),
+        super::WorkKind::Service,
+    );
+    service.mark_started();
+    service.mark_yielded(false);
+    assert_eq!(
+        wake.classify_turn_end(&assignment, "producer-turn", TurnEndDisposition::Succeeded),
+        Ok(super::super::coordinator::AssignmentPhase::Completed)
+    );
+    assert!(coordinator.has_live_registrations(assignment.thread_id));
+    assert_eq!(coordinator.observation().snapshot().outstanding_work, 0);
+    service.mark_terminal();
+    drop(service);
+    assert!(!coordinator.has_live_registrations(assignment.thread_id));
+    assert!(!wake.has_ready_owned_completions(&assignment));
+}
