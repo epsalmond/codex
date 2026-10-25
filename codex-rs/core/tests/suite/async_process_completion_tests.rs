@@ -1,5 +1,7 @@
 use super::*;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::TurnAbortReason;
 use core_test_support::TestTargetOs;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::StreamingSseServer;
@@ -610,6 +612,14 @@ print("{{}}")
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    // Finite work retains the original assignment in Waiting. End that assignment so this
+    // tests cross-generation recovery authority rather than permitted exact-assignment delivery.
+    assert_eq!(test.codex.agent_status().await, AgentStatus::Waiting);
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(aborted) if aborted.reason == TurnAbortReason::Interrupted)
+    })
+    .await;
     if explicit {
         submit_unified_exec_turn(&test, "continue", PermissionProfile::Disabled).await?;
     } else {
@@ -628,6 +638,16 @@ print("{{}}")
     )
     .await
     .context("local Stop hook must reach the late-steer gate")?;
+    let pending = test.codex.list_pending_completions().await;
+    let retained = pending
+        .iter()
+        .find(|completion| completion.call_id == "reentry-finite")
+        .context("the old assignment must retain its completion")?;
+    assert!(!retained.ready);
+    assert!(
+        !retained.wakes_owner,
+        "the new turn must not share the retained completion's assignment"
+    );
     let turn = request_bodies(&hook_server).await[0]["turn_id"]
         .as_str()
         .unwrap()
