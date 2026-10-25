@@ -1010,7 +1010,23 @@ async fn retained_cell_launch() -> Result<()> {
         "native handler has not run before initial turn cleanup"
     );
     let pending = run.worker.list_pending_completions().await;
-    assert_eq!(pending.len(), 1);
+    let initial_outputs = run
+        .requests_for(run.worker_thread_id)
+        .await
+        .into_iter()
+        .flat_map(|request| request["input"].as_array().cloned().unwrap_or_default())
+        .filter(|item| {
+            item["type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with("_call_output"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pending.len(),
+        1,
+        "callbacks: {:?}; outputs: {initial_outputs:?}",
+        *callbacks.borrow()
+    );
     assert!(pending[0].cell_id.is_some());
     assert!(!pending[0].ready);
     assert_eq!(callbacks.borrow().closed, 0);
