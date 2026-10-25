@@ -653,7 +653,7 @@ async fn finite_lifecycle_holds_drain_through_recording_and_model_acceptance(
 }
 
 #[tokio::test]
-async fn automatic_record_retains_lifecycle_until_native_close_then_acceptance() {
+async fn yielded_cell_is_visible_but_not_deliverable_until_native_close_then_acceptance() {
     let (session, turn) = make_session_and_context().await;
     let session = Arc::new(session);
     let runtime = &session.services.local_agent_runtime;
@@ -669,19 +669,46 @@ async fn automatic_record_retains_lifecycle_until_native_close_then_acceptance()
         .reserve_cell_with_lifecycle(session.thread_id(), &turn, "event-held", &work)
         .unwrap();
     reservation.bind_cell("native-cell").unwrap();
+    assert!(store.pending().is_empty());
     let publisher = reservation.register();
-    drop(reservation);
+    assert!(store.pending().is_empty());
+    reservation.mark_cell_yielded_for_visibility();
+    let pending = store.pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].cell_id.as_deref(), Some("native-cell"));
+    assert!(!pending[0].ready);
+    assert!(!store.has_ready(session.thread_id(), None));
     assert!(current_items(&store, &session, &turn).1.is_empty());
     assert!(runtime.has_live_owned_work(session.thread_id()));
+    publisher.publish(CompletionStatus::CellCompleted, b"done", 0);
+    assert_eq!(store.published_texts().len(), 1);
+    assert_eq!(store.pending(), pending);
+    assert!(!store.has_ready(session.thread_id(), None));
+    assert!(current_items(&store, &session, &turn).1.is_empty());
+    // Native close releases the delivery fence, leaving the existing record as the final hold.
     work.mark_terminal();
     drop(work);
-    // The record remains authoritative during the native-close to publication handoff.
+    drop(reservation);
     assert!(runtime.has_live_owned_work(session.thread_id()));
     assert!(!observation.snapshot().quiescent);
-    publisher.publish(CompletionStatus::CellCompleted, b"done", 0);
+    assert!(store.pending()[0].ready);
+    assert!(store.has_ready(session.thread_id(), None));
     let (claim, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
     claim.recorded();
-    store.accept(&[items[0].item.id().unwrap().clone()]);
+    let input = items
+        .into_iter()
+        .map(ResponseItemEnvelope::into_item)
+        .collect::<Vec<_>>();
+    let accepted = store.candidates(
+        session.thread_id(),
+        &turn,
+        CompletionDrain::ExactAssignment,
+        &input,
+    );
+    assert_eq!(accepted.len(), 1);
+    store.accept(&accepted);
+    assert!(store.pending().is_empty());
     assert!(!runtime.has_live_owned_work(session.thread_id()));
     assert!(observation.snapshot().quiescent);
 }

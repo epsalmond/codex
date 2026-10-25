@@ -99,6 +99,9 @@ struct Record {
     call_id: String,
     producer: Producer,
     assignment: Option<AgentAssignmentId>,
+    /// A Cell's initial call yielded, even while its native-close delivery fence is retained.
+    cell_yielded_for_visibility: bool,
+    /// The initial call's delivery fence was released; Cells wait for native close.
     yielded: bool,
     claimed: bool,
     terminal: Option<AsyncToolCompletion>,
@@ -214,7 +217,7 @@ impl AsyncCompletions {
         self.state()
             .records
             .iter()
-            .filter(|(_, record)| record.yielded)
+            .filter(|(_, record)| record.yielded || record.cell_yielded_for_visibility)
             .map(|(id, record)| {
                 let (process_id, cell_id) = match &record.producer {
                     Producer::Process {
@@ -234,7 +237,7 @@ impl AsyncCompletions {
                     cell_id,
                     command: record.command.clone(),
                     created_at: record.create_time.as_f64().map_or(0, |time| time as i64),
-                    ready: record.terminal.is_some(),
+                    ready: record.yielded && record.terminal.is_some(),
                     wakes_owner,
                 }
             })
@@ -430,6 +433,7 @@ impl AsyncCompletions {
                 call_id: call_id.to_owned(),
                 producer,
                 assignment: turn.agent_assignment.get().cloned(),
+                cell_yielded_for_visibility: false,
                 yielded: false,
                 claimed: false,
                 terminal: None,
@@ -658,6 +662,19 @@ impl CompletionReservation {
         CompletionPublisher {
             store: Arc::downgrade(&self.store),
             id: self.id.clone(),
+        }
+    }
+
+    /// Exposes an actually yielded Cell in status views without releasing its delivery fence.
+    /// Call only after registering automatic delivery for the initial yielded response.
+    pub(crate) fn mark_cell_yielded_for_visibility(&self) {
+        if !self.registered {
+            return;
+        }
+        if let Some(record) = self.store.state().records.get_mut(&self.id)
+            && matches!(record.producer, Producer::Cell { cell_id: Some(_) })
+        {
+            record.cell_yielded_for_visibility = true;
         }
     }
 

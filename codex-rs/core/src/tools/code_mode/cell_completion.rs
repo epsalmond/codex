@@ -191,7 +191,11 @@ impl CellCompletion {
                 .reservation
                 .as_mut()
                 .filter(|_| yielded)
-                .map(CompletionReservation::register);
+                .map(|reservation| {
+                    let publisher = reservation.register();
+                    reservation.mark_cell_yielded_for_visibility();
+                    publisher
+                });
             if publisher.is_some() {
                 state.publisher = publisher;
                 state.yielded = true;
@@ -557,7 +561,6 @@ impl CellCompletion {
                 let (tail, omitted) = text_tail(content_items, None);
                 (CompletionStatus::Cancelled, tail, omitted)
             }
-            Ok(WaitOutcome::MissingCell(_)) => (CompletionStatus::Cancelled, Vec::new(), 0),
             _ => (
                 CompletionStatus::CollectionFailed,
                 b"terminal output could not be collected".to_vec(),
