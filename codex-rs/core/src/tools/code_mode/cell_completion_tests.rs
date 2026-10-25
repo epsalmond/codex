@@ -598,9 +598,63 @@ impl NativeFixture {
         close_gate: Option<CancellationToken>,
         fail_termination: bool,
     ) -> Self {
+        Self::with_options_and_assignment(
+            kind,
+            terminal,
+            readiness,
+            wait_hidden,
+            close_gate,
+            fail_termination,
+            false,
+        )
+        .await
+    }
+
+    async fn with_options_and_assignment(
+        kind: crate::agent::control::WorkKind,
+        terminal: Result<RuntimeResponse, String>,
+        readiness: TerminalReadySupport,
+        wait_hidden: bool,
+        close_gate: Option<CancellationToken>,
+        fail_termination: bool,
+        bind_assignment: bool,
+    ) -> Self {
         use crate::session::step_context::StepContext;
         use crate::tools::code_mode::delegate::CodeModeCellDelegate;
-        let (session, turn) = make_session_and_context().await;
+        let (session, mut turn) = make_session_and_context().await;
+        if bind_assignment {
+            use codex_protocol::protocol::SessionSource;
+            use codex_protocol::protocol::SubAgentSource;
+
+            let runtime = &session.services.local_agent_runtime;
+            runtime.enable_wake_mode();
+            let parent_thread_id = codex_protocol::ThreadId::new();
+            runtime
+                .begin_wake_assignment_for_turn(
+                    parent_thread_id,
+                    &SessionSource::Cli,
+                    "parent-turn",
+                    true,
+                )
+                .unwrap();
+            turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            });
+            let assignment = runtime
+                .begin_wake_assignment_for_turn(
+                    session.thread_id(),
+                    &turn.session_source,
+                    &turn.sub_id,
+                    true,
+                )
+                .unwrap()
+                .unwrap();
+            turn.agent_assignment.set(assignment).unwrap();
+        }
         let session = Arc::new(session);
         let turn = Arc::new(turn);
         let registration = session
@@ -1137,6 +1191,198 @@ async fn cell_terminal_record_waits_for_delayed_native_close_in_collector_watche
                 .has_ready(fixture.base.session.thread_id(), None)
         );
     }
+}
+
+#[tokio::test]
+async fn cell_model_terminal_read_delayed_close_settles_exact_assignment_without_payload() {
+    use crate::agent::control::AssignmentPhase;
+    use crate::agent::control::TurnEndDisposition;
+    use crate::agent::control::WorkKind;
+
+    for kind in [WorkKind::Cell, WorkKind::Service] {
+        for terminate in [true, false] {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let gate = CancellationToken::new();
+                let fixture = NativeFixture::with_options_and_assignment(
+                    kind,
+                    Ok(RuntimeResponse::Result {
+                        cell_id: cell_id(),
+                        content_items: vec![text("manually consumed terminal output")],
+                        error_text: None,
+                        code_mode_host_duration: None,
+                    }),
+                    TerminalReadySupport::Supported,
+                    false,
+                    Some(gate.clone()),
+                    false,
+                    true,
+                )
+                .await;
+                let session = &fixture.base.session;
+                let service = &session.services.code_mode_service;
+                let runtime = &session.services.local_agent_runtime;
+                let turn = &fixture.base.completion.turn;
+                let assignment = turn.agent_assignment.get().unwrap();
+                let result = if terminate {
+                    service.terminate(cell_id()).await
+                } else {
+                    service
+                        .wait(
+                            WaitRequest {
+                                cell_id: cell_id(),
+                                yield_time_ms: 1,
+                            },
+                            None,
+                        )
+                        .await
+                };
+                assert!(matches!(
+                    result,
+                    Ok(WaitOutcome::LiveCell(
+                        RuntimeResponse::Result { .. } | RuntimeResponse::Terminated { .. }
+                    ))
+                ));
+                assert!(!fixture.base.store().has_owned_work());
+                assert!(fixture.base.store().published_texts().is_empty());
+                assert_eq!(service.active_cell_ids(), vec![cell_id()]);
+                assert!(fixture.delegate.work_registration.lock().unwrap().is_some());
+                assert!(fixture.live());
+                // The parent and child assignments are open, plus exactly one finite Cell hold.
+                assert_eq!(
+                    runtime.work_observation().snapshot().running_finite_work,
+                    2 + usize::from(kind.is_finite())
+                );
+                assert!(!runtime.has_ready_owned_completions(assignment));
+                assert_eq!(
+                    runtime
+                        .classify_wake_turn_end(
+                            assignment,
+                            &turn.sub_id,
+                            TurnEndDisposition::Succeeded,
+                        )
+                        .await,
+                    Ok(if kind.is_finite() {
+                        AssignmentPhase::Waiting
+                    } else {
+                        AssignmentPhase::Completed
+                    })
+                );
+                assert!(!runtime.has_ready_owned_completions(assignment));
+
+                // Only the provider delivers native close, after the model's final boundary.
+                gate.cancel();
+                fixture.base.completion.native_closed.cancelled().await;
+                assert!(fixture.delegate.work_registration.lock().unwrap().is_none());
+                assert!(service.active_cell_ids().is_empty());
+                assert!(!fixture.live());
+                assert!(!fixture.base.store().has_owned_work());
+                assert!(fixture.base.store().published_texts().is_empty());
+                assert_eq!(
+                    runtime.has_ready_owned_completions(assignment),
+                    kind.is_finite()
+                );
+                if kind.is_finite() {
+                    runtime
+                        .continue_owned_completion(assignment, "manual-close")
+                        .unwrap();
+                    runtime.acknowledge_finite_terminal_hint(assignment, "manual-close");
+                    assert_eq!(
+                        runtime
+                            .classify_wake_turn_end(
+                                assignment,
+                                "manual-close",
+                                TurnEndDisposition::Succeeded,
+                            )
+                            .await,
+                        Ok(AssignmentPhase::Completed)
+                    );
+                }
+                assert!(!runtime.has_ready_owned_completions(assignment));
+                assert!(
+                    runtime
+                        .continue_owned_completion(assignment, "extra")
+                        .is_err()
+                );
+            })
+            .await
+            .expect("manual terminal read and provider-controlled native close");
+        }
+    }
+}
+
+#[tokio::test]
+async fn cell_model_missing_read_preserves_published_fence_without_close_hint() {
+    use crate::agent::control::AssignmentPhase;
+    use crate::agent::control::TurnEndDisposition;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let gate = CancellationToken::new();
+        let fixture = NativeFixture::with_options_and_assignment(
+            crate::agent::control::WorkKind::Cell,
+            Ok(RuntimeResponse::Result {
+                cell_id: cell_id(),
+                content_items: vec![text("collector-owned terminal output")],
+                error_text: None,
+                code_mode_host_duration: None,
+            }),
+            TerminalReadySupport::Supported,
+            false,
+            Some(gate.clone()),
+            false,
+            true,
+        )
+        .await;
+        let session = &fixture.base.session;
+        let runtime = &session.services.local_agent_runtime;
+        let turn = &fixture.base.completion.turn;
+        let assignment = turn.agent_assignment.get().unwrap();
+        fixture.base.completion.ready(ready(CellOutputKind::Text));
+        let published = fixture.base.published().await;
+        let pending = fixture.base.store().pending();
+        assert_eq!(published.len(), 1);
+        assert_eq!(pending.len(), 1);
+        assert!(!pending[0].ready);
+        fixture
+            .provider
+            .missing_after_close
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = session
+            .services
+            .code_mode_service
+            .wait(
+                WaitRequest {
+                    cell_id: cell_id(),
+                    yield_time_ms: 1,
+                },
+                None,
+            )
+            .await;
+        assert!(matches!(result, Ok(WaitOutcome::MissingCell(_))));
+        assert_eq!(fixture.base.store().published_texts(), published);
+        assert_eq!(fixture.base.store().pending(), pending);
+        assert_eq!(
+            runtime
+                .classify_wake_turn_end(assignment, &turn.sub_id, TurnEndDisposition::Succeeded)
+                .await,
+            Ok(AssignmentPhase::Waiting)
+        );
+        assert!(!runtime.has_ready_owned_completions(assignment));
+        gate.cancel();
+        fixture.base.completion.native_closed.cancelled().await;
+        assert_eq!(fixture.base.store().published_texts(), published);
+        assert!(fixture.base.store().pending()[0].ready);
+        assert!(runtime.has_ready_owned_completions(assignment));
+        fixture.retire_ready_record();
+        assert!(fixture.base.store().published_texts().is_empty());
+        assert!(!runtime.has_ready_owned_completions(assignment));
+        assert!(
+            runtime
+                .continue_owned_completion(assignment, "unwanted-close-hint")
+                .is_err()
+        );
+    })
+    .await
+    .expect("published record remains fenced until provider native close");
 }
 
 #[tokio::test]

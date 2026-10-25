@@ -409,6 +409,14 @@ impl CellCompletion {
             // The collector already observed the terminal result. A queued model read may only
             // see MissingCell; it must not remove that collector's still-fenced terminal record.
             if !state.published {
+                // An explicit terminal read transfers delivery to the model. Retire the automatic
+                // record only after restoring the existing nonautomatic close hint, so a delayed
+                // native close can still settle the yielded finite work's waiting assignment.
+                if state.yielded
+                    && let Some(lifecycle) = &state.lifecycle
+                {
+                    lifecycle.mark_yielded(false);
+                }
                 state.release();
             }
         }
