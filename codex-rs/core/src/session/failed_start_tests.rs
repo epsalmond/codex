@@ -165,7 +165,7 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
     };
     session
         .input_queue
-        .enqueue_mailbox_communication(communication.clone(), options.clone())
+        .enqueue_mailbox_communication(communication.clone().into(), options.clone())
         .await;
     // A user pause lets queue-only mail wake the sleep; the rejected start then suppresses starts.
     if paused_first {
@@ -191,7 +191,8 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
                     Vec::new(),
                     "fresh progress".to_string(),
                     /*trigger_turn*/ false,
-                ),
+                )
+                .into(),
                 Default::default(),
             )
             .await;
@@ -286,7 +287,8 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
             Vec::new(),
             "explicit recovery".to_string(),
             /*trigger_turn*/ true,
-        ),
+        )
+        .into(),
         options.clone(),
     )
     .await;

@@ -317,13 +317,16 @@ async fn explicit_root_recovery_uses_the_same_owner_policy_for_claim_and_accepta
         text: "recover".to_owned(),
         text_elements: Vec::new(),
     }])];
-    let mail = TurnInput::InterAgentCommunication(InterAgentCommunication::new(
-        AgentPath::try_from("/root/worker").unwrap(),
-        AgentPath::root(),
-        Vec::new(),
-        "recover".to_owned(),
-        /*trigger_turn*/ true,
-    ));
+    let mail = TurnInput::InterAgentCommunication(
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").unwrap(),
+            AgentPath::root(),
+            Vec::new(),
+            "recover".to_owned(),
+            /*trigger_turn*/ true,
+        )
+        .into(),
+    );
     let response = TurnInput::ResponseItem(original[0].clone());
     let function_output = TurnInput::FunctionCallOutput(ResponseItemEnvelope::new(
         serde_json::from_value(serde_json::json!({
