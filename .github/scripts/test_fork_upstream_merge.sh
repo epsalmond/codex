@@ -212,6 +212,54 @@ if bash "$merge_script" \
   exit 1
 fi
 
+# Immutable repair attempts are new trees with the original exact two parents.
+# They must not become child commits of the failed merge or reuse arbitrary refs.
+for attempt in 1 2; do
+  repair_branch="$recovery_branch-attempt-$attempt"
+  git -C "$root" checkout --detach -q "$candidate_sha"
+  printf 'repair %s\n' "$attempt" > "$root/repaired.txt"
+  git -C "$root" add repaired.txt
+  repair_tree=$(git -C "$root" write-tree)
+  repair_sha=$(printf 'repair attempt %s\n' "$attempt" | git -C "$root" commit-tree "$repair_tree" -p "$fork_sha" -p "$upstream_sha")
+  git -C "$root" push -q origin "$repair_sha:refs/heads/$repair_branch"
+  bash "$merge_script" --mode prepare-recovery --repo-root "$root" \
+    --upstream-url "$upstream_remote" --upstream-tag rust-v1.2.3 \
+    --upstream-sha "$upstream_sha" --fork-sha "$fork_sha" \
+    --candidate-sha "$repair_sha" --recovery-branch "$repair_branch" \
+    --output "$fixture/repair-$attempt-output"
+  grep -Fxq "candidate_sha=$repair_sha" "$fixture/repair-$attempt-output"
+  if bash "$merge_script" --mode prepare-recovery --repo-root "$root" \
+    --upstream-url "$upstream_remote" --upstream-tag rust-v1.2.3 \
+    --upstream-sha "$upstream_sha" --fork-sha "$fork_sha" \
+    --candidate-sha "$candidate_sha" --recovery-branch "$repair_branch" \
+    --output "$fixture/wrong-tip-output"; then
+    echo "expected exact repair branch tip mismatch to fail" >&2
+    exit 1
+  fi
+done
+for suffix in attempt-0 attempt-3 attempt-01 attempt-1/extra other; do
+  if bash "$merge_script" --mode prepare-recovery --repo-root "$root" \
+    --upstream-url "$upstream_remote" --upstream-tag rust-v1.2.3 \
+    --upstream-sha "$upstream_sha" --fork-sha "$fork_sha" \
+    --candidate-sha "$candidate_sha" --recovery-branch "$recovery_branch-$suffix" \
+    --output "$fixture/wrong-suffix-output"; then
+    echo "expected unbounded/malformed attempt branch to fail" >&2
+    exit 1
+  fi
+done
+# A child of a prior candidate is not an exact two-parent repair candidate.
+bad_parent_sha=$(printf 'wrong parents\n' | git -C "$root" commit-tree "$repair_tree" -p "$candidate_sha" -p "$upstream_sha")
+if bash "$merge_script" --mode verify --repo-root "$root" \
+  --upstream-url "$upstream_remote" --upstream-tag rust-v1.2.3 \
+  --upstream-sha "$upstream_sha" --fork-sha "$fork_sha" --candidate-sha "$bad_parent_sha"; then
+  echo "expected repair-parent candidate to fail" >&2
+  exit 1
+fi
+# Land the repaired candidate, then retry the exact accepted candidate to resume
+# release dispatch. This retains the production compare-and-swap retry boundary.
+candidate_sha=$repair_sha
+recovery_branch=$repair_branch
+
 bash "$merge_script" \
   --mode land \
   --repo-root "$root" \

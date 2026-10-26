@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Decide whether an existing local Luna recovery handoff is healthy.
+# Decide whether an existing automatic recovery handoff is healthy.
 #
 # The management-plane processor reports progress as deployment statuses on the
 # handoff deployment. A scheduled sync that finds an existing handoff exits
@@ -89,6 +89,19 @@ IFS=$'\t' read -r deployment_id deployment_created upstream_tag upstream_sha for
   exit 2
 }
 
+if ! jq -e '
+    (.payload.upstream_tag | test("^rust-v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+    (.payload.upstream_sha | test("^[0-9a-f]{40}$")) and
+    (.payload.fork_sha | test("^[0-9a-f]{40}$")) and
+    ((.payload.schema_version == 2 and .payload.recovery_kind == "merge_conflict") or
+     (.payload.schema_version == 3 and .payload.recovery_kind == "validation_failure" and
+      (.payload.candidate_sha | test("^[0-9a-f]{40}$")) and
+      (.payload.validation_result == "source_failure" or .payload.validation_result == "infrastructure_failure")))
+  ' "$deployment_file" >/dev/null; then
+  echo "fork-recovery-handoff-status: unsupported recovery identity" >&2
+  exit 2
+fi
+
 # Statuses are listed newest first, but pick the highest id so ordering never matters.
 IFS=$'\t' read -r state status_created description < <(
   jq -r 'if type == "array" and length > 0
@@ -98,12 +111,18 @@ IFS=$'\t' read -r state status_created description < <(
 ) || true
 
 state_id="$upstream_tag-$fork_sha-$upstream_sha"
-retry_hint="After fixing the cause, retry on nas: $processor --retry-recovery $state_id"
+retry_hint="Inspect the terminal processor status and fix its prerequisite before retry on nas: $processor --retry-recovery $state_id. Retry preserves the consumed model budget; exhausted attempts require operator escalation."
 handoff="recovery handoff $deployment_id for $upstream_tag at fork ${fork_sha:0:12}"
+
+if [[ $(jq -r '.payload.schema_version' "$deployment_file") == 3 ]]; then
+  candidate=$(jq -r '.payload.candidate_sha' "$deployment_file")
+  classification=$(jq -r '.payload.validation_result' "$deployment_file")
+  handoff="$handoff, failed candidate $candidate ($classification)"
+fi
 
 case "$state" in
   failure|error)
-    fail "Luna recovery failed" \
+    fail "Automatic recovery failed" \
       "$handoff failed: ${description:-no description}. $retry_hint"
     ;;
   success|inactive)

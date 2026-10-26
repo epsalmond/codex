@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Merge a stable upstream release or validate a Luna recovery.
+        description: Merge a stable upstream release or validate an automatic recovery.
         required: true
         type: choice
         options:
@@ -23,7 +23,7 @@ on:
         required: true
         type: string
       recovery_branch:
-        description: Required for recovery, fork-recovery/<tag>/<fork_sha12>.
+        description: Required for recovery, exact root or immutable attempt-1/attempt-2 branch.
         required: false
         type: string
       candidate_sha:
@@ -89,7 +89,7 @@ jobs:
           fi
           bash .github/scripts/fork-upstream-merge.sh "${args[@]}"
 
-      - name: Send conflict to local Luna recovery
+      - name: Send conflict to local Sol recovery
         if: steps.prepare.outputs.result == 'conflict'
         shell: bash
         env:
@@ -152,6 +152,37 @@ jobs:
       fork_sha: ${{ inputs.fork_sha }}
       upstream_tag: ${{ inputs.upstream_tag }}
       upstream_sha: ${{ inputs.upstream_sha }}
+
+  validation-feedback:
+    name: Send exact validation failure to recovery
+    needs: [prepare, validate]
+    if: ${{ always() && needs.prepare.outputs.result == 'ready' && needs.validate.result == 'failure' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+      deployments: write
+    outputs:
+      deployment_url: ${{ steps.handoff.outputs.deployment_url }}
+      validation_result: ${{ steps.handoff.outputs.validation_result }}
+      failure_reason: ${{ steps.handoff.outputs.failure_reason }}
+    steps:
+      # This job has a write token: only the trusted workflow base may execute.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify failed run and deliver bounded diagnostics
+        id: handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          FORK_SHA: ${{ inputs.fork_sha }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+        run: python3 .github/scripts/fork-upstream-validation-failure.py
 
   land:
     name: Fast-forward feature branch and start release
@@ -221,7 +252,7 @@ jobs:
 
   candidate-review:
     name: Open review for failed candidate validation
-    needs: [prepare, validate]
+    needs: [prepare, validate, validation-feedback]
     if: ${{ always() && ((inputs.mode == 'recovery' && needs.prepare.result == 'failure') || needs.validate.result == 'failure') }}
     runs-on: ubuntu-22.04
     permissions:
@@ -235,6 +266,11 @@ jobs:
           MODE: ${{ inputs.mode }}
           RECOVERY_BRANCH: ${{ inputs.recovery_branch }}
           CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha || inputs.candidate_sha }}
+          DEPLOYMENT_URL: ${{ needs.validation-feedback.outputs.deployment_url }}
+          VALIDATION_RESULT: ${{ needs.validation-feedback.outputs.validation_result }}
+          FAILURE_REASON: ${{ needs.validation-feedback.outputs.failure_reason }}
+          FEEDBACK_RESULT: ${{ needs.validation-feedback.result }}
           UPSTREAM_TAG: ${{ inputs.upstream_tag }}
           UPSTREAM_SHA: ${{ inputs.upstream_sha }}
           FORK_SHA: ${{ inputs.fork_sha }}
@@ -251,14 +287,18 @@ jobs:
             echo "candidate branch was not created; see the failed workflow run"
             exit 0
           fi
-          candidate_sha=$(gh api \
+          branch_tip=$(gh api \
             "repos/${GITHUB_REPOSITORY}/git/ref/heads/${review_branch}" \
             --jq '.object.sha' 2>/dev/null || true)
-          if [[ -z "$candidate_sha" ]]; then
+          if [[ -z "$branch_tip" ]]; then
             echo "candidate branch is unavailable; see the failed workflow run"
             exit 0
           fi
 
+          branch_note="Branch tip matches the exact failed candidate."
+          if [[ "$branch_tip" != "$CANDIDATE_SHA" ]]; then
+            branch_note="Branch tip changed to $branch_tip; it is not the exact failed candidate."
+          fi
           body_file=$(mktemp)
           cat > "$body_file" <<EOF
           Actions could not validate or land this upstream merge candidate.
@@ -266,10 +306,17 @@ jobs:
           Upstream tag: \`$UPSTREAM_TAG\` ($UPSTREAM_SHA)
           Expected fork parent: $FORK_SHA
           Candidate branch: $review_branch
-          Candidate commit: $candidate_sha
+          Candidate commit: $CANDIDATE_SHA
+          $branch_note
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 
-          The feature branch was left unchanged. Review the failed run before changing this candidate.
+          Validation classification: ${VALIDATION_RESULT:-not delivered} (${FAILURE_REASON:-see run})
+          Recovery handoff job: $FEEDBACK_RESULT
+          Deployment status: ${DEPLOYMENT_URL:-unavailable; inspect the failed handoff job}
+
+          Automatic source repair is limited to two model invocations on immutable attempt branches.
+          This initial review cannot predict later exhaustion; the deployment status records the processor's terminal outcome and retry guidance.
+          Validation, landing, and release publication remain separate gates. Review the exact run and deployment before operator retry.
           EOF
           existing_pr=$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
@@ -279,7 +326,8 @@ jobs:
             --json number \
             --jq '.[0].number // empty')
           if [[ -n "$existing_pr" ]]; then
-            gh pr edit "$existing_pr" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
+            jq -n --rawfile body "$body_file" '{body: $body}' | gh api \
+              --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/$existing_pr" --input -
           else
             gh pr create \
               --repo "$GITHUB_REPOSITORY" \
