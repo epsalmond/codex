@@ -24,11 +24,10 @@ impl CodeModeToolOutput {
             crate::agent::control::WorkKind::Service => "service",
         };
         let classification = format!("work_kind={kind}");
+        // The constructor places the timing header directly after this status.
+        let status_end = self.status.len();
         self.status = format!("{}\n{classification}", self.status);
         if let FunctionCallOutputContentItem::InputText { text } = &mut self.output.body[0] {
-            let status_end = text
-                .find("\nWall time ")
-                .expect("constructor owns the output header");
             text.insert_str(status_end, &format!("\n{classification}"));
         }
         self

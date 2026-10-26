@@ -43,7 +43,8 @@ impl CodeModeSession for GatedSession {
                 .unwrap()
                 .send(())
                 .unwrap();
-            self.start.lock().await.take().unwrap().await.unwrap();
+            let start = self.start.lock().await.take().unwrap();
+            start.await.unwrap();
             Ok(StartedCell::from_future(
                 CellId::new("gated-cell".to_owned()),
                 std::future::pending(),
@@ -68,7 +69,8 @@ impl CodeModeSession for GatedSession {
                 .unwrap()
                 .send(())
                 .unwrap();
-            self.terminate.lock().await.take().unwrap().await.unwrap();
+            let terminate = self.terminate.lock().await.take().unwrap();
+            terminate.await.unwrap();
             self.delegate
                 .lock()
                 .unwrap()

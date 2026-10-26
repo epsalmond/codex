@@ -270,6 +270,10 @@ impl UnifiedExecProcess {
         self.finish_termination();
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "serialize native/remote termination acknowledgement before publishing settled state"
+    )]
     pub(super) async fn terminate_confirmed(&self) -> Result<(), UnifiedExecError> {
         let _termination = self.termination_lock.lock().await;
         if self.termination_confirmed.load(Ordering::Acquire) {
