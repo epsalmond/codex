@@ -265,6 +265,8 @@ pub(crate) struct SelectionViewParams {
     /// Optional non-text key that can toggle a row while printable keys edit the search query.
     pub search_toggle_key: Option<KeyBinding>,
     pub search_mode: SearchMode,
+    /// Use ordinal digits in the gutter; when false, use only each row's explicit shortcut.
+    pub auto_number_shortcuts: bool,
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
@@ -333,6 +335,7 @@ impl Default for SelectionViewParams {
             search_activation: SelectionSearchActivation::Immediate,
             search_toggle_key: None,
             search_mode: SearchMode::default(),
+            auto_number_shortcuts: true,
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
@@ -394,6 +397,7 @@ pub(crate) struct ListSelectionView {
     search_toggle_key: Option<KeyBinding>,
     search_mode: SearchMode,
     search_active: bool,
+    auto_number_shortcuts: bool,
     search_query: String,
     search_placeholder: Option<String>,
     col_width_mode: ColumnWidthMode,
@@ -570,6 +574,7 @@ impl ListSelectionView {
             search_mode: params.search_mode,
             search_active,
             search_query,
+            auto_number_shortcuts: params.auto_number_shortcuts,
             search_placeholder: if params.is_searchable {
                 params.search_placeholder
             } else {
@@ -823,6 +828,11 @@ impl ListSelectionView {
                         // The number keys don't work when search is enabled (since we let the
                         // numbers be used for the search query).
                         format!("{prefix} ")
+                    } else if !self.auto_number_shortcuts {
+                        item.display_shortcut.map_or_else(
+                            || format!("{prefix} "),
+                            |shortcut| format!("{prefix} {}. ", shortcut.display_label()),
+                        )
                     } else if is_disabled {
                         if let Some(disabled_gutter_marker) = item.disabled_gutter_marker {
                             let marker_width = UnicodeWidthStr::width(disabled_gutter_marker);
@@ -857,7 +867,10 @@ impl ListSelectionView {
                         selection_style: row_selection_style,
                         name: name_with_marker,
                         name_prefix_spans,
-                        display_shortcut: item.display_shortcut,
+                        display_shortcut: self
+                            .auto_number_shortcuts
+                            .then_some(item.display_shortcut)
+                            .flatten(),
                         match_indices: None,
                         description,
                         wrap_indent,
@@ -1183,7 +1196,7 @@ impl ListSelectionView {
             None
         }
         .or_else(|| self.footer_note.clone());
-        let mut lines = note.map(&wrap).unwrap_or_default();
+        let mut lines = note.map(wrap).unwrap_or_default();
         if self.reserve_result_rows && show_selected_description {
             let height = self
                 .items
@@ -1590,10 +1603,11 @@ impl BottomPaneView for ListSelectionView {
                     self.select_shortcut(idx);
                     return;
                 }
-                if let Some(idx) = c
-                    .to_digit(10)
-                    .map(|d| d as usize)
-                    .and_then(|number| self.actual_idx_for_enabled_number(number))
+                if self.auto_number_shortcuts
+                    && let Some(idx) = c
+                        .to_digit(/*radix*/ 10)
+                        .map(|d| d as usize)
+                        .and_then(|number| self.actual_idx_for_enabled_number(number))
                 {
                     self.select_shortcut(idx);
                 }

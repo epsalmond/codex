@@ -192,6 +192,7 @@ async fn cell_completion_initial_inline_response_is_never_visible(error: Option<
         cell_id: cell_id(),
         content_items: vec![text("inline output")],
         error_text: error.map(str::to_owned),
+        result_buffered_for: Duration::ZERO,
         code_mode_host_duration: None,
     }));
     assert!(store.pending().is_empty());
@@ -264,6 +265,7 @@ async fn cell_completion_publishes_text_tail_once_on_readiness() {
             cell_id: cell_id(),
             content_items: vec![text("terminal-tail")],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         },
         /*wait_hidden*/ false,
@@ -285,6 +287,7 @@ async fn cell_completion_media_ready_is_left_for_visible_wait() {
             cell_id: cell_id(),
             content_items: vec![text("caption"), image()],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         },
         /*wait_hidden*/ false,
@@ -303,6 +306,7 @@ async fn cell_completion_media_ready_publishes_text_and_omission_when_wait_is_hi
             cell_id: cell_id(),
             content_items: vec![text("caption"), image()],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         },
         /*wait_hidden*/ true,
@@ -325,6 +329,7 @@ async fn cell_completion_model_read_releases_without_publication() {
             cell_id: cell_id(),
             content_items: vec![text("read-by-model")],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         })));
     fixture.completion.ready(ready(CellOutputKind::Text));
@@ -389,6 +394,7 @@ async fn cell_completion_terminate_after_readiness_before_collection_releases() 
             cell_id: cell_id(),
             content_items: vec![text("collected")],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         },
         /*wait_hidden*/ true,
@@ -404,6 +410,7 @@ async fn cell_completion_terminate_after_readiness_before_collection_releases() 
             cell_id: cell_id(),
             content_items: vec![text("read-by-terminate")],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         })));
     drop(permit);
@@ -450,6 +457,7 @@ async fn cell_completion_watches_unsupported_cell_when_wait_is_hidden() {
         cell_id: cell_id(),
         content_items: vec![text("watched-tail")],
         error_text: None,
+        result_buffered_for: Duration::ZERO,
         code_mode_host_duration: None,
     })
     .await;
@@ -816,6 +824,7 @@ async fn cell_native_close_and_repeated_readiness_keep_one_collector_and_retaine
                 cell_id: cell_id(),
                 content_items: vec![text("retained-tail")],
                 error_text: error.clone(),
+                result_buffered_for: Duration::ZERO,
                 code_mode_host_duration: None,
             }),
             TerminalReadySupport::Supported,
@@ -856,6 +865,7 @@ async fn service_cell_diagnostic_preserves_cell_identity_without_finite_weight()
             cell_id: cell_id(),
             content_items: vec![text("service-tail")],
             error_text: None,
+            result_buffered_for: Duration::ZERO,
             code_mode_host_duration: None,
         }),
         TerminalReadySupport::Supported,
@@ -1089,6 +1099,7 @@ async fn cell_terminal_record_waits_for_delayed_native_close_in_collector_watche
                 cell_id: cell_id(),
                 content_items: vec![text("terminal before native close")],
                 error_text: None,
+                result_buffered_for: Duration::ZERO,
                 code_mode_host_duration: None,
             }),
             if path == "watcher" {
@@ -1208,6 +1219,7 @@ async fn cell_model_terminal_read_delayed_close_settles_exact_assignment_without
                         cell_id: cell_id(),
                         content_items: vec![text("manually consumed terminal output")],
                         error_text: None,
+                        result_buffered_for: Duration::ZERO,
                         code_mode_host_duration: None,
                     }),
                     TerminalReadySupport::Supported,
@@ -1322,6 +1334,7 @@ async fn cell_model_missing_read_preserves_published_fence_without_close_hint() 
                 cell_id: cell_id(),
                 content_items: vec![text("collector-owned terminal output")],
                 error_text: None,
+                result_buffered_for: Duration::ZERO,
                 code_mode_host_duration: None,
             }),
             TerminalReadySupport::Supported,

@@ -744,8 +744,6 @@ async fn one_shot_service_is_rejected_before_command_side_effects() {
     )
     .await;
     let handler = ExecCommandHandler::one_shot(ExecCommandHandlerOptions {
-        include_login_parameter: false,
-        include_shell_parameter: true,
         allow_tty: false,
         exec_permission_approvals_enabled: false,
         include_environment_id: false,

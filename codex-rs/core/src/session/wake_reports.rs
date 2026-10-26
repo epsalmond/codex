@@ -5,7 +5,6 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InterAgentCommunication;
 
 impl Session {
     pub(crate) async fn return_coordinator_reports_to_mailbox(&self, input: &[TurnInput]) {
@@ -98,7 +97,7 @@ fn deferred_coordinator_report(input_item: &TurnInput) -> Option<TurnInput> {
     let TurnInput::InterAgentCommunication(communication) = input_item else {
         return None;
     };
-    let communication: InterAgentCommunication = communication.clone();
+    let communication = communication.clone();
     if !communication
         .id
         .as_ref()

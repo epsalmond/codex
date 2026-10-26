@@ -98,7 +98,7 @@ async fn host_failure_returns_accepted_mail_and_pauses_wakeups() {
     );
     session
         .input_queue
-        .enqueue_mailbox_communication(mail.clone(), Default::default())
+        .enqueue_mailbox_communication(mail.clone().into(), Default::default())
         .await;
     session
         .spawn_task(Arc::clone(&context), Vec::new(), PendingTask)
@@ -122,6 +122,6 @@ async fn host_failure_returns_accepted_mail_and_pauses_wakeups() {
             paused,
             session.input_queue.drain_mailbox_input_items().await.0
         ),
-        (true, vec![TurnInput::InterAgentCommunication(mail)])
+        (true, vec![TurnInput::InterAgentCommunication(mail.into())])
     );
 }
