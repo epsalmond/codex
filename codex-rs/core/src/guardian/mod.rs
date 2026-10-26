@@ -19,7 +19,6 @@ pub(crate) use request_budget::ExhaustedReviewBudget;
 pub(crate) use request_budget::ReviewBudgetCompacted;
 pub(crate) use request_budget::estimate_request_overhead_tokens;
 pub(crate) use request_budget::estimate_request_tokens;
-pub(crate) use request_budget::observe as observe_guardian_request;
 pub(crate) use request_budget::prepare_prompt as prepare_guardian_prompt;
 mod review;
 mod review_session;

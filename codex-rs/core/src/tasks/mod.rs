@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_diagnostics::Gauge;
+use codex_exec_server::ExecutorCapabilityDiscoveryV2Cache;
 use codex_extension_api::ThreadIdleCause;
 use futures::future::BoxFuture;
 use tokio::select;
@@ -374,7 +375,7 @@ impl Session {
     /// reservation still holds the slot; a start that does not run releases what it holds.
     #[expect(
         clippy::await_holding_invalid_type,
-        reason = "record the started turn atomically with its active reservation"
+        reason = "record the started turn atomically with task registration"
     )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
@@ -390,6 +391,17 @@ impl Session {
             self.requeue_reserved_mail(&reservation).await;
             self.abandon_root_turn_lifecycle(&turn_context.sub_id);
             return TaskStartOutcome::Rejected(error);
+        }
+        // Replace the cache; in-flight acquisitions retain their previous Arc.
+        self.services
+            .thread_extension_data
+            .insert(ExecutorCapabilityDiscoveryV2Cache::default());
+        if turn_context
+            .config
+            .features
+            .enabled(Feature::ExecutorCapabilityDiscoveryV2)
+        {
+            self.request_mcp_runtime_reprojection();
         }
         self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
@@ -418,13 +430,6 @@ impl Session {
             let owns_reservation = active.as_ref().is_some_and(|turn| {
                 turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &reservation.turn_state)
             });
-            if owns_reservation {
-                self.record_started_turn(
-                    &turn_context.sub_id,
-                    (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
-                )
-                .await;
-            }
             owns_reservation
         };
         if !owns_reservation {
@@ -471,6 +476,12 @@ impl Session {
                 .await;
         };
         debug_assert!(turn.task.is_none());
+        // Record lineage when this reservation actually installs its task.
+        self.record_started_turn(
+            &turn_context.sub_id,
+            (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
+        )
+        .await;
         // Installing a task reopens input admission on this slot.
         turn.finishing = None;
         let done_clone = Arc::clone(&done);
@@ -633,8 +644,8 @@ impl Session {
 
     /// Starts a regular turn when the session is idle and pending work is waiting.
     ///
-    /// Pending work includes mailbox mail marked with `trigger_turn`, or any mailbox mail while
-    /// an outstanding durable sleep is attached to the thread.
+    /// Mail can request a new task with `trigger_turn`, wake durable sleep, or wake a root with
+    /// `wake_on_agent_messages` enabled.
     ///
     /// This helper generates a fresh sub-id for the synthetic turn before delegating to the
     /// explicit-sub-id variant.
@@ -652,8 +663,7 @@ impl Session {
     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
     /// session.
     ///
-    /// The turn is created only when the session is idle and mailbox mail either requests a turn
-    /// or can wake an outstanding durable sleep.
+    /// Starts an idle turn for explicit follow-ups, durable sleep, or enabled message wakes.
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
@@ -667,6 +677,7 @@ impl Session {
         }
         let cause = if self.input_queue.has_pending_mailbox_items().await
             && (self.input_queue.has_trigger_turn_mailbox_items().await
+                || self.should_wake_on_agent_messages().await
                 || (self.has_outstanding_durable_sleep()
                     && self
                         .input_queue

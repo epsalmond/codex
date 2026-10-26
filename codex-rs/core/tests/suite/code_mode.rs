@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
+#[path = "code_mode_dynamic_tools_tests.rs"]
+mod dynamic_tools;
+
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
@@ -7938,7 +7941,7 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
             COMPACTION_SUMMARY
         );
         for request in &guardian_requests {
-            assert!(!request.has_content_kinds(&["token_budget.context_window"]));
+            assert!(!request.has_content_kinds(&["token_budget.context_window"; 3]));
         }
     }
     let parent_request = requests.last().expect("parent turn should complete");

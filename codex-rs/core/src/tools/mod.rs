@@ -29,6 +29,8 @@ use std::borrow::Cow;
 
 use crate::session::turn_context::TurnContext;
 pub(crate) use approvals::ApprovalContext;
+pub(crate) use approvals::ApprovalResolution;
+pub(crate) use approvals::ApprovalResolutionSource;
 pub(crate) use approvals::in_code_mode_nested_call;
 #[cfg(test)]
 pub(crate) use approvals::scope_code_mode_nested_call;

@@ -62,6 +62,7 @@ fn agent_message_from_tool(
     if matches!(
         source,
         crate::tools::context::ToolCallSource::DirectPlaintextMessage
+            | crate::tools::context::ToolCallSource::CodeMode { .. }
     ) {
         AgentMessage::Plaintext(message)
     } else {
