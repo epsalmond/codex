@@ -841,7 +841,7 @@ impl NetworkApprovalService {
         } else {
             approval.await
         };
-        let approval_decision = match approval_result {
+        let approval_decision = match approval_result.result {
             Ok(decision) => decision,
             Err(ToolError::Rejected(rejection)) => {
                 if let Some(owner_call) = owner_call.as_ref() {

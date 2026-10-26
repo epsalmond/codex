@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tokio::time::Instant;
 
 use codex_code_mode_protocol::CellOutputKind;
 use codex_code_mode_protocol::CellTerminalStatus;
@@ -127,6 +128,7 @@ enum CellPhase {
         // Set only when `yield_control()` races the create-to-first-observe handoff.
         pending_initial_yield_items: Option<Vec<OutputItem>>,
         event: CellEvent,
+        completed_at: Instant,
     },
     CompletionClaimed(CellEvent),
     Tombstone,
@@ -190,8 +192,9 @@ impl CellState {
             CellPhase::Completed {
                 pending_initial_yield_items,
                 event,
+                completed_at,
             } => {
-                let event = prepend_initial_yield(event, pending_initial_yield_items);
+                let event = buffered_completion(event, pending_initial_yield_items, completed_at);
                 *phase = CellPhase::CompletionClaimed(event.clone());
                 self.cancellation_token.cancel();
                 ready_event(event)
@@ -221,6 +224,7 @@ impl CellState {
         *phase = CellPhase::Completed {
             pending_initial_yield_items,
             event,
+            completed_at: Instant::now(),
         };
         CompletionCommit::Committed
     }
@@ -233,12 +237,13 @@ impl CellState {
             .phase
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (pending_initial_yield_items, event) =
+        let (pending_initial_yield_items, event, completed_at) =
             match std::mem::replace(&mut *phase, CellPhase::Tombstone) {
                 CellPhase::Completed {
                     pending_initial_yield_items,
                     event,
-                } => (pending_initial_yield_items, event),
+                    completed_at,
+                } => (pending_initial_yield_items, event, completed_at),
                 previous => {
                     *phase = previous;
                     return CompletionDelivery::Rejected(response_tx);
@@ -248,6 +253,7 @@ impl CellState {
             *phase = CellPhase::Completed {
                 pending_initial_yield_items,
                 event,
+                completed_at,
             };
             return CompletionDelivery::Buffered;
         };
@@ -260,6 +266,7 @@ impl CellState {
                 *phase = CellPhase::Completed {
                     pending_initial_yield_items,
                     event,
+                    completed_at,
                 };
                 CompletionDelivery::Buffered
             }
@@ -286,12 +293,14 @@ impl CellState {
             CellPhase::Completed {
                 pending_initial_yield_items: Some(content_items),
                 event,
+                completed_at,
             } if matches!(mode, ObserveMode::YieldAfter(_)) => {
                 match response_tx.send(Ok(CellEvent::Yielded { content_items })) {
                     Ok(()) => {
                         *phase = CellPhase::Completed {
                             pending_initial_yield_items: None,
                             event,
+                            completed_at,
                         };
                         ObservationDelivery::Buffered
                     }
@@ -299,6 +308,7 @@ impl CellState {
                         *phase = CellPhase::Completed {
                             pending_initial_yield_items: Some(content_items),
                             event,
+                            completed_at,
                         };
                         ObservationDelivery::Buffered
                     }
@@ -313,9 +323,13 @@ impl CellState {
             CellPhase::Completed {
                 pending_initial_yield_items,
                 event,
+                completed_at,
             } => {
-                let delivered_event =
-                    prepend_initial_yield(event.clone(), pending_initial_yield_items.clone());
+                let delivered_event = buffered_completion(
+                    event.clone(),
+                    pending_initial_yield_items.clone(),
+                    completed_at,
+                );
                 match response_tx.send(Ok(delivered_event)) {
                     Ok(()) => {
                         self.cancellation_token.cancel();
@@ -325,6 +339,7 @@ impl CellState {
                         *phase = CellPhase::Completed {
                             pending_initial_yield_items,
                             event,
+                            completed_at,
                         };
                         ObservationDelivery::Buffered
                     }
@@ -368,7 +383,12 @@ impl CellState {
             CellPhase::Completed {
                 pending_initial_yield_items,
                 event,
-            } => Some(prepend_initial_yield(event, pending_initial_yield_items)),
+                completed_at,
+            } => Some(buffered_completion(
+                event,
+                pending_initial_yield_items,
+                completed_at,
+            )),
             CellPhase::CompletionClaimed(completed_event) => Some(completed_event),
             CellPhase::Tombstone => None,
         };
@@ -403,7 +423,9 @@ impl CellState {
                     CellEvent::Completed {
                         content_items,
                         error_text,
+                        ..
                     },
+                ..
             } => Some((
                 if error_text.is_some() {
                     CellTerminalStatus::Error
@@ -428,47 +450,29 @@ impl CellState {
     }
 }
 
-fn prepend_initial_yield(
-    event: CellEvent,
+fn buffered_completion(
+    mut event: CellEvent,
     pending_initial_yield_items: Option<Vec<OutputItem>>,
+    completed_at: Instant,
 ) -> CellEvent {
-    let Some(mut pending_initial_yield_items) = pending_initial_yield_items else {
-        return event;
-    };
-    match event {
-        CellEvent::Yielded { mut content_items } => {
-            pending_initial_yield_items.append(&mut content_items);
-            CellEvent::Yielded {
-                content_items: pending_initial_yield_items,
-            }
-        }
-        CellEvent::Pending {
-            mut content_items,
-            pending_tool_call_ids,
-        } => {
-            pending_initial_yield_items.append(&mut content_items);
-            CellEvent::Pending {
-                content_items: pending_initial_yield_items,
-                pending_tool_call_ids,
-            }
-        }
+    let content_items = match &mut event {
         CellEvent::Completed {
-            mut content_items,
-            error_text,
+            content_items,
+            result_buffered_for,
+            ..
         } => {
-            pending_initial_yield_items.append(&mut content_items);
-            CellEvent::Completed {
-                content_items: pending_initial_yield_items,
-                error_text,
-            }
+            *result_buffered_for = completed_at.elapsed();
+            content_items
         }
-        CellEvent::Terminated { mut content_items } => {
-            pending_initial_yield_items.append(&mut content_items);
-            CellEvent::Terminated {
-                content_items: pending_initial_yield_items,
-            }
-        }
+        CellEvent::Yielded { content_items }
+        | CellEvent::Pending { content_items, .. }
+        | CellEvent::Terminated { content_items } => content_items,
+    };
+    if let Some(mut initial) = pending_initial_yield_items {
+        initial.append(content_items);
+        *content_items = initial;
     }
+    event
 }
 
 pub(super) enum CellCommand {

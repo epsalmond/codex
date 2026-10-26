@@ -1,0 +1,142 @@
+---
+source: core/tests/suite/scenarios_model_instructions.rs
+expression: "context_snapshot::format_request_history_snapshot(\"A same-model catalog refresh appends replacement instructions once without changing tools or the prefix. Compaction starts a new window with the latest base.\",\n&mock.requests(),\n&ContextSnapshotOptions::default().include_request_settings(),)"
+---
+Scenario: A same-model catalog refresh appends replacement instructions once without changing tools or the prefix. Compaction starts a new window with the latest base.
+
+## Window 1
+Settings:
+  include: ["reasoning.encrypted_content"]
+  model: "gpt-5.4"
+  parallel_tool_calls: false
+  prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
+  reasoning: {"context":"all_turns","summary":"auto"}
+  store: false
+  stream: true
+  tool_choice: "auto"
+-- request 1 (turn) --
+00:additional_tools/developer (2; hash=d536e797c92b515b):
+        - namespace/functions; hash=29f53d8b84d682d4
+          - function/exec_command
+          - function/write_stdin
+          - function/request_user_input
+          - function/view_image
+          - function/close_agents
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=cca2961f50eb6eae
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
+          - function/spawn_agent
+01:message/developer:
+    Help the user complete their task.
+02:message/developer:
+    <permissions instructions>
+    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
+    Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
+    </permissions instructions>
+03:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 18 LINES; ~281 TOKENS; hash=1a48f6339074b3b5>
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    Agents you spawn report to you only through `report_to_parent`: `FINAL_ANSWER` when done, `BLOCKED` when...one, if any, only when an agent genuinely needs that. [hash=1abc2bf4a9f489af]
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` set to `"all"`) inherit the parent model and reasoning effort and do no... when doing so, leave `fork_turns` unset or `"none"`. [hash=e91c89a6be8f1b87]
+04:message/developer:
+    <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
+05:message/user:
+    <environment_context>
+      <cwd><CWD></cwd>
+      <shell><HOST_SHELL></shell>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="disabled"><...e="unrestricted" /></permission_profile></filesystem> [hash=d40b2f45cb028888]
+    </environment_context>
+06:message/user:
+    Begin work.
+-- request 2 (turn) --
+07:message/developer:
+    <model_instructions>
+    The following instructions replace the previous base instructions:
+
+    Check your work before responding.
+    </model_instructions>
+08:message/user:
+    Continue with refreshed instructions.
+-- request 3 (turn) --
+09:message/user:
+    Continue without further changes.
+-- request 4 (compaction) --
+10:compaction_trigger
+
+## Window 2 (after request 4: input diverged at item 01)
+Settings: same as window 1
+-- request 5 (turn) --
+00:additional_tools/developer (2; hash=d536e797c92b515b):
+        - namespace/functions; hash=29f53d8b84d682d4
+          - function/exec_command
+          - function/write_stdin
+          - function/request_user_input
+          - function/view_image
+          - function/close_agents
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=cca2961f50eb6eae
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
+          - function/spawn_agent
+01:message/developer:
+    Check your work before responding.
+02:message/user:
+    Begin work.
+03:message/user:
+    Continue with refreshed instructions.
+04:message/developer:
+    <permissions instructions>
+    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
+    Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
+    </permissions instructions>
+05:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 18 LINES; ~281 TOKENS; hash=1a48f6339074b3b5>
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    Agents you spawn report to you only through `report_to_parent`: `FINAL_ANSWER` when done, `BLOCKED` when...one, if any, only when an agent genuinely needs that. [hash=1abc2bf4a9f489af]
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` set to `"all"`) inherit the parent model and reasoning effort and do no... when doing so, leave `fork_turns` unset or `"none"`. [hash=e91c89a6be8f1b87]
+06:message/developer:
+    <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
+07:message/user:
+    <environment_context>
+      <cwd><CWD></cwd>
+      <shell><HOST_SHELL></shell>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="disabled"><...e="unrestricted" /></permission_profile></filesystem> [hash=d40b2f45cb028888]
+    </environment_context>
+08:message/user:
+    Continue without further changes.
+09:compaction:encrypted=true; chars=29; hash=a44318b8dfee766d
+10:message/user:
+    Continue after compaction.

@@ -1,7 +1,9 @@
 use codex_protocol::AgentPath;
 
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InterAgentCompletionMessage {
@@ -51,10 +53,10 @@ impl ContextualUserFragment for InterAgentCompletionMessage {
         ("", "")
     }
 
-    fn body(&self) -> String {
-        format!(
+    fn body(&self) -> ContentItem {
+        input_text(format!(
             "Message Type: {}\nTask name: {}\nSender: {}\nPayload:\n{}",
             self.message_type, self.task_name, self.sender, self.payload,
-        )
+        ))
     }
 }
