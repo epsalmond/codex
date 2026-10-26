@@ -3575,13 +3575,13 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
 fn resumed_history_from(source: SessionSource) -> InitialHistory {
     InitialHistory::Resumed(ResumedHistory {
         conversation_id: ThreadId::new(),
-        history: Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
+        history: Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
             meta: SessionMeta {
                 source,
                 ..SessionMeta::default()
             },
             git: None,
-        })]),
+        }))]),
         rollout_path: None,
         last_activity_at: None,
         history_revision: None,
