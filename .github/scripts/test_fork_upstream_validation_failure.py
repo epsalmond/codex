@@ -409,6 +409,105 @@ class LogTests(unittest.TestCase):
         self.assertIn("error[E0053]", result["failure_context"])
         self.assertIn("terminal result", result["failure_context"])
 
+    def test_distinct_locations_and_deep_box_context_survive_cleanup(self):
+        blocks = []
+        for index in range(36):
+            path = f"core/src/fixture_{index}.rs:{100 + index}:9"
+            snippet = f"{100 + index} | enqueue_mailbox_communication(value)"
+            detail = "| expected `PendingAgentMessage`, found `InterAgentCommunication`"
+            if index == 15:
+                path = "core/src/thread_manager_tests.rs:3578:57"
+                snippet = "3578 | RolloutItem::SessionMeta(SessionMetaLine {"
+                detail = "| expected `Box<SessionMetaLine>`, found `SessionMetaLine`"
+            blocks.append("\n".join([
+                "error[E0308]: mismatched types", f"--> {path}", "|", snippet,
+                *[f"{200 + n} | nested field {n}" for n in range(30)],
+                detail, "help: wrap the argument", "",
+            ]))
+        log = ("\n".join(blocks) + "\ncache cleanup\n" * 20000).encode()
+        expected = self.collect(log)
+        context = expected["failure_context"]
+        self.assertEqual(len(MOD.RUSTC.findall(context)), 36)
+        self.assertIn("core/src/fixture_0.rs:100:9", context)
+        self.assertIn("core/src/thread_manager_tests.rs:3578:57", context)
+        self.assertIn("3578 | RolloutItem::SessionMeta(SessionMetaLine {", context)
+        self.assertIn("expected `Box<SessionMetaLine>`", context)
+        self.assertTrue(expected["context_truncated"])
+        self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
+        self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
+        for width in (17, 65536):
+            self.assertEqual(MOD.collect_log(
+                (log[i:i + width] for i in range(0, len(log), width)),
+                "Test scoped release behavior",
+            ), expected)
+
+    def test_verbose_early_errors_cannot_displace_later_identities(self):
+        log = "".join(
+            f"error[E0308]: wrong\n--> core/src/a.rs:{i}:2\n{i} | bad()\n"
+            + ("verbose continuation " + "x" * 1800 + "\n") * 50
+            + "| expected `Box<SessionMetaLine>`, found `SessionMetaLine`\n"
+            for i in range(36)
+        ).encode()
+        result = self.collect(log)
+        context = result["failure_context"]
+        self.assertEqual(len(MOD.RUSTC.findall(context)), 36)
+        self.assertIn("core/src/a.rs:35:2", context)
+        self.assertIn("35 | bad()", context)
+        self.assertIn("expected `Box<SessionMetaLine>`", context)
+        self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
+        self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
+        self.assertTrue(result["context_truncated"])
+
+    def test_deduplication_uses_error_and_primary_location(self):
+        block = b"error[E0308]: wrong\n--> core/src/a.rs:1:2\n1 | bad()\n"
+        log = block * 100 + block.replace(b":1:2", b":3:4")
+        context = self.collect(log)["failure_context"]
+        self.assertEqual(len(MOD.RUSTC.findall(context)), 2)
+        self.assertIn("core/src/a.rs:1:2", context)
+        self.assertIn("core/src/a.rs:3:4", context)
+
+    def test_excess_unique_locations_are_explicitly_truncated(self):
+        log = "".join(
+            f"error[E0308]: wrong\n--> core/src/a.rs:{i}:2\n{i} | bad()\n"
+            for i in range(1000)
+        ).encode()
+        result = self.collect(log)
+        context = result["failure_context"]
+        self.assertEqual(result["validation_result"], "source_failure")
+        self.assertTrue(result["context_truncated"])
+        self.assertIn("diagnostic context truncated", context)
+        self.assertLess(len(MOD.RUSTC.findall(context)), 1000)
+        self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
+        self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
+
+    def test_context_byte_cap_admits_whole_identities(self):
+        log = "".join(
+            "error[E0308]: " + "界" * 500 + f" {i}\n"
+            f"--> core/src/a.rs:{i}:2\n{i} | bad()\n"
+            for i in range(100)
+        ).encode()
+        result = self.collect(log)
+        context = result["failure_context"]
+        self.assertTrue(result["context_truncated"])
+        self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
+        self.assertNotIn("\ufffd", context)
+        lines = context.splitlines()
+        for index, line in enumerate(lines):
+            if MOD.RUSTC.search(line):
+                self.assertTrue(MOD.LOCATION.match(lines[index + 1]))
+
+    def test_named_tests_and_formatter_blocks_retain_distinct_failures(self):
+        for step, log, expected in (
+            ("Check formatting", b"Diff in /repo/a.rs:4:\n-old\n+new\n"
+             b"Diff in /repo/b.rs:5:\n-old2\n+new2\n", ("a.rs:4:", "b.rs:5:")),
+            ("Test scoped release behavior", b"test suite::one ... FAILED\n"
+             b"thread 'one' panicked at core/a.rs:5\nassertion failed\n"
+             b"test suite::two ... FAILED\n", ("suite::one", "suite::two", "assertion failed")),
+        ):
+            context = self.collect(log, step)["failure_context"]
+            for text in expected:
+                self.assertIn(text, context)
+
     def test_complete_authorization_and_quoted_secret_redaction(self):
         for value in (
             "Authorization: Basic ZHVtbXk6dGVzdC1zZWNyZXQ=",

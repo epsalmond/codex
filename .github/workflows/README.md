@@ -153,9 +153,15 @@ prevent any feedback job; Actions failure and the existing stalled-handoff
 check remain the available evidence in that case.
 
 Raw job logs use a 30-second request timeout and a 60-second streaming deadline,
-with a 16 MiB download ceiling, at most 128 KiB selected/tail storage, 2 KiB lines,
-and at most 160 lines / 12 KiB final UTF-8 context. The collector retains the first recognized
-diagnostic window and terminal tail, strips ANSI/OSC/control/workflow commands,
+with a 16 MiB download ceiling, at most 128 KiB diagnostic/infrastructure/tail storage, 2 KiB lines,
+and at most 160 lines / 12 KiB final UTF-8 context. The collector scans the full
+bounded stream and deduplicates diagnostic headers with their primary locations.
+Compact distinct error/location pairs take priority over detail; source snippets
+and expected/found/help lines are then added across diagnostics before a short
+terminal tail. Per-block and aggregate limits prevent early verbose errors or
+cleanup output from crowding out later locations. Excess unique diagnostics or
+detail set `context_truncated`; bounded context cannot guarantee completeness.
+The collector strips ANSI/OSC/control/workflow commands,
 and redacts token patterns, authorization values, URL userinfo/query/fragment,
 and the active workflow token. Signed log redirects receive no API authorization
 header. Hitting the download ceiling prevents source classification. Full public
