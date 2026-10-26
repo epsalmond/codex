@@ -1,5 +1,7 @@
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 
 /// Tells a long-running subagent, once per turn, to finish and report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,10 +26,10 @@ impl ContextualUserFragment for SubagentWrapUpReminder {
         ("<subagent_wrap_up>\n", "\n</subagent_wrap_up>")
     }
 
-    fn body(&self) -> String {
-        format!(
+    fn body(&self) -> ContentItem {
+        input_text(format!(
             "You have made {} model calls on this task. Finish the current step, then report_to_parent(kind=\"final\") — or report_to_parent(kind=\"blocked\") if you can't finish.",
             self.model_calls
-        )
+        ))
     }
 }

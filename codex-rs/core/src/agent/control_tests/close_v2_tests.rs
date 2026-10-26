@@ -275,7 +275,8 @@ async fn close_after_final_keeps_worker_for_in_flight_follow_up() {
                 Vec::new(),
                 "more work".to_string(),
                 /*trigger_turn*/ true,
-            ),
+            )
+            .into(),
             Default::default(),
         )
         .await;

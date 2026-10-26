@@ -13,6 +13,7 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Presets,
     Daybreak,
     Ide,
     Permissions,
@@ -136,6 +137,7 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Presets => "run or save reusable prompts and slash commands",
             SlashCommand::Daybreak => "turn Daybreak on or off",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
@@ -175,6 +177,10 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::Model
+                | SlashCommand::Permissions
+                | SlashCommand::Title
+                | SlashCommand::Statusline
                 | SlashCommand::Rename
                 | SlashCommand::New
                 | SlashCommand::Clear
@@ -274,6 +280,7 @@ impl SlashCommand {
             | SlashCommand::Archive
             | SlashCommand::Resume
             | SlashCommand::Model
+            | SlashCommand::Presets
             | SlashCommand::Daybreak
             | SlashCommand::Permissions
             | SlashCommand::Copy

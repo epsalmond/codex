@@ -578,7 +578,7 @@ async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
         for communication in unread {
             session
                 .input_queue
-                .enqueue_mailbox_communication(communication, Default::default())
+                .enqueue_mailbox_communication(communication.into(), Default::default())
                 .await;
         }
         session.spawn_task(turn_context, Vec::new(), task).await;
@@ -622,6 +622,7 @@ async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
 
     let returned = unread()
         .into_iter()
+        .map(Into::into)
         .map(TurnInput::InterAgentCommunication)
         .collect::<Vec<_>>();
     let recorded = (Vec::new(), 2);
