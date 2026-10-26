@@ -78,7 +78,7 @@ impl Session {
                     recipient.clone(),
                     author.clone(),
                     format!("Automatic turn did not start: {reason}. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn. No task was dispatched or completed by this startup attempt."),
-                ).render();
+                ).render().into_text().unwrap_or_default();
             // Paths are valid without a length limit. Bound the complete fragment, including
             // attribution, with room for the truncation marker just like completion notices.
             let content = if approx_token_count(&content) > MAX_FAILURE_MESSAGE_TOKENS {

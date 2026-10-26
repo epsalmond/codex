@@ -75,6 +75,7 @@ pub fn is_structured_feature_path<S: AsRef<str>>(path: &[S]) -> bool {
                 | "network_proxy"
                 | "sleep_tool"
                 | "async_process_completion"
+                | "runtime_agent_instances"
         )
 }
 

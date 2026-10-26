@@ -405,14 +405,26 @@ async fn register_root_thread_again_preserves_retained_root_state() {
     let root_thread_id = ThreadId::new();
     let config = crate::config::test_config().await;
     registry.register_root_thread(root_thread_id);
-    registry.save_evicted_settings(root_thread_id, Vec::new(), config.clone());
+    registry.save_evicted_settings(
+        root_thread_id,
+        EvictedEnvironments {
+            selections: Vec::new(),
+            bindings: TurnEnvironmentSnapshot::default(),
+        },
+        config.clone(),
+    );
     registry.close_completion_delivery(root_thread_id);
 
     registry.register_root_thread(root_thread_id);
 
     assert_eq!(
-        registry.evicted_environments(root_thread_id),
-        Some(Vec::new())
+        registry
+            .evicted_environments(root_thread_id)
+            .map(|environments| (
+                environments.selections,
+                environments.bindings.all_selections()
+            )),
+        Some((Vec::new(), Vec::new()))
     );
     assert_eq!(registry.evicted_config(root_thread_id), Some(config));
     assert!(registry.completion_delivery_closed(root_thread_id));

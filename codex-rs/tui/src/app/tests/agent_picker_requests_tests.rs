@@ -245,8 +245,11 @@ async fn overlapping_preview_backfills_share_the_sixteen_request_limit() -> Resu
         auth_token: None,
     })
     .await?;
-    let app_server =
-        AppServerSession::new(client, crate::app_server_session::ThreadParamsMode::Remote);
+    let app_server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
+        client,
+        crate::app_server_session::ThreadParamsMode::Remote,
+    );
 
     app.refresh_agent_picker_previews(&app_server, root, children[..10].to_vec());
     app.refresh_agent_picker_previews(&app_server, root, children[10..].to_vec());

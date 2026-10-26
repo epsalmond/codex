@@ -67,13 +67,14 @@ async fn child_report_wake_follows_root_version_and_mode() {
             session.services.local_agent_runtime.enable_wake_mode();
         }
 
-        let mut report = InterAgentCommunication::new(
+        let mut report: crate::PendingAgentMessage = InterAgentCommunication::new(
             AgentPath::try_from("/root/worker").expect("agent path"),
             AgentPath::root(),
             Vec::new(),
             "done".to_string(),
             /*trigger_turn*/ true,
-        );
+        )
+        .into();
         session.apply_child_report_mode(&mut report).await;
         kept.push(report.trigger_turn);
     }
@@ -95,7 +96,7 @@ async fn explicit_followup_clears_the_wake_pause_before_queuing_its_turn() {
     crate::session::handlers::inter_agent_communication(
         &session,
         "followup-sub-id".to_string(),
-        communication,
+        communication.into(),
         TurnStartOptions {
             parent_turn_id: Some("parent-turn".to_string()),
             ..Default::default()
@@ -122,7 +123,7 @@ async fn queue_only_or_automatic_mail_does_not_clear_the_wake_pause() {
         crate::session::handlers::inter_agent_communication(
             &session,
             "queued-sub-id".to_string(),
-            communication,
+            communication.into(),
             TurnStartOptions {
                 parent_turn_id,
                 ..Default::default()

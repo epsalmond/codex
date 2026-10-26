@@ -61,7 +61,7 @@ fn latest_checkpoint(path: &Path) -> Result<CompactedItem> {
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .filter_map(|item| match item {
-            RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+            RolloutItem::Compacted(checkpoint) => Some(*checkpoint),
             _ => None,
         })
         .next_back()

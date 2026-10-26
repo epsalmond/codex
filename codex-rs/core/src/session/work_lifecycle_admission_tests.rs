@@ -121,7 +121,8 @@ async fn closed_root_keeps_pending_wakeup_mail_queued() {
                 Vec::new(),
                 "pending trigger".to_string(),
                 /*trigger_turn*/ true,
-            ),
+            )
+            .into(),
             Default::default(),
         )
         .await;
@@ -226,7 +227,8 @@ async fn rejected_task_start_releases_its_reservation_and_requeues_its_mail() {
                     Vec::new(),
                     "held for the reserved turn".to_string(),
                     /*trigger_turn*/ true,
-                ),
+                )
+                .into(),
             )],
         )
         .await;
@@ -347,7 +349,8 @@ async fn rejected_wake_bind_releases_its_root_turn() {
                 Vec::new(),
                 "pending trigger".to_string(),
                 /*trigger_turn*/ true,
-            ),
+            )
+            .into(),
             Default::default(),
         )
         .await;

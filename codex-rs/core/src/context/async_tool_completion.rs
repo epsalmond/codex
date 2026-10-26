@@ -1,5 +1,7 @@
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 
 /// A correlated terminal result appended after the original tool has yielded.
 #[derive(Clone, Debug)]
@@ -24,7 +26,7 @@ impl ContextualUserFragment for AsyncToolCompletion {
         ("<async_tool_completion>", "</async_tool_completion>")
     }
 
-    fn body(&self) -> String {
-        self.text.clone()
+    fn body(&self) -> ContentItem {
+        input_text(self.text.clone())
     }
 }

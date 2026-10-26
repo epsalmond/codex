@@ -128,7 +128,8 @@ async fn paused_v2_agent_holding_trigger_mail_is_not_unloadable() {
                 Vec::new(),
                 "held wake".to_string(),
                 /*trigger_turn*/ true,
-            ),
+            )
+            .into(),
             TurnStartOptions::default(),
         )
         .await;
@@ -179,13 +180,16 @@ async fn paused_durable_sleep_wake_with_only_held_reports_starts_no_turn() {
         .enqueue(
             child.thread_id,
             /*id*/ None,
-            vec![InterAgentCommunication::new(
-                AgentPath::try_from("/root/worker/helper").expect("agent path"),
-                AgentPath::try_from("/root/worker").expect("agent path"),
-                Vec::new(),
-                "held report".to_string(),
-                /*trigger_turn*/ true,
-            )],
+            vec![
+                InterAgentCommunication::new(
+                    AgentPath::try_from("/root/worker/helper").expect("agent path"),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    Vec::new(),
+                    "held report".to_string(),
+                    /*trigger_turn*/ true,
+                )
+                .into(),
+            ],
         )
         .expect("enqueue controller mail");
 

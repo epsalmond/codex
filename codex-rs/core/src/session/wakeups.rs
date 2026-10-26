@@ -8,7 +8,6 @@ use super::session::Session;
 use codex_protocol::protocol::AgentWakeupsUpdatedEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use uuid::Uuid;
 
@@ -52,7 +51,7 @@ impl Session {
     /// unresolved, and it has no children yet; a resumed root resolves it from its history.
     pub(super) async fn apply_child_report_mode(
         &self,
-        communication: &mut InterAgentCommunication,
+        communication: &mut crate::PendingAgentMessage,
     ) {
         let reads_on_next_turn = match self.multi_agent_version() {
             None => true,
@@ -66,7 +65,7 @@ impl Session {
             && communication.recipient.is_root()
             && !communication.author.is_root()
         {
-            communication.trigger_turn = false;
+            communication.set_trigger_turn(false);
         }
     }
 
