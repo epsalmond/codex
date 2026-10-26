@@ -64,8 +64,11 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
                 .build()
                 .await?;
             let launch_overrides = config_request_overrides_from_config(&config, mode);
-            let mut session =
-                AppServerSession::new(crate::connect_remote_app_server(endpoint).await?, mode);
+            let mut session = AppServerSession::new(
+                crate::backend_id::BackendId::new(),
+                crate::connect_remote_app_server(endpoint).await?,
+                mode,
+            );
             let local_settings = LocalSettings::from(&config);
             let thread_id = ThreadId::new();
             let result = match presentation {

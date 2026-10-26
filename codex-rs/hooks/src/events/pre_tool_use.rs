@@ -40,7 +40,7 @@ pub struct PreToolUseOutcome {
     pub hook_events: Vec<HookCompletedEvent>,
     pub should_block: bool,
     pub block_reason: Option<String>,
-    pub additional_contexts: Vec<String>,
+    pub additional_contexts: Vec<crate::HookContext>,
     pub updated_input: Option<Value>,
 }
 
@@ -331,6 +331,7 @@ fn parse_completed_with_mode(
                             &mut additional_contexts_for_model,
                             handler,
                             additional_context,
+                            &run_result.context_metadata,
                         );
                     }
                     if observational
@@ -651,7 +652,7 @@ mod tests {
                 should_block: true,
                 block_reason: Some("do not run that".to_string()),
                 additional_contexts_for_model: vec![AdditionalContext {
-                    text: "remember this".to_string(),
+                    context: crate::HookContext::harness("remember this".to_string()),
                     limit: Default::default(),
                 }],
                 updated_input: None,
@@ -751,7 +752,7 @@ mod tests {
                 should_block: true,
                 block_reason: Some("do not run that".to_string()),
                 additional_contexts_for_model: vec![AdditionalContext {
-                    text: "nope".to_string(),
+                    context: crate::HookContext::harness("nope".to_string()),
                     limit: AdditionalContextLimit::from_config(Some(13)),
                 }],
                 updated_input: None,
@@ -988,6 +989,7 @@ mod tests {
     fn handler_with_async(r#async: bool) -> ConfiguredHandler {
         ConfiguredHandler {
             builtin: false,
+            plugin_trust: None,
             event_name: HookEventName::PreToolUse,
             matcher: Some(crate::engine::HookMatcher::new("^Bash$").expect("valid matcher")),
             timeout_sec: 5,
@@ -1006,6 +1008,7 @@ mod tests {
 
     fn run_result(exit_code: Option<i32>, stdout: &str, stderr: &str) -> HandlerRunResult {
         HandlerRunResult {
+            context_metadata: codex_protocol::models::ContentItemMetadata::harness(),
             started_at: 1,
             completed_at: 2,
             duration_ms: 1,

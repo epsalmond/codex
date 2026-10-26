@@ -28,8 +28,10 @@ use self::connection::Connection;
 use self::connection::ConnectionError;
 use self::connection::RemoteSession;
 use self::connection::SessionCleanup;
+use self::delegate::TracedCellDelegate;
 
 mod connection;
+mod delegate;
 
 pub(crate) type ShutdownResultReceiver = watch::Receiver<Option<Result<(), String>>>;
 
@@ -272,6 +274,10 @@ impl ProcessOwnedCodeModeSession {
         preempt: Option<CancellationToken>,
     ) -> Result<StartedCell, String> {
         let binding = self.connection().await?;
+        let delegate = Arc::new(TracedCellDelegate {
+            delegate,
+            trace: codex_otel::current_span_w3c_trace_context(),
+        });
         binding
             .connection
             .execute(binding.remote, request, delegate, preempt)

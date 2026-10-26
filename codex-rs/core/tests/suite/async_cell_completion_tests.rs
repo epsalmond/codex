@@ -171,6 +171,7 @@ impl CodeModeSession for Cell {
                         cell_id: id,
                         content_items: vec![],
                         error_text: None,
+                        result_buffered_for: Duration::ZERO,
                         code_mode_host_duration: None,
                     }
                 } else {
@@ -240,6 +241,7 @@ impl CodeModeSession for Cell {
                         }
                     }],
                     error_text: None,
+                    result_buffered_for: Duration::ZERO,
                     code_mode_host_duration: None,
                 };
                 if self.case == Case::Missing {
@@ -750,6 +752,7 @@ impl CodeModeSession for ControlledCells {
                     text: "controlled-tail".to_owned(),
                 }],
                 error_text: None,
+                result_buffered_for: Duration::ZERO,
                 code_mode_host_duration: None,
             }))
         })

@@ -1,0 +1,110 @@
+---
+source: core/tests/suite/scenarios.rs
+expression: "context_snapshot::format_context_snapshot(\"An MCP discovery call announces a new tool, which is called in the same turn.\",\n&entries,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+---
+Scenario: An MCP discovery call announces a new tool, which is called in the same turn.
+
+## Window 1
+Settings:
+  include: ["reasoning.encrypted_content"]
+  model: "gpt-5.5"
+  parallel_tool_calls: true
+  prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
+  reasoning: {"effort":"medium"}
+  store: false
+  stream: true
+  text: {"verbosity":"low"}
+  tool_choice: "auto"
+  tools (12; hash=6c2079175ceec57e):
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction. Session IDs ar...; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, work_kind, workdir, yield_time_ms]; hash=0a2b7a5beea32cd3
+    - function/write_stdin: Writes characters to an existing unified exec session owned by this agent and returns recent outp...; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=bb589a88bd0ab0fa
+    - function/list_mcp_resources: Lists resources provided by MCP servers. Resources allow servers to share data that provides cont...; args=[cursor, server]; hash=6792edaff13561bd
+    - function/list_mcp_resource_templates: Lists resource templates provided by MCP servers. Parameterized resource templates allow servers ...; args=[cursor, server]; hash=60f17c90ef7a4ebb
+    - function/read_mcp_resource: Read a specific resource from an MCP server given the server name and resource URI.; args=[server, uri]; hash=24246896b39008ae
+    - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+    - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+    - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
+      - function/followup_task
+      - function/interrupt_agent
+      - function/list_agents
+      - function/send_message
+      - function/spawn_agent
+    - function/close_agents: Close agents you spawned, and their descendants, once you no longer need them. Closing is permane...; args=[targets]; hash=e5bc72874d41d04b
+    - namespace/mcp__discovery: Use these tools to exercise the rmcp test server.; hash=55b000f43c815c1f
+      - function/search_tools
+    - web_search; hash=e214d4db1bc49e89
+-- request 1 (request) --
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 18 LINES; ~281 TOKENS; hash=1a48f6339074b3b5>
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    Agents you spawn report to you only through `report_to_parent`: `FINAL_ANSWER` when done, `BLOCKED` when...one, if any, only when an agent genuinely needs that. [hash=1abc2bf4a9f489af]
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` set to `"all"`) inherit the parent model and reasoning effort and do no... when doing so, leave `fork_turns` unset or `"none"`. [hash=e91c89a6be8f1b87]
+03:message/developer:
+    <MULTI_AGENT_MODE>
+04:message/user:
+    <ENVIRONMENT_CONTEXT>
+05:message/user:
+    Discover the echo tool, then call it with hello.
+
+## Window 2 (after request 1)
+Settings: relative to window 1
+  tools (12; hash=e7bdb94e14689ad2):
+    ~ namespace/mcp__discovery: Use these tools to exercise the rmcp test server.; hash=66db79539eaf6be3
+      - function/echo
+      - function/search_tools
+-- request 2 (request) --
+00:message/developer:
+    <MODEL_INSTRUCTIONS>
+01:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer:
+    You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
+
+    At the start of your turn, you are the active agent.
+    You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.
+    All agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.
+
+    You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
+    Child agents can also spawn their own sub-agents.
+    <OMITTED 18 LINES; ~281 TOKENS; hash=1a48f6339074b3b5>
+
+    Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
+
+    Agents you spawn report to you only through `report_to_parent`: `FINAL_ANSWER` when done, `BLOCKED` when...one, if any, only when an agent genuinely needs that. [hash=1abc2bf4a9f489af]
+
+    There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
+
+    Full-history forks (`fork_turns` set to `"all"`) inherit the parent model and reasoning effort and do no... when doing so, leave `fork_turns` unset or `"none"`. [hash=e91c89a6be8f1b87]
+03:message/developer:
+    <MULTI_AGENT_MODE>
+04:message/user:
+    <ENVIRONMENT_CONTEXT>
+05:message/user:
+    Discover the echo tool, then call it with hello.
+06:function_call/mcp__discovery.search_tools:{"message":"find echo"}
+07:function_call_output:Wall time: <DURATION> seconds
+    Output:
+    {"tools":[{"annotations":{"readOnlyHint":true},"description":"Echo back the provided message and include...ll"}]}},"required":["echo","env"],"type":"object"}}]} [hash=ccb6ffb1e2ec3a2c]
+-- request 3 (request) --
+08:function_call/mcp__discovery.echo:{"message":"hello"}
+09:function_call_output:Wall time: <DURATION> seconds
+    Output:
+    {"echo":"ECHOING: hello","env":"discovered"}
