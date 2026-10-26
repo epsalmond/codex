@@ -414,14 +414,17 @@ class LogTests(unittest.TestCase):
         for separator in ("\u2028", "\u2029"):
             cases = {
                 "detail": header + "1 | " + ("x" + separator) * 300,
-                "identity": "error[E0308]: " + ("x" + separator) * 300
+                "identity": "error[E0308]: "
+                + ("x" + separator) * 300
                 + "\n--> core/src/a.rs:1:2\n",
                 "tail": "ordinary " + ("x" + separator) * 300,
                 "infrastructure": "No space left on device " + ("x" + separator) * 300,
                 "trailing_separator": "".join(
                     f"error[E0308]: bad{i}\n--> core/src/a.rs:{i}:2\n"
                     for i in range(79)
-                ) + "1 | x" + separator,
+                )
+                + "1 | x"
+                + separator,
             }
             for name, value in cases.items():
                 with self.subTest(separator=repr(separator), admission=name):
@@ -429,15 +432,20 @@ class LogTests(unittest.TestCase):
                     result = self.collect(log)
                     context = result["failure_context"]
                     self.assertTrue(result["context_truncated"])
-                    self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
+                    self.assertLessEqual(
+                        len(context.splitlines()), MOD.MAX_CONTEXT_LINES
+                    )
                     self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
                     if name == "detail":
                         self.assertIn(header.strip(), context)
                     for width in (1, 257, 65536):
-                        self.assertEqual(MOD.collect_log(
-                            (log[i:i + width] for i in range(0, len(log), width)),
-                            "Test scoped release behavior",
-                        ), result)
+                        self.assertEqual(
+                            MOD.collect_log(
+                                (log[i : i + width] for i in range(0, len(log), width)),
+                                "Test scoped release behavior",
+                            ),
+                            result,
+                        )
 
     def test_supplemental_tail_cannot_reintroduce_skipped_identity_lines(self):
         for count in (80, 1000):
@@ -448,9 +456,14 @@ class LogTests(unittest.TestCase):
                 ).encode()
                 result = self.collect(log)
                 context = result["failure_context"]
-                expected = [text for i in range(79) for text in (
-                    f"error[E0308]: bad{i}", f"--> core/src/a.rs:{i}:2",
-                )] + ["[... diagnostic context truncated ...]"]
+                expected = [
+                    text
+                    for i in range(79)
+                    for text in (
+                        f"error[E0308]: bad{i}",
+                        f"--> core/src/a.rs:{i}:2",
+                    )
+                ] + ["[... diagnostic context truncated ...]"]
                 self.assertEqual(context.splitlines(), expected)
                 self.assertTrue(result["context_truncated"])
                 self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
@@ -466,11 +479,20 @@ class LogTests(unittest.TestCase):
                 path = "core/src/thread_manager_tests.rs:3578:57"
                 snippet = "3578 | RolloutItem::SessionMeta(SessionMetaLine {"
                 detail = "| expected `Box<SessionMetaLine>`, found `SessionMetaLine`"
-            blocks.append("\n".join([
-                "error[E0308]: mismatched types", f"--> {path}", "|", snippet,
-                *[f"{200 + n} | nested field {n}" for n in range(30)],
-                detail, "help: wrap the argument", "",
-            ]))
+            blocks.append(
+                "\n".join(
+                    [
+                        "error[E0308]: mismatched types",
+                        f"--> {path}",
+                        "|",
+                        snippet,
+                        *[f"{200 + n} | nested field {n}" for n in range(30)],
+                        detail,
+                        "help: wrap the argument",
+                        "",
+                    ]
+                )
+            )
         log = ("\n".join(blocks) + "\ncache cleanup\n" * 20000).encode()
         expected = self.collect(log)
         context = expected["failure_context"]
@@ -483,10 +505,13 @@ class LogTests(unittest.TestCase):
         self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
         self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
         for width in (17, 65536):
-            self.assertEqual(MOD.collect_log(
-                (log[i:i + width] for i in range(0, len(log), width)),
-                "Test scoped release behavior",
-            ), expected)
+            self.assertEqual(
+                MOD.collect_log(
+                    (log[i : i + width] for i in range(0, len(log), width)),
+                    "Test scoped release behavior",
+                ),
+                expected,
+            )
 
     def test_verbose_early_errors_cannot_displace_later_identities(self):
         log = "".join(
@@ -545,11 +570,19 @@ class LogTests(unittest.TestCase):
 
     def test_named_tests_and_formatter_blocks_retain_distinct_failures(self):
         for step, log, expected in (
-            ("Check formatting", b"Diff in /repo/a.rs:4:\n-old\n+new\n"
-             b"Diff in /repo/b.rs:5:\n-old2\n+new2\n", ("a.rs:4:", "b.rs:5:")),
-            ("Test scoped release behavior", b"test suite::one ... FAILED\n"
-             b"thread 'one' panicked at core/a.rs:5\nassertion failed\n"
-             b"test suite::two ... FAILED\n", ("suite::one", "suite::two", "assertion failed")),
+            (
+                "Check formatting",
+                b"Diff in /repo/a.rs:4:\n-old\n+new\n"
+                b"Diff in /repo/b.rs:5:\n-old2\n+new2\n",
+                ("a.rs:4:", "b.rs:5:"),
+            ),
+            (
+                "Test scoped release behavior",
+                b"test suite::one ... FAILED\n"
+                b"thread 'one' panicked at core/a.rs:5\nassertion failed\n"
+                b"test suite::two ... FAILED\n",
+                ("suite::one", "suite::two", "assertion failed"),
+            ),
         ):
             context = self.collect(log, step)["failure_context"]
             for text in expected:
