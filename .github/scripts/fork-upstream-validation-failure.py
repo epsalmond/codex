@@ -106,9 +106,13 @@ def sanitize(text):
         "[REDACTED]",
         text,
     )
+    # Authorization schemes may contain spaces, commas, and quoted parameters.
+    # Discard the entire physical header value, independent of its scheme.
+    text = re.sub(r"(?i)\b(authorization)\s*[:=][^\r\n]*", r"\1=[REDACTED]", text)
     text = re.sub(
-        r"(?i)\b(authorization|token|password|secret|api[_-]?key)\s*[:=]\s*"
-        r"(?:bearer\s+)?[^\s,;]+",
+        r"(?i)\b(token|password|secret|api[_-]?key)\s*[:=]\s*(?:bearer\s+)?"
+        r'(?:"(?:\\.|[^"\\\r\n])*(?:"|$)|'
+        r"'(?:\\.|[^'\\\r\n])*(?:'|$)|[^\s,;]+)",
         r"\1=[REDACTED]",
         text,
     )
@@ -160,6 +164,8 @@ def collect_log(chunks, failed_step):
     infrastructure = False
     truncated = False
     exceeded = False
+    overlong = False
+    long_line = False
     downloaded = 0
 
     def line(value):
@@ -204,26 +210,48 @@ def collect_log(chunks, failed_step):
             truncated = True
         before.append(clean)
 
+    def complete_line(value):
+        nonlocal infrastructure, overlong, long_line, truncated
+        if long_line or len(value) > MAX_LINE * 2:
+            infrastructure |= bool(INFRA.search(sanitize(value)))
+            overlong = truncated = True
+            # Never expose a credential continuation as a fresh artificial line.
+            line("[... overlong log line omitted ...]")
+        else:
+            line(value)
+        long_line = False
+
+    def feed(value):
+        nonlocal pending, infrastructure, overlong, long_line, truncated
+        # Keep a full fragment of overlap for signatures across boundaries. Some
+        # patterns span unbounded text, so any overlong logical line also fails
+        # closed even when these bounded windows cannot establish a signature.
+        width = MAX_LINE * 2
+        for offset in range(0, len(value), width):
+            pending += value[offset : offset + width]
+            while "\n" in pending:
+                current, pending = pending.split("\n", 1)
+                complete_line(current)
+            if len(pending) > width:
+                infrastructure |= bool(INFRA.search(sanitize(pending)))
+                pending = pending[-width:]
+                overlong = long_line = truncated = True
+
     for chunk in chunks:
         downloaded += len(chunk)
         if downloaded > MAX_DOWNLOAD:
             exceeded = truncated = True
             break
-        pending += decoder.decode(chunk).replace("\r", "\n")
-        while "\n" in pending or len(pending) > MAX_LINE * 2:
-            if "\n" in pending:
-                value, pending = pending.split("\n", 1)
-            else:
-                value, pending = pending[: MAX_LINE * 2], pending[MAX_LINE * 2 :]
-                truncated = True
-            line(value)
-    pending += decoder.decode(b"", final=True)
+        feed(decoder.decode(chunk).replace("\r", "\n"))
+    feed(decoder.decode(b"", final=True))
     if pending and not exceeded:
-        line(pending)
+        complete_line(pending)
     if exceeded:
         result, reason = "infrastructure_failure", "log_download_limit"
     elif infrastructure:
         result, reason = "infrastructure_failure", "infrastructure_diagnostics"
+    elif overlong:
+        result, reason = "infrastructure_failure", "log_line_limit"
     elif failed_step not in SOURCE_STEPS:
         result, reason = "infrastructure_failure", "setup_or_identity_failure"
     elif reason:

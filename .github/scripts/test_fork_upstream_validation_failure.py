@@ -409,6 +409,102 @@ class LogTests(unittest.TestCase):
         self.assertIn("error[E0053]", result["failure_context"])
         self.assertIn("terminal result", result["failure_context"])
 
+    def test_complete_authorization_and_quoted_secret_redaction(self):
+        for value in (
+            "Authorization: Basic ZHVtbXk6dGVzdC1zZWNyZXQ=",
+            'authorization: Digest username="private user", response="private digest"',
+            "AUTHORIZATION=Custom private scheme value",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    MOD.sanitize(value).lower(), "authorization=[redacted]"
+                )
+        for key in ("token", "password", "secret", "api_key", "api-key"):
+            for value in (
+                "Bearer PRIVATE_TOKEN",
+                '"private words, and; separators"',
+                "'private words, and; separators'",
+                r'"private \"quoted\" words"',
+                r"'private \'quoted\' words'",
+                '"unterminated private words',
+                "'unterminated private words",
+            ):
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(
+                        MOD.sanitize(f"{key}={value}"), f"{key}=[REDACTED]"
+                    )
+        log = (
+            b"error[E0308]: wrong\nAuthorization: Basic PRIVATE_AUTH\n"
+            b'secret="PRIVATE FIRST SECOND"\nterminal\n'
+        )
+        expected = self.collect(log)
+        for width in (1, 7, 4096):
+            result = MOD.collect_log(
+                (log[i : i + width] for i in range(0, len(log), width)),
+                "Test scoped release behavior",
+            )
+            self.assertEqual(result, expected)
+            self.assertNotIn("PRIVATE", result["failure_context"])
+
+    def test_long_line_infrastructure_is_independent_of_transport_chunks(self):
+        for signature in (
+            b"No space left on device",
+            b"temporary failure in name resolution",
+            b"process didn't exit successfully (signal: 9)",
+        ):
+            log = b"x" * 4090 + signature + b"x" * 70000 + b"\n" + RUST_LOG
+            expected = self.collect(log)
+            self.assertEqual(expected["failure_reason"], "infrastructure_diagnostics")
+            for width in (17, 4096, 65536):
+                with self.subTest(signature=signature, width=width):
+                    self.assertEqual(
+                        MOD.collect_log(
+                            (log[i : i + width] for i in range(0, len(log), width)),
+                            "Test scoped release behavior",
+                        ),
+                        expected,
+                    )
+
+    def test_overlong_lines_fail_closed_when_signature_exceeds_overlap(self):
+        for ending in (b"\n", b""):
+            log = RUST_LOG + b"toolchain " + b"x" * 70000 + b" not installed" + ending
+            expected = self.collect(log)
+            self.assertEqual(expected["validation_result"], "infrastructure_failure")
+            self.assertEqual(expected["failure_reason"], "log_line_limit")
+            self.assertTrue(expected["context_truncated"])
+            self.assertEqual(
+                MOD.collect_log(
+                    (log[i : i + 65536] for i in range(0, len(log), 65536)),
+                    "Test scoped release behavior",
+                ),
+                expected,
+            )
+
+    def test_overlong_credential_lines_never_expose_fragment_suffixes(self):
+        for secret in (
+            b"Authorization: Basic " + b"PRIVATE_AUTH" * 8000,
+            b'password="' + b"PRIVATE WORDS " * 8000 + b'"',
+            b"https://user:PRIVATE@example.org/log?signature=" + b"PRIVATE" * 8000,
+        ):
+            log = RUST_LOG + b"x" * 4090 + secret + b"\nterminal\n"
+            expected = self.collect(log)
+            for width in (17, 4096, 65536):
+                with self.subTest(prefix=secret[:30], width=width):
+                    result = MOD.collect_log(
+                        (log[i : i + width] for i in range(0, len(log), width)),
+                        "Test scoped release behavior",
+                    )
+                    self.assertEqual(result, expected)
+                    self.assertNotIn("PRIVATE", result["failure_context"])
+                    self.assertIn("terminal", result["failure_context"])
+                    self.assertLessEqual(
+                        len(result["failure_context"].encode()), MOD.MAX_CONTEXT
+                    )
+                    self.assertLessEqual(
+                        len(result["failure_context"].splitlines()),
+                        MOD.MAX_CONTEXT_LINES,
+                    )
+
     def test_context_line_count_bound(self):
         result = self.collect(RUST_LOG + b"x\n" * 10000 + b"terminal\n")
         self.assertLessEqual(
