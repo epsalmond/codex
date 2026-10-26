@@ -179,7 +179,8 @@ class DiagnosticContext:
             identity_bytes = sum(
                 len(row[2].encode("utf-8")) + 1
                 for block in [*self.blocks, self.current]
-                for row in block if row[0] <= 1
+                for row in block
+                if row[0] <= 1
             )
             if len(self.blocks) < MAX_CONTEXT_LINES and identity_bytes <= 56 * 1024:
                 self.blocks.append(self.current)
@@ -191,7 +192,8 @@ class DiagnosticContext:
                     _, index, removed = max(
                         (row[:2], index, row)
                         for index, block in enumerate(self.blocks)
-                        for row in block if row[0] > 1
+                        for row in block
+                        if row[0] > 1
                     )
                     self.blocks[index].remove(removed)
                     self.stored_bytes -= len(removed[2].encode("utf-8")) + 1
@@ -234,7 +236,9 @@ class DiagnosticContext:
         self.finish()
         blocks = [sorted(block) for block in self.blocks]
         if infrastructure:
-            blocks = [[(0 if i == 0 else 5, i, text) for i, text in enumerate(infrastructure)]]
+            blocks = [
+                [(0 if i == 0 else 5, i, text) for i, text in enumerate(infrastructure)]
+            ]
         selected = [[] for _ in blocks]
         used_bytes = used_lines = 0
         # Reserve room for an honest omission marker, even if we discover the
@@ -274,14 +278,21 @@ class DiagnosticContext:
             for index in admitted:
                 if offset < len(details[index]):
                     include(index, details[index][offset])
-        output = [row[2] for rows in selected for row in sorted(rows, key=lambda row: row[1])]
+        output = [
+            row[2] for rows in selected for row in sorted(rows, key=lambda row: row[1])
+        ]
         # A short terminal tail is supplemental; it never displaces a distinct
         # compiler location or useful snippet. Avoid repeating retained text.
         terminal = []
         for text in list(tail)[-8:] if blocks else tail:
             # Diagnostic identities must pass the whole-block admission above,
             # including identities discarded before rendering the reservoir.
-            if RUSTC.search(text) or FORMAT.search(text) or TEST.search(text) or LOCATION.match(text):
+            if (
+                RUSTC.search(text)
+                or FORMAT.search(text)
+                or TEST.search(text)
+                or LOCATION.match(text)
+            ):
                 continue
             if text not in output and text not in terminal:
                 size = len(text.encode("utf-8")) + 1
@@ -321,7 +332,13 @@ def collect_log(chunks, failed_step):
     downloaded = 0
 
     def line(value):
-        nonlocal tail_bytes, infra_bytes, infra_remaining, reason, infrastructure, truncated
+        nonlocal \
+            tail_bytes, \
+            infra_bytes, \
+            infra_remaining, \
+            reason, \
+            infrastructure, \
+            truncated
         clean = sanitize(value)
         if not clean:
             return
@@ -345,6 +362,7 @@ def collect_log(chunks, failed_step):
         while tail_bytes > MAX_STORAGE // 4:
             tail_bytes -= len(tail.popleft().encode("utf-8")) + 1
             truncated = True
+
     def complete_line(value):
         nonlocal infrastructure, overlong, long_line, truncated
         if long_line or len(value) > MAX_LINE * 2:
