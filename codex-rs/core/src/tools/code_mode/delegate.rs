@@ -128,12 +128,11 @@ impl CodeModeDispatchBroker {
             .get(cell_id)?
             .delegate
             .upgrade()?;
-        let registration = delegate
+        delegate
             .work_registration
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        registration
+            .clone()
     }
 
     /// Makes the cell's completion observable to `wait` and `terminate` until the cell closes.

@@ -705,14 +705,14 @@ impl UnifiedExecProcessManager {
         };
         let startup = {
             let store = self.process_store.lock().await;
-            if store.closed {
-                drop(store);
-                self.release_process_id(request.process_id).await;
-                return Err(UnifiedExecError::process_failed(
-                    "native process manager is shutting down".into(),
-                ));
-            }
-            self.startups.token()
+            // Admission must register with shutdown before releasing the store lock.
+            (!store.closed).then(|| self.startups.token())
+        };
+        let Some(startup) = startup else {
+            self.release_process_id(request.process_id).await;
+            return Err(UnifiedExecError::process_failed(
+                "native process manager is shutting down".into(),
+            ));
         };
         let startup = ProcessStartupGuard {
             process: None,

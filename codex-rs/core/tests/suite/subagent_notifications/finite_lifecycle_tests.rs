@@ -25,12 +25,15 @@ fn configure_finite_child(config: &mut codex_core::config::Config) {
     config
         .features
         .enable(Feature::AsyncProcessCompletion)
-        .unwrap();
-    config.features.enable(Feature::UnifiedExec).unwrap();
+        .expect("enable automatic process completion");
+    config
+        .features
+        .enable(Feature::UnifiedExec)
+        .expect("enable unified exec");
     config
         .permissions
         .set_permission_profile(PermissionProfile::Disabled)
-        .unwrap();
+        .expect("disable sandbox permissions for the local test");
 }
 
 async fn assert_waiting_without_parent_final(run: &TypedReportsRun) -> Result<()> {
@@ -418,7 +421,7 @@ async fn compatibility_cell_child_stays_waiting_until_explicit_wait_terminates_i
     let worker_id_text = worker_id.to_string();
     let child_initial: Value = requests
         .iter()
-        .filter_map(|request| decoded_body(request))
+        .filter_map(decoded_body)
         .filter_map(|body| serde_json::from_slice::<Value>(&body).ok())
         .find(|body| body["client_metadata"]["thread_id"] == worker_id_text)
         .expect("child request");
@@ -473,7 +476,7 @@ async fn compatibility_cell_child_stays_waiting_until_explicit_wait_terminates_i
     let report: Value = requests
         .iter()
         .filter(|request| body_contains(request, "Message Type: FINAL_ANSWER"))
-        .filter_map(|request| decoded_body(request))
+        .filter_map(decoded_body)
         .filter_map(|body| serde_json::from_slice(&body).ok())
         .next()
         .expect("real child final reaches the root");
@@ -692,7 +695,7 @@ impl TypedReportsRun {
             move |_headers, body| {
                 let body: Value = serde_json::from_slice(body).ok()?;
                 let id = body["client_metadata"]["thread_id"].as_str()?;
-                let mut root = root_id.lock().unwrap();
+                let mut root = root_id.lock().expect("root routing state");
                 if root.is_none() && body.to_string().contains(START_PROMPT) {
                     *root = Some(id.to_owned());
                     return Some(0);
@@ -725,7 +728,10 @@ impl TypedReportsRun {
             .with_config(move |config| {
                 configure_finite_child(config);
                 for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::CodeMode] {
-                    config.features.enable(feature).unwrap();
+                    config
+                        .features
+                        .enable(feature)
+                        .expect("enable cell feature");
                 }
                 config.multi_agent_v2.agent_polling = AgentPolling::Disabled;
                 config.multi_agent_v2.expose_spawn_agent_model_overrides = true;
@@ -924,7 +930,7 @@ fn automatic_receipt(request: &Value, producer: &str) -> String {
             (text.starts_with("<async_tool_completion>") && text.contains(producer))
                 .then_some(text.to_owned())
         })
-        .last()
+        .next_back()
         .expect("automatic completion for this producer")
 }
 

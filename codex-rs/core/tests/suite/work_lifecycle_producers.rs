@@ -287,10 +287,16 @@ async fn fixture(
             config
                 .features
                 .enable(Feature::AsyncProcessCompletion)
-                .unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
+                .expect("enable automatic process completion");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("enable multi-agent V2");
             if matches!(producer, Producer::Cell) {
-                config.features.enable(Feature::CodeMode).unwrap();
+                config
+                    .features
+                    .enable(Feature::CodeMode)
+                    .expect("enable code mode");
             }
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Disabled;
             config.model_provider.stream_max_retries = Some(0);
@@ -381,7 +387,7 @@ async fn request_count(server: &StreamingSseServer, count: usize) -> Result<()> 
 fn completion_texts(request: &Value) -> Vec<&str> {
     request["input"]
         .as_array()
-        .unwrap()
+        .expect("model input")
         .iter()
         .filter_map(|item| {
             let text = item["content"][0]["text"].as_str()?;
@@ -393,7 +399,7 @@ fn completion_texts(request: &Value) -> Vec<&str> {
 fn yielded_output(request: &Value) -> String {
     let item = request["input"]
         .as_array()
-        .unwrap()
+        .expect("model input")
         .iter()
         .find(|item| {
             item["call_id"] == CALL_ID
@@ -407,7 +413,7 @@ fn yielded_output(request: &Value) -> String {
     } else {
         item["output"]
             .as_array()
-            .unwrap()
+            .expect("tool output content items")
             .iter()
             .filter_map(|part| part["text"].as_str())
             .collect::<Vec<_>>()
@@ -581,12 +587,12 @@ async fn finite_acceptance(
         retained.pending_notifications > 0,
         "history append cannot release the result hold: {retained:?}"
     );
-    accept.send(()).unwrap();
+    accept.send(()).expect("release model acceptance gate");
     observe(&mut updates, |snapshot| {
         snapshot.revision != retained.revision && snapshot.pending_notifications == 0
     })
     .await?;
-    finish.send(()).unwrap();
+    finish.send(()).expect("release final response gate");
     let automatic = terminal_turn(&test).await?;
     assert!(automatic.error.is_none(), "{automatic:?}");
     assert_ne!(initial.turn_id, automatic.turn_id);
