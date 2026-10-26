@@ -118,6 +118,17 @@ verify_candidate() {
     die "candidate must have exactly fork_sha then upstream_sha as its parents"
 }
 
+verify_branch_name() {
+  local branch=$1 root="fork-recovery/$upstream_tag/${fork_sha:0:12}"
+  case "$branch" in
+    "$root"|"$root-attempt-1"|"$root-attempt-2") ;;
+    "fork-upstream-candidate/$upstream_tag/${fork_sha:0:12}")
+      [[ "$mode" == land ]] || die "recovery branch must use fork-recovery"
+      ;;
+    *) die "candidate branch is not an exact root or bounded repair branch" ;;
+  esac
+}
+
 write_ready_output() {
   [[ -n "$output" ]] || die "--output is required for preparation modes"
   {
@@ -253,9 +264,7 @@ case "$mode" in
   prepare-recovery)
     [[ -n "$output" && -n "$candidate_sha" && -n "$recovery_branch" ]] ||
       die "prepare-recovery needs --candidate-sha, --recovery-branch, and --output"
-    expected_recovery_branch="fork-recovery/$upstream_tag/${fork_sha:0:12}"
-    [[ "$recovery_branch" == "$expected_recovery_branch" ]] ||
-      die "recovery branch must be $expected_recovery_branch"
+    verify_branch_name "$recovery_branch"
     "${git_cmd[@]}" fetch --quiet --no-tags origin \
       "+refs/heads/$fork_branch:refs/remotes/origin/$fork_branch" \
       "+refs/heads/$recovery_branch:refs/remotes/origin/$recovery_branch" ||
@@ -275,6 +284,7 @@ case "$mode" in
   land)
     [[ -n "$candidate_sha" && -n "$candidate_branch" ]] ||
       die "land mode needs --candidate-sha and --candidate-branch"
+    verify_branch_name "$candidate_branch"
     "${git_cmd[@]}" fetch --quiet --no-tags origin \
       "+refs/heads/$candidate_branch:refs/remotes/origin/$candidate_branch" ||
       die "candidate branch is unavailable: $candidate_branch"

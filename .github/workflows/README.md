@@ -42,6 +42,7 @@ Only these targets and selectors run (14 test cases):
   - `spawn_internal_session_preserves_parent_lineage_without_forking_history`
   - `interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_history`
   - `interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_source`
+
 - `codex-tui --lib`:
   `app::owned_transcript::tests::fullscreen_composer_mouse_copy_and_input_ownership`
   and
@@ -88,3 +89,107 @@ their existing checks and builds.
 - If a build/test/clippy check can be expressed in Bazel, prefer putting the PR-time version in `bazel.yml`.
 - Keep `rust-ci.yml` fast enough that it usually does not dominate PR latency.
 - Reserve `rust-ci-full.yml` for heavyweight Cargo-native coverage that Bazel does not replace yet.
+
+## Exact upstream recovery
+
+`fork-upstream-update.yml` prepares an exact upstream merge and validates its
+immutable branch/SHA before landing it on `main` with compare-and-swap. The
+candidate must have exactly the original fork parent followed by the peeled
+upstream tag commit. Landing rechecks the remote branch tip and current `main`;
+retrying an already landed exact candidate can resume release dispatch. A new
+repair uses the same original two parents, never an extra repair parent.
+
+Merge conflicts retain the existing schema v2 `merge_conflict` deployment.
+Failed validation now emits schema v3 `validation_failure` through the same
+`upstream-release` deployment environment and task. The deployment ref and SHA
+are the original full fork SHA; its creator must be `github-actions[bot]`
+(ID 41898282). The fixed repository is `epsalmond/codex` (ID 1365250630).
+The feedback job has contents/actions read and deployments write permissions,
+checks out the trusted workflow base (`github.sha`) without persisted credentials,
+and never executes the failed candidate with its write token.
+
+The v3 payload fields are:
+
+```json
+{
+  "schema_version": 3,
+  "recovery_kind": "validation_failure",
+  "upstream_tag": "rust-v0.164.0",
+  "upstream_sha": "<40 lowercase hex>",
+  "fork_sha": "<40 lowercase hex>",
+  "candidate_sha": "<exact failed prepare-output SHA>",
+  "candidate_branch": "fork-recovery/<tag>/<fork_sha12>-attempt-1",
+  "run_id": 40297840820,
+  "run_attempt": 1,
+  "run_url": "https://github.com/epsalmond/codex/actions/runs/40297840820",
+  "validation_job_id": 121488520368,
+  "failed_step": "Test scoped release behavior",
+  "validation_result": "source_failure",
+  "failure_reason": "rustc_diagnostics",
+  "failure_context": "<sanitized bounded diagnostic windows>",
+  "context_truncated": false
+}
+```
+
+The collector verifies the fixed repository, updater workflow path/event, base
+SHA, current run attempt, and exact attempt's prepare and reusable validation
+jobs. It does not compare the run head to the candidate: the run executes the
+base workflow. GitHub does not expose dispatch inputs in run metadata. It
+requires terminal validation failure, not terminal completion of the containing
+updater run, which is still delivering the feedback. It also rechecks current
+`main`, exact candidate branch/SHA, original parents, and upstream tag identity.
+The processor independently verifies API provenance and logs; payload context is
+untrusted diagnostic data, never permission to change acceptance or budgets.
+
+Only `Check formatting` with an actual formatter diff, or `Test scoped release
+behavior` with rustc error codes or named test failures, can classify as
+`source_failure`. Setup/identity failures, cancellation/timeouts, toolchain,
+network/disk/resource diagnostics, and unknown output classify as
+`infrastructure_failure`. Infrastructure diagnostics anywhere in the bounded
+log take precedence over incidental source text. Failed helper tests remain
+unclassified infrastructure outcomes. A source classification additionally
+requires successful prepare and candidate identity steps. A killed workflow may
+prevent any feedback job; Actions failure and the existing stalled-handoff
+check remain the available evidence in that case.
+
+Raw job logs use a 30-second request timeout and a 60-second streaming deadline,
+with a 16 MiB download ceiling, at most 128 KiB selected/tail storage, 2 KiB lines,
+and at most 160 lines / 12 KiB final UTF-8 context. The collector retains the first recognized
+diagnostic window and terminal tail, strips ANSI/OSC/control/workflow commands,
+and redacts token patterns, authorization values, URL userinfo/query/fragment,
+and the active workflow token. Signed log redirects receive no API authorization
+header. Hitting the download ceiling prevents source classification. Full public
+job logs remain the authoritative detailed evidence; collection/API/provenance
+failure turns the handoff job red and still permits the failed-candidate draft PR.
+
+Initial candidates use `fork-upstream-candidate/<tag>/<fork_sha12>` or the existing
+`fork-recovery/<tag>/<fork_sha12>` root. Source repairs use only immutable
+`fork-recovery/<tag>/<fork_sha12>-attempt-1` and `-attempt-2`. Sibling refs avoid
+Git's file/directory collision with preserved historical root refs. The processor owns
+the durable budget: at most two repair model invocations for the original tuple,
+shared across reruns, redeliveries, restarts, and operator retry. Preflight before
+a model call consumes no invocation. A prerequisite discovered during a model
+call consumes that invocation; any later model call uses the next remaining
+slot. Publication/dispatch retry never reruns the model. This supersedes the older
+same-slot toolchain-continuation proposal. Toolchain provisioning uses an isolated
+management-plane manifest draft PR, normal review/merge/GitOps promotion, and
+installed sandbox verification; no candidate-controlled host setup is authorized.
+
+The producer deduplicates candidate/run/attempt deployments. The processor also
+deduplicates consumed failed candidates across different runs and owns persistent
+attempt reservations and terminal exhaustion. Infrastructure failures spend no
+source repair slot. A rerun supersedes old run-attempt notifications; advancing
+`main` or moving the candidate makes the old tuple stale. The failed-candidate PR
+records the exact prepare SHA, any changed branch tip, classification, and
+deployment status link. It cannot predict future exhaustion. Terminal processor
+status carries the final budget, last diagnostic, and supported retry/escalation.
+A successful deployment status establishes local handoff completion only;
+validation success, accepted landing, release dispatch, and published assets are
+separate acceptance gates.
+
+Deploy compatible management-plane processor/runtime support first, then this
+producer and branch grammar, then exercise one new exact-base automatic attempt.
+Preserve historical candidates, PRs, worktrees, and budgets. Roll back the v3
+producer first; stop or forward-fix the processor rather than resetting upgraded
+state or budgets. Component installation and full GitOps convergence are separate
+gates; unrelated host capacity admission is not a reason to clean storage.

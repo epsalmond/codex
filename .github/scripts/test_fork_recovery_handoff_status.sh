@@ -70,7 +70,7 @@ statuses \
   "2 failure 2026-10-08T20:16:00Z git merge failed: refusing to merge unrelated histories 100%" \
   "1 in_progress 2026-10-08T20:15:30Z local Luna merge recovery started"
 check 1 $((created + hour)) \
-  "::error title=Luna recovery failed::" \
+  "::error title=Automatic recovery failed::" \
   "refusing to merge unrelated histories 100%25" \
   "--retry-recovery $state_id"
 grep -Fq -- "--retry-recovery $state_id" "$fixture/summary.md"
@@ -95,6 +95,17 @@ check 1 $((created + 72 * hour + 7 * hour)) "Recovery handoff stalled" "has been
 # Stale handoffs are superseded and stay green.
 statuses "4 inactive 2026-10-08T20:20:00Z stale: fork branch advanced"
 check 0 $((created + 100 * hour)) "is inactive"
+
+# Validation feedback records immutable candidate/classification and preserves budget.
+jq --arg candidate "$(printf 'c%.0s' {1..40})" \
+  '.payload += {schema_version: 3, recovery_kind: "validation_failure", candidate_sha: $candidate, validation_result: "infrastructure_failure"}' \
+  "$fixture/deployment.json" > "$fixture/v3.json"
+mv "$fixture/v3.json" "$fixture/deployment.json"
+statuses "6 failure 2026-10-08T20:30:00Z repair_exhausted: 2/2 invocations; last rustc E0308"
+check 1 $((created + hour)) "failed candidate" "infrastructure_failure" "repair_exhausted" "preserves the consumed model budget" "operator escalation"
+jq '.payload.schema_version = 4' "$fixture/deployment.json" > "$fixture/bad.json"
+mv "$fixture/bad.json" "$fixture/deployment.json"
+check 2 $((created + hour)) "unsupported recovery identity"
 
 # Malformed deployment JSON is a usage error, not a silent pass.
 printf '{}\n' > "$fixture/deployment.json"
