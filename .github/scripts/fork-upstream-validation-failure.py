@@ -246,12 +246,14 @@ class DiagnosticContext:
         def include(index, row):
             nonlocal used_bytes, used_lines
             size = len(row[2].encode("utf-8")) + 1
-            if used_lines >= line_limit or used_bytes + size > byte_limit:
+            # Count Unicode separators and an empty line before the joining LF.
+            lines = len((row[2] + "\n").splitlines())
+            if used_lines + lines > line_limit or used_bytes + size > byte_limit:
                 self.truncated = True
                 return False
             selected[index].append(row)
             used_bytes += size
-            used_lines += 1
+            used_lines += lines
             return True
 
         # Every compact identity precedes any detail. When even identities do
@@ -260,7 +262,8 @@ class DiagnosticContext:
         for index, block in enumerate(blocks):
             identity = [row for row in block if row[0] <= 1]
             size = sum(len(row[2].encode("utf-8")) + 1 for row in identity)
-            if used_lines + len(identity) > line_limit or used_bytes + size > byte_limit:
+            lines = sum(len((row[2] + "\n").splitlines()) for row in identity)
+            if used_lines + lines > line_limit or used_bytes + size > byte_limit:
                 self.truncated = True
                 continue
             for row in identity:
@@ -276,11 +279,16 @@ class DiagnosticContext:
         # compiler location or useful snippet. Avoid repeating retained text.
         terminal = []
         for text in list(tail)[-8:] if blocks else tail:
+            # Diagnostic identities must pass the whole-block admission above,
+            # including identities discarded before rendering the reservoir.
+            if RUSTC.search(text) or FORMAT.search(text) or TEST.search(text) or LOCATION.match(text):
+                continue
             if text not in output and text not in terminal:
                 size = len(text.encode("utf-8")) + 1
-                if used_lines < line_limit and used_bytes + size <= byte_limit:
+                lines = len((text + "\n").splitlines())
+                if used_lines + lines <= line_limit and used_bytes + size <= byte_limit:
                     terminal.append(text)
-                    used_lines += 1
+                    used_lines += lines
                     used_bytes += size
                 else:
                     self.truncated = True

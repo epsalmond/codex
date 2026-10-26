@@ -409,6 +409,53 @@ class LogTests(unittest.TestCase):
         self.assertIn("error[E0053]", result["failure_context"])
         self.assertIn("terminal result", result["failure_context"])
 
+    def test_unicode_separators_count_toward_every_context_admission(self):
+        header = "error[E0308]: bad\n--> core/src/a.rs:1:2\n"
+        for separator in ("\u2028", "\u2029"):
+            cases = {
+                "detail": header + "1 | " + ("x" + separator) * 300,
+                "identity": "error[E0308]: " + ("x" + separator) * 300
+                + "\n--> core/src/a.rs:1:2\n",
+                "tail": "ordinary " + ("x" + separator) * 300,
+                "infrastructure": "No space left on device " + ("x" + separator) * 300,
+                "trailing_separator": "".join(
+                    f"error[E0308]: bad{i}\n--> core/src/a.rs:{i}:2\n"
+                    for i in range(79)
+                ) + "1 | x" + separator,
+            }
+            for name, value in cases.items():
+                with self.subTest(separator=repr(separator), admission=name):
+                    log = value.encode()
+                    result = self.collect(log)
+                    context = result["failure_context"]
+                    self.assertTrue(result["context_truncated"])
+                    self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
+                    self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
+                    if name == "detail":
+                        self.assertIn(header.strip(), context)
+                    for width in (1, 257, 65536):
+                        self.assertEqual(MOD.collect_log(
+                            (log[i:i + width] for i in range(0, len(log), width)),
+                            "Test scoped release behavior",
+                        ), result)
+
+    def test_supplemental_tail_cannot_reintroduce_skipped_identity_lines(self):
+        for count in (80, 1000):
+            with self.subTest(diagnostic_count=count):
+                log = "".join(
+                    f"error[E0308]: bad{i}\n--> core/src/a.rs:{i}:2\n"
+                    for i in range(count)
+                ).encode()
+                result = self.collect(log)
+                context = result["failure_context"]
+                expected = [text for i in range(79) for text in (
+                    f"error[E0308]: bad{i}", f"--> core/src/a.rs:{i}:2",
+                )] + ["[... diagnostic context truncated ...]"]
+                self.assertEqual(context.splitlines(), expected)
+                self.assertTrue(result["context_truncated"])
+                self.assertLessEqual(len(context.splitlines()), MOD.MAX_CONTEXT_LINES)
+                self.assertLessEqual(len(context.encode()), MOD.MAX_CONTEXT)
+
     def test_distinct_locations_and_deep_box_context_survive_cleanup(self):
         blocks = []
         for index in range(36):
