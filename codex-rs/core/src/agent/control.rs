@@ -319,7 +319,9 @@ impl LocalAgentControl {
                 .id
                 .take()
                 .filter(|id| !id.is_empty())
-                .unwrap_or_else(|| ResponseItemId::new("amsg"));
+                // `amsg_` is reserved for coordinator terminal reports, whose
+                // delivery is fenced by the current assignment generation.
+                .unwrap_or_else(|| ResponseItemId::new("mail"));
             communication.id = Some(message_id.clone());
             MessageDelivery::publish(context.sender_thread_id, message_id, observers)
         });
