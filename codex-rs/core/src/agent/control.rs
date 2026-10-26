@@ -10,8 +10,10 @@ use crate::agent::types::ListedAgent;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::agent_communication::MessageDelivery;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
+use crate::context::ContextualUserFragment;
 use crate::context::SubagentNotification;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::emit_subagent_session_started;
@@ -25,6 +27,7 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -33,6 +36,8 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemMetadata;
+use codex_protocol::models::ContentItemNamespace;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::Event;
@@ -304,10 +309,22 @@ impl LocalAgentControl {
         &self,
         agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
-        communication: InterAgentCommunication,
+        mut communication: InterAgentCommunication,
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        let observers = state.extensions.message_lifecycle_contributors();
+        let delivery = (!observers.is_empty()).then(|| {
+            let message_id = communication
+                .id
+                .take()
+                .filter(|id| !id.is_empty())
+                // `amsg_` is reserved for coordinator terminal reports, whose
+                // delivery is fenced by the current assignment generation.
+                .unwrap_or_else(|| ResponseItemId::new("mail"));
+            communication.id = Some(message_id.clone());
+            MessageDelivery::publish(context.sender_thread_id, message_id, observers)
+        });
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
         {
@@ -320,7 +337,7 @@ impl LocalAgentControl {
                 self.runtime.mailboxes.enqueue(
                     agent_id,
                     Some(submission_id.clone()),
-                    vec![communication],
+                    vec![crate::PendingAgentMessage::new(communication, delivery)],
                 )?;
                 if let Some(communication) = communication_for_log {
                     crate::agent_communication::emit_agent_communication_send(
@@ -355,6 +372,7 @@ impl LocalAgentControl {
                         },
                         parent_turn_id,
                         root_turn_id,
+                        delivery,
                     )
                     .await,
             )
@@ -384,6 +402,7 @@ impl LocalAgentControl {
                     Op::Interrupt,
                     /*parent_turn_id*/ None,
                     /*root_turn_id*/ None,
+                    /*message_delivery*/ None,
                 )
                 .await,
         )
@@ -543,11 +562,27 @@ impl LocalAgentControl {
             let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
                 return;
             };
+            let config = parent_thread.config().await;
+            let namespace = match parent_thread
+                .multi_agent_version()
+                .unwrap_or_else(|| config.multi_agent_version_from_features())
+            {
+                MultiAgentVersion::Disabled => None,
+                MultiAgentVersion::V1 => Some(ContentItemNamespace::MultiAgentV1),
+                MultiAgentVersion::V2 => Some(
+                    config
+                        .multi_agent_v2
+                        .tool_namespace
+                        .clone()
+                        .map(ContentItemNamespace::from)
+                        .unwrap_or(ContentItemNamespace::Functions),
+                ),
+            };
             parent_thread
-                .inject_fragment_without_turn(SubagentNotification::new(
-                    child_reference.as_str(),
-                    status,
-                ))
+                .inject_fragment_without_turn(
+                    SubagentNotification::new(child_reference.as_str(), status)
+                        .with_metadata(ContentItemMetadata::tool(namespace)),
+                )
                 .await;
         };
         tokio::spawn(async move {
@@ -625,14 +660,7 @@ impl LocalAgentControl {
         };
 
         let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
-        Some(
-            parent_thread
-                .session
-                .services
-                .turn_environments
-                .snapshot()
-                .await,
-        )
+        Some(parent_thread.session.inherited_environment_snapshot().await)
     }
 
     async fn inherited_exec_policy_for_source(

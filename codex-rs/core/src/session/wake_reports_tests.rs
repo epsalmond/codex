@@ -18,10 +18,10 @@ fn deferred_report_preserves_its_wake_request_until_history_is_recorded() {
             /*trigger_turn*/ true,
         )
     };
-    let input = TurnInput::InterAgentCommunication(communication.clone());
+    let input = TurnInput::InterAgentCommunication(communication.clone().into());
 
     assert_eq!(
         deferred_coordinator_report(&input),
-        Some(TurnInput::InterAgentCommunication(communication))
+        Some(TurnInput::InterAgentCommunication(communication.into()))
     );
 }

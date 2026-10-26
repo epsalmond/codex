@@ -5,17 +5,61 @@ use crate::suite::settings_commits::COMMITTED_MODEL;
 use crate::suite::settings_commits::PauseAfterCommit;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::MessageLifecycleContributor;
+use codex_extension_api::MessageLifecycleInput;
+use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Op;
 use core_test_support::ThreadIdle;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
+use test_case::test_case;
 use tokio::sync::oneshot;
 
+#[derive(Default)]
+struct Messages(Mutex<MessageEvents>);
+
+#[derive(Default)]
+struct MessageEvents {
+    pending: HashSet<ResponseItemId>,
+    published: HashMap<ResponseItemId, ThreadId>,
+    consumed: HashMap<ResponseItemId, (ThreadId, ThreadId)>,
+}
+impl MessageLifecycleContributor for Messages {
+    fn on_publish(&self, input: &MessageLifecycleInput) {
+        let mut events = self.0.lock().expect("messages lock");
+        assert!(events.pending.insert(input.message_id.clone()));
+        assert!(
+            events
+                .published
+                .insert(input.message_id.clone(), input.sender)
+                .is_none()
+        );
+    }
+    fn on_consumed(&self, input: &MessageLifecycleInput, recipient: ThreadId) {
+        let mut events = self.0.lock().expect("messages lock");
+        assert!(events.pending.remove(&input.message_id));
+        assert_eq!(events.published.get(&input.message_id), Some(&input.sender));
+        assert!(
+            events
+                .consumed
+                .insert(input.message_id.clone(), (input.sender, recipient))
+                .is_none()
+        );
+    }
+}
+
+#[test_case(false; "loaded")]
+#[test_case(true; "reloaded")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()> {
+#[tracing_test::traced_test]
+async fn idle_mail_survives_eviction_and_preserves_followup_order(evict: bool) -> Result<()> {
+    const WORKER_ROLE: &str = "mailbox_worker";
     const MAIL: &str = "Keep this note for later";
     const LATE_MAIL: &str = "Another note while unloaded";
     const FOLLOWUP: &str = "Read the pending note";
@@ -26,7 +70,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({ "message": FIRST_TASK, "task_name": "first", "fork_turns": "none" }),
+        json!({ "message": FIRST_TASK, "task_name": "first", "agent_type": WORKER_ROLE, "fork_turns": "none" }),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
@@ -37,6 +81,8 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         gate: Mutex::new(Some((entered_tx, release_rx))),
     }));
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    let messages = Arc::new(Messages::default());
+    extensions.message_lifecycle_contributor(messages.clone());
     let test = test_codex()
         .with_model("gpt-5.6-sol")
         .with_extensions(Arc::new(extensions.build()))
@@ -45,13 +91,24 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
             config.features.enable(Feature::MultiAgentV2).unwrap();
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
             config.multi_agent_v2.hide_spawn_agent_metadata = true;
+            // Task agents close after their final report; this fixture needs later mail.
+            config.agent_roles.insert(
+                WORKER_ROLE.to_string(),
+                codex_agent_roles::AgentRoleConfig {
+                    lifetime: Some(AgentLifetime::Persistent),
+                    ..Default::default()
+                },
+            );
             // The worker drains retained mail with `wait_agent`, which only polling exposes.
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
         })
         .build_with_auto_env(&server)
-        .await?;
+        .await
+        .context("build mailbox test root")?;
     let mut created = test.thread_manager.subscribe_thread_created();
-    test.submit_turn(FIRST_PROMPT).await?;
+    test.submit_turn(FIRST_PROMPT)
+        .await
+        .context("spawn first worker")?;
     ThreadIdle::wait(&test.codex).await;
     let first_id = created.recv().await?;
     let first = test.thread_manager.get_thread(first_id).await?;
@@ -66,36 +123,45 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         json!({ "target": "first", "message": MAIL }),
     )
     .await;
-    test.submit_turn("send a note").await?;
+    test.submit_turn("send a note")
+        .await
+        .context("send loaded note")?;
     ThreadIdle::wait(&test.codex).await;
     // Wait for delivery through the submission queue before attempting eviction.
-    submit_thread_settings(&first, ThreadSettingsOverrides::default()).await?;
+    submit_thread_settings(&first, ThreadSettingsOverrides::default())
+        .await
+        .context("flush loaded note submission")?;
     assert_eq!(
         first.agent_status().await,
         AgentStatus::Completed(Some("worker completed".into()))
     );
     drop(first);
 
-    mount_root_collaboration_call(
-        &server,
-        "spawn while child is idle",
-        "replacement-spawn",
-        "spawn_agent",
-        json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
-    )
-    .await;
-    mount_completed_worker(&server, SECOND_TASK, "replacement-spawn").await;
-    test.submit_turn("spawn while child is idle").await?;
-    ThreadIdle::wait(&test.codex).await;
-    let replacement_id = created.recv().await?;
-    let replacement = test.thread_manager.get_thread(replacement_id).await?;
-    wait_for_event(&replacement, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    ThreadIdle::wait(&replacement).await;
-    assert!(test.thread_manager.get_thread(first_id).await.is_err());
-    assert_eq!(test.thread_manager.list_thread_ids().await.len(), 2);
+    if evict {
+        mount_root_collaboration_call(
+            &server,
+            "spawn while child is idle",
+            "replacement-spawn",
+            "spawn_agent",
+            json!({ "message": SECOND_TASK, "task_name": "replacement", "agent_type": WORKER_ROLE, "fork_turns": "none" }),
+        )
+        .await;
+        mount_completed_worker(&server, SECOND_TASK, "replacement-spawn").await;
+        test.submit_turn("spawn while child is idle").await?;
+        ThreadIdle::wait(&test.codex).await;
+        let replacement_id = created.recv().await?;
+        let replacement = test.thread_manager.get_thread(replacement_id).await?;
+        wait_for_event(&replacement, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        ThreadIdle::wait(&replacement).await;
+        assert_eq!(test.thread_manager.list_thread_ids().await.len(), 2);
+    }
+    assert_eq!(
+        test.thread_manager.get_thread(first_id).await.is_err(),
+        evict
+    );
     mount_root_collaboration_call(
         &server,
         "send while unloaded",
@@ -106,13 +172,20 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
     .await;
     test.submit_turn("send while unloaded").await?;
     ThreadIdle::wait(&test.codex).await;
-    assert!(test.thread_manager.get_thread(first_id).await.is_err());
+    assert_eq!(
+        test.thread_manager.get_thread(first_id).await.is_err(),
+        evict
+    );
 
-    // Reload without starting a turn, then hold dispatch while both tools submit.
+    let retained = messages.0.lock().unwrap().pending.clone();
+    assert_eq!(retained.len(), 2);
+    // Hold dispatch for a loaded or reloaded recipient while both tools submit.
     // The older queued notes must precede the follow-up, and the newer note must follow it.
-    test.thread_manager
-        .ensure_multi_agent_v2_child_loaded(first_id)
-        .await?;
+    if evict {
+        test.thread_manager
+            .ensure_multi_agent_v2_child_loaded(first_id)
+            .await?;
+    }
     let resumed = test.thread_manager.get_thread(first_id).await?;
     resumed
         .submit(Op::ThreadSettings {
@@ -132,10 +205,19 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         json!({ "target": "first", "message": FOLLOWUP }),
     )
     .await;
+    let (at_sampling, pending_at_sampling) = mpsc::channel();
+    let sampling_messages = Arc::clone(&messages);
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
-            body_contains(request, FOLLOWUP) && !has_function_call_output(request, "followup")
+        move |request: &wiremock::Request| {
+            let matches =
+                body_contains(request, FOLLOWUP) && !has_function_call_output(request, "followup");
+            if matches {
+                at_sampling
+                    .send(sampling_messages.0.lock().unwrap().pending.clone())
+                    .unwrap();
+            }
+            matches
         },
         sse(vec![
             ev_response_created("worker-wait"),
@@ -173,14 +255,18 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
     release_tx.send(())?;
     wait_for_event(&resumed, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     ThreadIdle::wait(&resumed).await;
+    assert!(
+        pending_at_sampling.try_recv()?.is_disjoint(&retained),
+        "both retained publications must be consumed before the first resumed sample"
+    );
     let request = delivered
         .requests()
         .into_iter()
         .find(|request| request.function_call_output_text("wait-note").is_some())
         .expect("worker continuation after waiting for mail");
-    let messages = request.inputs_of_type("agent_message");
+    let input_messages = request.inputs_of_type("agent_message");
     let expected = [MAIL, LATE_MAIL, FOLLOWUP, AFTER_FOLLOWUP];
-    let received = messages
+    let received = input_messages
         .iter()
         .filter_map(|item| {
             expected
@@ -190,6 +276,27 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         })
         .collect::<Vec<_>>();
     assert_eq!(received, expected);
+    {
+        let events = messages.0.lock().unwrap();
+        let ordinary_ids = input_messages
+            .iter()
+            .filter(|item| expected.iter().any(|text| item.to_string().contains(text)))
+            .map(|item| serde_json::from_value::<ResponseItemId>(item["id"].clone()))
+            .collect::<std::result::Result<HashSet<_>, _>>()?;
+        assert_eq!(ordinary_ids.len(), expected.len());
+        assert!(retained.is_subset(&ordinary_ids));
+        for id in ordinary_ids {
+            assert_eq!(
+                events.published.get(&id),
+                Some(&test.session_configured.thread_id)
+            );
+            assert_eq!(
+                events.consumed.get(&id),
+                Some(&(test.session_configured.thread_id, first_id))
+            );
+            assert!(!events.pending.contains(&id));
+        }
+    }
     assert_eq!(test.thread_manager.list_thread_ids().await.len(), 2);
 
     test.thread_manager
