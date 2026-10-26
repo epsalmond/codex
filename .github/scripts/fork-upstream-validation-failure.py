@@ -146,20 +146,172 @@ def diagnostic(line, step):
     return None
 
 
+LOCATION = re.compile(r"^\s*-->\s+.+:\d+(?::\d+)?\s*$")
+SNIPPET = re.compile(r"^\s*\d+\s*[|~]")
+SEMANTIC = re.compile(r"\b(?:expected|found)\b|^\s*(?:help:|= note:)")
+
+
+class DiagnosticContext:
+    """Bounded distinct diagnostic reservoir, independent of download chunks.
+
+    Reserve 56 KiB for finished blocks and 8 KiB for the current block. Lines
+    with a location, source snippet or expected/found/help text displace routine
+    continuation output. Each block also has a fixed line/count ceiling.
+    """
+
+    def __init__(self):
+        self.blocks = []
+        self.keys = set()
+        self.current = []
+        self.current_bytes = 0
+        self.stored_bytes = 0
+        self.position = 0
+        self.location = None
+        self.snippet = False
+        self.semantic = False
+        self.truncated = False
+
+    def finish(self):
+        if not self.current:
+            return
+        key = (self.current[0][2], self.location)
+        if key not in self.keys:
+            identity_bytes = sum(
+                len(row[2].encode("utf-8")) + 1
+                for block in [*self.blocks, self.current]
+                for row in block if row[0] <= 1
+            )
+            if len(self.blocks) < MAX_CONTEXT_LINES and identity_bytes <= 56 * 1024:
+                self.blocks.append(self.current)
+                self.keys.add(key)
+                self.stored_bytes += self.current_bytes
+                # New identities displace low-value detail from any earlier
+                # block, rather than losing later errors to verbose early ones.
+                while self.stored_bytes > 56 * 1024:
+                    _, index, removed = max(
+                        (row[:2], index, row)
+                        for index, block in enumerate(self.blocks)
+                        for row in block if row[0] > 1
+                    )
+                    self.blocks[index].remove(removed)
+                    self.stored_bytes -= len(removed[2].encode("utf-8")) + 1
+                    self.truncated = True
+            else:
+                self.truncated = True
+        self.current = []
+        self.current_bytes = 0
+
+    def add(self, text, starts=False):
+        if starts:
+            self.finish()
+            self.location = None
+            self.snippet = self.semantic = False
+        elif not self.current:
+            return
+        priority = 5
+        if starts:
+            priority = 0
+        elif self.location is None and LOCATION.match(text):
+            self.location = text
+            priority = 1
+        elif not self.snippet and SNIPPET.match(text):
+            self.snippet = True
+            priority = 2
+        elif SEMANTIC.search(text):
+            priority = 4 if self.semantic else 3
+            self.semantic = True
+        entry = (priority, self.position, text)
+        self.position += 1
+        self.current.append(entry)
+        self.current_bytes += len(text.encode("utf-8")) + 1
+        while self.current_bytes > 8 * 1024 or len(self.current) > 48:
+            removed = max(self.current, key=lambda row: row[:2])
+            self.current.remove(removed)
+            self.current_bytes -= len(removed[2].encode("utf-8")) + 1
+            self.truncated = True
+
+    def render(self, tail, infrastructure):
+        self.finish()
+        blocks = [sorted(block) for block in self.blocks]
+        if infrastructure:
+            blocks = [[(0 if i == 0 else 5, i, text) for i, text in enumerate(infrastructure)]]
+        selected = [[] for _ in blocks]
+        used_bytes = used_lines = 0
+        # Reserve room for an honest omission marker, even if we discover the
+        # final cap only while enriching the last diagnostic.
+        marker = "[... diagnostic context truncated ...]"
+        byte_limit = MAX_CONTEXT - len(marker.encode("utf-8")) - 1
+        line_limit = MAX_CONTEXT_LINES - 1
+
+        def include(index, row):
+            nonlocal used_bytes, used_lines
+            size = len(row[2].encode("utf-8")) + 1
+            # Count Unicode separators and an empty line before the joining LF.
+            lines = len((row[2] + "\n").splitlines())
+            if used_lines + lines > line_limit or used_bytes + size > byte_limit:
+                self.truncated = True
+                return False
+            selected[index].append(row)
+            used_bytes += size
+            used_lines += lines
+            return True
+
+        # Every compact identity precedes any detail. When even identities do
+        # not fit, keep only whole header/location pairs and report truncation.
+        admitted = []
+        for index, block in enumerate(blocks):
+            identity = [row for row in block if row[0] <= 1]
+            size = sum(len(row[2].encode("utf-8")) + 1 for row in identity)
+            lines = sum(len((row[2] + "\n").splitlines()) for row in identity)
+            if used_lines + lines > line_limit or used_bytes + size > byte_limit:
+                self.truncated = True
+                continue
+            for row in identity:
+                include(index, row)
+            admitted.append(index)
+        details = [[row for row in block if row[0] > 1] for block in blocks]
+        for offset in range(max((len(rows) for rows in details), default=0)):
+            for index in admitted:
+                if offset < len(details[index]):
+                    include(index, details[index][offset])
+        output = [row[2] for rows in selected for row in sorted(rows, key=lambda row: row[1])]
+        # A short terminal tail is supplemental; it never displaces a distinct
+        # compiler location or useful snippet. Avoid repeating retained text.
+        terminal = []
+        for text in list(tail)[-8:] if blocks else tail:
+            # Diagnostic identities must pass the whole-block admission above,
+            # including identities discarded before rendering the reservoir.
+            if RUSTC.search(text) or FORMAT.search(text) or TEST.search(text) or LOCATION.match(text):
+                continue
+            if text not in output and text not in terminal:
+                size = len(text.encode("utf-8")) + 1
+                lines = len((text + "\n").splitlines())
+                if used_lines + lines <= line_limit and used_bytes + size <= byte_limit:
+                    terminal.append(text)
+                    used_lines += lines
+                    used_bytes += size
+                else:
+                    self.truncated = True
+        output.extend(terminal)
+        if self.truncated:
+            output.append(marker)
+        return "\n".join(output)
+
+
 def collect_log(chunks, failed_step):
-    """Stream entire bounded log; keep first diagnostic windows and terminal tail.
+    """Scan the bounded full stream; prioritize distinct diagnostic context.
 
     Infrastructure signatures anywhere in the download take precedence. A transport
     ceiling prevents source classification even if a prior compiler line matched.
     """
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     pending = ""
-    before = collections.deque(maxlen=2)
-    selected = []
+    diagnostics = DiagnosticContext()
+    infra_window = []
+    infra_bytes = 0
+    infra_remaining = 0
     tail = collections.deque()
     tail_bytes = 0
-    selected_bytes = 0
-    remaining = 0
     reason = None
     infrastructure = False
     truncated = False
@@ -169,13 +321,7 @@ def collect_log(chunks, failed_step):
     downloaded = 0
 
     def line(value):
-        nonlocal \
-            tail_bytes, \
-            selected_bytes, \
-            remaining, \
-            reason, \
-            infrastructure, \
-            truncated
+        nonlocal tail_bytes, infra_bytes, infra_remaining, reason, infrastructure, truncated
         clean = sanitize(value)
         if not clean:
             return
@@ -184,32 +330,21 @@ def collect_log(chunks, failed_step):
         truncated |= bounded != clean
         clean = bounded
         found = diagnostic(clean, failed_step)
-        if (
-            infra
-            and not infrastructure
-            or found
-            and reason is None
-            and not infrastructure
-        ):
-            selected[:] = list(before)
-            selected_bytes = sum(len(x.encode("utf-8")) + 1 for x in selected)
-            remaining = 24
+        if infra and not infrastructure:
+            infra_remaining = 24
         infrastructure |= infra
         reason = reason or found
-        if (
-            remaining > 0
-            and selected_bytes + len(clean.encode("utf-8")) + 1 <= MAX_STORAGE // 2
-        ):
-            selected.append(clean)
-            selected_bytes += len(clean.encode("utf-8")) + 1
-            remaining -= 1
+        diagnostics.add(clean, starts=bool(found))
+        size = len(clean.encode("utf-8")) + 1
+        if infra_remaining and infra_bytes + size <= MAX_STORAGE // 4:
+            infra_window.append(clean)
+            infra_bytes += size
+            infra_remaining -= 1
         tail.append(clean)
-        tail_bytes += len(clean.encode("utf-8")) + 1
-        while tail_bytes > MAX_STORAGE // 2:
+        tail_bytes += size
+        while tail_bytes > MAX_STORAGE // 4:
             tail_bytes -= len(tail.popleft().encode("utf-8")) + 1
             truncated = True
-        before.append(clean)
-
     def complete_line(value):
         nonlocal infrastructure, overlong, long_line, truncated
         if long_line or len(value) > MAX_LINE * 2:
@@ -258,29 +393,8 @@ def collect_log(chunks, failed_step):
         result = "source_failure"
     else:
         result, reason = "infrastructure_failure", "unclassified"
-    head = "\n".join(selected)
-    end = "\n".join(tail)
-    context = end if not head or head == end else head + "\n[terminal log tail]\n" + end
-    context_lines = context.splitlines()
-    if len(context_lines) > MAX_CONTEXT_LINES:
-        context = "\n".join(
-            context_lines[:100] + ["[... log lines omitted ...]"] + context_lines[-59:]
-        )
-        truncated = True
-    if len(context.encode("utf-8")) > MAX_CONTEXT:
-        context = (
-            utf8_prefix(context, 8 * 1024)
-            + "\n[terminal log tail]\n"
-            + context.encode("utf-8")[-3800:].decode("utf-8", "ignore")
-        )
-        truncated = True
-    # The byte-window join can duplicate lines; enforce the line limit again.
-    context_lines = context.splitlines()
-    if len(context_lines) > MAX_CONTEXT_LINES:
-        context = "\n".join(
-            context_lines[:100] + ["[... log lines omitted ...]"] + context_lines[-59:]
-        )
-        truncated = True
+    context = diagnostics.render(tail, infra_window if infrastructure else [])
+    truncated |= diagnostics.truncated
     return {
         "validation_result": result,
         "failure_reason": reason,
