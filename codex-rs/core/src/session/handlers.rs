@@ -6,6 +6,7 @@ use crate::realtime_conversation::handle_speech as handle_realtime_conversation_
 use crate::realtime_conversation::handle_start as handle_realtime_conversation_start;
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use async_channel::Receiver;
+use codex_features::Feature;
 use codex_otel::set_parent_from_w3c_trace_context;
 use tracing::Instrument;
 use tracing::debug_span;
@@ -37,7 +38,6 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::GuardianAssessmentStatus;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeConversationListVoicesResponseEvent;
 use codex_protocol::protocol::RealtimeVoicesList;
@@ -401,7 +401,7 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
 pub async fn inter_agent_communication(
     sess: &Arc<Session>,
     sub_id: String,
-    mut communication: InterAgentCommunication,
+    communication: crate::PendingAgentMessage,
     start_options: codex_protocol::turn_input::TurnStartOptions,
 ) {
     let report_id = communication
@@ -413,7 +413,10 @@ pub async fn inter_agent_communication(
             .local_agent_runtime
             .terminal_report_delivery_guard(report_id)
     });
-    sess.apply_child_report_mode(&mut communication).await;
+    // Normalize the protocol payload while retaining the captured publication state.
+    let mut normalized = (*communication).clone();
+    sess.apply_child_report_mode(&mut normalized).await;
+    let communication = crate::PendingAgentMessage::new(normalized, communication.delivery.clone());
     if communication.trigger_turn
         && start_options.parent_turn_id.is_some()
         && sess.input_queue.wakeups_paused()
@@ -467,7 +470,10 @@ pub async fn inter_agent_communication(
     if trigger_turn && sess.input_queue.wakeups_paused() {
         sess.emit_agent_wakeups_updated().await;
     }
-    if trigger_turn || sess.has_outstanding_durable_sleep() {
+    if trigger_turn
+        || sess.features.enabled(Feature::WakeOnAgentMessages)
+        || sess.has_outstanding_durable_sleep()
+    {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
     }
@@ -875,7 +881,9 @@ pub(super) async fn submission_loop(
                 match update {
                     Ok(true) => {
                         sess.input_queue.notify_mailbox();
-                        if sess.has_outstanding_durable_sleep() {
+                        if sess.features.enabled(Feature::WakeOnAgentMessages)
+                            || sess.has_outstanding_durable_sleep()
+                        {
                             sess.maybe_start_turn_for_pending_work().await;
                         }
                     }
@@ -1062,6 +1070,8 @@ pub(super) async fn submission_loop(
                     communication,
                     start_options,
                 } => {
+                    let communication =
+                        crate::PendingAgentMessage::new(communication, sub.message_delivery);
                     inter_agent_communication(&sess, sub.id.clone(), communication, start_options)
                         .await;
                     false

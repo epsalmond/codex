@@ -95,7 +95,7 @@ async fn explicit_followup_clears_the_wake_pause_before_queuing_its_turn() {
     crate::session::handlers::inter_agent_communication(
         &session,
         "followup-sub-id".to_string(),
-        communication,
+        communication.into(),
         TurnStartOptions {
             parent_turn_id: Some("parent-turn".to_string()),
             ..Default::default()
@@ -122,7 +122,7 @@ async fn queue_only_or_automatic_mail_does_not_clear_the_wake_pause() {
         crate::session::handlers::inter_agent_communication(
             &session,
             "queued-sub-id".to_string(),
-            communication,
+            communication.into(),
             TurnStartOptions {
                 parent_turn_id,
                 ..Default::default()
