@@ -279,6 +279,7 @@ async fn polling_guard_preserves_input_queued_before_the_fourth_check() -> Resul
             }],
             client_user_message_id: None,
             responsesapi_client_metadata: None,
+            responsesapi_client_metadata_patch: None,
             additional_context: None,
         })
         .await?;
