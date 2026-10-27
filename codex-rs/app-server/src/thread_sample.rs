@@ -230,6 +230,7 @@ impl SampleTask {
                 conversation_id: id,
                 history: Arc::new(history.items),
                 rollout_path: None,
+                last_activity_at: None,
             }),
         ))
         .await

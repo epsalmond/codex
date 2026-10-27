@@ -46,6 +46,7 @@ async fn program_status_tracks_live_results_and_resolved_approvals() {
     handle_turn_started(&mut chat, "failed-turn");
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            context_usage: None,
             thread_id: String::new(),
             turn: app_server_turn(
                 "failed-turn",
