@@ -5650,7 +5650,12 @@ async fn multi_agent_v2_report_answer_selects_one_of_two_ancestors(first: &str, 
         let delivered = delivered_mail(&manager, &threads, "/root/lead/worker", asker);
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].recipient.as_str(), asker);
-        assert_eq!(delivered[0].content, message);
+        assert_eq!(
+            delivered[0].content,
+            format!(
+                "Message Type: ANSWER\nTask name: {asker}\nSender: /root/lead/worker\nPayload:\n{message}"
+            )
+        );
     }
 }
 
