@@ -432,6 +432,30 @@ impl InputQueue {
         (items, start_options, generation)
     }
 
+    /// Attach startup mail while the turn state is locked, without a drain-to-attach await.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "mailbox removal and its recovery copy must share one cancellation boundary"
+    )]
+    pub(crate) async fn drain_mailbox_into_turn_state(
+        &self,
+        turn_state: &Mutex<TurnState>,
+        reserved_start_options: &TurnStartOptions,
+    ) -> TurnStartOptions {
+        let mut turn_state = turn_state.lock().await;
+        let (items, drained_start_options) = self.drain_mailbox_input_items().await;
+        let start_options = if reserved_start_options.parent_turn_id.is_some()
+            || reserved_start_options.root_turn_id.is_some()
+        {
+            reserved_start_options.clone()
+        } else {
+            drained_start_options
+        };
+        turn_state.pending_input.items.extend(items);
+        turn_state.mail_start_options = start_options.clone();
+        start_options
+    }
+
     pub(crate) async fn turn_state_for_sub_id(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
@@ -484,10 +508,15 @@ impl InputQueue {
         reason: &TurnAbortReason,
         mode: ChildReportMode,
     ) -> bool {
-        let mut items = {
+        let (mail_start_options, mut items) = {
             let mut turn_state = active_turn.turn_state.lock().await;
             turn_state.clear_pending_waiters();
-            std::mem::take(&mut turn_state.pending_input).items
+            (
+                // Mail in pending input stopped carrying its own options when the turn drained
+                // it, so return it with the options the turn was started with.
+                turn_state.mail_start_options.clone(),
+                std::mem::take(&mut turn_state.pending_input).items,
+            )
         };
         match mode {
             ChildReportMode::WakeOnReport => {
@@ -505,28 +534,96 @@ impl InputQueue {
                 }
             }
         }
-        self.return_to_mailbox(&mut items).await
+        self.return_to_mailbox_with_start_options(&mut items, mail_start_options)
+            .await
     }
 
     /// Takes the agent mail from the active turn's pending input, in order, and leaves the rest.
-    pub(crate) async fn take_pending_agent_mail(
+    /// One copy of every taken mail item stays in pending input (in take order): a hard abort
+    /// before the copies are consumed at recording recovers the mail through `clear_pending`
+    /// instead of losing it.
+    pub(crate) async fn take_pending_agent_mail_keeping_unrecorded_mail(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
-    ) -> Vec<TurnInput> {
+    ) -> (Vec<TurnInput>, Option<Arc<Mutex<TurnState>>>) {
         let turn_state = active_turn
             .lock()
             .await
             .as_ref()
             .map(|turn| Arc::clone(&turn.turn_state));
         let Some(turn_state) = turn_state else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
-        let mut turn_state = turn_state.lock().await;
-        let (mail, rest) = std::mem::take(&mut turn_state.pending_input.items)
+        let mut state = turn_state.lock().await;
+        let (mail, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut state.pending_input.items)
             .into_iter()
             .partition(|item| matches!(item, TurnInput::InterAgentCommunication(_)));
-        turn_state.pending_input.items = rest;
-        mail
+        state.pending_input.items = rest.into_iter().chain(mail.iter().cloned()).collect();
+        drop(state);
+        (mail, Some(turn_state))
+    }
+
+    /// Finish a batch against its original owner. Acquire the destination before removing any
+    /// recovery copies, so cancellation leaves each message in either the turn or the mailbox.
+    pub(crate) async fn finish_unrecorded_mail(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+        consumed: &[TurnInput],
+        returned: &[TurnInput],
+    ) {
+        let mut state = match turn_state {
+            Some(state) => Some(state.lock().await),
+            None => None,
+        };
+        let mut mailbox = if returned.is_empty() {
+            None
+        } else {
+            Some(self.mailbox_pending_mails.lock().await)
+        };
+        let start_options = state
+            .as_ref()
+            .map(|state| state.mail_start_options.clone())
+            .unwrap_or_default();
+        for item in consumed {
+            if let TurnInput::InterAgentCommunication(mail) = item
+                && let Some(state) = state.as_mut()
+            {
+                state.pending_input.consume_unrecorded_mail(mail);
+            }
+        }
+        if let Some(mailbox) = mailbox.as_mut() {
+            for item in returned.iter().rev() {
+                if let TurnInput::InterAgentCommunication(communication) = item {
+                    mailbox.push_front(PendingMailboxCommunication {
+                        communication: communication.clone(),
+                        start_options: start_options.clone(),
+                        _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+                    });
+                }
+            }
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "reserved-mail recovery and mailbox insertion must be atomic"
+    )]
+    pub(crate) async fn requeue_pending_input_for_turn_state(&self, state: &Mutex<TurnState>) {
+        let mut state = state.lock().await;
+        let mut mailbox = self.mailbox_pending_mails.lock().await;
+        for item in std::mem::take(&mut state.pending_input)
+            .items
+            .into_iter()
+            .rev()
+        {
+            if let TurnInput::InterAgentCommunication(communication) = item {
+                mailbox.push_front(PendingMailboxCommunication {
+                    communication,
+                    start_options: state.mail_start_options.clone(),
+                    _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+                });
+            }
+        }
     }
 
     /// Moves the agent mail in `items` back to the front of the mailbox, in order, and leaves the
@@ -692,6 +789,137 @@ impl InputQueue {
         }
     }
 
+    /// Takes the turn's pending input and drains deliverable mail for hook inspection, like
+    /// `get_pending_input` does, while leaving every not-yet-recorded `InterAgentCommunication`
+    /// in the turn's pending input at the same position of the drain order.
+    ///
+    /// Recording is the consuming step (`consume_unrecorded_mail`), so a hard abort between
+    /// drain and record leaves the untouched mail reachable by `clear_pending`, which returns
+    /// it to the mailbox instead of dropping it. Turn-start mail uses the same copy-held
+    /// contract through `take_pending_agent_mail_keeping_unrecorded_mail`.
+    ///
+    /// Mail drained from the mailbox mid-turn stops carrying its own options too: the turn
+    /// last accepted it, so `mail_start_options` moves to the drained batch's lineage.
+    #[cfg(test)]
+    pub(crate) async fn drain_pending_input_keeping_unrecorded_mail(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> Vec<TurnInput> {
+        self.drain_pending_input_with_recovery_owner(active_turn)
+            .await
+            .0
+    }
+
+    pub(crate) async fn drain_pending_input_with_recovery_owner(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> (Vec<TurnInput>, Option<Arc<Mutex<TurnState>>>) {
+        let Some((mut batch, turn_state, batch_mail_count)) = self
+            .take_pending_input_keeping_unrecorded_mail(active_turn)
+            .await
+        else {
+            return (Vec::new(), None);
+        };
+        self.attach_drained_mailbox_batch(active_turn, &turn_state, batch_mail_count, &mut batch)
+            .await;
+        (batch, Some(turn_state))
+    }
+
+    /// Takes the turn's pending input for recording, leaving one copy of every not-yet-recorded
+    /// mail item at the front of pending input: a hard abort between the take and its recordings
+    /// must find the mail through `clear_pending`. Returns the batch, the turn state holding the
+    /// copies, and how many pending mail items the batch owns, or `None` when there is no turn
+    /// to drain or the turn does not accept mailbox delivery right now.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    async fn take_pending_input_keeping_unrecorded_mail(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> Option<(Vec<TurnInput>, Arc<Mutex<TurnState>>, usize)> {
+        let active = active_turn.lock().await;
+        let active_turn = active.as_ref()?;
+        let turn_state = Arc::clone(&active_turn.turn_state);
+        let mut turn_state_guard = turn_state.lock().await;
+        if !turn_state_guard.accepts_mailbox_delivery_for_current_turn() {
+            return None;
+        }
+        let batch = std::mem::take(&mut turn_state_guard.pending_input).items;
+        let batch_mail_count = batch
+            .iter()
+            .filter(|item| matches!(item, TurnInput::InterAgentCommunication(_)))
+            .count();
+        turn_state_guard.pending_input.items = batch
+            .iter()
+            .filter(|item| matches!(item, TurnInput::InterAgentCommunication(_)))
+            .cloned()
+            .collect();
+        drop(turn_state_guard);
+        Some((batch, turn_state, batch_mail_count))
+    }
+
+    /// Drains deliverable mailbox mail into the drained batch, appending one unrecorded copy per
+    /// item directly behind the batch's pending-input copies. The copies stay a prefix of pending
+    /// input in drain order, so recording consumes them before any mail that lands in the turn
+    /// state mid-drain (a same-window message-board delivery appends at the end) can shift one
+    /// copy and lose another.
+    ///
+    /// If the active turn changed or stopped accepting mailbox delivery, mail stays in the
+    /// mailbox with its own start options. Returns whether the batch grew.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    async fn attach_drained_mailbox_batch(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+        turn_state: &Arc<Mutex<TurnState>>,
+        batch_mail_count: usize,
+        batch: &mut Vec<TurnInput>,
+    ) -> bool {
+        if !self.has_pending_mailbox_items().await {
+            return false;
+        }
+        // Acquire every contended turn lock before taking mail out of the mailbox. Once the
+        // mailbox drain completes, attaching its protection copies has no cancellation point.
+        let active = active_turn.lock().await;
+        if !active
+            .as_ref()
+            .is_some_and(|turn| Arc::ptr_eq(&turn.turn_state, turn_state))
+        {
+            return false;
+        }
+        let mut turn_state_guard = turn_state.lock().await;
+        if !turn_state_guard.accepts_mailbox_delivery_for_current_turn() {
+            return false;
+        }
+        let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
+        if mailbox_items.is_empty() {
+            return false;
+        }
+        // Mail delivered into the turn after the pending-input take trails the whole batch.
+        let insert_at = turn_state_guard
+            .pending_input
+            .items
+            .iter()
+            .take(batch_mail_count)
+            .filter(|item| matches!(item, TurnInput::InterAgentCommunication(_)))
+            .count();
+        turn_state_guard
+            .pending_input
+            .items
+            .splice(insert_at..insert_at, mailbox_items.iter().cloned());
+        // Queue-only updates do not replace the requester lineage of mail already held.
+        if mailbox_items.iter().any(
+            |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
+        ) {
+            turn_state_guard.mail_start_options = start_options;
+        }
+        batch.extend(mailbox_items);
+        true
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
@@ -721,6 +949,16 @@ impl InputQueue {
 }
 
 impl TurnInputQueue {
+    pub(super) fn consume_unrecorded_mail(&mut self, mail: &crate::PendingAgentMessage) {
+        if let Some(index) = self
+            .items
+            .iter()
+            .position(|item| matches!(item, TurnInput::InterAgentCommunication(pending) if pending.same_pending_delivery(mail)))
+        {
+            self.items.remove(index);
+        }
+    }
+
     fn has_user_input(&self) -> bool {
         self.items
             .iter()
@@ -755,6 +993,17 @@ impl TurnInputQueue {
 
 #[cfg(test)]
 mod tests {
+    async fn consume_mail(
+        queue: &InputQueue,
+        active: &Mutex<Option<ActiveTurn>>,
+        item: &TurnInput,
+    ) {
+        let state = active.lock().await.as_ref().unwrap().turn_state.clone();
+        queue
+            .finish_unrecorded_mail(Some(&state), std::slice::from_ref(item), &[])
+            .await;
+    }
+
     use super::*;
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
@@ -1428,6 +1677,657 @@ mod tests {
                 (true, true, vec![progress], Vec::new()),
                 (true, false, vec![followup], Vec::new()),
             ]
+        );
+    }
+
+    /// Mail returned by `clear_pending` keeps the turn's start options, so an interrupted
+    /// `followup_task` that starts a new turn still reports the requester's turn lineage. Mail
+    /// in the mailbox that the turn never drained is returned untouched.
+    #[test_case::test_case(TurnAbortReason::Interrupted; "interrupted")]
+    #[test_case::test_case(TurnAbortReason::Replaced; "replaced")]
+    #[tokio::test]
+    async fn clear_pending_returns_mail_with_the_turns_start_options(reason: TurnAbortReason) {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let report = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent,
+                AgentPath::root(),
+                "report",
+                /*trigger_turn*/ true,
+            )
+            .into(),
+        );
+        let steer = TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+            metadata: Default::default(),
+        };
+        let start_options = TurnStartOptions {
+            parent_turn_id: Some("requester-turn".to_string()),
+            root_turn_id: Some("root-turn".to_string()),
+            turn_trigger: Some("composer".to_string()),
+            ..Default::default()
+        };
+
+        let input_queue = InputQueue::new();
+        let active_turn = ActiveTurn::default();
+        input_queue
+            .extend_pending_input_for_turn_state(
+                active_turn.turn_state.as_ref(),
+                vec![report.clone(), steer.clone()],
+            )
+            .await;
+        active_turn.turn_state.lock().await.mail_start_options = start_options.clone();
+
+        assert!(
+            input_queue
+                .clear_pending(&active_turn, &reason, ChildReportMode::WaitAgent)
+                .await
+        );
+        input_queue.resume_wakeups();
+        let (delivered, delivered_options) = input_queue.drain_mailbox_input_items().await;
+        assert_eq!(delivered, vec![report]);
+        assert_eq!(
+            delivered_options.parent_turn_id.as_deref(),
+            Some("requester-turn")
+        );
+        assert_eq!(delivered_options.root_turn_id.as_deref(), Some("root-turn"));
+        assert_eq!(delivered_options.turn_trigger.as_deref(), Some("composer"));
+        assert!(
+            !input_queue
+                .clear_pending(&active_turn, &reason, ChildReportMode::WaitAgent)
+                .await
+        );
+    }
+
+    fn steer_input(text: &str) -> TurnInput {
+        TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+            metadata: Default::default(),
+        }
+    }
+
+    /// A mid-turn drain leaves unrecorded mail in pending input at the drain order, so hooks can
+    /// inspect a stable snapshot for a hard abort to recover; recording consumes it item by item.
+    #[tokio::test]
+    async fn drain_keeping_unrecorded_mail_leaves_mail_until_consumed() {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let steer = steer_input("steer");
+        let queued_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "queued report",
+                /*trigger_turn*/ false,
+            )
+            .into(),
+        );
+        let mailbox_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "mailbox report",
+                /*trigger_turn*/ true,
+            )
+            .into(),
+        );
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        input_queue
+            .extend_pending_input_for_turn_state(
+                active_turn
+                    .lock()
+                    .await
+                    .as_ref()
+                    .expect("active turn")
+                    .turn_state
+                    .as_ref(),
+                vec![steer.clone(), queued_mail.clone()],
+            )
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(
+                match &mailbox_mail {
+                    TurnInput::InterAgentCommunication(communication) => communication.clone(),
+                    _ => unreachable!("mailbox mail is a communication"),
+                },
+                Default::default(),
+            )
+            .await;
+
+        let drained = input_queue
+            .drain_pending_input_keeping_unrecorded_mail(&active_turn)
+            .await;
+        assert_eq!(
+            drained,
+            vec![steer.clone(), queued_mail.clone(), mailbox_mail.clone()]
+        );
+
+        // The steering input left the queue; unrecorded mail stays pending until recording
+        // consumes it, in drain order.
+        consume_mail(&input_queue, &active_turn, &queued_mail).await;
+        {
+            let mut active = active_turn.lock().await;
+            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
+            let left = turn_state.lock().await.pending_input.items.clone();
+            assert_eq!(left, vec![mailbox_mail.clone()]);
+        }
+
+        // Consuming the recorded copy fully empties the held copies; steering drains without a
+        // protection copy.
+        consume_mail(&input_queue, &active_turn, &mailbox_mail).await;
+        input_queue
+            .extend_pending_input_for_turn_state(
+                active_turn
+                    .lock()
+                    .await
+                    .as_ref()
+                    .expect("active turn")
+                    .turn_state
+                    .as_ref(),
+                vec![steer.clone()],
+            )
+            .await;
+        let steered_batch = input_queue
+            .drain_pending_input_keeping_unrecorded_mail(&active_turn)
+            .await;
+        assert_eq!(steered_batch, vec![steer]);
+        {
+            let mut active = active_turn.lock().await;
+            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
+            assert!(turn_state.lock().await.pending_input.items.is_empty());
+        }
+    }
+
+    /// Mail appended into the turn state during the drain window (a same-window message-board
+    /// delivery, between the pending-input take and the mailbox attach) must stay behind the
+    /// drained batch's copies: recording consumes exactly the batch copies, in batch order, and
+    /// the late delivery is neither consumed on the batch's behalf nor left doubled.
+    #[tokio::test]
+    async fn mail_delivered_mid_drain_window_waits_behind_batch_copies() {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let steer = steer_input("steer");
+        let queued_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "queued report",
+                /*trigger_turn*/ false,
+            )
+            .into(),
+        );
+        let mailbox_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "mailbox report",
+                /*trigger_turn*/ true,
+            )
+            .into(),
+        );
+        let late_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "board update",
+                /*trigger_turn*/ false,
+            )
+            .into(),
+        );
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        // Pre-bind the turn state so the guard is not held across the extend's await.
+        let turn_state_ref = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
+        input_queue
+            .extend_pending_input_for_turn_state(
+                turn_state_ref.as_ref(),
+                vec![steer.clone(), queued_mail.clone()],
+            )
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(
+                match &mailbox_mail {
+                    TurnInput::InterAgentCommunication(communication) => communication.clone(),
+                    _ => unreachable!("mailbox mail is a communication"),
+                },
+                Default::default(),
+            )
+            .await;
+
+        // Block 1 of the drain: pending input becomes the batch; the queued mail keeps one copy.
+        let Some((mut batch, turn_state, batch_mail_count)) = input_queue
+            .take_pending_input_keeping_unrecorded_mail(&active_turn)
+            .await
+        else {
+            panic!("the turn accepts mailbox delivery");
+        };
+        assert_eq!(batch, vec![steer.clone(), queued_mail.clone()]);
+        assert_eq!(batch_mail_count, 1);
+
+        // The same window: a producer appends mail into the turn state, like the message-board
+        // delivery does before the mailbox attach runs.
+        input_queue
+            .extend_pending_input_for_turn_state(&turn_state, vec![late_mail.clone()])
+            .await;
+        {
+            let turn_state = turn_state.lock().await;
+            assert_eq!(
+                turn_state.pending_input.items,
+                vec![queued_mail.clone(), late_mail.clone()]
+            );
+        }
+
+        // Block 2: mailbox copies attach directly behind the batch's existing copies, so the
+        // late mail trails the whole batch. The window's append runs before and after both work.
+        let attached = input_queue
+            .attach_drained_mailbox_batch(&active_turn, &turn_state, batch_mail_count, &mut batch)
+            .await;
+        assert!(attached);
+        assert_eq!(
+            batch,
+            vec![steer.clone(), queued_mail.clone(), mailbox_mail.clone()]
+        );
+        {
+            let turn_state = turn_state.lock().await;
+            assert_eq!(
+                turn_state.pending_input.items,
+                vec![queued_mail.clone(), mailbox_mail.clone(), late_mail.clone()]
+            );
+        }
+
+        // Recording the batch consumes exactly its two copies, in batch order. The late mail
+        // keeps its own entry for its own delivery instead of being consumed in their place.
+        consume_mail(&input_queue, &active_turn, &queued_mail).await;
+        consume_mail(&input_queue, &active_turn, &mailbox_mail).await;
+        {
+            let turn_state = turn_state.lock().await;
+            assert_eq!(turn_state.pending_input.items, vec![late_mail.clone()]);
+        }
+
+        // The late mail is delivered exactly once by its own later drain.
+        let late_batch = input_queue
+            .drain_pending_input_keeping_unrecorded_mail(&active_turn)
+            .await;
+        assert_eq!(late_batch, vec![late_mail.clone()]);
+        consume_mail(&input_queue, &active_turn, &late_mail).await;
+        {
+            let turn_state = turn_state.lock().await;
+            assert!(turn_state.pending_input.items.is_empty());
+        }
+    }
+
+    #[test_case::test_case(true; "active_turn_lock")]
+    #[test_case::test_case(false; "turn_state_lock")]
+    #[tokio::test]
+    async fn cancelled_mailbox_attach_keeps_mail_in_order(contend_active_turn: bool) {
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .turn_state
+            .clone();
+        let start_options = TurnStartOptions {
+            parent_turn_id: Some("requester-turn".to_string()),
+            root_turn_id: Some("requester-root".to_string()),
+            ..Default::default()
+        };
+        let first = TurnInput::InterAgentCommunication(
+            make_mail(AgentPath::root(), AgentPath::root(), "first", true).into(),
+        );
+        input_queue
+            .extend_pending_input_for_turn_state(&turn_state, vec![first.clone()])
+            .await;
+        turn_state.lock().await.mail_start_options = start_options.clone();
+        let second = make_mail(AgentPath::root(), AgentPath::root(), "second", true);
+        input_queue
+            .enqueue_mailbox_communication(second.clone().into(), start_options)
+            .await;
+        let (mut batch, _, mail_count) = input_queue
+            .take_pending_input_keeping_unrecorded_mail(&active_turn)
+            .await
+            .unwrap();
+
+        // Poll once while a lock is held, then cancel the future at that precise await.
+        // The former drain-before-lock implementation loses the second message here.
+        let active_guard = if contend_active_turn {
+            Some(active_turn.lock().await)
+        } else {
+            None
+        };
+        let state_guard = if contend_active_turn {
+            None
+        } else {
+            Some(turn_state.lock().await)
+        };
+        {
+            let attach = input_queue.attach_drained_mailbox_batch(
+                &active_turn,
+                &turn_state,
+                mail_count,
+                &mut batch,
+            );
+            tokio::pin!(attach);
+            assert!(futures::poll!(attach.as_mut()).is_pending());
+        }
+        drop(state_guard);
+        drop(active_guard);
+        assert_eq!(input_queue.trigger_turn_mailbox_count().await, 1);
+        assert!(
+            input_queue
+                .clear_pending(
+                    active_turn.lock().await.as_ref().unwrap(),
+                    &TurnAbortReason::Replaced,
+                    ChildReportMode::WaitAgent,
+                )
+                .await
+        );
+        let (recovered, options) = input_queue.drain_mailbox_input_items().await;
+        assert_eq!(
+            recovered,
+            vec![first, TurnInput::InterAgentCommunication(second.into())]
+        );
+        assert_eq!(options.parent_turn_id.as_deref(), Some("requester-turn"));
+        assert_eq!(options.root_turn_id.as_deref(), Some("requester-root"));
+        assert!(input_queue.drain_mailbox_input_items().await.0.is_empty());
+    }
+
+    /// Recording consumes the turn's held mail copies in drain order; consuming past the batch is
+    /// a no-op instead of losing later mail.
+    #[tokio::test]
+    async fn consume_unrecorded_mail_consumes_in_drain_order() {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let first = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "first",
+                /*trigger_turn*/ true,
+            )
+            .into(),
+        );
+        let second = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent,
+                AgentPath::root(),
+                "second",
+                /*trigger_turn*/ false,
+            )
+            .into(),
+        );
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        {
+            let mut active = active_turn.lock().await;
+            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
+            turn_state
+                .lock()
+                .await
+                .pending_input
+                .items
+                .extend([first.clone(), second.clone()]);
+        }
+
+        consume_mail(&input_queue, &active_turn, &first).await;
+        {
+            let mut active = active_turn.lock().await;
+            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
+            let left = turn_state.lock().await.pending_input.items.clone();
+            assert_eq!(left, vec![second.clone()]);
+        }
+        consume_mail(&input_queue, &active_turn, &second).await;
+        consume_mail(&input_queue, &active_turn, &second).await;
+        {
+            let mut active = active_turn.lock().await;
+            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
+            assert!(turn_state.lock().await.pending_input.items.is_empty());
+        }
+    }
+
+    #[test]
+    fn recovery_consumes_only_the_named_delivery_even_for_identical_mail() {
+        let communication = make_mail(
+            codex_protocol::AgentPath::root().join("worker").unwrap(),
+            codex_protocol::AgentPath::root(),
+            "same contents",
+            false,
+        );
+        let first: crate::PendingAgentMessage = communication.clone().into();
+        let second: crate::PendingAgentMessage = communication.into();
+        let mut queue = TurnInputQueue::default();
+        queue.items = vec![
+            TurnInput::InterAgentCommunication(second.clone()),
+            TurnInput::InterAgentCommunication(first.clone()),
+        ];
+        queue.consume_unrecorded_mail(&first);
+        assert_eq!(queue.items.len(), 1);
+        let TurnInput::InterAgentCommunication(remaining) = &queue.items[0] else {
+            unreachable!()
+        };
+        assert!(remaining.same_pending_delivery(&second));
+        queue.consume_unrecorded_mail(&first);
+        assert_eq!(
+            queue.items.len(),
+            1,
+            "a repeated commit cannot consume another delivery"
+        );
+    }
+
+    #[test_case::test_case(true, true; "blocked_start_turn_lock")]
+    #[test_case::test_case(true, false; "blocked_start_mailbox_lock")]
+    #[test_case::test_case(false, true; "deferred_report_turn_lock")]
+    #[test_case::test_case(false, false; "deferred_report_mailbox_lock")]
+    #[tokio::test]
+    async fn cancelled_mail_return_keeps_copies_until_atomic_mailbox_handoff(
+        return_all: bool,
+        contend_turn: bool,
+    ) {
+        let queue = InputQueue::new();
+        let state = Mutex::new(TurnState::default());
+        let batch: Vec<_> = ["first report", "second report"]
+            .into_iter()
+            .map(|content| {
+                TurnInput::InterAgentCommunication(
+                    make_mail(
+                        codex_protocol::AgentPath::root().join("worker").unwrap(),
+                        codex_protocol::AgentPath::root(),
+                        content,
+                        true,
+                    )
+                    .into(),
+                )
+            })
+            .collect();
+        state.lock().await.pending_input.items = batch.clone();
+        state.lock().await.mail_start_options = TurnStartOptions {
+            parent_turn_id: Some("requester".into()),
+            root_turn_id: Some("root".into()),
+            ..Default::default()
+        };
+        let returned = if return_all {
+            batch.as_slice()
+        } else {
+            &batch[..1]
+        };
+        let turn_guard = if contend_turn {
+            Some(state.lock().await)
+        } else {
+            None
+        };
+        let mailbox_guard = if contend_turn {
+            None
+        } else {
+            Some(queue.mailbox_pending_mails.lock().await)
+        };
+        {
+            let transfer = queue.finish_unrecorded_mail(Some(&state), returned, returned);
+            tokio::pin!(transfer);
+            assert!(futures::poll!(transfer.as_mut()).is_pending());
+        }
+        drop(turn_guard);
+        drop(mailbox_guard);
+        assert_eq!(state.lock().await.pending_input.items, batch);
+        assert!(queue.drain_mailbox_input_items().await.0.is_empty());
+        queue
+            .finish_unrecorded_mail(Some(&state), returned, returned)
+            .await;
+        assert_eq!(
+            state.lock().await.pending_input.items,
+            if return_all {
+                vec![]
+            } else {
+                batch[1..].to_vec()
+            }
+        );
+        let (mail, options) = queue.drain_mailbox_input_items().await;
+        assert_eq!(mail, returned);
+        assert_eq!(options.parent_turn_id.as_deref(), Some("requester"));
+        assert_eq!(options.root_turn_id.as_deref(), Some("root"));
+    }
+
+    #[tokio::test]
+    async fn stale_batch_consumption_keeps_replacement_turn_mail() {
+        let queue = InputQueue::new();
+        let active = Mutex::new(Some(ActiveTurn::default()));
+        let mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                codex_protocol::AgentPath::root().join("worker").unwrap(),
+                codex_protocol::AgentPath::root(),
+                "old turn",
+                false,
+            )
+            .into(),
+        );
+        let old_state = active.lock().await.as_ref().unwrap().turn_state.clone();
+        queue
+            .extend_pending_input_for_turn_state(&old_state, vec![mail.clone()])
+            .await;
+        let (drained, owner) = queue.drain_pending_input_with_recovery_owner(&active).await;
+        let replacement = ActiveTurn::default();
+        let new_state = replacement.turn_state.clone();
+        queue
+            .extend_pending_input_for_turn_state(&new_state, vec![mail.clone()])
+            .await;
+        *active.lock().await = Some(replacement);
+        queue
+            .finish_unrecorded_mail(owner.as_deref(), &drained, &[])
+            .await;
+        assert!(old_state.lock().await.pending_input.items.is_empty());
+        assert_eq!(new_state.lock().await.pending_input.items, vec![mail]);
+    }
+
+    /// A hard abort while pre-sampling hooks still hold a drained batch returns every
+    /// not-yet-recorded mail item to the mailbox (in order, with the mail's own lineage) and
+    /// drops the steered input.
+    #[test_case::test_case(true; "trigger_mail")]
+    #[test_case::test_case(false; "queue_only_update")]
+    #[tokio::test]
+    async fn clear_pending_recovers_unrecorded_drained_mail_after_hard_abort(
+        mailbox_trigger_turn: bool,
+    ) {
+        let parent = AgentPath::try_from("/root/worker").expect("agent path");
+        let steer = steer_input("steer");
+        let queued_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent.clone(),
+                AgentPath::root(),
+                "queued report",
+                /*trigger_turn*/ true,
+            )
+            .into(),
+        );
+        let mailbox_mail = TurnInput::InterAgentCommunication(
+            make_mail(
+                parent,
+                AgentPath::root(),
+                "mailbox report",
+                mailbox_trigger_turn,
+            )
+            .into(),
+        );
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        input_queue
+            .extend_pending_input_for_turn_state(
+                active_turn
+                    .lock()
+                    .await
+                    .as_ref()
+                    .expect("active turn")
+                    .turn_state
+                    .as_ref(),
+                vec![steer.clone(), queued_mail.clone()],
+            )
+            .await;
+        active_turn
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .turn_state
+            .lock()
+            .await
+            .mail_start_options = TurnStartOptions {
+            parent_turn_id: Some("requester-turn".to_string()),
+            root_turn_id: Some("requester-root".to_string()),
+            ..Default::default()
+        };
+        input_queue
+            .enqueue_mailbox_communication(
+                match &mailbox_mail {
+                    TurnInput::InterAgentCommunication(communication) => communication.clone(),
+                    _ => unreachable!("mailbox mail is a communication"),
+                },
+                TurnStartOptions {
+                    parent_turn_id: Some("requester-turn".to_string()),
+                    root_turn_id: Some("requester-root".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let drained = input_queue
+            .drain_pending_input_keeping_unrecorded_mail(&active_turn)
+            .await;
+        assert_eq!(
+            drained,
+            vec![steer.clone(), queued_mail.clone(), mailbox_mail.clone()]
+        );
+
+        assert!(
+            input_queue
+                .clear_pending(
+                    active_turn.lock().await.as_ref().expect("active turn"),
+                    &TurnAbortReason::Interrupted,
+                    ChildReportMode::WaitAgent,
+                )
+                .await
+        );
+        input_queue.resume_wakeups();
+        let (delivered, delivered_options) = input_queue.drain_mailbox_input_items().await;
+        assert_eq!(delivered, vec![queued_mail, mailbox_mail]);
+        assert_eq!(
+            delivered_options.parent_turn_id.as_deref(),
+            Some("requester-turn")
+        );
+        assert_eq!(
+            delivered_options.root_turn_id.as_deref(),
+            Some("requester-root")
         );
     }
 

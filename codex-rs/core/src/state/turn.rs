@@ -26,6 +26,7 @@ use crate::session::turn_context::TurnEnvironment;
 use crate::tasks::AnySessionTask;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::turn_input::TurnStartOptions;
 
 /// Metadata about the currently running turn.
 pub(crate) struct ActiveTurn {
@@ -108,6 +109,10 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(crate) pending_input: TurnInputQueue,
     mailbox_delivery_phase: MailboxDeliveryPhase,
+    /// Start options the turn accepted its mail with, restored on returned mail so an
+    /// interrupted `followup_task` keeps the requester's turn lineage. Mail drained from the
+    /// mailbox during a turn stops carrying its own options, so the turn retains them.
+    pub(crate) mail_start_options: TurnStartOptions,
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,

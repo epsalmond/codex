@@ -384,6 +384,8 @@ impl Session {
         task: T,
         reservation: TurnReservation,
     ) -> TaskStartOutcome {
+        reservation.turn_state.lock().await.mail_start_options =
+            reservation.mail_start_options.clone();
         if let Err(error) = self.admit_root_task_or_emit_error(&turn_context).await {
             // Leaving the reservation taskless would make later input wait for a turn that never
             // runs. Another caller's reservation is left alone.
@@ -405,11 +407,6 @@ impl Session {
             self.request_mcp_runtime_reprojection();
         }
         self.activate_plugin_selection(&turn_context).await;
-        // Inherited or recovered roots are applied before task start. Otherwise this
-        // task owns its turn, including background work. Later mail cannot change it.
-        turn_context
-            .turn_metadata_state
-            .set_root_turn_id(turn_context.sub_id.clone());
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
@@ -439,12 +436,34 @@ impl Session {
                 .abort_unstarted_task(&turn_context, &reservation, input)
                 .await;
         }
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
         let turn_state = Arc::clone(&reservation.turn_state);
-        turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
-        self.input_queue
-            .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
+        let mail_start_options = self
+            .input_queue
+            .drain_mailbox_into_turn_state(turn_state.as_ref(), &reservation.mail_start_options)
             .await;
+        // The delivering turn reports the mail's requester lineage: the drain derived these
+        // ids from the triggering mails' start options. A wake turn already set them during
+        // its start and wins.
+        if let Some(parent_turn_id) = &mail_start_options.parent_turn_id {
+            turn_context
+                .turn_metadata_state
+                .set_parent_turn_id(parent_turn_id.clone());
+        }
+        if let Some(root_turn_id) = &mail_start_options.root_turn_id {
+            turn_context
+                .turn_metadata_state
+                .set_root_turn_id(root_turn_id.clone());
+        }
+        // Inherited or recovered roots, including the drain's, are applied before task start.
+        // Otherwise this task owns its turn, including background work. Later mail cannot
+        // change it.
+        turn_context
+            .turn_metadata_state
+            .set_root_turn_id(turn_context.sub_id.clone());
+        {
+            let mut turn_state = turn_state.lock().await;
+            turn_state.token_usage_at_turn_start = token_usage_at_turn_start.clone();
+        }
         self.emit_turn_start_lifecycle(
             turn_context.as_ref(),
             Some(&token_usage_at_turn_start),
@@ -569,15 +588,8 @@ impl Session {
     }
 
     async fn requeue_reserved_mail(&self, reservation: &TurnReservation) {
-        let mut pending_input = self
-            .input_queue
-            .take_pending_input_for_turn_state(&reservation.turn_state)
-            .await;
         self.input_queue
-            .return_to_mailbox_with_start_options(
-                &mut pending_input,
-                reservation.mail_start_options.clone(),
-            )
+            .requeue_pending_input_for_turn_state(&reservation.turn_state)
             .await;
     }
 

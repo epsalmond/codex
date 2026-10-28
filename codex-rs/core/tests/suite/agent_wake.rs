@@ -31,6 +31,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::turn_input::TurnInputSubmission;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ev_assistant_message;
@@ -226,6 +227,18 @@ async fn assert_no_turn_starts(codex: &CodexThread, window: Duration) {
     }
 }
 
+/// Waits until the parked-hook marker file appears, so the abort below lands mid-hook.
+async fn wait_for_hook_marker(marker_path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the UserPromptSubmit hook never parked"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Simulates a child report arriving at the root's mailbox.
 async fn submit_child_mail(codex: &CodexThread, author: &str, text: &str, trigger_turn: bool) {
     codex
@@ -255,6 +268,28 @@ async fn deliver_child_mail(codex: &CodexThread, author: &str, text: &str, trigg
         matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
     })
     .await;
+}
+
+/// Queues child mail that carries turn start options, as an explicit `followup_task` does.
+async fn submit_child_mail_with_start_options(
+    codex: &CodexThread,
+    author: &str,
+    text: &str,
+    start_options: TurnStartOptions,
+) {
+    codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                AgentPath::try_from(author).expect("author path should parse"),
+                AgentPath::root(),
+                Vec::new(),
+                text.to_string(),
+                /*trigger_turn*/ true,
+            ),
+            start_options,
+        })
+        .await
+        .expect("submit child mail");
 }
 
 async fn wait_for_wakeups(codex: &CodexThread, paused: bool, queued_results: u32) {
@@ -847,6 +882,120 @@ async fn wake_mode_steered_message_clears_pause() {
     server.shutdown().await;
 }
 
+/// A hard abort while a pre-sampling hook is still parked (Esc aborts the task's handle when the
+/// cancelled turn does not stop in time) cannot lose the drained mail: the mid-turn drain leaves
+/// unrecorded `InterAgentCommunication` in the turn's pending input, so the abort's
+/// `clear_pending` returns the report to the mailbox and the next user message delivers it
+/// exactly once. The steered prompt the abort interrupted never reaches the model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_mode_hard_abort_mid_hook_keeps_report() {
+    const STEER: &str = "hook-parked steer";
+    const NEXT_PROMPT: &str = "deliver the recovered report";
+    let (release_tx, release_rx) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![
+        // The automatic turn's request, held open while the steer parks the pre-sampling hook.
+        vec![
+            chunk(ev_response_created("resp-1")),
+            gated_chunk(release_rx, vec![ev_completed("resp-1")]),
+        ],
+        final_answer_chunks("resp-2", "delivered"),
+    ])
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_session_source(SessionSource::Cli)
+        .with_pre_build_hook(|home| {
+            let script_path = home.join("park_once_hook.py");
+            let marker_path = home.join("park-marker");
+            std::fs::write(
+                &script_path,
+                r#"import json, sys, os, time
+json.load(sys.stdin)
+marker = sys.argv[1]
+if not os.path.exists(marker):
+    open(marker, "w").write("parked\n")
+    time.sleep(120)
+print(json.dumps({}))
+"#,
+            )
+            .expect("write hook script");
+            let hooks = json!({"hooks": {"UserPromptSubmit": [{"hooks": [{
+                "type": "command",
+                "command": format!("python3 {} {}", script_path.display(), marker_path.display()),
+            }]}]}});
+            std::fs::write(home.join("hooks.json"), hooks.to_string()).expect("write hooks.json");
+        })
+        .with_config(|config| {
+            configure_multi_agent(config, Some(AgentPolling::Disabled));
+            trust_discovered_hooks(config);
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session");
+    let codex = test.codex.clone();
+    let marker_path = test.config.codex_home.join("park-marker");
+
+    pause_idle_root(&codex).await;
+    hold_child_report(
+        &codex,
+        "/root/worker_a",
+        "report a",
+        /*queued_results*/ 1,
+    )
+    .await;
+    hold_child_report(
+        &codex,
+        "/root/worker_b",
+        "report b",
+        /*queued_results*/ 2,
+    )
+    .await;
+    let submission = codex
+        .start_turn_if_idle(TurnInputRequest::new(TurnInput::ResponseItem(
+            user_message_item("automatic input"),
+        )))
+        .await
+        .expect("start automatic turn");
+    assert!(matches!(submission, StartIfIdleSubmission::Started { .. }));
+    server.wait_for_request_count(1).await;
+
+    // Steer the running turn: its drain pulls the held report in, and the UserPromptSubmit hook
+    // parks the pre-sampling step before any part of the batch is recorded.
+    submit_user_text(&codex, STEER).await;
+    let _ = release_tx.send(());
+    wait_for_hook_marker(&marker_path).await;
+    codex.submit(Op::Interrupt).await.expect("interrupt");
+    // The abort's `clear_pending` returns the unread report to the mailbox, where the pause
+    // holds it for the next user message.
+    wait_for_wakeups(&codex, /*paused*/ true, /*queued_results*/ 2).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    submit_user_text(&codex, NEXT_PROMPT).await;
+    wait_for_turn_complete(&codex).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    let bodies = streaming_request_bodies(&server).await;
+    let steering_prompted = bodies
+        .iter()
+        .any(|body| user_texts(body).iter().any(|text| text == STEER));
+    assert_eq!(
+        (
+            bodies.len(),
+            deliveries(&bodies[..1], "report a"),
+            deliveries(&bodies, "report a"),
+            deliveries(&bodies, "report b"),
+            steering_prompted,
+        ),
+        (2, 0, 1, 1, false)
+    );
+    let delivered = agent_message_texts(bodies.last().expect("recovery request"));
+    assert!(
+        delivered.iter().position(|text| text.contains("report a"))
+            < delivered.iter().position(|text| text.contains("report b"))
+    );
+    server.shutdown().await;
+}
+
 /// Queue-only mail still wakes a durable sleep while paused, but that turn leaves held reports
 /// for the next user message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1026,6 +1175,96 @@ async fn wake_mode_interrupt_at_wake_turn_start_keeps_report() {
         ),
         (true, 1)
     );
+    server.shutdown().await;
+}
+
+/// Esc (or a replaced turn) returns a `followup_task` that already entered the turn's pending
+/// input to the mailbox with the requester's turn lineage. The turn that finally delivers it
+/// reports that lineage in `client_metadata` (flat and canonical `-x-codex-turn-metadata`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_mode_interrupted_trigger_mail_keeps_its_turn_lineage() {
+    let (_hold_tx, hold_rx) = oneshot::channel();
+    // The first turn burns tokens so the wake turn runs pre-turn compaction; the wake turn
+    // parks there holding the report in pending input, before it drains (and records) it.
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![
+            chunk(ev_response_created("resp-1")),
+            chunk(final_answer_item("resp-1-msg", "worker is running")),
+            chunk(ev_completed_with_tokens(
+                "resp-1", /*total_tokens*/ 500_000,
+            )),
+        ],
+        // The wake turn's pre-turn compaction, held until the interrupt replaces the turn.
+        vec![gated_chunk(hold_rx, vec![ev_completed("resp-2")])],
+        // The recovery turn's pre-turn compaction...
+        vec![
+            chunk(json!({
+                "type": "response.output_item.done",
+                "item": {"type": "compaction", "encrypted_content": "COMPACTED"},
+            })),
+            chunk(ev_completed_with_tokens("resp-3", /*total_tokens*/ 50)),
+        ],
+        // ...then the recovery turn's actual sampling request with the returned mail.
+        final_answer_chunks("resp-4", "delivered"),
+    ])
+    .await;
+    let codex = build_compacting_wake_mode(&server).await;
+    let parent_turn_id = "requester-turn".to_string();
+    let root_turn_id = "requester-root".to_string();
+
+    submit_user_text(&codex, ROOT_PROMPT).await;
+    wait_for_turn_complete(&codex).await;
+    submit_child_mail_with_start_options(
+        &codex,
+        "/root/worker_a",
+        "report a",
+        TurnStartOptions {
+            parent_turn_id: Some(parent_turn_id.clone()),
+            root_turn_id: Some(root_turn_id.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
+    server.wait_for_request_count(2).await;
+    codex.submit(Op::Interrupt).await.expect("interrupt");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    // The returned report waits paused for the next user message instead of waking again.
+    wait_for_wakeups(&codex, /*paused*/ true, /*queued_results*/ 1).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    submit_user_text(&codex, "deliver the held report").await;
+    wait_for_turn_complete(&codex).await;
+    assert_no_turn_starts(&codex, SETTLE).await;
+
+    let bodies = streaming_request_bodies(&server).await;
+    // 0: initial turn, 1: wake turn's pre-turn compaction, 2: the recovery turn's pre-turn
+    // compaction, 3: the recovery turn's actual sampling request with the returned mail.
+    assert_eq!(bodies.len(), 4);
+    assert_eq!(deliveries(&bodies[..3], "report a"), 0);
+    let last = bodies.last().expect("the recovery turn issues a request");
+    let metadata = &last["client_metadata"];
+    assert_eq!(
+        metadata["parent_turn_id"].as_str(),
+        Some(parent_turn_id.as_str())
+    );
+    assert_eq!(
+        metadata["root_turn_id"].as_str(),
+        Some(root_turn_id.as_str())
+    );
+    let canonical = serde_json::from_str::<Value>(
+        metadata["x-codex-turn-metadata"]
+            .as_str()
+            .expect("turn metadata"),
+    )
+    .expect("canonical metadata is JSON");
+    assert_eq!(
+        (
+            canonical["parent_turn_id"].as_str(),
+            canonical["root_turn_id"].as_str()
+        ),
+        (Some(parent_turn_id.as_str()), Some(root_turn_id.as_str()))
+    );
+    assert_eq!(deliveries(&bodies, "report a"), 1);
     server.shutdown().await;
 }
 

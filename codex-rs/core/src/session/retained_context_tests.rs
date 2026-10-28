@@ -116,3 +116,119 @@ async fn confirmed_delivery_reserves_order_and_persists_before_a_fast_user_reply
         .expect("confirmed delivery order");
     assert!(assistant_order < codex_history::RetainedContextOrder::Local(reply_order));
 }
+
+#[test_case("pending_recording"; "code_mode_recording_wait")]
+#[test_case("turn_state"; "recovery_owner_lock")]
+#[tokio::test]
+async fn cancelled_second_recording_preserves_deferred_report_and_replacement_mail(barrier: &str) {
+    use crate::session::TurnInput;
+    use crate::session::multi_agents::ChildReportMode;
+    use crate::state::ActiveTurn;
+    use codex_protocol::AgentPath;
+    use codex_protocol::protocol::InterAgentCommunication;
+    use codex_protocol::protocol::TurnAbortReason;
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let old_turn = ActiveTurn::default();
+    let owner = old_turn.turn_state.clone();
+    *session.active_turn.lock().await = Some(old_turn);
+    let mail = |content: &str| -> crate::PendingAgentMessage {
+        InterAgentCommunication::new(
+            AgentPath::root().join("worker").unwrap(),
+            AgentPath::root(),
+            Vec::new(),
+            content.into(),
+            false,
+        )
+        .into()
+    };
+    let first = mail("deferred report");
+    let second = mail("second report");
+    let batch = vec![
+        TurnInput::InterAgentCommunication(first),
+        TurnInput::InterAgentCommunication(second.clone()),
+    ];
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(&owner, batch.clone())
+        .await;
+    let (drained, captured_owner) = session
+        .input_queue
+        .drain_pending_input_with_recovery_owner(&session.active_turn)
+        .await;
+    assert!(Arc::ptr_eq(captured_owner.as_ref().unwrap(), &owner));
+    // A fresh delivery with identical content is still owned by the replacement turn.
+    let replacement = ActiveTurn::default();
+    let replacement_state = replacement.turn_state.clone();
+    let replacement_mail = vec![TurnInput::InterAgentCommunication(mail("second report"))];
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(&replacement_state, replacement_mail.clone())
+        .await;
+    let old_turn = session
+        .active_turn
+        .lock()
+        .await
+        .replace(replacement)
+        .unwrap();
+    let (recorded, recording) = tokio::sync::watch::channel(());
+    if barrier == "pending_recording" {
+        session
+            .code_mode_message_tasks
+            .pending_persistence
+            .lock()
+            .unwrap()
+            .push(recording);
+    }
+    let state_guard = if barrier == "turn_state" {
+        Some(owner.lock().await)
+    } else {
+        None
+    };
+    {
+        // R1 is deferred in the batch while R2 waits at its actual recording barrier.
+        let recording = session.record_inter_agent_communication_with_pending_input(
+            &turn,
+            turn.model_info(),
+            second,
+            captured_owner.as_deref(),
+        );
+        tokio::pin!(recording);
+        assert!(futures::poll!(recording.as_mut()).is_pending());
+    }
+    drop(state_guard);
+    drop(recorded);
+    assert!(session.clone_history().await.raw_items().next().is_none());
+    assert!(
+        session
+            .input_queue
+            .clear_pending(
+                &old_turn,
+                &TurnAbortReason::Replaced,
+                ChildReportMode::WaitAgent
+            )
+            .await
+    );
+    let (recovered, _) = session.input_queue.drain_mailbox_input_items().await;
+    assert_eq!(
+        recovered, drained,
+        "both reports remain ordered after cancellation"
+    );
+    assert_eq!(
+        session
+            .input_queue
+            .take_pending_input_for_turn_state(&replacement_state)
+            .await,
+        replacement_mail
+    );
+    assert!(
+        session
+            .input_queue
+            .drain_mailbox_input_items()
+            .await
+            .0
+            .is_empty()
+    );
+}

@@ -7,6 +7,7 @@ mod notification_tests;
 mod work_lifecycle_admission_tests;
 
 use super::mcp_refresh::McpRefresh;
+use super::multi_agents::ChildReportMode;
 #[path = "turn_start_mcp_tests.rs"]
 mod turn_start_mcp_tests;
 use super::step_settings::ResolvedStepSettings;
@@ -2813,6 +2814,100 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
         })
         .collect::<Vec<_>>();
     assert_eq!(messages, vec![message]);
+}
+
+#[tokio::test]
+async fn cancelled_mail_recording_keeps_recovery_copy_until_history_commit() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    let turn_state = session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .turn_state
+        .clone();
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").unwrap(),
+        AgentPath::root(),
+        Vec::new(),
+        "recover this report".to_string(),
+        false,
+    );
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(
+            &turn_state,
+            vec![TurnInput::InterAgentCommunication(
+                communication.clone().into(),
+            )],
+        )
+        .await;
+    let drained = session
+        .input_queue
+        .drain_pending_input_keeping_unrecorded_mail(&session.active_turn)
+        .await;
+    let boundary = session
+        .code_mode_message_tasks
+        .communication_boundary
+        .acquire()
+        .await
+        .unwrap();
+    {
+        let recording = super::turn::run_hooks_and_record_drained_inputs(
+            &session,
+            &turn_context,
+            turn_context.model_info(),
+            &drained,
+            PersistContext::SteeredUserInput,
+            Some(&turn_state),
+        );
+        tokio::pin!(recording);
+        assert!(futures::poll!(recording.as_mut()).is_pending());
+    }
+    drop(boundary);
+    assert!(raw_history_items(&session.clone_history().await).is_empty());
+    assert!(
+        session
+            .input_queue
+            .clear_pending(
+                session.active_turn.lock().await.as_ref().unwrap(),
+                &TurnAbortReason::Replaced,
+                ChildReportMode::WaitAgent,
+            )
+            .await
+    );
+    let recovered = session.input_queue.drain_mailbox_input_items().await.0;
+    assert_eq!(recovered, drained);
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(&turn_state, recovered)
+        .await;
+    let recovered = session
+        .input_queue
+        .drain_pending_input_keeping_unrecorded_mail(&session.active_turn)
+        .await;
+    super::turn::run_hooks_and_record_drained_inputs(
+        &session,
+        &turn_context,
+        turn_context.model_info(),
+        &recovered,
+        PersistContext::SteeredUserInput,
+        Some(&turn_state),
+    )
+    .await;
+    let history = session.clone_history().await;
+    assert_eq!(raw_history_items(&history).len(), 1);
+    assert!(
+        session
+            .input_queue
+            .drain_pending_input_keeping_unrecorded_mail(&session.active_turn)
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -13024,10 +13119,13 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
 }
 
+/// Mail coalesced into a turn's start drain claims the delivering turn's lineage: a turn with
+/// no inherited root reports the first mail's requester lineage, and inherited roots keep
+/// winning over the drain because they were set first.
 #[test_case(None; "independent root")]
 #[test_case(Some("root-a"); "inherited root")]
 #[tokio::test]
-async fn active_turn_keeps_first_root_when_mail_coalesces(inherited_root: Option<&str>) {
+async fn turn_starting_with_coalesced_mail_reports_mail_lineage(inherited_root: Option<&str>) {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     if let Some(root) = inherited_root {
         tc.turn_metadata_state.set_root_turn_id(root.to_string());
@@ -13086,8 +13184,11 @@ async fn active_turn_keeps_first_root_when_mail_coalesces(inherited_root: Option
         ]
     );
     assert_eq!(
-        tc.turn_metadata_state.root_turn_id().as_deref(),
-        Some(inherited_root.unwrap_or(&tc.sub_id))
+        (
+            tc.turn_metadata_state.parent_turn_id().as_deref(),
+            tc.turn_metadata_state.root_turn_id().as_deref(),
+        ),
+        (Some("parent-a"), Some(inherited_root.unwrap_or("root-a"))),
     );
     assert!(!sess.input_queue.has_pending_mailbox_items().await);
 

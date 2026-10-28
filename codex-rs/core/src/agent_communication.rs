@@ -100,6 +100,9 @@ pub(crate) fn emit_agent_communication_receive(communication_id: &str) {
 #[serde(transparent)]
 pub struct PendingAgentMessage {
     communication: InterAgentCommunication,
+    /// Clones of one delivery share an identity, including mail without a protocol ID.
+    #[serde(skip)]
+    recovery_identity: Arc<()>,
     #[serde(skip)]
     pub(crate) delivery: Option<MessageDelivery>,
 }
@@ -130,8 +133,13 @@ impl PendingAgentMessage {
     ) -> Self {
         Self {
             communication,
+            recovery_identity: Arc::new(()),
             delivery,
         }
+    }
+
+    pub(crate) fn same_pending_delivery(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.recovery_identity, &other.recovery_identity)
     }
 
     /// Adjusts wake scheduling while retaining the message's identity and delivery ownership.

@@ -421,19 +421,25 @@ pub(crate) async fn run_turn(
     if !can_drain_pending_input
         && sess.child_report_mode().await == Some(ChildReportMode::WakeOnReport)
     {
-        let mut mail = sess
+        // Same recovery contract as the mid-turn drain: the taken mail keeps an unrecorded copy
+        // in pending input until recording consumes it, so a hard abort while the turn-start
+        // hooks run cannot lose it.
+        let (mail, pending_turn_state) = sess
             .input_queue
-            .take_pending_agent_mail(&sess.active_turn)
+            .take_pending_agent_mail_keeping_unrecorded_mail(&sess.active_turn)
             .await;
         if blocked {
-            sess.input_queue.return_to_mailbox(&mut mail).await;
+            sess.input_queue
+                .finish_unrecorded_mail(pending_turn_state.as_deref(), &mail, &mail)
+                .await;
         } else {
-            run_hooks_and_record_inputs(
+            run_hooks_and_record_drained_inputs(
                 &sess,
                 &turn_context,
                 &first_step_context.settings.model_info,
                 &mail,
                 PersistContext::TurnStart,
+                pending_turn_state.as_deref(),
             )
             .await;
         }
@@ -510,21 +516,21 @@ pub(crate) async fn run_turn(
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
-        let pending_input = if can_drain_pending_input {
+        let (pending_input, pending_turn_state) = if can_drain_pending_input {
             sess.input_queue
-                .get_pending_input(&sess.active_turn)
+                .drain_pending_input_with_recovery_owner(&sess.active_turn)
                 .await
-                .0
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
 
-        if run_hooks_and_record_inputs(
+        if run_hooks_and_record_drained_inputs(
             &sess,
             &turn_context,
             &turn_context.capture_current_model_info(),
             &pending_input,
             PersistContext::SteeredUserInput,
+            pending_turn_state.as_deref(),
         )
         .await
         {
@@ -1065,6 +1071,35 @@ pub(crate) async fn run_hooks_and_record_inputs(
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
+    run_hooks_and_record_drained_inputs(
+        sess,
+        turn_context,
+        model_info,
+        input,
+        persist_context,
+        None,
+    )
+    .await
+}
+
+/// Records drained input with hooks, consuming each item from the input queue at the point of
+/// successful recording. The captured owner follows the batch across active-turn replacement. Plain owned
+/// turn input has no recovery owner.
+///
+/// Queue-origin mail is the one input a hard abort must not lose: the drain leaves unrecorded
+/// `InterAgentCommunication` items in pending input, so this function removes the matching copy
+/// exactly when the item is dropped or recorded, and a hard abort before that returns the mail
+/// to the mailbox through `clear_pending` instead. Non-mail input is not copy-held and is never
+/// re-recorded.
+#[instrument(level = "trace", skip_all)]
+pub(crate) async fn run_hooks_and_record_drained_inputs(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
+    input: &[TurnInput],
+    persist_context: PersistContext,
+    pending_turn_state: Option<&tokio::sync::Mutex<crate::state::TurnState>>,
+) -> bool {
     // Cancellation can reach this path before Guardian's tools and context are
     // resolved. Only finalized evidence may enter reusable reviewer history.
     if sess
@@ -1073,7 +1108,8 @@ pub(crate) async fn run_hooks_and_record_inputs(
         .get::<crate::guardian::PendingReviewContext>()
         .is_some()
     {
-        sess.return_coordinator_reports_to_mailbox(input).await;
+        sess.return_coordinator_reports_to_mailbox(input, pending_turn_state)
+            .await;
         return false;
     }
     let mut blocked_input = false;
@@ -1083,6 +1119,9 @@ pub(crate) async fn run_hooks_and_record_inputs(
         if let Some(report_id) = Session::coordinator_report_id(input_item)
             && !sess.coordinator_report_is_current(report_id)
         {
+            sess.input_queue
+                .finish_unrecorded_mail(pending_turn_state, std::slice::from_ref(input_item), &[])
+                .await;
             sess.services
                 .local_agent_runtime
                 .release_terminal_report_claim(report_id);
@@ -1099,6 +1138,14 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 && let Some(input_item) = Session::deferred_coordinator_report(input_item)
             {
                 deferred_reports.push(input_item);
+            } else {
+                sess.input_queue
+                    .finish_unrecorded_mail(
+                        pending_turn_state,
+                        std::slice::from_ref(input_item),
+                        &[],
+                    )
+                    .await;
             }
         } else {
             if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
@@ -1119,6 +1166,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 input_item.clone(),
                 hook_outcome.additional_contexts,
                 input_persist_context,
+                pending_turn_state,
             )
             .await;
             if let Some(report_id) = Session::coordinator_report_id(input_item) {
@@ -1128,7 +1176,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
     }
     if !deferred_reports.is_empty() {
         sess.input_queue
-            .return_to_mailbox(&mut deferred_reports)
+            .finish_unrecorded_mail(pending_turn_state, &deferred_reports, &deferred_reports)
             .await;
     }
     blocked_input && !accepted_user_input
