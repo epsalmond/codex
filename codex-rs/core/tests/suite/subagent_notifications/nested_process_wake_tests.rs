@@ -14,6 +14,7 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::protocol::MultiAgentVersion;
 use core_test_support::ThreadIdle;
 use core_test_support::process::process_is_alive;
+use core_test_support::test_codex::run_test_with_large_stack;
 use pretty_assertions::assert_eq;
 use tokio::io::AsyncWriteExt;
 
@@ -48,10 +49,10 @@ fn report_count(request: &Value, text: &str) -> usize {
         .count()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn nested_process_completion_wakes_grandchild_child_and_root_then_drains() -> Result<()> {
+#[test]
+fn nested_process_completion_wakes_grandchild_child_and_root_then_drains() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    Box::pin(composed_process_wake_trace()).await
+    run_test_with_large_stack("composed-process-wake", composed_process_wake_trace)
 }
 
 async fn composed_process_wake_trace() -> Result<()> {
