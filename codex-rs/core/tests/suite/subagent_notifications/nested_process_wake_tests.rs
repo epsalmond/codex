@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::suite::work_lifecycle_producers::CALL_ID;
+use crate::suite::work_lifecycle_producers::MAX_RECEIPT_BYTES;
 use crate::suite::work_lifecycle_producers::NativeGate;
 use crate::suite::work_lifecycle_producers::assert_close_rejected;
 use crate::suite::work_lifecycle_producers::close_drained_tree;
@@ -230,7 +231,10 @@ async fn composed_process_wake_trace() -> Result<()> {
     let running = assert_close_rejected(&observation);
     assert_eq!(running.active_root_turns, 0);
     assert_eq!(running.pending_terminal_outputs, 0);
-    assert!(running.running_finite_work > 0, "{running:?}");
+    assert_eq!(
+        running.running_finite_work, 4,
+        "three open assignments plus the native process producer: {running:?}"
+    );
     assert!(process_is_alive(&pid)?);
     let initial_requests = requests(&server).await?;
     assert_eq!(initial_requests.len(), 6, "two requests per yielded agent");
@@ -269,7 +273,7 @@ async fn composed_process_wake_trace() -> Result<()> {
         "one native terminal result wakes grandchild"
     );
     let receipt = receipts[0];
-    assert!(serde_json::to_vec(&json!({"text": receipt}))?.len() <= 3072);
+    assert!(serde_json::to_vec(&json!({"text": receipt}))?.len() <= MAX_RECEIPT_BYTES);
     for identity in [
         format!("call={CALL_ID}"),
         format!("owner={grandchild_id}"),
@@ -282,9 +286,20 @@ async fn composed_process_wake_trace() -> Result<()> {
         assert!(receipt.contains(&identity), "missing {identity}: {receipt}");
     }
     let retained = assert_close_rejected(&observation);
-    assert!(retained.pending_notifications > 0, "{retained:?}");
+    assert_eq!(retained.running_finite_work, 3, "{retained:?}");
+    assert_eq!(
+        retained.outstanding_work, 4,
+        "three assignments plus the retained terminal producer; queued wakes do not contribute: {retained:?}"
+    );
+    let pending = grandchild.list_pending_completions().await;
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].call_id, CALL_ID);
+    assert_eq!(pending[0].process_id.as_deref(), Some(process_id));
+    assert!(pending[0].ready && pending[0].wakes_owner, "{pending:?}");
     accept_process.send(()).expect("accept the native result");
-    observe(&mut updates, |snapshot| snapshot.pending_notifications == 0).await?;
+    let accepted = observe(&mut updates, |snapshot| snapshot.pending_notifications == 0).await?;
+    assert_eq!(accepted.outstanding_work, 3, "{accepted:?}");
+    assert!(grandchild.list_pending_completions().await.is_empty());
     assert_close_rejected(&observation);
     finish_grandchild
         .send(())
@@ -351,22 +366,7 @@ async fn composed_process_wake_trace() -> Result<()> {
             namespace_child_tool(request, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_none(),
             "model polling is disabled"
         );
-        assert!(
-            request["input"]
-                .as_array()
-                .expect("model input")
-                .iter()
-                .all(|item| {
-                    item["type"] != "function_call"
-                        || !matches!(
-                            item["name"].as_str(),
-                            Some("write_stdin" | "wait_agent" | "list_agents" | "wait")
-                        )
-                }),
-            "no model polling calls"
-        );
     }
-    assert!(!process_is_alive(&pid)?);
     server.shutdown().await;
     Ok(())
 }

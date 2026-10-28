@@ -43,6 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 pub(super) const CALL_ID: &str = "owned-producer";
+pub(super) const MAX_RECEIPT_BYTES: usize = 3072;
 
 // The process reports its actual PID and then blocks in a shell read. Readiness, release and
 // teardown are socket events; neither the test nor the model polls a process or a marker file.
@@ -547,7 +548,7 @@ async fn finite_acceptance(
         "one automatic result for the yielded producer"
     );
     let receipt = delivered[0];
-    assert!(serde_json::to_vec(&json!({"text":receipt}))?.len() <= 3072);
+    assert!(serde_json::to_vec(&json!({"text":receipt}))?.len() <= MAX_RECEIPT_BYTES);
     assert!(receipt.contains(&format!("call={CALL_ID}")), "{receipt}");
     match producer {
         Producer::Native => {
