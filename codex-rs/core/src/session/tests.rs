@@ -7,6 +7,7 @@ mod notification_tests;
 mod work_lifecycle_admission_tests;
 
 use super::mcp_refresh::McpRefresh;
+use super::multi_agents::ChildReportMode;
 #[path = "turn_start_mcp_tests.rs"]
 mod turn_start_mcp_tests;
 use super::step_settings::ResolvedStepSettings;
