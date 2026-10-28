@@ -414,12 +414,9 @@ pub async fn inter_agent_communication(
             .terminal_report_delivery_guard(report_id)
     });
     sess.apply_child_report_mode(&mut communication).await;
-    if communication.trigger_turn && start_options.parent_turn_id.is_some() {
-        // Only an explicit followup carries a parent turn ID. Automatic terminal reports use
-        // default start options, so they remain held until the user or an agent follows up.
-        // Record recovery even while active so an in-flight failed start cannot undo it.
-        sess.resume_paused_wakeups().await;
-    }
+    // Only a delivered explicit followup counts as recovery. Commit recovery under the
+    // mailbox lock with acceptance, so a draining start observes one generation for its mail.
+    let explicit_followup = communication.trigger_turn && start_options.parent_turn_id.is_some();
     if let Some(report_id) = communication
         .id
         .as_ref()
@@ -435,20 +432,23 @@ pub async fn inter_agent_communication(
         return;
     }
     let trigger_turn = communication.trigger_turn;
-    let accepted = if report_id.is_some() {
-        sess.input_queue
-            .enqueue_mailbox_communication_if(communication, start_options, || {
-                delivery_guard
+    let mut resumed = false;
+    let accepted = sess
+        .input_queue
+        .enqueue_mailbox_communication_if(communication, start_options, || {
+            if report_id.is_some()
+                && !delivery_guard
                     .as_ref()
                     .is_some_and(|guard| guard.acknowledge(sess.thread_id))
-            })
-            .await
-    } else {
-        sess.input_queue
-            .enqueue_mailbox_communication(communication, start_options)
-            .await;
-        true
-    };
+            {
+                return false;
+            }
+            if explicit_followup {
+                resumed = sess.input_queue.resume_wakeups();
+            }
+            true
+        })
+        .await;
     if !accepted {
         let Some(report_id) = report_id.as_ref() else {
             return;
@@ -462,7 +462,7 @@ pub async fn inter_agent_communication(
         delivery_guard.commit();
     }
     crate::agent_communication::emit_agent_communication_receive(&sub_id);
-    if trigger_turn && sess.input_queue.wakeups_paused() {
+    if resumed || (trigger_turn && sess.input_queue.wakeups_paused()) {
         sess.emit_agent_wakeups_updated().await;
     }
     if trigger_turn

@@ -26,16 +26,27 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
         oversized_path,
         wake_from_sleep,
         paused_first,
-        /*resume_during_start*/ false,
+        /*resume_at*/ None,
     )
     .await;
 }
 
+#[test_case::test_case(false, false, false, crate::tasks::TurnStartHoldPoint::WakeBeforeBind; "ordinary followup before binding")]
+#[test_case::test_case(true, false, false, crate::tasks::TurnStartHoldPoint::WakeBeforeBind; "oversized followup before binding")]
+#[test_case::test_case(false, true, true, crate::tasks::TurnStartHoldPoint::WakeBeforeBind; "paused sleep followup before binding")]
+#[test_case::test_case(false, false, false, crate::tasks::TurnStartHoldPoint::WakeBeforeSuppress; "followup after binding failure")]
 #[tokio::test]
-async fn failed_automatic_binding_does_not_overwrite_concurrent_explicit_resume() {
+async fn failed_automatic_binding_does_not_stall_concurrent_explicit_resume(
+    oversized_path: bool,
+    wake_from_sleep: bool,
+    paused_first: bool,
+    resume_at: crate::tasks::TurnStartHoldPoint,
+) {
     failed_automatic_binding_recovery(
-        /*oversized_path*/ true, /*wake_from_sleep*/ false, /*paused_first*/ false,
-        /*resume_during_start*/ true,
+        oversized_path,
+        wake_from_sleep,
+        paused_first,
+        Some(resume_at),
     )
     .await;
 }
@@ -44,8 +55,9 @@ async fn failed_automatic_binding_recovery(
     oversized_path: bool,
     wake_from_sleep: bool,
     paused_first: bool,
-    resume_during_start: bool,
+    resume_at: Option<crate::tasks::TurnStartHoldPoint>,
 ) {
+    let resume_during_start = resume_at.is_some();
     let server = core_test_support::responses::start_mock_server().await;
     let parent_thread_id = ThreadId::new();
     let worker_path = AgentPath::try_from(if oversized_path {
@@ -204,15 +216,24 @@ async fn failed_automatic_binding_recovery(
     );
     let pending_start =
         session.maybe_start_turn_for_pending_work_with_sub_id("rejected-followup".to_string());
-    let start_result = if resume_during_start {
-        let mut hold = crate::tasks::hold_next_turn_start(
-            session.thread_id,
-            crate::tasks::TurnStartHoldPoint::WakeBeforeBind,
-        );
+    let restore_owner = || {
+        session
+            .services
+            .local_agent_runtime
+            .begin_wake_assignment_for_turn(
+                parent_thread_id,
+                &SessionSource::Cli,
+                "restored-owner",
+                /*allow_new_generation*/ true,
+            )
+            .expect("restored parent assignment");
+    };
+    let start_result = if let Some(resume_at) = resume_at {
+        let mut hold = crate::tasks::hold_next_turn_start(session.thread_id, resume_at);
         tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(pending_start, async {
                 hold.reached().await;
-                assert!(!session.input_queue.wakeups_paused());
+                assert_eq!(session.input_queue.wakeups_paused(), paused_first);
                 // Follow up through the real handler while the failed start owns the slot.
                 // Recovery must be recorded even though wakeups are already active.
                 super::handlers::inter_agent_communication(
@@ -223,7 +244,21 @@ async fn failed_automatic_binding_recovery(
                 )
                 .await;
                 assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 1);
-                hold.release();
+                if resume_at == crate::tasks::TurnStartHoldPoint::WakeBeforeBind {
+                    let mut failed = crate::tasks::hold_next_turn_start(
+                        session.thread_id,
+                        crate::tasks::TurnStartHoldPoint::WakeBeforeSuppress,
+                    );
+                    hold.release();
+                    failed.reached().await;
+                    // Repair only after the original bind has failed. The failed start must
+                    // schedule the accepted recovery itself after releasing its reservation.
+                    restore_owner();
+                    failed.release();
+                } else {
+                    restore_owner();
+                    hold.release();
+                }
             })
             .0
         })
@@ -233,13 +268,15 @@ async fn failed_automatic_binding_recovery(
         pending_start.await
     };
     assert_eq!(start_result, crate::tasks::PendingWorkStartResult::Stale);
-    assert!(session.active_turn.lock().await.is_none());
+    if !resume_during_start {
+        assert!(session.active_turn.lock().await.is_none());
+    }
     assert_eq!(session.input_queue.wakeups_paused(), !resume_during_start);
     assert_eq!(
         session.input_queue.automatic_starts_suppressed(),
         !resume_during_start
     );
-    if paused_first {
+    if paused_first && !resume_during_start {
         // Fresh queue-only mail would wake a merely paused sleep, but not after a failed start.
         session
             .input_queue
@@ -256,11 +293,11 @@ async fn failed_automatic_binding_recovery(
             )
             .await;
     }
-    assert_eq!(
-        session.input_queue.trigger_turn_mailbox_count().await,
-        usize::from(!wake_from_sleep) + usize::from(resume_during_start)
-    );
     if !resume_during_start {
+        assert_eq!(
+            session.input_queue.trigger_turn_mailbox_count().await,
+            usize::from(!wake_from_sleep)
+        );
         assert_eq!(
             session.maybe_start_turn_for_pending_work().await,
             crate::tasks::PendingWorkStartResult::Stale,
@@ -286,11 +323,13 @@ async fn failed_automatic_binding_recovery(
     .await
     .expect("root processes startup rejection");
     let requests = responses.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].body_contains_text("Automatic turn did not start"));
-    assert!(requests[1].body_contains_text("Accepted messages remain queued"));
-    assert!(!requests[1].body_contains_text("accepted followup"));
-    let rejection = requests[1]
+    let rejection_request = requests
+        .iter()
+        .find(|request| request.body_contains_text("Automatic turn did not start"))
+        .expect("startup rejection reaches root");
+    assert!(rejection_request.body_contains_text("Accepted messages remain queued"));
+    assert!(!rejection_request.body_contains_text("accepted followup"));
+    let rejection = rejection_request
         .input()
         .into_iter()
         .find(|item| {
@@ -309,7 +348,11 @@ async fn failed_automatic_binding_recovery(
     );
     let mut warning = None;
     let mut startup_warning_count = 0;
+    let mut recovered = false;
     while let Ok(event) = rx.try_recv() {
+        if matches!(event.msg, EventMsg::TurnComplete(_)) {
+            recovered = true;
+        }
         if let EventMsg::Warning(event) = event.msg
             && event.message.starts_with("Automatic turn did not start")
         {
@@ -338,25 +381,8 @@ async fn failed_automatic_binding_recovery(
         assert_eq!(input, Vec::new());
         assert_eq!(retained.parent_turn_id, None);
     }
-    // Repair the missing owner, then recover through the actual explicit-followup handler.
-    session
-        .services
-        .local_agent_runtime
-        .begin_wake_assignment_for_turn(
-            parent_thread_id,
-            &SessionSource::Cli,
-            "restored-owner",
-            /*allow_new_generation*/ true,
-        )
-        .expect("restored parent assignment");
-    if resume_during_start {
-        // The follow-up already arrived. Once binding is repaired, the pending-work scheduler
-        // can run it and the retained mail without a second follow-up or resume.
-        assert_eq!(
-            session.maybe_start_turn_for_pending_work().await,
-            crate::tasks::PendingWorkStartResult::Started,
-        );
-    } else {
+    if !resume_during_start {
+        restore_owner();
         super::handlers::inter_agent_communication(
             &session,
             "explicit-recovery".to_string(),
@@ -367,7 +393,7 @@ async fn failed_automatic_binding_recovery(
     }
     assert!(!session.input_queue.wakeups_paused());
     tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
+        while !recovered {
             let event = rx.recv().await.expect("recovery event");
             assert!(
                 !matches!(event.msg, EventMsg::Error(_)),
@@ -383,9 +409,12 @@ async fn failed_automatic_binding_recovery(
     .expect("explicit recovery turn completes");
     let requests = responses.requests();
     assert_eq!(requests.len(), 3);
-    assert!(requests[2].body_contains_text("explicit recovery"));
+    let recovery_request = requests
+        .iter()
+        .find(|request| request.body_contains_text("explicit recovery"))
+        .expect("recovery reaches worker");
     assert_eq!(
-        requests[2]
+        recovery_request
             .input()
             .iter()
             .filter(|item| item["type"] == "agent_message"
@@ -395,11 +424,11 @@ async fn failed_automatic_binding_recovery(
     );
     assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 0);
     assert_eq!(
-        requests[2].body_json()["client_metadata"]["parent_turn_id"],
+        recovery_request.body_json()["client_metadata"]["parent_turn_id"],
         serde_json::json!(options.parent_turn_id),
     );
     assert_eq!(
-        requests[2].body_json()["client_metadata"]["root_turn_id"],
+        recovery_request.body_json()["client_metadata"]["root_turn_id"],
         serde_json::json!(options.root_turn_id),
     );
 }

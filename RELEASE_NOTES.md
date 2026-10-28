@@ -50,7 +50,7 @@ With `agent_polling = "enabled"`, `wait_agent` without `timeout_ms` in `codex ex
 
 ## Durable sleep wakes while reports are paused
 
-A `send_message` again wakes an agent in a durable sleep while Esc has paused its wakeups; held child reports still wait for the next message. A failed automatic start still waits for an explicit follow-up. See the [release notes](releases/2026-10-14-durable-sleep-paused-wake.md).
+A `send_message` again wakes an agent in a durable sleep while Esc has paused its wakeups; held child reports still wait for the next message. A failed automatic start still waits for an explicit follow-up. A follow-up accepted while that start is failing resumes the queued work as soon as the failed start releases its slot. Only accepted follow-ups and user turns count as recovery; rejected deliveries keep the failure pause. See the [release notes](releases/2026-10-14-durable-sleep-paused-wake.md).
 
 ## Polling agents keep reports across interrupts
 

@@ -123,7 +123,7 @@ enum WakeupState {
 const WAKEUP_STATE_MASK: u64 = 0b11;
 const WAKEUP_GENERATION_STEP: u64 = WAKEUP_STATE_MASK + 1;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct WakeupGeneration(u64);
 
 pub(crate) struct PendingMailboxCommunication {
@@ -231,6 +231,7 @@ impl InputQueue {
         true
     }
 
+    #[cfg(test)]
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
         communication: crate::PendingAgentMessage,
@@ -248,7 +249,6 @@ impl InputQueue {
         start_options: TurnStartOptions,
         accept: impl FnOnce() -> bool,
     ) -> bool {
-        let held = communication.trigger_turn && self.wakeups_paused();
         let mut pending = self.mailbox_pending_mails.lock().await;
         // Mail retained while unloaded precedes new submissions to the loaded session.
         self.read_mailbox(&mut pending);
@@ -264,6 +264,9 @@ impl InputQueue {
             drop(rejected);
             return false;
         }
+        let held = pending
+            .back()
+            .is_some_and(|mail| mail.communication.trigger_turn && self.wakeups_paused());
         drop(pending);
         // Held mail has nothing to deliver yet, so it must not interrupt a `sleep`.
         if !held {
@@ -324,40 +327,39 @@ impl InputQueue {
 
     /// Holds trigger-turn mail until an explicit resume. Keeps a stronger failed-start state.
     pub(crate) fn pause_wakeups(&self) {
-        let _ = self
-            .wakeups
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
-                Some(
-                    (wakeups & !WAKEUP_STATE_MASK)
-                        | (wakeups & WAKEUP_STATE_MASK).max(WakeupState::Paused as u64),
-                )
+        self.wakeups
+            .update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+                (wakeups & !WAKEUP_STATE_MASK)
+                    | (wakeups & WAKEUP_STATE_MASK).max(WakeupState::Paused as u64)
             });
     }
 
-    /// Captures the recovery generation before an automatic start can race an explicit resume.
+    /// Captures the recovery generation for the work an automatic start will attempt.
     pub(crate) fn wakeup_generation(&self) -> WakeupGeneration {
         WakeupGeneration(self.wakeups.load(Ordering::SeqCst) & !WAKEUP_STATE_MASK)
     }
 
     /// Holds trigger-turn mail and suppresses automatic starts only if no explicit resume has
-    /// happened since this start began. A concurrent pause keeps the same generation.
-    pub(crate) fn suppress_automatic_starts(&self, generation: WakeupGeneration) {
-        let _ = self
-            .wakeups
+    /// happened since its input was drained. Returns whether suppression applied.
+    /// A concurrent pause keeps the same generation.
+    pub(crate) fn suppress_automatic_starts(&self, generation: WakeupGeneration) -> bool {
+        self.wakeups
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
                 (wakeups & !WAKEUP_STATE_MASK == generation.0)
                     .then_some(generation.0 | WakeupState::StartFailed as u64)
-            });
+            })
+            .is_ok()
     }
 
     /// Advances the recovery generation even if already active, clears the pause, and returns
     /// whether wakeups were paused.
     pub(crate) fn resume_wakeups(&self) -> bool {
         self.wakeups
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
-                Some(wakeups.wrapping_add(WAKEUP_GENERATION_STEP) & !WAKEUP_STATE_MASK)
+            .update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+                wakeups.wrapping_add(WAKEUP_GENERATION_STEP) & !WAKEUP_STATE_MASK
             })
-            .is_ok_and(|wakeups| wakeups & WAKEUP_STATE_MASK != WakeupState::Active as u64)
+            & WAKEUP_STATE_MASK
+            != WakeupState::Active as u64
     }
 
     pub(crate) fn wakeups_paused(&self) -> bool {
@@ -378,15 +380,25 @@ impl InputQueue {
 
     /// Drains deliverable mail. Paused wakeups leave trigger-turn mail queued.
     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
-        let pending_mails = {
-            let paused = self.wakeups_paused();
+        let (items, options, _) = self
+            .drain_mailbox_input_items_with_wakeup_generation()
+            .await;
+        (items, options)
+    }
+
+    async fn drain_mailbox_input_items_with_wakeup_generation(
+        &self,
+    ) -> (Vec<TurnInput>, TurnStartOptions, WakeupGeneration) {
+        let (pending_mails, generation) = {
             let mut mails = self.mailbox_pending_mails.lock().await;
+            let generation = self.wakeup_generation();
+            let paused = self.wakeups_paused();
             self.read_mailbox(&mut mails);
             let (held, deliverable): (VecDeque<_>, VecDeque<_>) = mails
                 .drain(..)
                 .partition(|mail| paused && mail.communication.trigger_turn);
             *mails = held;
-            deliverable
+            (deliverable, generation)
         };
         // A later follow-up supersedes the earlier choice, including an omitted choice.
         let mut start_options = pending_mails
@@ -417,7 +429,7 @@ impl InputQueue {
             .into_iter()
             .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
             .collect();
-        (items, start_options)
+        (items, start_options, generation)
     }
 
     pub(crate) async fn turn_state_for_sub_id(
@@ -626,14 +638,24 @@ impl InputQueue {
         std::mem::take(&mut turn_state.lock().await.pending_input).items
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
     pub(crate) async fn get_pending_input(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> (Vec<TurnInput>, TurnStartOptions) {
+        let (input, options, _) = self
+            .get_pending_input_with_wakeup_generation(active_turn)
+            .await;
+        (input, options)
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn get_pending_input_with_wakeup_generation(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> (Vec<TurnInput>, TurnStartOptions, WakeupGeneration) {
         let (pending_input, accepts_mailbox_delivery) = {
             let mut active = active_turn.lock().await;
             match active.as_mut() {
@@ -652,15 +674,21 @@ impl InputQueue {
             }
         };
         if !accepts_mailbox_delivery {
-            return (pending_input, TurnStartOptions::default());
+            return (
+                pending_input,
+                TurnStartOptions::default(),
+                self.wakeup_generation(),
+            );
         }
-        let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
+        let (mailbox_items, start_options, generation) = self
+            .drain_mailbox_input_items_with_wakeup_generation()
+            .await;
         if pending_input.is_empty() {
-            (mailbox_items, start_options)
+            (mailbox_items, start_options, generation)
         } else {
             let mut pending_input = pending_input;
             pending_input.extend(mailbox_items);
-            (pending_input, start_options)
+            (pending_input, start_options, generation)
         }
     }
 
@@ -1294,6 +1322,49 @@ mod tests {
         queue.pause_wakeups();
         queue.suppress_automatic_starts(generation);
         assert!(queue.wakeups_paused());
+        assert!(queue.automatic_starts_suppressed());
+    }
+
+    /// Recovery consumed by this start belongs to its failure generation; only a followup
+    /// delivered after the drain can protect the next attempt from this failure.
+    #[tokio::test]
+    async fn drained_recovery_mail_belongs_to_the_failed_start_generation() {
+        let queue = InputQueue::new();
+        queue.pause_wakeups();
+        let generation_before_recovery = queue.wakeup_generation();
+        let (mut updates, _) = queue.subscribe_activity(None).await;
+        updates.borrow_and_update();
+        assert!(
+            queue
+                .enqueue_mailbox_communication_if(
+                    make_mail(
+                        AgentPath::root(),
+                        AgentPath::try_from("/root/worker").unwrap(),
+                        "recovery",
+                        true
+                    )
+                    .into(),
+                    TurnStartOptions {
+                        parent_turn_id: Some("parent".to_string()),
+                        ..Default::default()
+                    },
+                    || {
+                        assert!(queue.resume_wakeups());
+                        true
+                    },
+                )
+                .await
+        );
+        assert!(
+            updates.has_changed().unwrap(),
+            "accepted recovery must notify even from a pause"
+        );
+        let (input, _, generation) = queue
+            .get_pending_input_with_wakeup_generation(&Mutex::new(None))
+            .await;
+        assert_eq!(input.len(), 1);
+        assert_ne!(generation, generation_before_recovery);
+        assert!(queue.suppress_automatic_starts(generation));
         assert!(queue.automatic_starts_suppressed());
     }
 

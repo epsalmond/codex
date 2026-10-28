@@ -668,7 +668,6 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
-        let wakeup_generation = self.input_queue.wakeup_generation();
         // A rejected automatic start waits for explicit recovery. A user pause only holds
         // trigger-turn mail and owned completions: queue-only mail still wakes a durable sleep.
         // A failed turn pauses without suppressing starts: its error may be transient, and each
@@ -743,8 +742,10 @@ impl Session {
             self.clear_reserved_idle_turn(&turn_state).await;
             return PendingWorkStartResult::Stale;
         }
-        let (mut input, mut start_options) =
-            self.input_queue.get_pending_input(&self.active_turn).await;
+        let (mut input, mut start_options, wakeup_generation) = self
+            .input_queue
+            .get_pending_input_with_wakeup_generation(&self.active_turn)
+            .await;
         // Unread mail can turn out to be held trigger-turn mail; a pause leaves nothing to wake.
         if input.is_empty() && matches!(cause, PendingWorkCause::Mailbox) {
             self.abandon_root_turn_lifecycle(&sub_id);
@@ -857,9 +858,16 @@ impl Session {
                 }
                 _ => None,
             });
-            if has_held_work {
-                self.input_queue
+            let _failed = turn_start_hold::wait_if_held(
+                self.thread_id(),
+                TurnStartHoldPoint::WakeBeforeSuppress,
+            )
+            .await;
+            let suppressed = has_held_work
+                && self
+                    .input_queue
                     .suppress_automatic_starts(wakeup_generation);
+            if has_held_work {
                 self.input_queue
                     .return_to_mailbox_with_start_options(&mut input, retained_start_options)
                     .await;
@@ -868,7 +876,7 @@ impl Session {
             // immediately by sending another explicit follow-up.
             self.clear_reserved_idle_turn(&turn_state).await;
             if has_held_work {
-                let recovery_message = if self.input_queue.automatic_starts_suppressed() {
+                let recovery_message = if suppressed {
                     "Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn."
                 } else {
                     "Accepted messages remain queued; automatic wakeups have already been resumed by an explicit follow-up or user turn."
@@ -892,6 +900,11 @@ impl Session {
                 .await;
             }
             warn!("failed to bind automatic turn to agent assignment: {error}");
+            // An accepted followup may have found this reservation busy. Give it a start
+            // now; suppression prevents retrying the same deterministic rejection, and
+            // the next drain includes any recovery mail in its own failure generation.
+            drop(assignment_guard);
+            self.maybe_start_turn_for_pending_work().await;
             return PendingWorkStartResult::Stale;
         }
         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
