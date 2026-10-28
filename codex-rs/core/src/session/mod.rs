@@ -347,6 +347,7 @@ use crate::state::ReasoningEffortPin;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 use crate::state::TaskKind;
+use crate::state::TurnState;
 #[cfg(test)]
 use crate::stream_events_utils::HandleOutputCtx;
 #[cfg(test)]
@@ -4413,7 +4414,27 @@ impl Session {
         model_info: &ModelInfo,
         communication: impl Into<crate::PendingAgentMessage>,
     ) {
-        let communication = communication.into();
+        self.record_inter_agent_communication_with_pending_input(
+            turn_context,
+            model_info,
+            communication.into(),
+            None,
+        )
+        .await;
+    }
+
+    /// Commit queued mail and remove its recovery copy at the same history boundary.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "history insertion and recovery copy removal must be atomic"
+    )]
+    pub(crate) async fn record_inter_agent_communication_with_pending_input(
+        &self,
+        turn_context: &TurnContext,
+        model_info: &ModelInfo,
+        communication: crate::PendingAgentMessage,
+        pending_turn_state: Option<&Mutex<TurnState>>,
+    ) {
         self.grant_answer_credit(turn_context, &communication);
         let mut response_item = communication.to_model_input_item();
         if let ResponseItem::AgentMessage {
@@ -4468,6 +4489,14 @@ impl Session {
                     .raw_items()
                     .any(|item| item.id() == Some(response_item_id))
             }) {
+                drop(state);
+                if let Some(turn_state) = pending_turn_state {
+                    turn_state
+                        .lock()
+                        .await
+                        .pending_input
+                        .consume_unrecorded_mail();
+                }
                 return;
             }
             (
@@ -4483,6 +4512,12 @@ impl Session {
             let _ = recording.changed().await;
         }
         {
+            // Keep the recovery copy until all recording awaits have completed. Holding both
+            // locks makes history insertion and copy consumption one cancellation boundary.
+            let mut pending_turn_state = match pending_turn_state {
+                Some(turn_state) => Some(turn_state.lock().await),
+                None => None,
+            };
             let mut state = self.state.lock().await;
             if response_item_id.as_ref().is_some_and(|response_item_id| {
                 state
@@ -4490,7 +4525,13 @@ impl Session {
                     .raw_items()
                     .any(|item| item.id() == Some(response_item_id))
             }) {
+                if let Some(turn_state) = pending_turn_state.as_mut() {
+                    turn_state.pending_input.consume_unrecorded_mail();
+                }
                 return;
+            }
+            if let Some(turn_state) = pending_turn_state.as_mut() {
+                turn_state.pending_input.consume_unrecorded_mail();
             }
             state.current_time_reminder.note_recorded_items(items);
             state.history.record_annotated_items(

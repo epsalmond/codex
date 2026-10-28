@@ -943,6 +943,13 @@ print(json.dumps({}))
         /*queued_results*/ 1,
     )
     .await;
+    hold_child_report(
+        &codex,
+        "/root/worker_b",
+        "report b",
+        /*queued_results*/ 2,
+    )
+    .await;
     let submission = codex
         .start_turn_if_idle(TurnInputRequest::new(TurnInput::ResponseItem(
             user_message_item("automatic input"),
@@ -960,7 +967,7 @@ print(json.dumps({}))
     codex.submit(Op::Interrupt).await.expect("interrupt");
     // The abort's `clear_pending` returns the unread report to the mailbox, where the pause
     // holds it for the next user message.
-    wait_for_wakeups(&codex, /*paused*/ true, /*queued_results*/ 1).await;
+    wait_for_wakeups(&codex, /*paused*/ true, /*queued_results*/ 2).await;
     assert_no_turn_starts(&codex, SETTLE).await;
 
     submit_user_text(&codex, NEXT_PROMPT).await;
@@ -976,9 +983,15 @@ print(json.dumps({}))
             bodies.len(),
             deliveries(&bodies[..1], "report a"),
             deliveries(&bodies, "report a"),
+            deliveries(&bodies, "report b"),
             steering_prompted,
         ),
-        (2, 0, 1, false)
+        (2, 0, 1, 1, false)
+    );
+    let delivered = agent_message_texts(bodies.last().expect("recovery request"));
+    assert!(
+        delivered.iter().position(|text| text.contains("report a"))
+            < delivered.iter().position(|text| text.contains("report b"))
     );
     server.shutdown().await;
 }

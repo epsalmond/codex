@@ -2816,6 +2816,100 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
 }
 
 #[tokio::test]
+async fn cancelled_mail_recording_keeps_recovery_copy_until_history_commit() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    let turn_state = session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .turn_state
+        .clone();
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").unwrap(),
+        AgentPath::root(),
+        Vec::new(),
+        "recover this report".to_string(),
+        false,
+    );
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(
+            &turn_state,
+            vec![TurnInput::InterAgentCommunication(
+                communication.clone().into(),
+            )],
+        )
+        .await;
+    let drained = session
+        .input_queue
+        .drain_pending_input_keeping_unrecorded_mail(&session.active_turn)
+        .await;
+    let boundary = session
+        .code_mode_message_tasks
+        .communication_boundary
+        .acquire()
+        .await
+        .unwrap();
+    {
+        let recording = super::turn::run_hooks_and_record_drained_inputs(
+            &session,
+            &turn_context,
+            turn_context.model_info(),
+            &drained,
+            PersistContext::SteeredUserInput,
+            true,
+        );
+        tokio::pin!(recording);
+        assert!(futures::poll!(recording.as_mut()).is_pending());
+    }
+    drop(boundary);
+    assert!(raw_history_items(&session.clone_history().await).is_empty());
+    assert!(
+        session
+            .input_queue
+            .clear_pending(
+                session.active_turn.lock().await.as_ref().unwrap(),
+                &TurnAbortReason::Replaced,
+                ChildReportMode::WaitAgent,
+            )
+            .await
+    );
+    let recovered = session.input_queue.drain_mailbox_input_items().await.0;
+    assert_eq!(recovered, drained);
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(&turn_state, recovered)
+        .await;
+    let recovered = session
+        .input_queue
+        .drain_pending_input_keeping_unrecorded_mail(&session.active_turn)
+        .await;
+    super::turn::run_hooks_and_record_drained_inputs(
+        &session,
+        &turn_context,
+        turn_context.model_info(),
+        &recovered,
+        PersistContext::SteeredUserInput,
+        true,
+    )
+    .await;
+    let history = session.clone_history().await;
+    assert_eq!(raw_history_items(&history).len(), 1);
+    assert!(
+        session
+            .input_queue
+            .drain_pending_input_keeping_unrecorded_mail(&session.active_turn)
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let (mut session, turn_context) = make_session_and_context().await;
     let rollout_path = attach_thread_persistence(&mut session).await;

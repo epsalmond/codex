@@ -1137,6 +1137,15 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
         sess.return_coordinator_reports_to_mailbox(input).await;
         return false;
     }
+    let pending_turn_state = if from_input_queue {
+        sess.active_turn
+            .lock()
+            .await
+            .as_ref()
+            .map(|turn| Arc::clone(&turn.turn_state))
+    } else {
+        None
+    };
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     let mut deferred_reports = Vec::new();
@@ -1159,6 +1168,11 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
         }
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
+            if from_input_queue && matches!(input_item, TurnInput::InterAgentCommunication(_)) {
+                sess.input_queue
+                    .consume_unrecorded_mail(&sess.active_turn)
+                    .await;
+            }
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
             if Session::coordinator_report_id(input_item).is_some()
@@ -1178,13 +1192,6 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
             } else {
                 persist_context
             };
-            if from_input_queue && matches!(input_item, TurnInput::InterAgentCommunication(_)) {
-                // Consume before recording: an abort inside recording must not leave the same
-                // mail both in history and queued.
-                sess.input_queue
-                    .consume_unrecorded_mail(&sess.active_turn)
-                    .await;
-            }
             record_pending_input(
                 sess,
                 turn_context,
@@ -1192,6 +1199,7 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
                 input_item.clone(),
                 hook_outcome.additional_contexts,
                 input_persist_context,
+                pending_turn_state.as_deref(),
             )
             .await;
             if let Some(report_id) = Session::coordinator_report_id(input_item) {

@@ -718,6 +718,7 @@ pub(crate) async fn record_pending_input(
     pending_input: TurnInput,
     additional_contexts: Vec<codex_hooks::HookContext>,
     persist_context: PersistContext,
+    pending_turn_state: Option<&tokio::sync::Mutex<crate::state::TurnState>>,
 ) {
     match pending_input {
         TurnInput::UserInput {
@@ -762,8 +763,18 @@ pub(crate) async fn record_pending_input(
             sess.ensure_rollout_materialized(persist_context).await;
         }
         TurnInput::InterAgentCommunication(communication) => {
-            sess.record_inter_agent_communication(turn_context, model_info, communication)
+            if pending_turn_state.is_some() {
+                sess.record_inter_agent_communication_with_pending_input(
+                    turn_context,
+                    model_info,
+                    communication,
+                    pending_turn_state,
+                )
                 .await;
+            } else {
+                sess.record_inter_agent_communication(turn_context, model_info, communication)
+                    .await;
+            }
             sess.ensure_rollout_materialized(persist_context).await;
         }
     }

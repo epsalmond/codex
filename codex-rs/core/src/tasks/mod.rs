@@ -434,20 +434,11 @@ impl Session {
                 .abort_unstarted_task(&turn_context, &reservation, input)
                 .await;
         }
-        let (pending_items, drained_start_options) =
-            self.input_queue.drain_mailbox_input_items().await;
         let turn_state = Arc::clone(&reservation.turn_state);
-        // Mail drained here loses its own start options, so the turn retains them until it
-        // records the mail; aborted turns return mail with these options again. A reservation
-        // that brought its own lineage (a wake turn's returned followup) wins over the fresh
-        // drain's, which is empty in that flow.
-        let mail_start_options = match (
-            &reservation.mail_start_options.parent_turn_id,
-            &reservation.mail_start_options.root_turn_id,
-        ) {
-            (None, None) => drained_start_options,
-            _ => reservation.mail_start_options.clone(),
-        };
+        let mail_start_options = self
+            .input_queue
+            .drain_mailbox_into_turn_state(turn_state.as_ref(), &reservation.mail_start_options)
+            .await;
         // The delivering turn reports the mail's requester lineage: the drain derived these
         // ids from the triggering mails' start options. A wake turn already set them during
         // its start and wins.
@@ -470,11 +461,7 @@ impl Session {
         {
             let mut turn_state = turn_state.lock().await;
             turn_state.token_usage_at_turn_start = token_usage_at_turn_start.clone();
-            turn_state.mail_start_options = mail_start_options;
         }
-        self.input_queue
-            .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
-            .await;
         self.emit_turn_start_lifecycle(
             turn_context.as_ref(),
             Some(&token_usage_at_turn_start),
