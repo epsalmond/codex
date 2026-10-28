@@ -565,10 +565,6 @@ impl InputQueue {
 
     /// Finish a batch against its original owner. Acquire the destination before removing any
     /// recovery copies, so cancellation leaves each message in either the turn or the mailbox.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "recovery removal and mailbox insertion must be atomic"
-    )]
     pub(crate) async fn finish_unrecorded_mail(
         &self,
         turn_state: Option<&Mutex<TurnState>>,
