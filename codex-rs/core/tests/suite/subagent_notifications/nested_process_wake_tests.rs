@@ -51,6 +51,10 @@ fn report_count(request: &Value, text: &str) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_process_completion_wakes_grandchild_child_and_root_then_drains() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    Box::pin(composed_process_wake_trace()).await
+}
+
+async fn composed_process_wake_trace() -> Result<()> {
     let gate = NativeGate::new().await?;
     let (accept_process, process_acceptance) = oneshot::channel();
     let (finish_grandchild, grandchild_final) = oneshot::channel();
