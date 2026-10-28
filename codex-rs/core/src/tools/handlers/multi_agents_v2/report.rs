@@ -13,6 +13,7 @@ use crate::session::typed_reports::typed_report_agent_path;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME;
 use crate::tools::handlers::multi_agents_spec::create_report_tool;
+use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
 
 /// Model-visible rejection for `report_to_parent(answer)` without an unanswered ancestor message.
@@ -33,6 +34,7 @@ enum ReportKind {
 struct ReportArgs {
     kind: ReportKind,
     message: String,
+    to: Option<String>,
 }
 
 impl ToolExecutor<ToolInvocation> for Handler {
@@ -65,16 +67,16 @@ async fn handle_report(
     let args: ReportArgs = parse_arguments(&arguments)?;
     let message = message_content(args.message)?;
     let ToolInvocation { session, turn, .. } = invocation;
-    if typed_report_agent_path(&turn).is_none() {
+    let Some(agent_path) = typed_report_agent_path(&turn) else {
         return Err(FunctionCallError::RespondToModel(format!(
             "{REPORT_TOOL_NAME} is only available to subagents with typed reports enabled."
         )));
-    }
+    };
     let terminal_kind = match args.kind {
         ReportKind::Blocked => TerminalReportKind::Blocked,
         ReportKind::Final => TerminalReportKind::Final,
         ReportKind::Answer => {
-            return send_answer(&session, &turn, message).await;
+            return send_answer(&session, &turn, &agent_path, args.to, message).await;
         }
     };
     if turn.extension_data.get::<PendingTerminalReport>().is_some() {
@@ -101,13 +103,31 @@ async fn handle_report(
 async fn send_answer(
     session: &std::sync::Arc<crate::session::session::Session>,
     turn: &std::sync::Arc<crate::session::turn_context::TurnContext>,
+    agent_path: &AgentPath,
+    to: Option<String>,
     message: String,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let Some(ancestor_path) = session.take_answer_credit() else {
-        return Err(FunctionCallError::RespondToModel(
-            ANSWER_WITHOUT_QUESTION.to_string(),
-        ));
+    let ancestor = to
+        .as_deref()
+        .map(|target| {
+            AgentPath::try_from(target)
+                .ok()
+                .filter(|ancestor| ancestor.is_ancestor_of(agent_path))
+                .ok_or_else(|| FunctionCallError::RespondToModel(format!(
+                    "Answer recipient `{target}` must be an ancestor agent path of `{agent_path}`."
+                )))
+        })
+        .transpose()?;
+    let Some(credit) = session.take_answer_credit(ancestor.as_ref()) else {
+        let message = match ancestor {
+            Some(ancestor) => format!(
+                "No unanswered ancestor message from `{ancestor}`; no answer credit was consumed."
+            ),
+            None => ANSWER_WITHOUT_QUESTION.to_string(),
+        };
+        return Err(FunctionCallError::RespondToModel(message));
     };
+    let ancestor_path = credit.ancestor();
     let delivered = async {
         let ancestor = resolve_agent_target(session, turn, ancestor_path.as_str()).await?;
         let resume_config =
@@ -134,13 +154,11 @@ async fn send_answer(
     }
     .await;
     match delivered {
-        Ok(_) => Ok(FunctionToolOutput::from_text(
-            format!("Answer delivered to `{ancestor_path}`. Continue your task."),
-            Some(true),
-        )),
-        Err(err) => {
-            session.restore_answer_credit(ancestor_path);
-            Err(err)
+        Ok(_) => {
+            let output = format!("Answer delivered to `{ancestor_path}`. Continue your task.");
+            credit.commit();
+            Ok(FunctionToolOutput::from_text(output, Some(true)))
         }
+        Err(err) => Err(err),
     }
 }
