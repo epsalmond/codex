@@ -44,6 +44,23 @@ impl AnswerCredits {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    fn take(&self, ancestor: Option<&AgentPath>) -> Option<(usize, AgentPath)> {
+        let mut credits = self.lock();
+        let position = match ancestor {
+            Some(ancestor) => credits.iter().position(|credit| credit == ancestor)?,
+            None => 0,
+        };
+        credits
+            .remove(position)
+            .map(|ancestor| (position, ancestor))
+    }
+
+    fn restore(&self, (position, ancestor): (usize, AgentPath)) {
+        let mut credits = self.lock();
+        let position = position.min(credits.len());
+        credits.insert(position, ancestor);
+    }
 }
 
 /// Returns the agent path of a non-root V2 agent that reports through `report_to_parent`. Hosts that hide
@@ -90,22 +107,23 @@ impl Session {
             .push_back(communication.author.clone());
     }
 
-    /// Spends the oldest answer credit, returning the ancestor to answer.
-    pub(crate) fn take_answer_credit(&self) -> Option<AgentPath> {
+    /// Spends one credit for the selected ancestor, or the oldest credit when omitted.
+    pub(crate) fn take_answer_credit(
+        &self,
+        ancestor: Option<&AgentPath>,
+    ) -> Option<(usize, AgentPath)> {
         self.services
             .thread_extension_data
             .get::<AnswerCredits>()?
-            .lock()
-            .pop_front()
+            .take(ancestor)
     }
 
-    /// Returns an unused answer credit after a failed delivery.
-    pub(crate) fn restore_answer_credit(&self, ancestor: AgentPath) {
+    /// Returns the selected credit to its queue position after a failed delivery.
+    pub(crate) fn restore_answer_credit(&self, credit: (usize, AgentPath)) {
         self.services
             .thread_extension_data
             .get_or_init(AnswerCredits::default)
-            .lock()
-            .push_front(ancestor);
+            .restore(credit);
     }
 
     /// Questions end with the turn: its final or blocked report covers them.
@@ -136,4 +154,40 @@ pub(super) async fn maybe_record_wrap_up_reminder(
     )
     .await;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn answer_credits_select_and_restore_without_reordering_other_ancestors() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = AnswerCredits::default();
+        credits
+            .lock()
+            .extend([root.clone(), parent.clone(), parent.clone()]);
+
+        let selected = credits.take(Some(&parent)).expect("parent credit");
+        assert_eq!(selected, (1, parent.clone()));
+        credits.restore(selected);
+        assert_eq!(credits.take(None), Some((0, root)));
+        assert_eq!(credits.take(Some(&parent)), Some((0, parent.clone())));
+        assert_eq!(credits.take(Some(&parent)), Some((0, parent.clone())));
+        assert_eq!(credits.take(Some(&parent)), None);
+        assert_eq!(credits.take(None), None);
+    }
+
+    #[test]
+    fn answer_credits_missing_target_preserves_fifo() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = AnswerCredits::default();
+        credits.lock().push_back(root.clone());
+
+        assert_eq!(credits.take(Some(&parent)), None);
+        assert_eq!(credits.take(None), Some((0, root)));
+    }
 }

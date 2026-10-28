@@ -573,3 +573,20 @@ fn list_agents_tool_status_schema_includes_interrupted() {
         json!(["unloaded"])
     );
 }
+
+#[test]
+fn report_tool_answer_recipient_is_optional() {
+    let ToolSpec::Function(tool) = create_report_tool() else {
+        panic!("report should be a function tool");
+    };
+    assert_eq!(
+        tool.parameters.required,
+        Some(vec!["kind".to_string(), "message".to_string()])
+    );
+    assert!(
+        tool.parameters
+            .properties
+            .expect("report properties")
+            .contains_key("to")
+    );
+}
