@@ -639,3 +639,50 @@ async fn finished_task_returns_unread_mail_only_in_wake_mode_when_not_read() {
         ]
     );
 }
+
+#[tokio::test]
+async fn lost_reservation_requeues_startup_drain_with_accepted_lineage() {
+    let (session, _, _) = make_session_and_context_with_rx().await;
+    let state = Arc::new(tokio::sync::Mutex::new(crate::state::TurnState::default()));
+    let options = codex_protocol::turn_input::TurnStartOptions {
+        parent_turn_id: Some("requester-turn".into()),
+        root_turn_id: Some("requester-root".into()),
+        ..Default::default()
+    };
+    session
+        .input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                AgentPath::root().join("worker").unwrap(),
+                AgentPath::root(),
+                Vec::new(),
+                "startup mail".into(),
+                true,
+            )
+            .into(),
+            options.clone(),
+        )
+        .await;
+    session
+        .input_queue
+        .drain_mailbox_into_turn_state(&state, &Default::default())
+        .await;
+    session
+        .requeue_reserved_mail(&super::TurnReservation {
+            turn_state: state.clone(),
+            mail_start_options: Default::default(),
+            return_input_if_lost: false,
+        })
+        .await;
+    let (returned, recovered) = session.input_queue.drain_mailbox_input_items().await;
+    assert_eq!(returned.len(), 1);
+    assert_eq!(recovered.parent_turn_id, options.parent_turn_id);
+    assert_eq!(recovered.root_turn_id, options.root_turn_id);
+    assert!(
+        session
+            .input_queue
+            .take_pending_input_for_turn_state(&state)
+            .await
+            .is_empty()
+    );
+}

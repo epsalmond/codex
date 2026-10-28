@@ -4495,7 +4495,7 @@ impl Session {
                         .lock()
                         .await
                         .pending_input
-                        .consume_unrecorded_mail();
+                        .consume_unrecorded_mail(&communication);
                 }
                 return;
             }
@@ -4519,19 +4519,18 @@ impl Session {
                 None => None,
             };
             let mut state = self.state.lock().await;
+            if let Some(turn_state) = pending_turn_state.as_mut() {
+                turn_state
+                    .pending_input
+                    .consume_unrecorded_mail(&communication);
+            }
             if response_item_id.as_ref().is_some_and(|response_item_id| {
                 state
                     .history
                     .raw_items()
                     .any(|item| item.id() == Some(response_item_id))
             }) {
-                if let Some(turn_state) = pending_turn_state.as_mut() {
-                    turn_state.pending_input.consume_unrecorded_mail();
-                }
                 return;
-            }
-            if let Some(turn_state) = pending_turn_state.as_mut() {
-                turn_state.pending_input.consume_unrecorded_mail();
             }
             state.current_time_reminder.note_recorded_items(items);
             state.history.record_annotated_items(

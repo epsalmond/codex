@@ -384,6 +384,8 @@ impl Session {
         task: T,
         reservation: TurnReservation,
     ) -> TaskStartOutcome {
+        reservation.turn_state.lock().await.mail_start_options =
+            reservation.mail_start_options.clone();
         if let Err(error) = self.admit_root_task_or_emit_error(&turn_context).await {
             // Leaving the reservation taskless would make later input wait for a turn that never
             // runs. Another caller's reservation is left alone.
@@ -586,15 +588,8 @@ impl Session {
     }
 
     async fn requeue_reserved_mail(&self, reservation: &TurnReservation) {
-        let mut pending_input = self
-            .input_queue
-            .take_pending_input_for_turn_state(&reservation.turn_state)
-            .await;
         self.input_queue
-            .return_to_mailbox_with_start_options(
-                &mut pending_input,
-                reservation.mail_start_options.clone(),
-            )
+            .requeue_pending_input_for_turn_state(&reservation.turn_state)
             .await;
     }
 

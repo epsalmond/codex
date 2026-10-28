@@ -2863,7 +2863,7 @@ async fn cancelled_mail_recording_keeps_recovery_copy_until_history_commit() {
             turn_context.model_info(),
             &drained,
             PersistContext::SteeredUserInput,
-            true,
+            Some(&turn_state),
         );
         tokio::pin!(recording);
         assert!(futures::poll!(recording.as_mut()).is_pending());
@@ -2896,7 +2896,7 @@ async fn cancelled_mail_recording_keeps_recovery_copy_until_history_commit() {
         turn_context.model_info(),
         &recovered,
         PersistContext::SteeredUserInput,
-        true,
+        Some(&turn_state),
     )
     .await;
     let history = session.clone_history().await;

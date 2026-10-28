@@ -763,18 +763,13 @@ pub(crate) async fn record_pending_input(
             sess.ensure_rollout_materialized(persist_context).await;
         }
         TurnInput::InterAgentCommunication(communication) => {
-            if pending_turn_state.is_some() {
-                sess.record_inter_agent_communication_with_pending_input(
-                    turn_context,
-                    model_info,
-                    communication,
-                    pending_turn_state,
-                )
-                .await;
-            } else {
-                sess.record_inter_agent_communication(turn_context, model_info, communication)
-                    .await;
-            }
+            sess.record_inter_agent_communication_with_pending_input(
+                turn_context,
+                model_info,
+                communication,
+                pending_turn_state,
+            )
+            .await;
             sess.ensure_rollout_materialized(persist_context).await;
         }
     }

@@ -424,26 +424,13 @@ pub(crate) async fn run_turn(
         // Same recovery contract as the mid-turn drain: the taken mail keeps an unrecorded copy
         // in pending input until recording consumes it, so a hard abort while the turn-start
         // hooks run cannot lose it.
-        let mut mail = sess
+        let (mail, pending_turn_state) = sess
             .input_queue
             .take_pending_agent_mail_keeping_unrecorded_mail(&sess.active_turn)
             .await;
         if blocked {
-            // The copies are still pending; consume them before the requeue so the same mail
-            // cannot be delivered again through `clear_pending`.
-            for mail_item in &mail {
-                if matches!(mail_item, TurnInput::InterAgentCommunication(_)) {
-                    sess.input_queue
-                        .consume_unrecorded_mail(&sess.active_turn)
-                        .await;
-                }
-            }
-            let mail_start_options = sess
-                .input_queue
-                .turn_mail_start_options(&sess.active_turn)
-                .await;
             sess.input_queue
-                .return_to_mailbox_with_start_options(&mut mail, mail_start_options)
+                .finish_unrecorded_mail(pending_turn_state.as_deref(), &mail, &mail)
                 .await;
         } else {
             run_hooks_and_record_drained_inputs(
@@ -452,7 +439,7 @@ pub(crate) async fn run_turn(
                 &first_step_context.settings.model_info,
                 &mail,
                 PersistContext::TurnStart,
-                /*from_input_queue*/ true,
+                pending_turn_state.as_deref(),
             )
             .await;
         }
@@ -529,12 +516,12 @@ pub(crate) async fn run_turn(
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
-        let pending_input = if can_drain_pending_input {
+        let (pending_input, pending_turn_state) = if can_drain_pending_input {
             sess.input_queue
-                .drain_pending_input_keeping_unrecorded_mail(&sess.active_turn)
+                .drain_pending_input_with_recovery_owner(&sess.active_turn)
                 .await
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
 
         if run_hooks_and_record_drained_inputs(
@@ -543,7 +530,7 @@ pub(crate) async fn run_turn(
             &turn_context.capture_current_model_info(),
             &pending_input,
             PersistContext::SteeredUserInput,
-            /*from_input_queue*/ can_drain_pending_input,
+            pending_turn_state.as_deref(),
         )
         .await
         {
@@ -1090,14 +1077,14 @@ pub(crate) async fn run_hooks_and_record_inputs(
         model_info,
         input,
         persist_context,
-        /*from_input_queue*/ false,
+        None,
     )
     .await
 }
 
 /// Records drained input with hooks, consuming each item from the input queue at the point of
-/// successful recording. Inputs that did not come from the input queue are handled as plain
-/// owned turn input (`from_input_queue == false`).
+/// successful recording. The captured owner follows the batch across active-turn replacement. Plain owned
+/// turn input has no recovery owner.
 ///
 /// Queue-origin mail is the one input a hard abort must not lose: the drain leaves unrecorded
 /// `InterAgentCommunication` items in pending input, so this function removes the matching copy
@@ -1111,7 +1098,7 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
     model_info: &ModelInfo,
     input: &[TurnInput],
     persist_context: PersistContext,
-    from_input_queue: bool,
+    pending_turn_state: Option<&tokio::sync::Mutex<crate::state::TurnState>>,
 ) -> bool {
     // Cancellation can reach this path before Guardian's tools and context are
     // resolved. Only finalized evidence may enter reusable reviewer history.
@@ -1121,31 +1108,10 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
         .get::<crate::guardian::PendingReviewContext>()
         .is_some()
     {
-        if from_input_queue {
-            // The drained copies leave the queue here, in batch order: consuming once per mail
-            // item of the snapshot removes exactly the copies this batch owns. Mail that landed
-            // in the turn state after the drain (not part of the snapshot) keeps its copy for
-            // its own delivery, and coordinator reports are returned from the snapshot below.
-            for input_item in input {
-                if matches!(input_item, TurnInput::InterAgentCommunication(_)) {
-                    sess.input_queue
-                        .consume_unrecorded_mail(&sess.active_turn)
-                        .await;
-                }
-            }
-        }
-        sess.return_coordinator_reports_to_mailbox(input).await;
+        sess.return_coordinator_reports_to_mailbox(input, pending_turn_state)
+            .await;
         return false;
     }
-    let pending_turn_state = if from_input_queue {
-        sess.active_turn
-            .lock()
-            .await
-            .as_ref()
-            .map(|turn| Arc::clone(&turn.turn_state))
-    } else {
-        None
-    };
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     let mut deferred_reports = Vec::new();
@@ -1153,11 +1119,9 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
         if let Some(report_id) = Session::coordinator_report_id(input_item)
             && !sess.coordinator_report_is_current(report_id)
         {
-            if from_input_queue {
-                sess.input_queue
-                    .consume_unrecorded_mail(&sess.active_turn)
-                    .await;
-            }
+            sess.input_queue
+                .finish_unrecorded_mail(pending_turn_state, std::slice::from_ref(input_item), &[])
+                .await;
             sess.services
                 .local_agent_runtime
                 .release_terminal_report_claim(report_id);
@@ -1168,17 +1132,20 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
         }
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
-            if from_input_queue && matches!(input_item, TurnInput::InterAgentCommunication(_)) {
-                sess.input_queue
-                    .consume_unrecorded_mail(&sess.active_turn)
-                    .await;
-            }
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
             if Session::coordinator_report_id(input_item).is_some()
                 && let Some(input_item) = Session::deferred_coordinator_report(input_item)
             {
                 deferred_reports.push(input_item);
+            } else {
+                sess.input_queue
+                    .finish_unrecorded_mail(
+                        pending_turn_state,
+                        std::slice::from_ref(input_item),
+                        &[],
+                    )
+                    .await;
             }
         } else {
             if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
@@ -1199,7 +1166,7 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
                 input_item.clone(),
                 hook_outcome.additional_contexts,
                 input_persist_context,
-                pending_turn_state.as_deref(),
+                pending_turn_state,
             )
             .await;
             if let Some(report_id) = Session::coordinator_report_id(input_item) {
@@ -1209,7 +1176,7 @@ pub(crate) async fn run_hooks_and_record_drained_inputs(
     }
     if !deferred_reports.is_empty() {
         sess.input_queue
-            .return_to_mailbox(&mut deferred_reports)
+            .finish_unrecorded_mail(pending_turn_state, &deferred_reports, &deferred_reports)
             .await;
     }
     blocked_input && !accepted_user_input

@@ -7,7 +7,11 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
 
 impl Session {
-    pub(crate) async fn return_coordinator_reports_to_mailbox(&self, input: &[TurnInput]) {
+    pub(crate) async fn return_coordinator_reports_to_mailbox(
+        &self,
+        input: &[TurnInput],
+        pending_turn_state: Option<&tokio::sync::Mutex<crate::state::TurnState>>,
+    ) {
         let mut reports = Vec::new();
         for input_item in input {
             let Some(report_id) = coordinator_report_id(input_item) else {
@@ -30,16 +34,9 @@ impl Session {
                     .discard_stale_terminal_report(report_id);
             }
         }
-        if !reports.is_empty() {
-            // Mirror every other recovery path: the turn's accepted-mail lineage, not defaults.
-            let mail_start_options = self
-                .input_queue
-                .turn_mail_start_options(&self.active_turn)
-                .await;
-            self.input_queue
-                .return_to_mailbox_with_start_options(&mut reports, mail_start_options)
-                .await;
-        }
+        self.input_queue
+            .finish_unrecorded_mail(pending_turn_state, input, &reports)
+            .await;
     }
 
     pub(crate) fn coordinator_report_id(input_item: &TurnInput) -> Option<&ResponseItemId> {
