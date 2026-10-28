@@ -252,7 +252,7 @@ pub(crate) fn followup_task_description(sibling_wake: bool, typed_reports: bool)
 pub(crate) const REPORT_TOOL_NAME: &str = "report_to_parent";
 
 /// `report_to_parent` description; the tool exists only for subagents under typed reports.
-const REPORT_DESCRIPTION: &str = "Report to your parent. This is the only way to message your parent or other ancestors. Use it only for these three reasons, and never for progress updates:\n- `blocked`: you hit something unexpected and need instructions to continue. Your turn ends and you wait; your parent replies with a follow-up.\n- `answer`: reply to a question an ancestor sent you while you work. Allowed only when an ancestor message is waiting for an answer; your turn continues.\n- `final`: your task is done. Include everything your parent needs: what you did, results, and anything useful. Your turn ends, and unless you were spawned as `persistent` you are closed.\nEnding your turn without calling report_to_parent delivers your last message as your final report.";
+const REPORT_DESCRIPTION: &str = "Report to your parent. This is the only way to message your parent or other ancestors. Use it only for these three reasons, and never for progress updates:\n- `blocked`: you hit something unexpected and need instructions to continue. Your turn ends and you wait; your parent replies with a follow-up.\n- `answer`: reply to a question an ancestor sent you while you work. Allowed only when an ancestor message is waiting for an answer; your turn continues. Use `to` to choose which ancestor to answer, or omit it to answer the oldest outstanding message.\n- `final`: your task is done. Include everything your parent needs: what you did, results, and anything useful. Your turn ends, and unless you were spawned as `persistent` you are closed.\nEnding your turn without calling report_to_parent delivers your last message as your final report.";
 
 pub fn create_report_tool() -> ToolSpec {
     let properties = BTreeMap::from([
@@ -268,6 +268,13 @@ pub fn create_report_tool() -> ToolSpec {
             // Plaintext: the server encrypts only its own reviewed collaboration parameters.
             JsonSchema::string(Some(
                 "The report: your question or blocker, your answer, or your final result."
+                    .to_string(),
+            )),
+        ),
+        (
+            "to".to_string(),
+            JsonSchema::string(Some(
+                "For `answer` only: full ancestor agent path whose outstanding question you are answering. Omit to answer the oldest outstanding message. Ignored for `blocked` and `final`."
                     .to_string(),
             )),
         ),

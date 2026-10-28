@@ -1695,3 +1695,41 @@ async fn waiting_parent_hears_once_from_a_followup_whose_retried_start_fails() {
     );
     assert_eq!(runtime.claim_next_wake_assignment(), Some(parent));
 }
+
+/// A user turn admitted while wakeups are active still fences a previous automatic failure.
+#[test_case(TurnInputMode::StartOrSteer; "replace or steer path")]
+#[test_case(TurnInputMode::StartIfIdle; "start only path")]
+#[tokio::test]
+async fn user_turn_records_recovery_even_when_wakeups_are_active(mode: TurnInputMode) {
+    let (session, _, _) = make_session_and_context_with_rx().await;
+    let session = Arc::new(session);
+    let failed_start_generation = session.input_queue.wakeup_generation();
+    let mut hold = crate::tasks::hold_next_turn_start(
+        session.thread_id,
+        crate::tasks::TurnStartHoldPoint::InputBeforeInstall,
+    );
+    let (submission, ()) = tokio::join!(
+        handle(
+            &session,
+            explicit_turn("user recovery"),
+            mode,
+            "user-recovery".to_string()
+        ),
+        async {
+            hold.reached().await;
+            assert!(!session.input_queue.wakeups_paused());
+            assert!(
+                !session
+                    .input_queue
+                    .suppress_automatic_starts(failed_start_generation)
+            );
+            assert!(!session.input_queue.automatic_starts_suppressed());
+            hold.release();
+        },
+    );
+    assert!(matches!(
+        submission,
+        Ok(TurnInputSubmission::Started { .. })
+    ));
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}

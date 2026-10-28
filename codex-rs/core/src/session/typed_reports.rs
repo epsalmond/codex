@@ -13,7 +13,8 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 /// Terminal report kinds; `answer` never ends a turn.
@@ -36,13 +37,82 @@ pub(crate) struct CloseAfterFinalReport;
 
 /// Ancestors whose messages this agent has not yet answered, oldest first.
 #[derive(Default)]
-pub(crate) struct AnswerCredits(Mutex<VecDeque<AgentPath>>);
+pub(crate) struct AnswerCredits(Mutex<AnswerCreditQueue>);
+
+#[derive(Default)]
+struct AnswerCreditQueue {
+    generation: u64,
+    next_id: u64,
+    credits: BTreeMap<u64, AgentPath>,
+}
 
 impl AnswerCredits {
-    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<AgentPath>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, AnswerCreditQueue> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn grant(&self, ancestor: AgentPath) {
+        let mut queue = self.lock();
+        let id = queue.next_id;
+        queue.next_id += 1;
+        queue.credits.insert(id, ancestor);
+    }
+
+    fn take(self: &Arc<Self>, ancestor: Option<&AgentPath>) -> Option<AnswerCreditReservation> {
+        let mut queue = self.lock();
+        let id = match ancestor {
+            Some(ancestor) => queue
+                .credits
+                .iter()
+                .find_map(|(&id, credit)| (credit == ancestor).then_some(id))?,
+            None => *queue.credits.first_key_value()?.0,
+        };
+        let (_, ancestor) = queue.credits.remove_entry(&id)?;
+        Some(AnswerCreditReservation {
+            credits: Arc::clone(self),
+            generation: queue.generation,
+            id,
+            ancestor,
+            delivered: false,
+        })
+    }
+
+    fn clear(&self) {
+        let mut queue = self.lock();
+        queue.generation += 1;
+        queue.credits.clear();
+    }
+}
+
+/// Returns an undelivered credit on errors or cancellation, unless its turn has ended.
+pub(crate) struct AnswerCreditReservation {
+    credits: Arc<AnswerCredits>,
+    generation: u64,
+    id: u64,
+    ancestor: AgentPath,
+    delivered: bool,
+}
+
+impl AnswerCreditReservation {
+    pub(crate) fn ancestor(&self) -> &AgentPath {
+        &self.ancestor
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.delivered = true;
+    }
+}
+
+impl Drop for AnswerCreditReservation {
+    fn drop(&mut self) {
+        if !self.delivered {
+            let mut queue = self.credits.lock();
+            if queue.generation == self.generation {
+                queue.credits.insert(self.id, self.ancestor.clone());
+            }
+        }
     }
 }
 
@@ -86,32 +156,24 @@ impl Session {
         self.services
             .thread_extension_data
             .get_or_init(AnswerCredits::default)
-            .lock()
-            .push_back(communication.author.clone());
+            .grant(communication.author.clone());
     }
 
-    /// Spends the oldest answer credit, returning the ancestor to answer.
-    pub(crate) fn take_answer_credit(&self) -> Option<AgentPath> {
+    /// Reserves a credit for the selected ancestor, or the oldest credit when omitted.
+    pub(crate) fn take_answer_credit(
+        &self,
+        ancestor: Option<&AgentPath>,
+    ) -> Option<AnswerCreditReservation> {
         self.services
             .thread_extension_data
             .get::<AnswerCredits>()?
-            .lock()
-            .pop_front()
-    }
-
-    /// Returns an unused answer credit after a failed delivery.
-    pub(crate) fn restore_answer_credit(&self, ancestor: AgentPath) {
-        self.services
-            .thread_extension_data
-            .get_or_init(AnswerCredits::default)
-            .lock()
-            .push_front(ancestor);
+            .take(ancestor)
     }
 
     /// Questions end with the turn: its final or blocked report covers them.
     pub(crate) fn clear_answer_credits(&self) {
         if let Some(credits) = self.services.thread_extension_data.get::<AnswerCredits>() {
-            credits.lock().clear();
+            credits.clear();
         }
     }
 }
@@ -136,4 +198,107 @@ pub(super) async fn maybe_record_wrap_up_reminder(
     )
     .await;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::future::Future;
+
+    fn spend(
+        credits: &Arc<AnswerCredits>,
+        ancestor: Option<&AgentPath>,
+    ) -> Option<(u64, AgentPath)> {
+        let credit = credits.take(ancestor)?;
+        let selected = (credit.id, credit.ancestor.clone());
+        credit.commit();
+        Some(selected)
+    }
+
+    #[test]
+    fn answer_credits_select_and_restore_without_reordering_other_ancestors() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = Arc::new(AnswerCredits::default());
+        for ancestor in [root.clone(), parent.clone(), parent.clone()] {
+            credits.grant(ancestor);
+        }
+
+        let selected = credits.take(Some(&parent)).expect("parent credit");
+        assert_eq!(selected.id, 1);
+        drop(selected);
+        assert_eq!(spend(&credits, None), Some((0, root)));
+        assert_eq!(spend(&credits, Some(&parent)), Some((1, parent.clone())));
+        assert_eq!(spend(&credits, Some(&parent)), Some((2, parent.clone())));
+        assert!(credits.take(Some(&parent)).is_none());
+        assert!(credits.take(None).is_none());
+    }
+
+    #[test]
+    fn answer_credits_restore_keeps_fifo_after_another_answer_completes() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = Arc::new(AnswerCredits::default());
+        for ancestor in [root.clone(), parent.clone(), root.clone()] {
+            credits.grant(ancestor);
+        }
+
+        let selected = credits.take(Some(&parent)).expect("parent credit");
+        assert_eq!(spend(&credits, None), Some((0, root.clone())));
+        credits.grant(parent.clone());
+        drop(selected);
+        assert_eq!(spend(&credits, None), Some((1, parent.clone())));
+        assert_eq!(spend(&credits, None), Some((2, root)));
+        assert_eq!(spend(&credits, None), Some((3, parent)));
+    }
+
+    #[test]
+    fn answer_credits_missing_target_preserves_fifo() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = Arc::new(AnswerCredits::default());
+        credits.grant(root.clone());
+
+        assert!(credits.take(Some(&parent)).is_none());
+        assert_eq!(spend(&credits, None), Some((0, root)));
+    }
+
+    #[test]
+    fn answer_credits_dropped_delivery_cannot_restore_after_turn_cleanup() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = Arc::new(AnswerCredits::default());
+        credits.grant(root.clone());
+        let previous_turn = credits.take(None).expect("old credit");
+
+        credits.clear();
+        credits.grant(parent.clone());
+        drop(previous_turn);
+        assert_eq!(spend(&credits, None), Some((1, parent)));
+        assert!(credits.take(Some(&root)).is_none());
+    }
+
+    #[test]
+    fn answer_credits_cancelled_delivery_restores_selected_credit() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = Arc::new(AnswerCredits::default());
+        credits.grant(root.clone());
+        credits.grant(parent.clone());
+        let mut delivery = Box::pin(async {
+            let credit = credits.take(Some(&parent)).expect("selected credit");
+            std::future::pending::<()>().await;
+            credit.commit();
+        });
+        let waker = futures::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(delivery.as_mut().poll(&mut context).is_pending());
+        assert!(credits.take(Some(&parent)).is_none());
+        drop(delivery);
+
+        assert_eq!(spend(&credits, None), Some((0, root)));
+        assert_eq!(spend(&credits, None), Some((1, parent)));
+        assert!(credits.take(None).is_none());
+    }
 }

@@ -42,18 +42,24 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 const DEADLINE: Duration = Duration::from_secs(20);
-const CALL_ID: &str = "owned-producer";
+pub(super) const CALL_ID: &str = "owned-producer";
+pub(super) const MAX_RECEIPT_BYTES: usize = 3072;
 
 // The process reports its actual PID and then blocks in a shell read. Readiness, release and
 // teardown are socket events; neither the test nor the model polls a process or a marker file.
-struct NativeGate(TcpListener);
+pub(super) struct NativeGate(TcpListener);
 
 impl NativeGate {
-    async fn new() -> Result<Self> {
+    pub(super) async fn new() -> Result<Self> {
         Ok(Self(TcpListener::bind("127.0.0.1:0").await?))
     }
 
-    fn arguments(&self, service: bool, explicit_task: bool, exit_code: i32) -> Result<Value> {
+    pub(super) fn arguments(
+        &self,
+        service: bool,
+        explicit_task: bool,
+        exit_code: i32,
+    ) -> Result<Value> {
         let port = self.0.local_addr()?.port();
         let mut args = json!({
             "cmd": format!(
@@ -69,7 +75,7 @@ impl NativeGate {
         Ok(args)
     }
 
-    async fn connected(&self) -> Result<(String, BufReader<TcpStream>)> {
+    pub(super) async fn connected(&self) -> Result<(String, BufReader<TcpStream>)> {
         tokio::time::timeout(DEADLINE, async {
             let (stream, _) = self.0.accept().await?;
             let mut stream = BufReader::new(stream);
@@ -307,7 +313,7 @@ async fn fixture(
     Ok((test, recorder, receiver))
 }
 
-async fn terminal_turn(test: &TestCodex) -> Result<TurnCompleteEvent> {
+pub(super) async fn terminal_turn(test: &TestCodex) -> Result<TurnCompleteEvent> {
     tokio::time::timeout(DEADLINE, async {
         loop {
             match test.codex.next_event().await?.msg {
@@ -321,7 +327,7 @@ async fn terminal_turn(test: &TestCodex) -> Result<TurnCompleteEvent> {
     .context("expected a terminal root event")?
 }
 
-async fn observe(
+pub(super) async fn observe(
     updates: &mut watch::Receiver<WorkObservationSnapshot>,
     predicate: impl Fn(&WorkObservationSnapshot) -> bool,
 ) -> Result<WorkObservationSnapshot> {
@@ -338,7 +344,7 @@ async fn observe(
     .context("expected a work observation transition")?
 }
 
-fn assert_close_rejected(observation: &WorkObservation) -> WorkObservationSnapshot {
+pub(super) fn assert_close_rejected(observation: &WorkObservation) -> WorkObservationSnapshot {
     let snapshot = observation.snapshot();
     assert!(!snapshot.quiescent, "{snapshot:?}");
     match observation.shutdown_if_quiescent(&snapshot.revision) {
@@ -354,7 +360,10 @@ fn assert_close_rejected(observation: &WorkObservation) -> WorkObservationSnapsh
 // Quiescence is observed independently of the atomic close. Unrelated coordinator epoch
 // updates can invalidate that revision while leaving the tree drained; use the returned
 // snapshot to retry the guarded operation, as the host must, without accepting new work.
-fn close_drained_tree(observation: &WorkObservation, mut drained: WorkObservationSnapshot) {
+pub(super) fn close_drained_tree(
+    observation: &WorkObservation,
+    mut drained: WorkObservationSnapshot,
+) {
     for _ in 0..16 {
         assert!(
             drained.quiescent,
@@ -369,7 +378,7 @@ fn close_drained_tree(observation: &WorkObservation, mut drained: WorkObservatio
     panic!("drained tree revision did not settle: {drained:?}");
 }
 
-async fn requests(server: &StreamingSseServer) -> Result<Vec<Value>> {
+pub(super) async fn requests(server: &StreamingSseServer) -> Result<Vec<Value>> {
     server
         .requests()
         .await
@@ -384,7 +393,7 @@ async fn request_count(server: &StreamingSseServer, count: usize) -> Result<()> 
         .context("expected a model request")
 }
 
-fn completion_texts(request: &Value) -> Vec<&str> {
+pub(super) fn completion_texts(request: &Value) -> Vec<&str> {
     request["input"]
         .as_array()
         .expect("model input")
@@ -396,7 +405,7 @@ fn completion_texts(request: &Value) -> Vec<&str> {
         .collect()
 }
 
-fn yielded_output(request: &Value) -> String {
+pub(super) fn yielded_output(request: &Value) -> String {
     let item = request["input"]
         .as_array()
         .expect("model input")
@@ -539,7 +548,7 @@ async fn finite_acceptance(
         "one automatic result for the yielded producer"
     );
     let receipt = delivered[0];
-    assert!(serde_json::to_vec(&json!({"text":receipt}))?.len() <= 3072);
+    assert!(serde_json::to_vec(&json!({"text":receipt}))?.len() <= MAX_RECEIPT_BYTES);
     assert!(receipt.contains(&format!("call={CALL_ID}")), "{receipt}");
     match producer {
         Producer::Native => {

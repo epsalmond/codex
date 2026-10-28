@@ -15,6 +15,8 @@ use tokio::sync::oneshot;
 pub enum TurnStartHoldPoint {
     /// An automatic wake has reserved the slot and has not yet bound its assignment.
     WakeBeforeBind,
+    /// An automatic wake failed binding and has not yet decided whether to suppress retries.
+    WakeBeforeSuppress,
     /// An automatic wake has bound its assignment and has not yet installed its task.
     WakeBeforeInstall,
     /// Input has reserved the slot and has not yet bound its assignment.

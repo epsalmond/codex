@@ -3,6 +3,7 @@
 use std::io;
 use std::path::Path;
 
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -214,4 +215,99 @@ fn scan_model_context_from_lineage_blocking(
     let mut items = scan.finish();
     items.insert(0, RolloutItem::SessionMeta(Box::new(session_meta)));
     Ok(items)
+}
+
+/// Finds the latest terminal event for an exact turn, even before a compaction boundary.
+pub(super) async fn load_turn_terminal_event(
+    store: &LocalThreadStore,
+    params: LoadThreadHistoryParams,
+    turn_id: String,
+) -> ThreadStoreResult<Option<EventMsg>> {
+    let resolved = if params.include_archived {
+        thread_rollout_resolver::resolve_current_including_archived(store, params.thread_id).await?
+    } else {
+        thread_rollout_resolver::resolve_current(store, params.thread_id).await?
+    }
+    .ok_or_else(|| ThreadStoreError::InvalidRequest {
+        message: format!("no rollout found for thread id {}", params.thread_id),
+    })?;
+    let lineage = store
+        .resolve_rollout_lineage(params.thread_id, Some(resolved.path))
+        .await?;
+    let (stop, keep_running) = tokio::sync::oneshot::channel::<()>();
+    let scan = tokio::task::spawn_blocking(move || {
+        scan_turn_terminal_event(&lineage, &turn_id, || stop.is_closed())
+    })
+    .await
+    .map_err(|error| ThreadStoreError::Internal {
+        message: format!("failed to join terminal event scan: {error}"),
+    })?;
+    drop(keep_running);
+    scan.map_err(|error| ThreadStoreError::Internal {
+        message: format!("failed to scan turn terminal event: {error}"),
+    })
+}
+
+fn scan_turn_terminal_event(
+    lineage: &RolloutLineage,
+    turn_id: &str,
+    is_cancelled: impl Fn() -> bool,
+) -> io::Result<Option<EventMsg>> {
+    // Status restoration is best effort: missing/corrupt turn IDs must not replay
+    // an entire archived lineage. The deadline also bounds compressed decoding.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let is_cancelled = || is_cancelled() || std::time::Instant::now() >= deadline;
+    let mut remaining_records = 4096;
+    for segment in lineage.segments().iter().rev() {
+        let file = codex_rollout::open_rollout_seekable_reader(
+            segment.rollout_path.as_path(),
+            &is_cancelled,
+        )?;
+        let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
+            Some(end) => ReverseJsonlScanner::new_at(file, end)?,
+            None => ReverseJsonlScanner::new(file)?,
+        }
+        .with_max_record_bytes(1024 * 1024);
+        while let Some(outcome) = scanner.scan_next_rollout_line()? {
+            if is_cancelled() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "terminal event scan cancelled",
+                ));
+            }
+            if remaining_records == 0 {
+                return Err(io::Error::other(
+                    "terminal event scan record limit exceeded",
+                ));
+            }
+            remaining_records -= 1;
+            let ScanOutcome::Parsed(line) = outcome else {
+                continue;
+            };
+            if line
+                .ordinal
+                .is_some_and(|ordinal| ordinal < segment.start_ordinal)
+            {
+                break;
+            }
+            let event = match line.item {
+                RolloutItem::EventMsg(event) => event,
+                RolloutItem::SessionMeta(_) => break,
+                _ => continue,
+            };
+            let event_turn_id = match &event {
+                EventMsg::TurnComplete(turn) => Some(turn.turn_id.as_str()),
+                EventMsg::TurnAborted(turn) => turn.turn_id.as_deref(),
+                // The caller asks about the newest projected turn. Reaching any
+                // opening boundary without its terminal means the projection is
+                // stale or incomplete; older turns cannot supply its result.
+                EventMsg::TurnStarted(_) => return Ok(None),
+                _ => None,
+            };
+            if event_turn_id == Some(turn_id) {
+                return Ok(Some(event));
+            }
+        }
+    }
+    Ok(None)
 }

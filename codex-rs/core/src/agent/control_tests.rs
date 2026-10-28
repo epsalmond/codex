@@ -6414,3 +6414,64 @@ mod close_v2_tests;
 mod descendants_tests;
 #[path = "control_tests/polling_completion_tests.rs"]
 mod polling_completion_tests;
+
+#[tokio::test]
+async fn capacity_rejected_followup_does_not_record_recovery() {
+    let mut harness = AgentControlHarness::new().await;
+    harness
+        .config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .unwrap();
+    harness
+        .control
+        .runtime
+        .agent_execution_limiter
+        .initialize(1);
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").unwrap()),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let child = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(source.clone()),
+            ..StartThreadOptions::new(harness.config.clone())
+        })
+        .await
+        .expect("idle worker");
+    let session = &child.thread.session;
+    let generation = session.input_queue.wakeup_generation();
+    let _running = harness
+        .control
+        .execution_guard(MultiAgentVersion::V2, &source)
+        .await;
+    let result = harness
+        .control
+        .send_inter_agent_communication(
+            child.thread_id,
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").unwrap(),
+                Vec::new(),
+                "rejected followup".to_string(),
+                true,
+            ),
+            AgentCommunicationContext::new(AgentCommunicationKind::Followup, ThreadId::new()),
+            TurnStartOptions {
+                parent_turn_id: Some("parent-turn".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "capacity must reject the followup: {result:?}"
+    );
+    assert_eq!(session.input_queue.wakeup_generation(), generation);
+    assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 0);
+    assert!(session.input_queue.suppress_automatic_starts(generation));
+}

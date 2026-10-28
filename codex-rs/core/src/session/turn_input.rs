@@ -705,8 +705,7 @@ async fn start_reserved<'s>(
     };
     let resumes_wakeups = task_input
         .iter()
-        .any(|item| matches!(item, TurnInput::UserInput { .. }))
-        && session.input_queue.wakeups_paused();
+        .any(|item| matches!(item, TurnInput::UserInput { .. }));
     session.clear_connector_selection().await;
     if resumes_wakeups {
         // The reservation above keeps held mail from starting a wake turn once the pause clears.

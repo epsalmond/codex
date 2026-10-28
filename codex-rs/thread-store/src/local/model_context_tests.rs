@@ -33,6 +33,167 @@ use crate::ThreadStore;
 use crate::local::test_support::test_config;
 use crate::local::test_support::write_session_file_with_history_mode;
 
+#[test]
+fn terminal_event_scan_stops_at_a_newer_turn_before_opening_ancestors() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(9004);
+    let thread_id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let path = write_ordinaled_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-09-04",
+        uuid,
+        [turn_complete("older-turn"), turn_started("newer-turn")],
+    );
+    let lineage = RolloutLineage {
+        segments: vec![
+            super::super::rollout_lineage::RolloutLineageSegment {
+                rollout_id: ThreadId::new(),
+                rollout_path: home.path().join("must-not-open-missing-ancestor.jsonl"),
+                start_ordinal: 1,
+                end: None,
+            },
+            super::super::rollout_lineage::RolloutLineageSegment {
+                rollout_id: thread_id,
+                rollout_path: path,
+                start_ordinal: 1,
+                end: None,
+            },
+        ],
+    };
+    assert!(
+        scan_turn_terminal_event(&lineage, "older-turn", || false)
+            .expect("stop at latest boundary")
+            .is_none()
+    );
+    assert!(
+        scan_turn_terminal_event(&lineage, "absent-turn", || false)
+            .expect("stop before ancestor")
+            .is_none()
+    );
+}
+
+#[test]
+fn terminal_event_scan_limits_records_without_an_opening_boundary() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(9005);
+    let path = write_ordinaled_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-09-05",
+        uuid,
+        std::iter::repeat_with(|| turn_complete("unrelated-turn")).take(4097),
+    );
+    let lineage = RolloutLineage {
+        segments: vec![super::super::rollout_lineage::RolloutLineageSegment {
+            rollout_id: ThreadId::from_string(&uuid.to_string()).expect("thread id"),
+            rollout_path: path,
+            start_ordinal: 1,
+            end: None,
+        }],
+    };
+    let error =
+        scan_turn_terminal_event(&lineage, "absent-turn", || false).expect_err("bounded scan");
+    assert!(error.to_string().contains("record limit"));
+    assert!(scan_turn_terminal_event(&lineage, "absent-turn", || true).is_err());
+}
+
+#[tokio::test]
+async fn terminal_event_survives_compaction_and_compression() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(9001);
+    let thread_id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let RolloutItem::EventMsg(EventMsg::TurnComplete(mut complete)) =
+        turn_complete("reported-turn")
+    else {
+        unreachable!()
+    };
+    complete.last_agent_message = Some("blocked report from the terminal tool".to_owned());
+    let path = write_ordinaled_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-09-01",
+        uuid,
+        [
+            turn_started("reported-turn"),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(complete.clone())),
+            compacted("new context omits terminal event", Some(Vec::new())),
+        ],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), None);
+    let params = LoadThreadHistoryParams {
+        thread_id,
+        include_archived: true,
+    };
+    for compressed in [false, true] {
+        if compressed {
+            let input = std::fs::File::open(&path).expect("open plain rollout");
+            let output = std::fs::File::create(path.with_extension("jsonl.zst"))
+                .expect("compressed rollout");
+            zstd::stream::copy_encode(input, output, 3).expect("compress rollout");
+            std::fs::remove_file(&path).expect("remove plain rollout");
+        }
+        let event = store
+            .load_turn_terminal_event(params.clone(), "reported-turn".to_owned())
+            .await
+            .expect("targeted terminal read");
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::to_value(Some(EventMsg::TurnComplete(complete.clone()))).unwrap()
+        );
+        assert!(
+            store
+                .load_turn_terminal_event(params.clone(), "absent-turn".to_owned())
+                .await
+                .expect("missing terminal read")
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_event_read_respects_frozen_fork_cutoff() {
+    let home = TempDir::new().expect("temp dir");
+    let root_uuid = Uuid::from_u128(9002);
+    let root_id = ThreadId::from_string(&root_uuid.to_string()).expect("root id");
+    let root_path = write_ordinaled_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-09-02",
+        root_uuid,
+        [turn_started("source-turn"), turn_complete("source-turn")],
+    );
+    let child_uuid = Uuid::from_u128(9003);
+    let child_id = ThreadId::from_string(&child_uuid.to_string()).expect("child id");
+    let child_path =
+        write_ordinaled_paginated_rollout(home.path(), "2025-01-03T13-09-03", child_uuid, []);
+    let mut meta = codex_rollout::read_session_meta_line(&child_path)
+        .await
+        .expect("child metadata");
+    meta.meta.history_base = Some(history_position(&root_path, root_id, 2));
+    let head = RolloutLine {
+        timestamp: "2025-01-03T13:09:03Z".to_owned(),
+        ordinal: Some(0),
+        item: RolloutItem::SessionMeta(Box::new(meta)),
+    };
+    std::fs::write(
+        &child_path,
+        format!("{}\n", serde_json::to_string(&head).unwrap()),
+    )
+    .expect("write child metadata");
+    let store = LocalThreadStore::new(test_config(home.path()), None);
+    let event = store
+        .load_turn_terminal_event(
+            LoadThreadHistoryParams {
+                thread_id: child_id,
+                include_archived: true,
+            },
+            "source-turn".to_owned(),
+        )
+        .await
+        .expect("frozen terminal read");
+    assert!(
+        event.is_none(),
+        "the terminal event was appended beyond the fork cutoff"
+    );
+}
+
 #[tokio::test]
 async fn stops_at_newest_usable_compaction_and_keeps_companions() {
     let home = TempDir::new().expect("temp dir");
@@ -501,11 +662,11 @@ fn write_paginated_rollout<const N: usize>(
     path
 }
 
-fn write_ordinaled_paginated_rollout<const N: usize>(
+fn write_ordinaled_paginated_rollout(
     home: &Path,
     timestamp: &str,
     uuid: Uuid,
-    items: [RolloutItem; N],
+    items: impl IntoIterator<Item = RolloutItem>,
 ) -> PathBuf {
     let path =
         write_session_file_with_history_mode(home, timestamp, uuid, ThreadHistoryMode::Paginated)

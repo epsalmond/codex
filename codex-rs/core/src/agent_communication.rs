@@ -52,10 +52,6 @@ impl AgentCommunicationContext {
             sender_thread_id,
         }
     }
-
-    pub(crate) fn kind(&self) -> AgentCommunicationKind {
-        self.kind
-    }
 }
 
 pub(crate) fn logging_enabled() -> bool {

@@ -3049,6 +3049,9 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
 mod code_mode_wake_tests;
 #[path = "subagent_notifications/exec_nested_wake_tests.rs"]
 mod exec_nested_wake_tests;
+#[cfg(unix)]
+#[path = "subagent_notifications/nested_process_wake_tests.rs"]
+mod nested_process_wake_tests;
 #[path = "subagent_notifications/nested_wake_tests.rs"]
 mod nested_wake_tests;
 #[path = "subagent_notifications/peer_wake_tests.rs"]
