@@ -81,6 +81,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
+use core_test_support::test_codex::run_test_with_large_stack;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
 use opentelemetry_sdk::metrics::data::MetricData;
@@ -5517,6 +5518,32 @@ async fn multi_agent_v2_typed_reports_opt_out_restores_messages_to_parent() {
 }
 
 /// Calls `report_to_parent` as `sender` after the given ancestors each sent it one queued message.
+async fn record_report_questions(
+    session: &crate::session::session::Session,
+    turn: &TurnContext,
+    sender: &str,
+    questions_from: &[&str],
+) {
+    let sender_path = AgentPath::try_from(sender).expect("sender path");
+    for author in questions_from {
+        let mut question = InterAgentCommunication::new(
+            AgentPath::try_from(*author).expect("author path"),
+            sender_path.clone(),
+            Vec::new(),
+            "what did you find so far?".to_string(),
+            /*trigger_turn*/ false,
+        );
+        session
+            .record_inter_agent_communication(turn, turn.model_info(), question.clone())
+            .await;
+        // Follow-up tasks are assignments, answered by the final report, not answer credits.
+        question.trigger_turn = true;
+        session
+            .record_inter_agent_communication(turn, turn.model_info(), question)
+            .await;
+    }
+}
+
 async fn call_report_in_wake_tree(
     sender: &str,
     questions_from: &[&str],
@@ -5535,24 +5562,7 @@ async fn call_report_in_wake_tree(
     } = WakeTree::new(sender, |_| {}).await;
     let session = Arc::new(session);
     let turn = Arc::new(turn);
-    let sender_path = AgentPath::try_from(sender).expect("sender path");
-    for author in questions_from {
-        let mut question = InterAgentCommunication::new(
-            AgentPath::try_from(*author).expect("author path"),
-            sender_path.clone(),
-            Vec::new(),
-            "what did you find so far?".to_string(),
-            /*trigger_turn*/ false,
-        );
-        session
-            .record_inter_agent_communication(&turn, turn.model_info(), question.clone())
-            .await;
-        // Follow-up tasks are assignments, answered by the final report, not answer credits.
-        question.trigger_turn = true;
-        session
-            .record_inter_agent_communication(&turn, turn.model_info(), question)
-            .await;
-    }
+    record_report_questions(&session, &turn, sender, questions_from).await;
     let mut results = Vec::new();
     for report in reports {
         let invocation = invocation(
@@ -5571,225 +5581,395 @@ async fn call_report_in_wake_tree(
     (results, turn, manager, threads)
 }
 
-#[tokio::test]
-async fn multi_agent_v2_report_answer_requires_an_ancestor_question() {
-    let answer = json!({ "kind": "answer", "message": "halfway there" });
-    let (results, _turn, manager, threads) =
-        call_report_in_wake_tree("/root/lead/worker", &[], &[answer]).await;
+#[test]
+fn multi_agent_v2_report_answer_requires_an_ancestor_question() {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_requires_an_ancestor_question",
+        move || async move {
+            let answer = json!({ "kind": "answer", "message": "halfway there" });
+            let (results, _turn, manager, threads) =
+                call_report_in_wake_tree("/root/lead/worker", &[], &[answer]).await;
 
-    assert_eq!(
-        results,
-        vec![Err(FunctionCallError::RespondToModel(
-            "report_to_parent(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report_to_parent(kind=\"blocked\") if you need instructions to continue, or report_to_parent(kind=\"final\") when your task is done.".to_string()
-        ))]
-    );
-    assert_eq!(
-        delivered_mail(&manager, &threads, "/root/lead/worker", "/root/lead"),
-        Vec::new()
-    );
+            assert_eq!(
+                results,
+                vec![Err(FunctionCallError::RespondToModel(
+                    "report_to_parent(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report_to_parent(kind=\"blocked\") if you need instructions to continue, or report_to_parent(kind=\"final\") when your task is done.".to_string()
+                ))]
+            );
+            assert_eq!(
+                delivered_mail(&manager, &threads, "/root/lead/worker", "/root/lead"),
+                Vec::new()
+            );
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }
 
 #[test_case::test_case("/root/lead/worker", "/root/lead"; "child answers parent")]
 #[test_case::test_case("/root/lead/worker/helper", "/root/lead"; "grandchild answers grandparent")]
 #[test_case::test_case("/root/lead/worker/helper", "/root"; "grandchild answers root")]
-#[tokio::test]
-async fn multi_agent_v2_report_answer_spends_one_credit_per_ancestor_question(
-    sender: &str,
-    asker: &str,
+fn multi_agent_v2_report_answer_spends_one_credit_per_ancestor_question(
+    sender: &'static str,
+    asker: &'static str,
 ) {
-    let answer = json!({ "kind": "answer", "message": "found the config loader" });
-    let (results, _turn, manager, threads) =
-        call_report_in_wake_tree(sender, &[asker], &[answer.clone(), answer]).await;
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_spends_one_credit_per_ancestor_question",
+        move || async move {
+            let answer = json!({ "kind": "answer", "message": "found the config loader" });
+            let (results, _turn, manager, threads) =
+                call_report_in_wake_tree(sender, &[asker], &[answer.clone(), answer]).await;
 
-    assert_eq!(
-        results[0],
-        Ok(format!(
-            "Answer delivered to `{asker}`. Continue your task."
-        ))
-    );
-    assert!(
-        matches!(&results[1], Err(FunctionCallError::RespondToModel(message)) if message.contains("no ancestor message is waiting")),
-        "{:?}",
-        results[1]
-    );
-    let delivered = delivered_mail(&manager, &threads, sender, asker);
-    assert_eq!(delivered.len(), 1);
-    assert_eq!(delivered[0].recipient.as_str(), asker);
-    // A non-root ancestor that asked and went idle is woken by the answer.
-    if asker != "/root" {
-        assert!(delivered[0].trigger_turn);
-    }
+            assert_eq!(
+                results[0],
+                Ok(format!(
+                    "Answer delivered to `{asker}`. Continue your task."
+                ))
+            );
+            assert!(
+                matches!(&results[1], Err(FunctionCallError::RespondToModel(message)) if message.contains("no ancestor message is waiting")),
+                "{:?}",
+                results[1]
+            );
+            let delivered = delivered_mail(&manager, &threads, sender, asker);
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(delivered[0].recipient.as_str(), asker);
+            // A non-root ancestor that asked and went idle is woken by the answer.
+            if asker != "/root" {
+                assert!(delivered[0].trigger_turn);
+            }
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }
 
 #[test_case::test_case("/root", "/root/lead"; "select root after parent asked first")]
 #[test_case::test_case("/root/lead", "/root"; "select parent after root asked first")]
-#[tokio::test]
-async fn multi_agent_v2_report_answer_selects_one_of_two_ancestors(first: &str, second: &str) {
-    let (results, _turn, manager, threads) = call_report_in_wake_tree(
-        "/root/lead/worker",
-        &[second, first],
-        &[
-            json!({ "kind": "answer", "message": "selected answer", "to": first }),
-            json!({ "kind": "answer", "message": "FIFO answer" }),
-        ],
-    )
-    .await;
-
-    assert_eq!(
-        results,
-        vec![
-            Ok(format!(
-                "Answer delivered to `{first}`. Continue your task."
-            )),
-            Ok(format!(
-                "Answer delivered to `{second}`. Continue your task."
-            )),
-        ]
-    );
-    for (asker, message) in [(first, "selected answer"), (second, "FIFO answer")] {
-        let delivered = delivered_mail(&manager, &threads, "/root/lead/worker", asker);
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].recipient.as_str(), asker);
-        assert_eq!(
-            delivered[0].content,
-            format!(
-                "Message Type: ANSWER\nTask name: {asker}\nSender: /root/lead/worker\nPayload:\n{message}"
+fn multi_agent_v2_report_answer_selects_one_of_two_ancestors(
+    first: &'static str,
+    second: &'static str,
+) {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_selects_one_of_two_ancestors",
+        move || async move {
+            let (results, _turn, manager, threads) = call_report_in_wake_tree(
+                "/root/lead/worker",
+                &[second, first],
+                &[
+                    json!({ "kind": "answer", "message": "selected answer", "to": first }),
+                    json!({ "kind": "answer", "message": "FIFO answer" }),
+                ],
             )
-        );
-    }
+            .await;
+
+            assert_eq!(
+                results,
+                vec![
+                    Ok(format!(
+                        "Answer delivered to `{first}`. Continue your task."
+                    )),
+                    Ok(format!(
+                        "Answer delivered to `{second}`. Continue your task."
+                    )),
+                ]
+            );
+            for (asker, message) in [(first, "selected answer"), (second, "FIFO answer")] {
+                let delivered = delivered_mail(&manager, &threads, "/root/lead/worker", asker);
+                assert_eq!(delivered.len(), 1);
+                assert_eq!(delivered[0].recipient.as_str(), asker);
+                assert_eq!(
+                    delivered[0].content,
+                    format!(
+                        "Message Type: ANSWER\nTask name: {asker}\nSender: /root/lead/worker\nPayload:\n{message}"
+                    )
+                );
+            }
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }
 
-#[tokio::test]
-async fn multi_agent_v2_report_answer_preserves_fifo_and_repeated_questions() {
-    let answer = json!({ "kind": "answer", "message": "answer" });
-    let (results, _turn, manager, threads) = call_report_in_wake_tree(
-        "/root/lead/worker",
-        &["/root/lead", "/root", "/root/lead"],
-        &[answer.clone(), answer.clone(), answer.clone(), answer],
-    )
-    .await;
+#[test]
+fn multi_agent_v2_report_answer_preserves_fifo_and_repeated_questions() {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_preserves_fifo_and_repeated_questions",
+        move || async move {
+            let answer = json!({ "kind": "answer", "message": "answer" });
+            let (results, _turn, manager, threads) = call_report_in_wake_tree(
+                "/root/lead/worker",
+                &["/root/lead", "/root", "/root/lead"],
+                &[answer.clone(), answer.clone(), answer.clone(), answer],
+            )
+            .await;
 
-    for (result, ancestor) in results.iter().zip(["/root/lead", "/root", "/root/lead"]) {
-        assert_eq!(
-            result,
-            &Ok(format!(
-                "Answer delivered to `{ancestor}`. Continue your task."
-            ))
-        );
-    }
-    assert!(
-        matches!(&results[3], Err(FunctionCallError::RespondToModel(message)) if message.contains("no ancestor message is waiting"))
-    );
-    assert_eq!(
-        delivered_mail(&manager, &threads, "/root/lead/worker", "/root/lead").len(),
-        2
-    );
-    assert_eq!(
-        delivered_mail(&manager, &threads, "/root/lead/worker", "/root").len(),
-        1
-    );
+            for (result, ancestor) in results.iter().zip(["/root/lead", "/root", "/root/lead"]) {
+                assert_eq!(
+                    result,
+                    &Ok(format!(
+                        "Answer delivered to `{ancestor}`. Continue your task."
+                    ))
+                );
+            }
+            assert!(
+                matches!(&results[3], Err(FunctionCallError::RespondToModel(message)) if message.contains("no ancestor message is waiting"))
+            );
+            assert_eq!(
+                delivered_mail(&manager, &threads, "/root/lead/worker", "/root/lead").len(),
+                2
+            );
+            assert_eq!(
+                delivered_mail(&manager, &threads, "/root/lead/worker", "/root").len(),
+                1
+            );
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }
 
-#[tokio::test]
-async fn multi_agent_v2_report_answer_invalid_or_exhausted_target_preserves_other_credits() {
-    let answer = |target| json!({ "kind": "answer", "message": "answer", "to": target });
-    let (results, _turn, manager, threads) = call_report_in_wake_tree(
-        "/root/lead/worker",
-        &["/root/lead", "/root"],
-        &[
-            answer("not a path"),
-            answer("/root/other"),
-            answer("/root/lead/worker"),
-            answer("/root/lead/worker/helper"),
-            answer("/root"),
-            answer("/root"),
-            answer("/root/lead"),
-        ],
-    )
-    .await;
+#[test]
+fn multi_agent_v2_report_answer_invalid_or_exhausted_target_preserves_other_credits() {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_invalid_or_exhausted_target_preserves_other_credits",
+        move || async move {
+            let answer = |target| json!({ "kind": "answer", "message": "answer", "to": target });
+            let (results, _turn, manager, threads) = call_report_in_wake_tree(
+                "/root/lead/worker",
+                &["/root/lead", "/root"],
+                &[
+                    answer("not a path"),
+                    answer("/root/other"),
+                    answer("/root/lead/worker"),
+                    answer("/root/lead/worker/helper"),
+                    answer("/root"),
+                    answer("/root"),
+                    answer("/root/lead"),
+                ],
+            )
+            .await;
 
-    for result in &results[..4] {
-        assert!(
-            matches!(result, Err(FunctionCallError::RespondToModel(message)) if message.contains("must be an ancestor agent path")),
-            "{result:?}"
-        );
-    }
-    assert_eq!(
-        results[4],
-        Ok("Answer delivered to `/root`. Continue your task.".to_string())
-    );
-    assert_eq!(
-        results[5],
-        Err(FunctionCallError::RespondToModel(
-            "No unanswered ancestor message from `/root`; no answer credit was consumed."
-                .to_string()
-        ))
-    );
-    assert_eq!(
-        results[6],
-        Ok("Answer delivered to `/root/lead`. Continue your task.".to_string())
-    );
-    for ancestor in ["/root", "/root/lead"] {
-        assert_eq!(
-            delivered_mail(&manager, &threads, "/root/lead/worker", ancestor).len(),
-            1
-        );
-    }
+            for result in &results[..4] {
+                assert!(
+                    matches!(result, Err(FunctionCallError::RespondToModel(message)) if message.contains("must be an ancestor agent path")),
+                    "{result:?}"
+                );
+            }
+            assert_eq!(
+                results[4],
+                Ok("Answer delivered to `/root`. Continue your task.".to_string())
+            );
+            assert_eq!(
+                results[5],
+                Err(FunctionCallError::RespondToModel(
+                    "No unanswered ancestor message from `/root`; no answer credit was consumed."
+                        .to_string()
+                ))
+            );
+            assert_eq!(
+                results[6],
+                Ok("Answer delivered to `/root/lead`. Continue your task.".to_string())
+            );
+            for ancestor in ["/root", "/root/lead"] {
+                assert_eq!(
+                    delivered_mail(&manager, &threads, "/root/lead/worker", ancestor).len(),
+                    1
+                );
+            }
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
+}
+
+#[test]
+fn multi_agent_v2_report_answer_failed_delivery_restores_selected_credit() {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_failed_delivery_restores_selected_credit",
+        move || async move {
+            let sender = "/root/lead/worker";
+            let WakeTree {
+                manager,
+                session,
+                turn,
+                threads,
+            } = WakeTree::new(sender, |_| {}).await;
+            record_report_questions(&session, &turn, sender, &["/root", "/root/lead"]).await;
+            // The ancestor can close after its question was recorded but before the answer is delivered.
+            session.services.agent_control
+                .close_v2_agent(threads[&AgentPath::try_from("/root/lead").expect("parent")])
+                .await
+                .expect("close ancestor");
+            let session = Arc::new(session);
+            let turn = Arc::new(turn);
+            let answer = json!({ "kind": "answer", "message": "answer", "to": "/root/lead" });
+            for _ in 0..2 {
+                let result = crate::tools::handlers::multi_agents_v2::ReportHandler
+                    .handle(invocation(
+                        Arc::clone(&session),
+                        Arc::clone(&turn),
+                        crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME,
+                        function_payload(answer.clone()),
+                    ))
+                    .await;
+                assert!(
+                    matches!(result, Err(FunctionCallError::RespondToModel(ref message)) if message.contains("is closed"))
+                );
+            }
+            // A failed selected delivery stays retryable and leaves the older root question first.
+            for ancestor in ["/root", "/root/lead"] {
+                let credit = session.take_answer_credit(None).expect("restored credit");
+                assert_eq!(credit.ancestor().as_str(), ancestor);
+                credit.commit();
+                assert!(delivered_mail(&manager, &threads, sender, ancestor).is_empty());
+            }
+            assert!(session.take_answer_credit(None).is_none());
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
+}
+
+#[test]
+fn multi_agent_v2_report_answer_cancelled_delivery_restores_selected_credit() {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_answer_cancelled_delivery_restores_selected_credit",
+        move || async move {
+            let sender = "/root/lead/worker";
+            let WakeTree {
+                manager,
+                session,
+                turn,
+                threads,
+            } = WakeTree::new(sender, |_| {}).await;
+            record_report_questions(&session, &turn, sender, &["/root", "/root/lead"]).await;
+            let parent = AgentPath::try_from("/root/lead").expect("parent");
+            let ancestor = manager
+                .get_thread(threads[&parent])
+                .await
+                .expect("ancestor runtime");
+            // Hold the delivery admission gate so cancellation happens after credit selection, before send.
+            let gate = Arc::clone(&ancestor.residency_gate).write_owned().await;
+            let session = Arc::new(session);
+            let turn = Arc::new(turn);
+            let answer =
+                json!({ "kind": "answer", "message": "selected answer", "to": "/root/lead" });
+            let mut delivery =
+                crate::tools::handlers::multi_agents_v2::ReportHandler.handle(invocation(
+                    Arc::clone(&session),
+                    Arc::clone(&turn),
+                    crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME,
+                    function_payload(answer.clone()),
+                ));
+            assert!(futures::poll!(&mut delivery).is_pending());
+            assert!(session.take_answer_credit(Some(&parent)).is_none());
+            drop(delivery);
+            drop(gate);
+
+            for (report, expected) in [
+                (answer, "/root/lead"),
+                (
+                    json!({ "kind": "answer", "message": "FIFO answer" }),
+                    "/root",
+                ),
+            ] {
+                let result = crate::tools::handlers::multi_agents_v2::ReportHandler
+                    .handle(invocation(
+                        Arc::clone(&session),
+                        Arc::clone(&turn),
+                        crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME,
+                        function_payload(report),
+                    ))
+                    .await
+                    .map(|output| expect_text_output(output).0);
+                assert_eq!(
+                    result,
+                    Ok(format!(
+                        "Answer delivered to `{expected}`. Continue your task."
+                    ))
+                );
+                assert_eq!(
+                    delivered_mail(&manager, &threads, sender, expected).len(),
+                    1
+                );
+            }
+            assert!(session.take_answer_credit(None).is_none());
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }
 
 #[test_case::test_case("final", "Final report recorded. Your turn ends now."; "final report")]
 #[test_case::test_case("blocked", "Blocked report recorded. Your turn ends now; your parent will send instructions."; "blocked report")]
-#[tokio::test]
-async fn multi_agent_v2_report_records_one_terminal_report_per_turn(kind: &str, output: &str) {
-    let report =
-        json!({ "kind": kind, "message": "the result", "to": "ignored for terminal reports" });
-    let (results, turn, manager, threads) =
-        call_report_in_wake_tree("/root/lead/worker/helper", &[], &[report.clone(), report]).await;
+fn multi_agent_v2_report_records_one_terminal_report_per_turn(
+    kind: &'static str,
+    output: &'static str,
+) {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_records_one_terminal_report_per_turn",
+        move || async move {
+            let report =
+                json!({ "kind": kind, "message": "the result", "to": "ignored for terminal reports" });
+            let (results, turn, manager, threads) =
+                call_report_in_wake_tree("/root/lead/worker/helper", &[], &[report.clone(), report]).await;
 
-    assert_eq!(results[0], Ok(output.to_string()));
-    assert_eq!(
-        results[1],
-        Err(FunctionCallError::RespondToModel(
-            "You already reported this turn; your turn ends after this step.".to_string()
-        ))
-    );
-    let pending = turn
-        .extension_data
-        .get::<crate::session::typed_reports::PendingTerminalReport>()
-        .expect("pending terminal report");
-    assert_eq!(pending.message, "the result");
-    assert_eq!(
-        pending.kind == crate::session::typed_reports::TerminalReportKind::Blocked,
-        kind == "blocked"
-    );
-    // Terminal reports travel with the turn's end, not as mail.
-    assert_eq!(
-        delivered_mail(
-            &manager,
-            &threads,
-            "/root/lead/worker/helper",
-            "/root/lead/worker"
-        ),
-        Vec::new()
-    );
+            assert_eq!(results[0], Ok(output.to_string()));
+            assert_eq!(
+                results[1],
+                Err(FunctionCallError::RespondToModel(
+                    "You already reported this turn; your turn ends after this step.".to_string()
+                ))
+            );
+            let pending = turn
+                .extension_data
+                .get::<crate::session::typed_reports::PendingTerminalReport>()
+                .expect("pending terminal report");
+            assert_eq!(pending.message, "the result");
+            assert_eq!(
+                pending.kind == crate::session::typed_reports::TerminalReportKind::Blocked,
+                kind == "blocked"
+            );
+            // Terminal reports travel with the turn's end, not as mail.
+            assert_eq!(
+                delivered_mail(
+                    &manager,
+                    &threads,
+                    "/root/lead/worker/helper",
+                    "/root/lead/worker"
+                ),
+                Vec::new()
+            );
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }
 
-#[tokio::test]
-async fn multi_agent_v2_report_is_rejected_for_the_root() {
-    let report = json!({ "kind": "final", "message": "done" });
-    let (results, turn, _manager, _threads) =
-        call_report_in_wake_tree("/root", &[], &[report]).await;
+#[test]
+fn multi_agent_v2_report_is_rejected_for_the_root() {
+    run_test_with_large_stack(
+        "multi_agent_v2_report_is_rejected_for_the_root",
+        move || async move {
+            let report = json!({ "kind": "final", "message": "done" });
+            let (results, turn, _manager, _threads) =
+                call_report_in_wake_tree("/root", &[], &[report]).await;
 
-    assert_eq!(
-        results,
-        vec![Err(FunctionCallError::RespondToModel(
-            "report_to_parent is only available to subagents with typed reports enabled."
-                .to_string()
-        ))]
-    );
-    assert!(
-        turn.extension_data
-            .get::<crate::session::typed_reports::PendingTerminalReport>()
-            .is_none()
-    );
+            assert_eq!(
+                results,
+                vec![Err(FunctionCallError::RespondToModel(
+                    "report_to_parent is only available to subagents with typed reports enabled."
+                        .to_string()
+                ))]
+            );
+            assert!(
+                turn.extension_data
+                    .get::<crate::session::typed_reports::PendingTerminalReport>()
+                    .is_none()
+            );
+            Ok(())
+        },
+    )
+    .expect("report test should pass on its dedicated runtime");
 }

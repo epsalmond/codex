@@ -127,7 +127,7 @@ async fn send_answer(
         };
         return Err(FunctionCallError::RespondToModel(message));
     };
-    let (_, ancestor_path) = &credit;
+    let ancestor_path = credit.ancestor();
     let delivered = async {
         let ancestor = resolve_agent_target(session, turn, ancestor_path.as_str()).await?;
         let resume_config =
@@ -154,13 +154,11 @@ async fn send_answer(
     }
     .await;
     match delivered {
-        Ok(_) => Ok(FunctionToolOutput::from_text(
-            format!("Answer delivered to `{ancestor_path}`. Continue your task."),
-            Some(true),
-        )),
-        Err(err) => {
-            session.restore_answer_credit(credit);
-            Err(err)
+        Ok(_) => {
+            let output = format!("Answer delivered to `{ancestor_path}`. Continue your task.");
+            credit.commit();
+            Ok(FunctionToolOutput::from_text(output, Some(true)))
         }
+        Err(err) => Err(err),
     }
 }
