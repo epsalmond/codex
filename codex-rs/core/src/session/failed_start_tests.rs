@@ -22,6 +22,30 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
     wake_from_sleep: bool,
     paused_first: bool,
 ) {
+    failed_automatic_binding_recovery(
+        oversized_path,
+        wake_from_sleep,
+        paused_first,
+        /*resume_during_start*/ false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn failed_automatic_binding_does_not_overwrite_concurrent_explicit_resume() {
+    failed_automatic_binding_recovery(
+        /*oversized_path*/ true, /*wake_from_sleep*/ false, /*paused_first*/ false,
+        /*resume_during_start*/ true,
+    )
+    .await;
+}
+
+async fn failed_automatic_binding_recovery(
+    oversized_path: bool,
+    wake_from_sleep: bool,
+    paused_first: bool,
+    resume_during_start: bool,
+) {
     let server = core_test_support::responses::start_mock_server().await;
     let parent_thread_id = ThreadId::new();
     let worker_path = AgentPath::try_from(if oversized_path {
@@ -171,15 +195,50 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
     if paused_first {
         session.input_queue.pause_wakeups();
     }
-    assert_eq!(
-        session
-            .maybe_start_turn_for_pending_work_with_sub_id("rejected-followup".to_string())
-            .await,
-        crate::tasks::PendingWorkStartResult::Stale,
+    let recovery = InterAgentCommunication::new(
+        AgentPath::root(),
+        worker_path.clone(),
+        Vec::new(),
+        "explicit recovery".to_string(),
+        /*trigger_turn*/ true,
     );
+    let pending_start =
+        session.maybe_start_turn_for_pending_work_with_sub_id("rejected-followup".to_string());
+    let start_result = if resume_during_start {
+        let mut hold = crate::tasks::hold_next_turn_start(
+            session.thread_id,
+            crate::tasks::TurnStartHoldPoint::WakeBeforeBind,
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(pending_start, async {
+                hold.reached().await;
+                assert!(!session.input_queue.wakeups_paused());
+                // Follow up through the real handler while the failed start owns the slot.
+                // Recovery must be recorded even though wakeups are already active.
+                super::handlers::inter_agent_communication(
+                    &session,
+                    "explicit-recovery".to_string(),
+                    recovery.clone().into(),
+                    options.clone(),
+                )
+                .await;
+                assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 1);
+                hold.release();
+            })
+            .0
+        })
+        .await
+        .expect("parked start fails after explicit resume")
+    } else {
+        pending_start.await
+    };
+    assert_eq!(start_result, crate::tasks::PendingWorkStartResult::Stale);
     assert!(session.active_turn.lock().await.is_none());
-    assert!(session.input_queue.wakeups_paused());
-    assert!(session.input_queue.automatic_starts_suppressed());
+    assert_eq!(session.input_queue.wakeups_paused(), !resume_during_start);
+    assert_eq!(
+        session.input_queue.automatic_starts_suppressed(),
+        !resume_during_start
+    );
     if paused_first {
         // Fresh queue-only mail would wake a merely paused sleep, but not after a failed start.
         session
@@ -199,12 +258,14 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
     }
     assert_eq!(
         session.input_queue.trigger_turn_mailbox_count().await,
-        usize::from(!wake_from_sleep)
+        usize::from(!wake_from_sleep) + usize::from(resume_during_start)
     );
-    assert_eq!(
-        session.maybe_start_turn_for_pending_work().await,
-        crate::tasks::PendingWorkStartResult::Stale,
-    );
+    if !resume_during_start {
+        assert_eq!(
+            session.maybe_start_turn_for_pending_work().await,
+            crate::tasks::PendingWorkStartResult::Stale,
+        );
+    }
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let event = root
@@ -258,8 +319,15 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
     }
     assert_eq!(startup_warning_count, 1);
     let warning = warning.expect("startup failure is visible");
-    insta::assert_snapshot!(warning, @"Automatic turn did not start: parent assignment is not active for this turn. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn.");
-    if !wake_from_sleep {
+    if resume_during_start {
+        assert_eq!(
+            warning,
+            "Automatic turn did not start: parent assignment is not active for this turn. Accepted messages remain queued; automatic wakeups have already been resumed by an explicit follow-up or user turn."
+        );
+    } else {
+        insta::assert_snapshot!(warning, @"Automatic turn did not start: parent assignment is not active for this turn. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn.");
+    }
+    if !wake_from_sleep && !resume_during_start {
         let (input, retained) = session
             .input_queue
             .get_pending_input(&session.active_turn)
@@ -278,20 +346,22 @@ async fn failed_automatic_binding_retains_accepted_followup_until_explicit_resum
             /*allow_new_generation*/ true,
         )
         .expect("restored parent assignment");
-    super::handlers::inter_agent_communication(
-        &session,
-        "explicit-recovery".to_string(),
-        InterAgentCommunication::new(
-            AgentPath::root(),
-            worker_path,
-            Vec::new(),
-            "explicit recovery".to_string(),
-            /*trigger_turn*/ true,
+    if resume_during_start {
+        // The follow-up already arrived. Once binding is repaired, the pending-work scheduler
+        // can run it and the retained mail without a second follow-up or resume.
+        assert_eq!(
+            session.maybe_start_turn_for_pending_work().await,
+            crate::tasks::PendingWorkStartResult::Started,
+        );
+    } else {
+        super::handlers::inter_agent_communication(
+            &session,
+            "explicit-recovery".to_string(),
+            recovery.into(),
+            options.clone(),
         )
-        .into(),
-        options.clone(),
-    )
-    .await;
+        .await;
+    }
     assert!(!session.input_queue.wakeups_paused());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {

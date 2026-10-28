@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
@@ -102,8 +102,9 @@ pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
-    /// Holds trigger-turn mail until an explicit resume. See [`WakeupState`].
-    wakeups: AtomicU8,
+    /// Packs [`WakeupState`] in the low bits and the explicit-resume generation above them.
+    /// Updating both atomically prevents a failed automatic start from undoing a later resume.
+    wakeups: AtomicU64,
 }
 
 /// Why automatic wakeups are held. Both states clear on the next user turn or explicit followup.
@@ -112,12 +113,18 @@ pub(crate) struct InputQueue {
 /// trigger-turn mail, but queue-only mail still wakes an outstanding durable sleep. A rejected
 /// automatic start also holds that mail and suppresses every automatic start, so a deterministic
 /// startup failure is not repeated by later mail.
-#[repr(u8)]
+#[repr(u64)]
 enum WakeupState {
     Active = 0,
     Paused = 1,
     StartFailed = 2,
 }
+
+const WAKEUP_STATE_MASK: u64 = 0b11;
+const WAKEUP_GENERATION_STEP: u64 = WAKEUP_STATE_MASK + 1;
+
+#[derive(Clone, Copy)]
+pub(crate) struct WakeupGeneration(u64);
 
 pub(crate) struct PendingMailboxCommunication {
     pub(crate) communication: crate::PendingAgentMessage,
@@ -132,7 +139,7 @@ impl InputQueue {
             activity_tx,
             controller: None,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
-            wakeups: AtomicU8::new(WakeupState::Active as u8),
+            wakeups: AtomicU64::new(WakeupState::Active as u64),
         }
     }
 
@@ -317,30 +324,51 @@ impl InputQueue {
 
     /// Holds trigger-turn mail until an explicit resume. Keeps a stronger failed-start state.
     pub(crate) fn pause_wakeups(&self) {
-        self.wakeups
-            .fetch_max(WakeupState::Paused as u8, Ordering::SeqCst);
+        let _ = self
+            .wakeups
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+                Some(
+                    (wakeups & !WAKEUP_STATE_MASK)
+                        | (wakeups & WAKEUP_STATE_MASK).max(WakeupState::Paused as u64),
+                )
+            });
     }
 
-    /// Holds trigger-turn mail and suppresses every automatic start until an explicit resume.
-    pub(crate) fn suppress_automatic_starts(&self) {
-        self.wakeups
-            .store(WakeupState::StartFailed as u8, Ordering::SeqCst);
+    /// Captures the recovery generation before an automatic start can race an explicit resume.
+    pub(crate) fn wakeup_generation(&self) -> WakeupGeneration {
+        WakeupGeneration(self.wakeups.load(Ordering::SeqCst) & !WAKEUP_STATE_MASK)
     }
 
-    /// Clears the pause and returns whether wakeups were paused.
+    /// Holds trigger-turn mail and suppresses automatic starts only if no explicit resume has
+    /// happened since this start began. A concurrent pause keeps the same generation.
+    pub(crate) fn suppress_automatic_starts(&self, generation: WakeupGeneration) {
+        let _ = self
+            .wakeups
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+                (wakeups & !WAKEUP_STATE_MASK == generation.0)
+                    .then_some(generation.0 | WakeupState::StartFailed as u64)
+            });
+    }
+
+    /// Advances the recovery generation even if already active, clears the pause, and returns
+    /// whether wakeups were paused.
     pub(crate) fn resume_wakeups(&self) -> bool {
         self.wakeups
-            .swap(WakeupState::Active as u8, Ordering::SeqCst)
-            != WakeupState::Active as u8
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+                Some(wakeups.wrapping_add(WAKEUP_GENERATION_STEP) & !WAKEUP_STATE_MASK)
+            })
+            .expect("resume always advances the wakeup generation")
+            & WAKEUP_STATE_MASK
+            != WakeupState::Active as u64
     }
 
     pub(crate) fn wakeups_paused(&self) -> bool {
-        self.wakeups.load(Ordering::SeqCst) != WakeupState::Active as u8
+        self.wakeups.load(Ordering::SeqCst) & WAKEUP_STATE_MASK != WakeupState::Active as u64
     }
 
     /// Returns whether a rejected automatic start suppresses every automatic start.
     pub(crate) fn automatic_starts_suppressed(&self) -> bool {
-        self.wakeups.load(Ordering::SeqCst) == WakeupState::StartFailed as u8
+        self.wakeups.load(Ordering::SeqCst) & WAKEUP_STATE_MASK == WakeupState::StartFailed as u64
     }
 
     /// Drains all mail, including mail held by paused wakeups.
@@ -1225,7 +1253,7 @@ mod tests {
         let mut observed = vec![state(&input_queue)];
         input_queue.pause_wakeups();
         observed.push(state(&input_queue));
-        input_queue.suppress_automatic_starts();
+        input_queue.suppress_automatic_starts(input_queue.wakeup_generation());
         observed.push(state(&input_queue));
         input_queue.pause_wakeups();
         observed.push(state(&input_queue));
@@ -1247,6 +1275,29 @@ mod tests {
                 false,
             )
         );
+    }
+
+    #[test_case::test_case(false; "active resume")]
+    #[test_case::test_case(true; "paused resume")]
+    #[test]
+    fn failed_start_only_suppresses_its_own_resume_generation(paused: bool) {
+        let queue = InputQueue::new();
+        let generation = queue.wakeup_generation();
+        if paused {
+            queue.pause_wakeups();
+        }
+        assert_eq!(queue.resume_wakeups(), paused);
+        queue.suppress_automatic_starts(generation);
+        assert!(!queue.wakeups_paused());
+        assert!(!queue.automatic_starts_suppressed());
+
+        // Pausing does not count as explicit recovery, so a failed start in the current
+        // generation must still suppress deterministic retries.
+        let generation = queue.wakeup_generation();
+        queue.pause_wakeups();
+        queue.suppress_automatic_starts(generation);
+        assert!(queue.wakeups_paused());
+        assert!(queue.automatic_starts_suppressed());
     }
 
     /// Polling mode keeps accepted mail across an interrupt and pauses wakeups, so an interrupted

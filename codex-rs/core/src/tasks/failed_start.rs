@@ -26,6 +26,7 @@ impl Session {
         turn_context: &TurnContext,
         initiator: Option<AgentPath>,
         error: &CodexErr,
+        recovery_message: &str,
     ) {
         let author = turn_context
             .session_source
@@ -77,7 +78,7 @@ impl Session {
                     InterAgentMessageType::Message,
                     recipient.clone(),
                     author.clone(),
-                    format!("Automatic turn did not start: {reason}. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn. No task was dispatched or completed by this startup attempt."),
+                    format!("Automatic turn did not start: {reason}. {recovery_message} No task was dispatched or completed by this startup attempt."),
                 ).render().into_text().unwrap_or_default();
             // Paths are valid without a length limit. Bound the complete fragment, including
             // attribution, with room for the truncation marker just like completion notices.

@@ -414,12 +414,10 @@ pub async fn inter_agent_communication(
             .terminal_report_delivery_guard(report_id)
     });
     sess.apply_child_report_mode(&mut communication).await;
-    if communication.trigger_turn
-        && start_options.parent_turn_id.is_some()
-        && sess.input_queue.wakeups_paused()
-    {
+    if communication.trigger_turn && start_options.parent_turn_id.is_some() {
         // Only an explicit followup carries a parent turn ID. Automatic terminal reports use
         // default start options, so they remain held until the user or an agent follows up.
+        // Record recovery even while active so an in-flight failed start cannot undo it.
         sess.resume_paused_wakeups().await;
     }
     if let Some(report_id) = communication

@@ -668,6 +668,7 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) -> PendingWorkStartResult {
+        let wakeup_generation = self.input_queue.wakeup_generation();
         // A rejected automatic start waits for explicit recovery. A user pause only holds
         // trigger-turn mail and owned completions: queue-only mail still wakes a durable sleep.
         // A failed turn pauses without suppressing starts: its error may be transient, and each
@@ -857,7 +858,8 @@ impl Session {
                 _ => None,
             });
             if has_held_work {
-                self.input_queue.suppress_automatic_starts();
+                self.input_queue
+                    .suppress_automatic_starts(wakeup_generation);
                 self.input_queue
                     .return_to_mailbox_with_start_options(&mut input, retained_start_options)
                     .await;
@@ -866,18 +868,28 @@ impl Session {
             // immediately by sending another explicit follow-up.
             self.clear_reserved_idle_turn(&turn_state).await;
             if has_held_work {
+                let recovery_message = if self.input_queue.automatic_starts_suppressed() {
+                    "Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn."
+                } else {
+                    "Accepted messages remain queued; automatic wakeups have already been resumed by an explicit follow-up or user turn."
+                };
                 self.send_event(
                     turn_context.as_ref(),
                     EventMsg::Warning(WarningEvent {
                         message: format!(
-                            "Automatic turn did not start: {error}. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn."
+                            "Automatic turn did not start: {error}. {recovery_message}"
                         ),
                     }),
                 )
                 .await;
                 self.emit_agent_wakeups_updated().await;
-                self.report_failed_automatic_start(turn_context.as_ref(), initiator, &error)
-                    .await;
+                self.report_failed_automatic_start(
+                    turn_context.as_ref(),
+                    initiator,
+                    &error,
+                    recovery_message,
+                )
+                .await;
             }
             warn!("failed to bind automatic turn to agent assignment: {error}");
             return PendingWorkStartResult::Stale;
