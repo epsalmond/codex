@@ -326,7 +326,7 @@ impl InputQueue {
     pub(crate) fn pause_wakeups(&self) {
         let _ = self
             .wakeups
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
                 Some(
                     (wakeups & !WAKEUP_STATE_MASK)
                         | (wakeups & WAKEUP_STATE_MASK).max(WakeupState::Paused as u64),
@@ -344,7 +344,7 @@ impl InputQueue {
     pub(crate) fn suppress_automatic_starts(&self, generation: WakeupGeneration) {
         let _ = self
             .wakeups
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
                 (wakeups & !WAKEUP_STATE_MASK == generation.0)
                     .then_some(generation.0 | WakeupState::StartFailed as u64)
             });
@@ -354,12 +354,10 @@ impl InputQueue {
     /// whether wakeups were paused.
     pub(crate) fn resume_wakeups(&self) -> bool {
         self.wakeups
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |wakeups| {
                 Some(wakeups.wrapping_add(WAKEUP_GENERATION_STEP) & !WAKEUP_STATE_MASK)
             })
-            .expect("resume always advances the wakeup generation")
-            & WAKEUP_STATE_MASK
-            != WakeupState::Active as u64
+            .is_ok_and(|wakeups| wakeups & WAKEUP_STATE_MASK != WakeupState::Active as u64)
     }
 
     pub(crate) fn wakeups_paused(&self) -> bool {
@@ -1279,7 +1277,6 @@ mod tests {
 
     #[test_case::test_case(false; "active resume")]
     #[test_case::test_case(true; "paused resume")]
-    #[test]
     fn failed_start_only_suppresses_its_own_resume_generation(paused: bool) {
         let queue = InputQueue::new();
         let generation = queue.wakeup_generation();

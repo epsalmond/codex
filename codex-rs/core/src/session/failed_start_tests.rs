@@ -325,7 +325,10 @@ async fn failed_automatic_binding_recovery(
             "Automatic turn did not start: parent assignment is not active for this turn. Accepted messages remain queued; automatic wakeups have already been resumed by an explicit follow-up or user turn."
         );
     } else {
-        insta::assert_snapshot!(warning, @"Automatic turn did not start: parent assignment is not active for this turn. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn.");
+        assert_eq!(
+            warning,
+            "Automatic turn did not start: parent assignment is not active for this turn. Accepted messages remain queued; automatic wakeups are paused until an explicit follow-up or user turn."
+        );
     }
     if !wake_from_sleep && !resume_during_start {
         let (input, retained) = session
