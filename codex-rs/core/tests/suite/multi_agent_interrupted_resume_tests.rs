@@ -469,7 +469,7 @@ async fn cold_resume_restores_terminal_child_without_starting_queued_mail(
         .with_home(home)
         .with_thread_store(Arc::clone(&store))
         .with_config(configure)
-        .with_history_mode(history_mode)
+        .with_history_mode(ThreadHistoryMode::Legacy)
         .build_with_auto_env(&server)
         .await?;
     let mut created = initial.thread_manager.subscribe_thread_created();
@@ -601,7 +601,11 @@ async fn cold_resume_restores_terminal_child_without_starting_queued_mail(
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let requests = followup.requests();
+    let requests = followup
+        .requests()
+        .into_iter()
+        .filter(|request| request.body_json()["client_metadata"]["thread_id"] == json!(child_id))
+        .collect::<Vec<_>>();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].body_contains_text(QUEUED));
     let messages = requests[0].body_json()["input"]

@@ -253,6 +253,11 @@ fn scan_turn_terminal_event(
     turn_id: &str,
     is_cancelled: impl Fn() -> bool,
 ) -> io::Result<Option<EventMsg>> {
+    // Status restoration is best effort: missing/corrupt turn IDs must not replay
+    // an entire archived lineage. The deadline also bounds compressed decoding.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let is_cancelled = || is_cancelled() || std::time::Instant::now() >= deadline;
+    let mut remaining_records = 4096;
     for segment in lineage.segments().iter().rev() {
         let file = codex_rollout::open_rollout_seekable_reader(
             segment.rollout_path.as_path(),
@@ -261,7 +266,8 @@ fn scan_turn_terminal_event(
         let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
             Some(end) => ReverseJsonlScanner::new_at(file, end)?,
             None => ReverseJsonlScanner::new(file)?,
-        };
+        }
+        .with_max_record_bytes(1024 * 1024);
         while let Some(outcome) = scanner.scan_next_rollout_line()? {
             if is_cancelled() {
                 return Err(io::Error::new(
@@ -269,6 +275,12 @@ fn scan_turn_terminal_event(
                     "terminal event scan cancelled",
                 ));
             }
+            if remaining_records == 0 {
+                return Err(io::Error::other(
+                    "terminal event scan record limit exceeded",
+                ));
+            }
+            remaining_records -= 1;
             let ScanOutcome::Parsed(line) = outcome else {
                 continue;
             };
@@ -286,7 +298,10 @@ fn scan_turn_terminal_event(
             let event_turn_id = match &event {
                 EventMsg::TurnComplete(turn) => Some(turn.turn_id.as_str()),
                 EventMsg::TurnAborted(turn) => turn.turn_id.as_deref(),
-                EventMsg::TurnStarted(turn) if turn.turn_id == turn_id => return Ok(None),
+                // The caller asks about the newest projected turn. Reaching any
+                // opening boundary without its terminal means the projection is
+                // stale or incomplete; older turns cannot supply its result.
+                EventMsg::TurnStarted(_) => return Ok(None),
                 _ => None,
             };
             if event_turn_id == Some(turn_id) {

@@ -269,8 +269,10 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
-    /// Loads the canonical terminal event for one paginated turn without loading model history.
+    /// Loads the canonical terminal event for the latest projected paginated turn.
     /// Compaction must not hide the event; referenced history remains bounded by fork cutoffs.
+    /// This best-effort lookup may return no event or an error when its scan budget is exhausted.
+    /// Callers must preserve an unknown result rather than infer an empty completed report.
     fn load_turn_terminal_event(
         &self,
         _params: LoadThreadHistoryParams,
