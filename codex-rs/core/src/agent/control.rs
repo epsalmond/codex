@@ -195,14 +195,6 @@ impl LocalAgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
-        if agent_communication_context.kind() == AgentCommunicationKind::Followup {
-            state
-                .get_thread(agent_id)
-                .await?
-                .session
-                .resume_paused_wakeups()
-                .await;
-        }
         if communication.trigger_turn {
             let thread = state.get_thread(agent_id).await?;
             thread

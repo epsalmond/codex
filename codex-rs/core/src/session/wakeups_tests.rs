@@ -179,3 +179,86 @@ async fn stale_failure_finalizer_does_not_pause_newer_generation() {
     session.classify_wake_turn_end(&context, &event).await;
     assert!(!session.input_queue.wakeups_paused());
 }
+
+#[tokio::test]
+async fn stale_followup_report_does_not_record_recovery() {
+    let session = paused_wake_session().await;
+    let generation = session.input_queue.wakeup_generation();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::try_from("/root/worker").expect("worker path"),
+        Vec::new(),
+        "stale followup".to_string(),
+        true,
+    );
+    communication.id = Some(codex_protocol::ResponseItemId::new("amsg_stale"));
+    crate::session::handlers::inter_agent_communication(
+        &session,
+        "stale-followup".to_string(),
+        communication.into(),
+        TurnStartOptions {
+            parent_turn_id: Some("parent-turn".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(session.input_queue.wakeup_generation(), generation);
+    assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 0);
+    assert!(session.input_queue.suppress_automatic_starts(generation));
+}
+
+/// A duplicate terminal delivery passes the current-report check but fails the mailbox guard.
+#[tokio::test]
+async fn rejected_followup_delivery_does_not_record_recovery() {
+    let session = paused_wake_session().await;
+    let runtime = &session.services.local_agent_runtime;
+    let parent = runtime
+        .begin_wake_assignment_for_turn(session.thread_id, &SessionSource::Cli, "parent", true)
+        .unwrap()
+        .unwrap();
+    let child_id = codex_protocol::ThreadId::new();
+    let child_path = AgentPath::try_from("/root/worker").unwrap();
+    let child_source =
+        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+            parent_thread_id: session.thread_id,
+            depth: 1,
+            agent_path: Some(child_path.clone()),
+            agent_nickname: None,
+            agent_role: None,
+        });
+    let child = runtime
+        .begin_wake_assignment_for_turn(child_id, &child_source, "child", true)
+        .unwrap()
+        .unwrap();
+    runtime
+        .classify_wake_turn_end(
+            &child,
+            "child",
+            crate::agent::control::TurnEndDisposition::Interrupted,
+        )
+        .await
+        .unwrap();
+    assert!(runtime.publish_interrupted_assignment(&child, "child", child_path, None));
+    let claim = runtime
+        .claim_next_report_for_delivery(&parent)
+        .expect("report");
+    let communication = claim.communication.clone();
+    let report_id = claim.id.clone();
+    assert!(claim.mark_enqueued());
+    assert!(runtime.acknowledge_terminal_report_mailbox_delivery(&report_id, session.thread_id));
+    assert!(runtime.terminal_report_is_current(&report_id, session.thread_id));
+    let generation = session.input_queue.wakeup_generation();
+    crate::session::handlers::inter_agent_communication(
+        &session,
+        "duplicate-report".to_string(),
+        communication.into(),
+        TurnStartOptions {
+            parent_turn_id: Some("parent".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(session.input_queue.wakeup_generation(), generation);
+    assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 0);
+    assert!(session.input_queue.suppress_automatic_starts(generation));
+}
