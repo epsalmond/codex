@@ -580,8 +580,8 @@ fn report_tool_answer_recipient_is_optional() {
         panic!("report should be a function tool");
     };
     assert_eq!(
-        tool.parameters.required,
-        Some(vec!["kind".to_string(), "message".to_string()])
+        tool.parameters.required.as_deref(),
+        Some(["kind".to_string(), "message".to_string()].as_slice())
     );
     assert!(
         tool.parameters
