@@ -13,7 +13,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// Terminal report kinds; `answer` never ends a turn.
@@ -36,30 +36,42 @@ pub(crate) struct CloseAfterFinalReport;
 
 /// Ancestors whose messages this agent has not yet answered, oldest first.
 #[derive(Default)]
-pub(crate) struct AnswerCredits(Mutex<VecDeque<AgentPath>>);
+pub(crate) struct AnswerCredits(Mutex<AnswerCreditQueue>);
+
+#[derive(Default)]
+struct AnswerCreditQueue {
+    next_id: u64,
+    credits: BTreeMap<u64, AgentPath>,
+}
 
 impl AnswerCredits {
-    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<AgentPath>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, AnswerCreditQueue> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn take(&self, ancestor: Option<&AgentPath>) -> Option<(usize, AgentPath)> {
-        let mut credits = self.lock();
-        let position = match ancestor {
-            Some(ancestor) => credits.iter().position(|credit| credit == ancestor)?,
-            None => 0,
-        };
-        credits
-            .remove(position)
-            .map(|ancestor| (position, ancestor))
+    fn grant(&self, ancestor: AgentPath) {
+        let mut queue = self.lock();
+        let id = queue.next_id;
+        queue.next_id += 1;
+        queue.credits.insert(id, ancestor);
     }
 
-    fn restore(&self, (position, ancestor): (usize, AgentPath)) {
-        let mut credits = self.lock();
-        let position = position.min(credits.len());
-        credits.insert(position, ancestor);
+    fn take(&self, ancestor: Option<&AgentPath>) -> Option<(u64, AgentPath)> {
+        let mut queue = self.lock();
+        let id = match ancestor {
+            Some(ancestor) => queue
+                .credits
+                .iter()
+                .find_map(|(&id, credit)| (credit == ancestor).then_some(id))?,
+            None => *queue.credits.first_key_value()?.0,
+        };
+        queue.credits.remove_entry(&id)
+    }
+
+    fn restore(&self, (id, ancestor): (u64, AgentPath)) {
+        self.lock().credits.insert(id, ancestor);
     }
 }
 
@@ -103,23 +115,22 @@ impl Session {
         self.services
             .thread_extension_data
             .get_or_init(AnswerCredits::default)
-            .lock()
-            .push_back(communication.author.clone());
+            .grant(communication.author.clone());
     }
 
     /// Spends one credit for the selected ancestor, or the oldest credit when omitted.
     pub(crate) fn take_answer_credit(
         &self,
         ancestor: Option<&AgentPath>,
-    ) -> Option<(usize, AgentPath)> {
+    ) -> Option<(u64, AgentPath)> {
         self.services
             .thread_extension_data
             .get::<AnswerCredits>()?
             .take(ancestor)
     }
 
-    /// Returns the selected credit to its queue position after a failed delivery.
-    pub(crate) fn restore_answer_credit(&self, credit: (usize, AgentPath)) {
+    /// Restores the selected credit in FIFO order, even if another answer completed meanwhile.
+    pub(crate) fn restore_answer_credit(&self, credit: (u64, AgentPath)) {
         self.services
             .thread_extension_data
             .get_or_init(AnswerCredits::default)
@@ -129,7 +140,7 @@ impl Session {
     /// Questions end with the turn: its final or blocked report covers them.
     pub(crate) fn clear_answer_credits(&self) {
         if let Some(credits) = self.services.thread_extension_data.get::<AnswerCredits>() {
-            credits.lock().clear();
+            credits.lock().credits.clear();
         }
     }
 }
@@ -166,18 +177,36 @@ mod tests {
         let root = AgentPath::try_from("/root").expect("root");
         let parent = AgentPath::try_from("/root/lead").expect("parent");
         let credits = AnswerCredits::default();
-        credits
-            .lock()
-            .extend([root.clone(), parent.clone(), parent.clone()]);
+        for ancestor in [root.clone(), parent.clone(), parent.clone()] {
+            credits.grant(ancestor);
+        }
 
         let selected = credits.take(Some(&parent)).expect("parent credit");
         assert_eq!(selected, (1, parent.clone()));
         credits.restore(selected);
         assert_eq!(credits.take(None), Some((0, root)));
-        assert_eq!(credits.take(Some(&parent)), Some((0, parent.clone())));
-        assert_eq!(credits.take(Some(&parent)), Some((0, parent.clone())));
+        assert_eq!(credits.take(Some(&parent)), Some((1, parent.clone())));
+        assert_eq!(credits.take(Some(&parent)), Some((2, parent.clone())));
         assert_eq!(credits.take(Some(&parent)), None);
         assert_eq!(credits.take(None), None);
+    }
+
+    #[test]
+    fn answer_credits_restore_keeps_fifo_after_another_answer_completes() {
+        let root = AgentPath::try_from("/root").expect("root");
+        let parent = AgentPath::try_from("/root/lead").expect("parent");
+        let credits = AnswerCredits::default();
+        for ancestor in [root.clone(), parent.clone(), root.clone()] {
+            credits.grant(ancestor);
+        }
+
+        let selected = credits.take(Some(&parent)).expect("parent credit");
+        assert_eq!(credits.take(None), Some((0, root.clone())));
+        credits.grant(parent.clone());
+        credits.restore(selected);
+        assert_eq!(credits.take(None), Some((1, parent.clone())));
+        assert_eq!(credits.take(None), Some((2, root)));
+        assert_eq!(credits.take(None), Some((3, parent)));
     }
 
     #[test]
@@ -185,7 +214,7 @@ mod tests {
         let root = AgentPath::try_from("/root").expect("root");
         let parent = AgentPath::try_from("/root/lead").expect("parent");
         let credits = AnswerCredits::default();
-        credits.lock().push_back(root.clone());
+        credits.grant(root.clone());
 
         assert_eq!(credits.take(Some(&parent)), None);
         assert_eq!(credits.take(None), Some((0, root)));
