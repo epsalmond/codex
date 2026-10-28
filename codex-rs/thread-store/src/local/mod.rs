@@ -616,6 +616,16 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { model_context::load_latest_model_context(self, params).await })
     }
 
+    fn load_turn_terminal_event(
+        &self,
+        params: LoadThreadHistoryParams,
+        turn_id: String,
+    ) -> ThreadStoreFuture<'_, Option<codex_protocol::protocol::EventMsg>> {
+        Box::pin(model_context::load_turn_terminal_event(
+            self, params, turn_id,
+        ))
+    }
+
     fn prepare_fork(&self, params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
         Box::pin(async move { paginated_fork::prepare(self, params).await })
     }

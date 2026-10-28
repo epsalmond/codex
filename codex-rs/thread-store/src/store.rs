@@ -1,4 +1,5 @@
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutItem;
 use std::any::Any;
@@ -264,6 +265,20 @@ pub trait ThreadStore: Any + Send + Sync {
         Box::pin(async {
             Err(ThreadStoreError::Unsupported {
                 operation: "load_latest_model_context",
+            })
+        })
+    }
+
+    /// Loads the canonical terminal event for one paginated turn without loading model history.
+    /// Compaction must not hide the event; referenced history remains bounded by fork cutoffs.
+    fn load_turn_terminal_event(
+        &self,
+        _params: LoadThreadHistoryParams,
+        _turn_id: String,
+    ) -> ThreadStoreFuture<'_, Option<EventMsg>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "load_turn_terminal_event",
             })
         })
     }
