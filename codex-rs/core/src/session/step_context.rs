@@ -68,7 +68,7 @@ impl StepContext {
             .collect()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn extension_environments(
         &self,
     ) -> Vec<(
