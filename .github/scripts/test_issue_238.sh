@@ -47,7 +47,7 @@ run_selection() {
     --no-tests=fail --retries 0 --no-fail-fast --test-threads 4
 }
 
-# The prefix includes all four parameterized residency cases.
+# The prefix includes all eight parameterized residency cases.
 run_selection residency -p codex-core --test all \
   -E 'test(/^suite::agent_execution::v2_residency_reload_preserves_inherited_environment_and_tools::/)'
 
