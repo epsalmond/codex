@@ -244,6 +244,7 @@ async fn call_tool_with_budget(
         .handle(ToolCall {
             turn_id: "turn-1".to_string(),
             call_id: "skill-test".to_string(),
+            cancellation_token: Default::default(),
             tool_name: tool.tool_name(),
             model: "test".to_string(),
             codex_turn_metadata: None,
