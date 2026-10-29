@@ -1207,6 +1207,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     private.thread_id,
                     event_turn_id,
                     TurnCompletionMetadata {
+                        context_usage: None,
                         status: TurnStatus::Interrupted,
                         root_turn_id: aborted.root_turn_id,
                         error: aborted.error.map(|error| TurnError {

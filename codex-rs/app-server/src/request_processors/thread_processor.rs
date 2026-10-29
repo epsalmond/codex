@@ -2916,9 +2916,10 @@ impl ThreadRequestProcessor {
         let relation_root = relation_filter
             .as_ref()
             .filter(|_| archived != Some(true))
-            .map(|filter| match filter {
+            .and_then(|filter| match filter {
                 StoreThreadRelationFilter::DirectChildrenOf(thread_id)
-                | StoreThreadRelationFilter::DescendantsOf(thread_id) => *thread_id,
+                | StoreThreadRelationFilter::DescendantsOf(thread_id) => Some(*thread_id),
+                StoreThreadRelationFilter::AttachedThreadsOf(_) => None,
             });
 
         let requested_page_size = limit
