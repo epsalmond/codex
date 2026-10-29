@@ -135,8 +135,8 @@ async fn run_with_mode(
         };
     }
 
-    let input_json = match command_input_json_with_mode(&request, mode) {
-        Ok(input_json) => input_json,
+    let input = match command_input_with_mode(&request, mode) {
+        Ok(input) => input,
         Err(error) => {
             let hook_events = common::serialization_failure_hook_events_for_tool_use(
                 matched,
@@ -156,7 +156,7 @@ async fn run_with_mode(
     let execution = dispatcher::execute_handlers(
         engine,
         matched,
-        input_json,
+        &input,
         request.cwd.as_path(),
         Some(request.turn_id.clone()),
         parse,
@@ -242,16 +242,16 @@ fn latest_updated_input(
 /// stable. Shell-like tools pass `{ "command": ... }` as `tool_input`; MCP
 /// tools pass their resolved JSON arguments.
 #[cfg(test)]
-fn command_input_json(request: &PreToolUseRequest) -> Result<String, serde_json::Error> {
-    command_input_json_with_mode(request, DispatchMode::Control)
+fn command_input(request: &PreToolUseRequest) -> Result<Value, serde_json::Error> {
+    command_input_with_mode(request, DispatchMode::Control)
 }
 
-fn command_input_json_with_mode(
+fn command_input_with_mode(
     request: &PreToolUseRequest,
     mode: DispatchMode,
-) -> Result<String, serde_json::Error> {
+) -> Result<Value, serde_json::Error> {
     let subagent = SubagentCommandInputFields::from(request.subagent.as_ref());
-    serde_json::to_string(&PreToolUseCommandInput {
+    serde_json::to_value(PreToolUseCommandInput {
         session_id: request.session_id.to_string(),
         turn_id: request.turn_id.clone(),
         agent_id: subagent.agent_id,
@@ -451,8 +451,8 @@ mod tests {
     use super::DispatchMode;
     use super::OBSERVATIONAL_DECISION_IGNORED;
     use super::PreToolUseHandlerData;
-    use super::command_input_json;
-    use super::command_input_json_with_mode;
+    use super::command_input;
+    use super::command_input_with_mode;
     use super::latest_updated_input;
     use super::parse_completed;
     use super::parse_completed_observational;
@@ -468,9 +468,7 @@ mod tests {
         let mut request = request_for_tool_use("call-apply-patch");
         request.tool_name = "apply_patch".to_string();
 
-        let input_json = command_input_json(&request).expect("serialize command input");
-        let input: serde_json::Value =
-            serde_json::from_str(&input_json).expect("parse command input");
+        let input = command_input(&request).expect("serialize command input");
 
         assert_eq!(input["tool_name"], "apply_patch");
     }
@@ -777,15 +775,9 @@ mod tests {
     #[test]
     fn observational_input_marks_payload_and_control_input_omits_marker() {
         let request = request_for_tool_use("call-wait");
-        let control: serde_json::Value = serde_json::from_str(
-            &command_input_json(&request).expect("serialize control command input"),
-        )
-        .expect("parse control command input");
-        let observed: serde_json::Value = serde_json::from_str(
-            &command_input_json_with_mode(&request, DispatchMode::Observational)
-                .expect("serialize observational command input"),
-        )
-        .expect("parse observational command input");
+        let control = command_input(&request).expect("serialize control command input");
+        let observed = command_input_with_mode(&request, DispatchMode::Observational)
+            .expect("serialize observational command input");
 
         assert_eq!(control.get("observational"), None);
         assert_eq!(observed["observational"], true);

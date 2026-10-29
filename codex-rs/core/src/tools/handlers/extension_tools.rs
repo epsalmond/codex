@@ -19,6 +19,7 @@ use codex_utils_string::to_ascii_json_string;
 
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::tools::context::ToolEnvironments;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::lifecycle::extension_tool_call_source;
@@ -64,8 +65,21 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
         ToolInvocation: 'a,
     {
         Box::pin(async move {
-            let environment_accessors = invocation.step_context.extension_environments();
-            let environments = environment_accessors
+            let step = &invocation.step_context;
+            let selected: Vec<_> = match &invocation.environments {
+                ToolEnvironments::Arguments(environments) => {
+                    environments.iter().map(|(_, env)| env.as_ref()).collect()
+                }
+                _ => step.environments.turn_environments().collect(),
+            };
+            let accessors: Vec<_> = selected
+                .into_iter()
+                .map(|env| {
+                    let (fs, access) = step.extension_environment(env);
+                    (env, fs, access)
+                })
+                .collect();
+            let environments = accessors
                 .iter()
                 .map(|(environment, fs, access)| {
                     ToolEnvironment::new(
@@ -84,6 +98,33 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
 }
 
 impl CoreToolRuntime for ExtensionToolAdapter {
+    fn environments_for_input(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<ToolEnvironments, codex_tools::FunctionCallError> {
+        let arguments = self.0.environment_arguments(&invocation.payload)?;
+        if arguments.is_empty() {
+            return Ok(ToolEnvironments::All);
+        }
+        arguments
+            .into_iter()
+            .map(|(field, id)| {
+                let env = invocation
+                    .step_context
+                    .environments
+                    .turn_environments()
+                    .find(|env| env.selection.environment_id == id)
+                    .ok_or_else(|| {
+                        codex_tools::FunctionCallError::RespondToModel(format!(
+                            "unknown or unavailable environment ID: {id}"
+                        ))
+                    })?;
+                Ok((field, Arc::new(env.clone())))
+            })
+            .collect::<Result<_, _>>()
+            .map(ToolEnvironments::Arguments)
+    }
+
     fn is_builtin_control_tool(&self) -> bool {
         let tool_name = self.0.tool_name();
         if tool_name.is_default_namespace() {
@@ -396,6 +437,7 @@ mod tests {
             call_id: "call-extension".to_string(),
             tool_name: codex_tools::ToolName::plain("extension_echo"),
             source: ToolCallSource::Direct,
+            environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
             },
@@ -496,6 +538,7 @@ mod tests {
                 cell_id: "cell-1".to_string(),
                 runtime_tool_call_id: "nested-call-1".to_string(),
             },
+            environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
             },
@@ -652,6 +695,7 @@ mod tests {
                 session: Arc::clone(&session),
                 turn: Arc::clone(&turn),
                 step_context,
+                environments: Default::default(),
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "adapter-navigation".into(),

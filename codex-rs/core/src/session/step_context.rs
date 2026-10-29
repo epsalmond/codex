@@ -64,16 +64,11 @@ impl StepContext {
     pub(crate) fn environments(&self) -> Vec<(&TurnEnvironment, impl EnvironmentAccess + '_)> {
         self.environments
             .turn_environments()
-            .map(|environment| {
-                let grants = self
-                    .turn
-                    .granted_permissions(&environment.selection.environment_id);
-                (environment, environment.fs_accessor(grants))
-            })
+            .map(|environment| (environment, self.fs_accessor(environment)))
             .collect()
     }
 
-    /// Capture grants once so the accessor and navigation verdict have identical authority.
+    #[cfg(test)]
     pub(crate) fn extension_environments(
         &self,
     ) -> Vec<(
@@ -84,23 +79,39 @@ impl StepContext {
         self.environments
             .turn_environments()
             .map(|environment| {
-                let grants = self
-                    .turn
-                    .granted_permissions(&environment.selection.environment_id);
-                let sandbox = environment.sandbox_context(grants);
-                // A pending/failed second selection must not disappear into a single
-                // ready environment and authorize a broader local index.
-                let access = local_navigation_access(
-                    environment.environment.is_remote(),
-                    sandbox.should_read_from_sandbox() || self.environments.environments.len() != 1,
-                );
-                let fs = FileSystemEnvironmentAccessor::new(
-                    environment.environment.filesystem_ref(),
-                    sandbox,
-                );
+                let (fs, access) = self.extension_environment(environment);
                 (environment, fs, access)
             })
             .collect()
+    }
+
+    /// Capture grants once so the accessor and navigation verdict have identical authority.
+    pub(crate) fn extension_environment<'a>(
+        &self,
+        environment: &'a TurnEnvironment,
+    ) -> (impl EnvironmentAccess + 'a + use<'a>, LocalNavigationAccess) {
+        let grants = self
+            .turn
+            .granted_permissions(&environment.selection.environment_id);
+        let sandbox = environment.sandbox_context(grants);
+        // A pending/failed second selection must not authorize a broader local index.
+        let access = local_navigation_access(
+            environment.environment.is_remote(),
+            sandbox.should_read_from_sandbox() || self.environments.environments.len() != 1,
+        );
+        let fs =
+            FileSystemEnvironmentAccessor::new(environment.environment.filesystem_ref(), sandbox);
+        (fs, access)
+    }
+
+    pub(crate) fn fs_accessor<'a>(
+        &self,
+        environment: &'a TurnEnvironment,
+    ) -> impl EnvironmentAccess + 'a + use<'a> {
+        let grants = self
+            .turn
+            .granted_permissions(&environment.selection.environment_id);
+        environment.fs_accessor(grants)
     }
 
     /// Persist the context captured for this request, even after a live update.

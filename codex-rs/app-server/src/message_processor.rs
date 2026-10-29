@@ -1481,6 +1481,9 @@ impl MessageProcessor {
             ClientRequest::MemoryStatus { params, .. } => {
                 self.thread_processor.memory_status(params).await
             }
+            ClientRequest::ThreadMemoryRead { params, .. } => {
+                self.thread_processor.thread_memory_read(params).await
+            }
             ClientRequest::MemoryReset { .. } => self.thread_processor.memory_reset().await,
             ClientRequest::RolloutCompress { .. } => self.thread_processor.rollout_compress(),
             ClientRequest::ThreadUnarchive { params, .. } => {

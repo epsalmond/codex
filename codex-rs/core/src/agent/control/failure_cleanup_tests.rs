@@ -343,6 +343,7 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
                 call_id: "cleanup-cell".to_owned(),
                 tool_name: codex_tools::ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME),
                 source: ToolCallSource::Direct,
+                environments: Default::default(),
                 payload: ToolPayload::Custom {
                     input: "text('hold committed spawn')".to_owned(),
                 },
