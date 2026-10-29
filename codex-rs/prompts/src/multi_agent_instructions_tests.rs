@@ -4,6 +4,7 @@ use super::*;
 use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::RenderedFragment;
 use codex_protocol::models::ContentItemMetadata;
+use codex_protocol_test_support::ContentItemTestExt;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -75,7 +76,7 @@ fn subagent_guidance_reflects_its_polling_mode() {
             typed_reports: false,
         };
 
-        assert_eq!(instructions.body(), expected_body);
+        assert_eq!(instructions.body().expect_text(), expected_body);
     }
 }
 
@@ -97,7 +98,7 @@ fn wake_mode_root_guidance_states_how_child_results_arrive() {
         typed_reports: false,
     };
 
-    assert_eq!(instructions.body(), expected_body);
+    assert_eq!(instructions.body().expect_text(), expected_body);
 }
 
 #[test]
@@ -119,7 +120,7 @@ fn subagent_guidance_states_context_budget() {
         typed_reports: false,
     };
 
-    assert_eq!(instructions.body(), expected_body);
+    assert_eq!(instructions.body().expect_text(), expected_body);
 }
 
 #[test]
@@ -137,7 +138,7 @@ fn typed_reports_guidance_replaces_free_form_blocked_hint() {
         typed_reports: true,
     };
     assert_eq!(
-        subagent.body(),
+        subagent.body().expect_text(),
         format!(
             "Role.\n{shared}\n{SUBAGENT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{SUBAGENT_TYPED_REPORTS_USAGE_HINT_TEXT}\n\n{TYPED_REPORTS_DELEGATION_USAGE_HINT_TEXT}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you."
         )
@@ -154,7 +155,7 @@ fn typed_reports_guidance_replaces_free_form_blocked_hint() {
         typed_reports: true,
     };
     assert_eq!(
-        root.body(),
+        root.body().expect_text(),
         format!(
             "Role.\n{shared}\n{ROOT_WAKE_ON_REPORT_USAGE_HINT_TEXT}\n\n{TYPED_REPORTS_DELEGATION_USAGE_HINT_TEXT}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you."
         )

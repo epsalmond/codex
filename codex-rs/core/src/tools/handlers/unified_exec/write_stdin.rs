@@ -1,13 +1,14 @@
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolEnvironments;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::LiveEnvironmentResolver;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
@@ -28,7 +29,6 @@ use super::post_unified_exec_tool_use_payload;
 
 #[derive(Debug, Deserialize)]
 struct WriteStdinArgs {
-    // The model is trained on `session_id`.
     session_id: i32,
     #[serde(default)]
     chars: String,
@@ -50,6 +50,17 @@ impl WriteStdinHandler {
         Self {
             automatic_completion,
         }
+    }
+}
+
+impl WriteStdinArgs {
+    fn parse(payload: &ToolPayload) -> Result<Self, FunctionCallError> {
+        let ToolPayload::Function { arguments } = payload else {
+            return Err(FunctionCallError::RespondToModel(
+                "write_stdin handler received unsupported payload".to_string(),
+            ));
+        };
+        parse_arguments(arguments)
     }
 }
 
@@ -87,19 +98,17 @@ impl WriteStdinHandler {
             call_id,
             source,
             payload,
+            environments,
             ..
         } = invocation;
 
-        let arguments = match payload {
-            ToolPayload::Function { arguments } => arguments,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "write_stdin handler received unsupported payload".to_string(),
-                ));
-            }
+        let ToolEnvironments::Terminal(terminal) = environments else {
+            return Err(FunctionCallError::Fatal(
+                "write_stdin requires a terminal session".to_string(),
+            ));
         };
 
-        let args: WriteStdinArgs = parse_arguments(&arguments)?;
+        let args = WriteStdinArgs::parse(&payload)?;
         // Only model polls are refused; a Code Mode cell polling its own process is the cheap
         // pattern, since the whole loop costs one model request.
         if args.chars.is_empty()
@@ -108,15 +117,14 @@ impl WriteStdinHandler {
             && session
                 .services
                 .unified_exec_manager
-                .has_automatic_completion(args.session_id)
+                .has_automatic_completion(terminal.process_id)
                 .await
         {
             return Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                automatic_completion_poll_refusal(args.session_id),
+                automatic_completion_poll_refusal(terminal.process_id),
                 Some(true),
             )));
         }
-        resolve_tool_environment(&step_context.environments, /*environment_id*/ None)?;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
         let response = session
@@ -125,7 +133,7 @@ impl WriteStdinHandler {
             .write_stdin(
                 &context,
                 WriteStdinRequest {
-                    process_id: args.session_id,
+                    terminal: &terminal,
                     input: &args.chars,
                     yield_time_ms: args.yield_time_ms,
                     max_output_tokens: args.max_output_tokens,
@@ -166,6 +174,10 @@ fn automatic_completion_poll_refusal(session_id: i32) -> String {
 }
 
 impl CoreToolRuntime for WriteStdinHandler {
+    fn live_environment_resolver(&self) -> Option<LiveEnvironmentResolver> {
+        Some(super::terminal_session_for_input)
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

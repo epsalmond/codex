@@ -15,7 +15,7 @@ WAKE = CONTROL + "multi_agent_v2_completion_marks_only_root_parent_wake::"
 THREAD = "thread_manager::tests::"
 TUI = "app::owned_transcript::tests::"
 
-# Exact names from the reproduced baseline: 4 residency + 8 core + 2 TUI.
+# Exact cases in the focused gate: 8 residency + 8 core + 2 TUI.
 SELECTIONS = {
     "residency": (
         "codex-core::all",
@@ -24,6 +24,10 @@ SELECTIONS = {
             RESIDENCY + "owner_preserves_stricter_child",
             RESIDENCY + "owner_narrows_cached_permissions",
             RESIDENCY + "sender_preserves_stricter_child",
+            RESIDENCY + "owner_pending_configuration_blocks_cached_authority",
+            RESIDENCY + "owner_retains_child_workspace",
+            RESIDENCY + "sender_follows_pending_owner_configuration",
+            RESIDENCY + "sender_retains_child_workspace",
         ],
     ),
     "core-unit": (

@@ -62,6 +62,7 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
             call_id,
             tool_name: codex_tools::ToolName::plain("exec_command"),
             source: ToolCallSource::Direct,
+            environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
                     "cmd": "echo side-effect > rejected-completion-marker", "tty": false,

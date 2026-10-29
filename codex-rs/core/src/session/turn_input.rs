@@ -678,10 +678,7 @@ async fn start_reserved<'s>(
         } => {
             let submitted = *submitted;
             let has_explicit_input = match &submitted {
-                SubmittedTurnInput::UserInput { content, .. } => {
-                    turn_context.session_telemetry.user_prompt(content);
-                    !content.is_empty()
-                }
+                SubmittedTurnInput::UserInput { content, .. } => !content.is_empty(),
                 SubmittedTurnInput::ResponseItem(_)
                 | SubmittedTurnInput::AnnotatedResponseItem(_)
                 | SubmittedTurnInput::InterAgentCommunication(_) => true,
@@ -914,9 +911,6 @@ async fn start_if_idle(
     match kind {
         TurnStartKind::User => {
             session.clear_connector_selection().await;
-            if let SubmittedTurnInput::UserInput { content, .. } = &input {
-                turn_context.session_telemetry.user_prompt(content);
-            }
             session.resume_paused_wakeups().await;
             task_input.push(
                 pending_turn_input(
@@ -1051,6 +1045,38 @@ impl Session {
             .as_ref()
             .map(codex_history::TurnAttribution::start_options)
             .unwrap_or_default()
+    }
+
+    /// Revalidates a reserved wake and selects its settings before any mail is consumed.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "capture wake settings and cancel rejected reservations under the admission lock"
+    )]
+    pub(crate) async fn pending_work_turn_configuration(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) -> Option<SessionConfiguration> {
+        // Discovery can outlive an interrupt or a settings update. Keep cancellation
+        // atomic with admission so newly arriving mail can retry a rejected wake.
+        let mut active = self.active_turn.lock().await;
+        if active
+            .as_ref()
+            .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, turn_state))
+        {
+            return None;
+        }
+        let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
+        let state = self.state.lock().await;
+        let configuration = &state.session_configuration;
+        if !has_trigger_turn
+            && !self.has_outstanding_durable_sleep()
+            && !TurnStartKind::Automatic
+                .permits_mode(configuration.step_settings.collaboration_mode.mode)
+        {
+            *active = None;
+            return None;
+        }
+        Some(configuration.clone())
     }
 
     pub(crate) async fn should_wake_on_agent_messages(&self) -> bool {
@@ -1236,20 +1262,14 @@ impl Session {
                     merge_additional_context_input(self, std::mem::take(additional_context)).await;
                 let is_user_input = matches!(input.as_ref(), SubmittedTurnInput::UserInput { .. });
                 let input = match input.as_mut() {
-                    SubmittedTurnInput::UserInput { content, client_id } => {
-                        active_task
-                            .turn_context
-                            .session_telemetry
-                            .user_prompt(content);
-                        TurnInput::UserInput {
-                            content: std::mem::take(content),
-                            client_id: client_id.clone(),
-                            metadata: super::UserInputMetadata {
-                                acceptance_order: Some(self.reserve_user_input_order().await),
-                                origin,
-                            },
-                        }
-                    }
+                    SubmittedTurnInput::UserInput { content, client_id } => TurnInput::UserInput {
+                        content: std::mem::take(content),
+                        client_id: client_id.clone(),
+                        metadata: super::UserInputMetadata {
+                            acceptance_order: Some(self.reserve_user_input_order().await),
+                            origin,
+                        },
+                    },
                     input => {
                         pending_turn_input(
                             self,

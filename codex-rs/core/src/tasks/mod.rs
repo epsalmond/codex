@@ -739,16 +739,24 @@ impl Session {
             .models_manager
             .refresh_after_auth_change(self.get_config().await.http_client_factory())
             .await;
-        // A completion-triggered wakeup can be interrupted while discovery waits.
-        if self
-            .active_turn
-            .lock()
-            .await
-            .as_ref()
-            .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, &turn_state))
-        {
-            return PendingWorkStartResult::Stale;
-        }
+        let session_configuration = if self.enabled(Feature::WakeOnAgentMessages) {
+            let Some(configuration) = self.pending_work_turn_configuration(&turn_state).await
+            else {
+                return PendingWorkStartResult::Stale;
+            };
+            Some(configuration)
+        } else {
+            if self
+                .active_turn
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, &turn_state))
+            {
+                return PendingWorkStartResult::Stale;
+            }
+            None
+        };
         if let Err(error) = self.register_root_turn_lifecycle_for_session(&sub_id).await {
             tracing::warn!(%error, "pending wake turn admission rejected by lifecycle coordinator");
             self.clear_reserved_idle_turn(&turn_state).await;
@@ -777,15 +785,17 @@ impl Session {
                 .await
                 .and_then(|context| context.cyber_access_program);
         }
-        let turn_context = self
-            .new_turn_with_default_settings(
-                sub_id,
-                NewTurnContextOptions {
-                    final_output_json_schema: start_options.final_output_json_schema,
-                    cyber_access_program: start_options.cyber_access_program,
-                },
-            )
-            .await;
+        let options = NewTurnContextOptions {
+            final_output_json_schema: start_options.final_output_json_schema,
+            cyber_access_program: start_options.cyber_access_program,
+        };
+        let turn_context = match session_configuration {
+            Some(configuration) => {
+                self.new_turn_with_configuration(sub_id, configuration, options)
+                    .await
+            }
+            None => self.new_turn_with_default_settings(sub_id, options).await,
+        };
         assignment_guard.record_turn_context(&turn_context);
         if let Some(trigger) = start_options.turn_trigger {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
@@ -1431,10 +1441,14 @@ impl Session {
         if matches!(
             reason,
             TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
-        ) && active
-            .as_ref()
-            .is_some_and(|active_turn| active_turn.task.is_some())
-        {
+        ) && active.as_ref().is_some_and(|turn| {
+            turn.task.is_some()
+                || (self.enabled(Feature::WakeOnAgentMessages) && turn.finishing.is_none())
+        }) {
+            // Message wakes reserve work before registering a task. With the
+            // feature enabled, stopping a reservation must block later mail too.
+            // Finishing turns must retain their status until completion is
+            // persisted, so capacity eviction cannot close their rollout writer.
             self.mark_interrupted();
         }
         active.take()

@@ -12,6 +12,14 @@ known provider measurement. Resume preserves both timestamps. `shakeWatermark`
 is the exclusive sealed-history-item boundary, never a token count or percent.
 These updates use existing observer events and do not wake a parent model.
 
+# Thread memory summary (experimental)
+
+`thread/memory/read` takes `{threadId}` for a loaded thread and returns
+`{summary}`. Start or resume the thread first. The summary uses that thread's
+resolved memory version, including thread-specific configuration overrides.
+It is `null` when memory use is disabled or the selected summary is missing,
+unreadable, or blank. It never falls back to the other memory version.
+
 # Thread list exclusions
 
 `thread/list` accepts `excludedThreadIds`, an optional array of up to 100

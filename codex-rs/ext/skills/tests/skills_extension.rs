@@ -2784,6 +2784,7 @@ async fn v2_root_aliases_and_read_cache_use_the_captured_environment() -> TestRe
             .handle(ToolCall {
                 turn_id: "turn-1".to_string(),
                 call_id: "read".to_string(),
+                cancellation_token: Default::default(),
                 tool_name: read.tool_name(),
                 model: "gpt-test".to_string(),
                 codex_turn_metadata: None,

@@ -47,6 +47,8 @@ fn call<'a>(
         cancellation_token: CancellationToken::new(),
         conversation_history: Default::default(),
         turn_item_emitter: Arc::new(codex_tools::NoopTurnItemEmitter),
+        attachment_store: Arc::new(codex_attachment_store::InlineAttachmentStore),
+        ephemeral: false,
         environments: vec![
             ToolEnvironment::new(
                 "local-looking-id".into(),
