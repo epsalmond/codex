@@ -4749,6 +4749,7 @@ dependencies = [
 name = "codex-semantic-navigation"
 version = "0.0.0"
 dependencies = [
+ "codex-attachment-store",
  "codex-exec-server",
  "codex-extension-api",
  "codex-file-system",

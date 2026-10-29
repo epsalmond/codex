@@ -90,6 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cancellation_token,
         conversation_history: Default::default(),
         turn_item_emitter: Arc::new(codex_tools::NoopTurnItemEmitter),
+        attachment_store: Arc::new(codex_attachment_store::InlineAttachmentStore),
+        ephemeral: false,
         environments: vec![
             ToolEnvironment::new(
                 "driver".to_owned(),
