@@ -392,21 +392,23 @@ async fn failed_automatic_binding_recovery(
         .await;
     }
     assert!(!session.input_queue.wakeups_paused());
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !recovered {
-            let event = rx.recv().await.expect("recovery event");
-            assert!(
-                !matches!(event.msg, EventMsg::Error(_)),
-                "recovery failed: {:?}",
-                event.msg
-            );
-            if matches!(event.msg, EventMsg::TurnComplete(_)) {
-                break;
+    if !recovered {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = rx.recv().await.expect("recovery event");
+                assert!(
+                    !matches!(event.msg, EventMsg::Error(_)),
+                    "recovery failed: {:?}",
+                    event.msg
+                );
+                if matches!(event.msg, EventMsg::TurnComplete(_)) {
+                    break;
+                }
             }
-        }
-    })
-    .await
-    .expect("explicit recovery turn completes");
+        })
+        .await
+        .expect("explicit recovery turn completes");
+    }
     let requests = responses.requests();
     assert_eq!(requests.len(), 3);
     let recovery_request = requests

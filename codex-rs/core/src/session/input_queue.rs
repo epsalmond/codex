@@ -1780,15 +1780,16 @@ mod tests {
         );
         let input_queue = InputQueue::new();
         let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
         input_queue
             .extend_pending_input_for_turn_state(
-                active_turn
-                    .lock()
-                    .await
-                    .as_ref()
-                    .expect("active turn")
-                    .turn_state
-                    .as_ref(),
+                &turn_state,
                 vec![steer.clone(), queued_mail.clone()],
             )
             .await;
@@ -1814,8 +1815,6 @@ mod tests {
         // consumes it, in drain order.
         consume_mail(&input_queue, &active_turn, &queued_mail).await;
         {
-            let mut active = active_turn.lock().await;
-            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
             let left = turn_state.lock().await.pending_input.items.clone();
             assert_eq!(left, vec![mailbox_mail.clone()]);
         }
@@ -1824,24 +1823,13 @@ mod tests {
         // protection copy.
         consume_mail(&input_queue, &active_turn, &mailbox_mail).await;
         input_queue
-            .extend_pending_input_for_turn_state(
-                active_turn
-                    .lock()
-                    .await
-                    .as_ref()
-                    .expect("active turn")
-                    .turn_state
-                    .as_ref(),
-                vec![steer.clone()],
-            )
+            .extend_pending_input_for_turn_state(&turn_state, vec![steer.clone()])
             .await;
         let steered_batch = input_queue
             .drain_pending_input_keeping_unrecorded_mail(&active_turn)
             .await;
         assert_eq!(steered_batch, vec![steer]);
         {
-            let mut active = active_turn.lock().await;
-            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
             assert!(turn_state.lock().await.pending_input.items.is_empty());
         }
     }
@@ -2028,10 +2016,11 @@ mod tests {
         drop(state_guard);
         drop(active_guard);
         assert_eq!(input_queue.trigger_turn_mailbox_count().await, 1);
+        let completed_turn = active_turn.lock().await.take().expect("active turn");
         assert!(
             input_queue
                 .clear_pending(
-                    active_turn.lock().await.as_ref().unwrap(),
+                    &completed_turn,
                     &TurnAbortReason::Replaced,
                     ChildReportMode::WaitAgent,
                 )
@@ -2072,9 +2061,14 @@ mod tests {
         );
         let input_queue = InputQueue::new();
         let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
         {
-            let mut active = active_turn.lock().await;
-            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
             turn_state
                 .lock()
                 .await
@@ -2085,16 +2079,12 @@ mod tests {
 
         consume_mail(&input_queue, &active_turn, &first).await;
         {
-            let mut active = active_turn.lock().await;
-            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
             let left = turn_state.lock().await.pending_input.items.clone();
             assert_eq!(left, vec![second.clone()]);
         }
         consume_mail(&input_queue, &active_turn, &second).await;
         consume_mail(&input_queue, &active_turn, &second).await;
         {
-            let mut active = active_turn.lock().await;
-            let turn_state = active.as_mut().expect("active turn").turn_state.as_ref();
             assert!(turn_state.lock().await.pending_input.items.is_empty());
         }
     }
@@ -2109,11 +2099,13 @@ mod tests {
         );
         let first: crate::PendingAgentMessage = communication.clone().into();
         let second: crate::PendingAgentMessage = communication.into();
-        let mut queue = TurnInputQueue::default();
-        queue.items = vec![
-            TurnInput::InterAgentCommunication(second.clone()),
-            TurnInput::InterAgentCommunication(first.clone()),
-        ];
+        let mut queue = TurnInputQueue {
+            items: vec![
+                TurnInput::InterAgentCommunication(second.clone()),
+                TurnInput::InterAgentCommunication(first.clone()),
+            ],
+            ..Default::default()
+        };
         queue.consume_unrecorded_mail(&first);
         assert_eq!(queue.items.len(), 1);
         let TurnInput::InterAgentCommunication(remaining) = &queue.items[0] else {
@@ -2262,27 +2254,20 @@ mod tests {
         );
         let input_queue = InputQueue::new();
         let active_turn = Mutex::new(Some(ActiveTurn::default()));
-        input_queue
-            .extend_pending_input_for_turn_state(
-                active_turn
-                    .lock()
-                    .await
-                    .as_ref()
-                    .expect("active turn")
-                    .turn_state
-                    .as_ref(),
-                vec![steer.clone(), queued_mail.clone()],
-            )
-            .await;
-        active_turn
+        let turn_state = active_turn
             .lock()
             .await
             .as_ref()
-            .unwrap()
+            .expect("active turn")
             .turn_state
-            .lock()
-            .await
-            .mail_start_options = TurnStartOptions {
+            .clone();
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![steer.clone(), queued_mail.clone()],
+            )
+            .await;
+        turn_state.lock().await.mail_start_options = TurnStartOptions {
             parent_turn_id: Some("requester-turn".to_string()),
             root_turn_id: Some("requester-root".to_string()),
             ..Default::default()
@@ -2309,10 +2294,11 @@ mod tests {
             vec![steer.clone(), queued_mail.clone(), mailbox_mail.clone()]
         );
 
+        let completed_turn = active_turn.lock().await.take().expect("active turn");
         assert!(
             input_queue
                 .clear_pending(
-                    active_turn.lock().await.as_ref().expect("active turn"),
+                    &completed_turn,
                     &TurnAbortReason::Interrupted,
                     ChildReportMode::WaitAgent,
                 )

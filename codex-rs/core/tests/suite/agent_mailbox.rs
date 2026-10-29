@@ -87,8 +87,14 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order(evict: bool) -
         .with_model("gpt-5.6-sol")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config.features.enable(Feature::Collab).unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("enable collaboration");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("enable multi-agent v2");
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
             config.multi_agent_v2.hide_spawn_agent_metadata = true;
             // Task agents close after their final report; this fixture needs later mail.
@@ -177,7 +183,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order(evict: bool) -
         evict
     );
 
-    let retained = messages.0.lock().unwrap().pending.clone();
+    let retained = messages.0.lock().expect("messages lock").pending.clone();
     assert_eq!(retained.len(), 2);
     // Hold dispatch for a loaded or reloaded recipient while both tools submit.
     // The older queued notes must precede the follow-up, and the newer note must follow it.
@@ -214,8 +220,15 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order(evict: bool) -
                 body_contains(request, FOLLOWUP) && !has_function_call_output(request, "followup");
             if matches {
                 at_sampling
-                    .send(sampling_messages.0.lock().unwrap().pending.clone())
-                    .unwrap();
+                    .send(
+                        sampling_messages
+                            .0
+                            .lock()
+                            .expect("messages lock")
+                            .pending
+                            .clone(),
+                    )
+                    .expect("report pending messages at sampling");
             }
             matches
         },
@@ -277,7 +290,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order(evict: bool) -
         .collect::<Vec<_>>();
     assert_eq!(received, expected);
     {
-        let events = messages.0.lock().unwrap();
+        let events = messages.0.lock().expect("messages lock");
         let ordinary_ids = input_messages
             .iter()
             .filter(|item| expected.iter().any(|text| item.to_string().contains(text)))

@@ -2879,16 +2879,23 @@ async fn cancelled_mail_recording_keeps_recovery_copy_until_history_commit() {
     }
     drop(boundary);
     assert!(raw_history_items(&session.clone_history().await).is_empty());
+    let completed_turn = session
+        .active_turn
+        .lock()
+        .await
+        .take()
+        .expect("active turn");
     assert!(
         session
             .input_queue
             .clear_pending(
-                session.active_turn.lock().await.as_ref().unwrap(),
+                &completed_turn,
                 &TurnAbortReason::Replaced,
                 ChildReportMode::WaitAgent,
             )
             .await
     );
+    *session.active_turn.lock().await = Some(completed_turn);
     let recovered = session.input_queue.drain_mailbox_input_items().await.0;
     assert_eq!(recovered, drained);
     session
