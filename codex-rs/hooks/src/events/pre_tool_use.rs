@@ -802,7 +802,7 @@ mod tests {
                 should_block: false,
                 block_reason: None,
                 additional_contexts_for_model: vec![AdditionalContext {
-                    text: "poll advisory".to_string(),
+                    context: crate::HookContext::harness("poll advisory".to_string()),
                     limit: AdditionalContextLimit::default(),
                 }],
                 updated_input: None,
