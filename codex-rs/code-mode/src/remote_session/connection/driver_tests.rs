@@ -2279,6 +2279,7 @@ async fn early_ready_latched_until_initial_response() {
                     content_items: Vec::new(),
                     error_text: None,
                     code_mode_host_duration_ns: 1,
+                    result_buffered_for_ns: 0,
                 },
             },
         })
