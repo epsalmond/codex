@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use codex_code_mode::CellId;
+use codex_code_mode::CellTerminalReady;
 use codex_code_mode::CodeModeNestedToolCall;
 use codex_code_mode::CodeModeSession;
 use codex_code_mode::CodeModeSessionDelegate;
@@ -86,6 +87,8 @@ impl CodeModeSessionDelegate for BlockingNotificationDelegate {
             }
         })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, _cell_id: &CellId) {
         self.closed.add_permits(/*n*/ 1);

@@ -1050,3 +1050,140 @@ async fn cell_reservation_capacity_rejects_before_execution() -> Result<()> {
     server.shutdown().await;
     Ok(())
 }
+
+/// Regression for epsalmond/codex#26, through the real stdio host: cell A yields a process with
+/// its own completion, then cell B polls that process with `write_stdin` and yields while the poll
+/// runs. Cell B's result must still be delivered once, and neither record may keep the owner's
+/// work open afterwards.
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_polling_another_cells_process_delivers_its_completion() -> Result<()> {
+    let launch = "text(JSON.stringify(await tools.exec_command({cmd:'sleep 7; echo process-tail',yield_time_ms:250})));";
+    let poll = "// @exec: {\"yield_time_ms\": 500}\ntext(await tools.write_stdin({session_id:1000,chars:'',yield_time_ms:5000})); text('poll-tail');";
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: sse(vec![
+                ev_response_created("launch"),
+                ev_custom_tool_call("launch-call", "exec", launch),
+                ev_completed("launch"),
+            ]),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: sse(vec![
+                ev_response_created("poll"),
+                ev_custom_tool_call("poll-call", "exec", poll),
+                ev_completed("poll"),
+            ]),
+        }],
+        // The model keeps working in the same turn while the poll and the process finish.
+        vec![StreamingSseChunk {
+            gate: Some(gate),
+            body: sse(vec![
+                ev_response_created("work"),
+                ev_custom_tool_call("work-call", "exec", "text('other-work');"),
+                ev_completed("work"),
+            ]),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: assistant_response("done"),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: assistant_response("wake"),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: assistant_response("spare"),
+        }],
+    ])
+    .await;
+    let bootstrap = start_mock_server().await;
+    let base_url = format!("{}/v1", server.uri());
+    let test = test_codex()
+        .with_model_info_override("gpt-5.4", |model| {
+            model.tool_mode = Some(ToolMode::CodeMode)
+        })
+        .with_thread_manager(move |manager| {
+            manager.with_code_mode_session_provider(Arc::new(
+                ProcessOwnedCodeModeSessionProvider::with_host_program(
+                    core_test_support::code_mode_host_bin(),
+                ),
+            ))
+        })
+        .with_config(move |config| {
+            for feature in [
+                Feature::CodeMode,
+                Feature::CodeModeHost,
+                Feature::AsyncProcessCompletion,
+            ] {
+                config
+                    .features
+                    .enable(feature)
+                    .expect("cell completion fixture boundary");
+            }
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.stream_idle_timeout_ms = Some(600000);
+        })
+        .build_with_auto_env(&bootstrap)
+        .await?;
+    super::unified_exec::submit_unified_exec_turn(
+        &test,
+        "poll a process from a later cell",
+        codex_protocol::models::PermissionProfile::Disabled,
+    )
+    .await?;
+    tokio::time::timeout(Duration::from_secs(10), server.wait_for_request_count(3)).await?;
+    // Hold the model until the process has exited; cell B's poll returned seconds earlier.
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::ExecCommandEnd(end) if end.process_id.as_deref() == Some("1000"))
+        }),
+    )
+    .await?;
+    tokio::time::sleep(SETTLE).await;
+    release.send(()).expect("model gate held");
+    wait_for_turn_complete(&test).await;
+    // Delivery may need one automatic owner turn; wait for the store to settle.
+    let settled = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if test.codex.list_pending_completions().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    let pending = test.codex.list_pending_completions().await;
+    let requests = request_bodies(&server).await;
+    let delivered = completions(requests.last().expect("model request captured"));
+    let summary = delivered
+        .iter()
+        .map(|text| text.lines().next().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        settled.is_ok(),
+        "owner still owns work: {pending:?}; delivered {summary:?}"
+    );
+    let cell = delivered
+        .iter()
+        .filter(|text| text.contains("call=poll-call kind=cell"))
+        .collect::<Vec<_>>();
+    assert_eq!(cell.len(), 1, "cell B completion: {summary:?}");
+    assert!(cell[0].contains("status=completed"), "{}", cell[0]);
+    assert!(cell[0].contains("poll-tail"), "{}", cell[0]);
+    assert_eq!(
+        delivered
+            .iter()
+            .filter(|text| text.contains("kind=process process=1000"))
+            .count(),
+        1,
+        "process completion: {summary:?}"
+    );
+    server.shutdown().await;
+    Ok(())
+}

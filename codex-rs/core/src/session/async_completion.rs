@@ -258,31 +258,44 @@ impl AsyncCompletions {
             .iter()
             .filter(|(_, record)| record.yielded || record.cell_yielded_for_visibility)
             .map(|(id, record)| {
-                let (process_id, cell_id) = match &record.producer {
-                    Producer::Process {
-                        process_id,
-                        cell_id,
-                    } => (Some(*process_id), cell_id.clone()),
-                    Producer::Cell { cell_id } => (None, cell_id.clone()),
-                };
                 let wakes_owner = match &wake_assignment {
                     Some(assignment) => record.assignment.as_ref() == Some(assignment),
                     None => root_owner && record.assignment.is_none(),
                 };
-                PendingRecord {
-                    id: id.to_string(),
-                    call_id: record.call_id.clone(),
-                    process_id,
-                    cell_id,
-                    command: record.command.clone(),
-                    created_at: record.create_time.as_f64().map_or(0, |time| time as i64),
-                    ready: record.yielded && record.terminal.is_some(),
-                    wakes_owner,
-                }
+                record.pending(id, wakes_owner)
             })
             .collect()
     }
 
+    /// The yielded finite records that keep `assignment` open, leaving out the code cell
+    /// `asking_cell`. Running inline producers have not yielded and are not listed. Takes only the
+    /// record mutex, so the coordinator may call it under its own lock.
+    pub(crate) fn pending_for_assignment(
+        &self,
+        assignment: &AgentAssignmentId,
+        asking_cell: Option<&str>,
+    ) -> Vec<PendingRecord> {
+        self.state()
+            .records
+            .iter()
+            .filter(|(_, record)| {
+                record.owner == assignment.thread_id
+                    && record.assignment.as_ref() == Some(assignment)
+                    && record.work_kind.is_finite()
+                    && (record.yielded || record.cell_yielded_for_visibility)
+                    && match &record.producer {
+                        Producer::Process { .. } => true,
+                        Producer::Cell { cell_id } => {
+                            cell_id.is_some() && cell_id.as_deref() != asking_cell
+                        }
+                    }
+            })
+            .map(|(id, record)| record.pending(id, /*wakes_owner*/ true))
+            .collect()
+    }
+
+    /// Whether any finite record, yielded or still inline, keeps `assignment` open at turn end.
+    /// Broader than [`Self::pending_for_assignment`], which names only yielded records.
     pub(crate) fn owns_assignment(&self, assignment: &AgentAssignmentId) -> bool {
         self.state().records.values().any(|record| {
             record.owner == assignment.thread_id
@@ -614,6 +627,28 @@ impl AsyncCompletions {
         drop(state);
         drop(removed);
         self.changed();
+    }
+}
+
+impl Record {
+    fn pending(&self, id: &ResponseItemId, wakes_owner: bool) -> PendingRecord {
+        let (process_id, cell_id) = match &self.producer {
+            Producer::Process {
+                process_id,
+                cell_id,
+            } => (Some(*process_id), cell_id.clone()),
+            Producer::Cell { cell_id } => (None, cell_id.clone()),
+        };
+        PendingRecord {
+            id: id.to_string(),
+            call_id: self.call_id.clone(),
+            process_id,
+            cell_id,
+            command: self.command.clone(),
+            created_at: self.create_time.as_f64().map_or(0, |time| time as i64),
+            ready: self.yielded && self.terminal.is_some(),
+            wakes_owner,
+        }
     }
 }
 

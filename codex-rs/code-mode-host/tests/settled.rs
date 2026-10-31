@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codex_code_mode::CellId;
+use codex_code_mode::CellTerminalReady;
 use codex_code_mode::CodeModeNestedToolCall;
 use codex_code_mode::CodeModeSessionDelegate;
 use codex_code_mode::CodeModeSessionProvider;
@@ -55,6 +56,8 @@ impl CodeModeSessionDelegate for SlowDelegate {
     ) -> NotificationFuture<'a> {
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, _cell_id: &CellId) {}
 }

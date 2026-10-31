@@ -1,3 +1,4 @@
+use codex_code_mode_protocol::CellTerminalReady;
 use codex_code_mode_protocol::NoopCodeModeSessionDelegate;
 use std::sync::Arc;
 use std::time::Duration;
@@ -509,6 +510,8 @@ impl CodeModeSessionDelegate for ReleasableToolDelegate {
     ) -> NotificationFuture<'a> {
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, _cell_id: &CellId) {
         self.cell_closed.cancel();

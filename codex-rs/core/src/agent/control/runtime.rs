@@ -6,6 +6,7 @@ use super::coordinator::AgentAssignmentId;
 use super::coordinator::AgentWakeCoordinator;
 use super::coordinator::AssignmentPhase;
 use super::coordinator::ClaimedTerminalReport;
+use super::coordinator::NamedPendingWork;
 use super::coordinator::TerminalReportDeliveryGuard;
 use super::coordinator::TurnEndDisposition;
 use super::dispatcher::WakeDispatcherLifetime;
@@ -596,6 +597,32 @@ impl LocalAgentRuntime {
 
     pub(crate) fn current_wake_assignment(&self, thread_id: ThreadId) -> Option<AgentAssignmentId> {
         self.wake_coordinator.current_assignment(thread_id)
+    }
+
+    /// Named work holding `assignment` open, with children labelled by agent path, from one
+    /// coordinator snapshot; `None` when `assignment` is not current.
+    pub(crate) fn named_pending_work(
+        &self,
+        assignment: &AgentAssignmentId,
+        asking_cell: Option<&str>,
+    ) -> Option<NamedPendingWork<String>> {
+        let work = self
+            .wake_coordinator
+            .named_pending_work(assignment, asking_cell)?;
+        let children = work
+            .children
+            .into_iter()
+            .map(|thread_id| {
+                self.registry
+                    .agent_metadata_for_thread(thread_id)
+                    .and_then(|metadata| metadata.agent_path)
+                    .map_or_else(|| thread_id.to_string(), |path| path.to_string())
+            })
+            .collect();
+        Some(NamedPendingWork {
+            children,
+            completions: work.completions,
+        })
     }
 
     pub(crate) fn reserve_owned_work(

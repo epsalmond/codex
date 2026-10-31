@@ -2,19 +2,28 @@
 //!
 //! `blocked` and `final` end the turn and reach the parent as its terminal report. `answer`
 //! replies to an ancestor's question without ending the turn and spends one answer credit.
+//! A terminal report is rejected while the agent holds work it can name, since its parent would
+//! not receive the report until that work settles.
 
 use super::message_tool::message_content;
 use super::*;
 use crate::TurnStartOptions;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::session::async_completion::PendingRecord;
 use crate::session::typed_reports::PendingTerminalReport;
 use crate::session::typed_reports::TerminalReportKind;
 use crate::session::typed_reports::typed_report_agent_path;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::REPORT_TOOL_NAME;
 use crate::tools::handlers::multi_agents_spec::create_report_tool;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
+
+/// Pending work items named in a rejected terminal report before "and N more".
+const MAX_LISTED_PENDING_WORK: usize = 5;
+/// Bounds each command label quoted in a rejected terminal report.
+const MAX_PENDING_COMMAND_BYTES: usize = 80;
 
 /// Model-visible rejection for `report_to_parent(answer)` without an unanswered ancestor message.
 pub(crate) const ANSWER_WITHOUT_QUESTION: &str = "report_to_parent(kind=\"answer\") only replies to a message an ancestor sent you, and no ancestor message is waiting for an answer. Do not send progress reports: use report_to_parent(kind=\"blocked\") if you need instructions to continue, or report_to_parent(kind=\"final\") when your task is done.";
@@ -66,7 +75,12 @@ async fn handle_report(
     let arguments = function_arguments(invocation.payload.clone())?;
     let args: ReportArgs = parse_arguments(&arguments)?;
     let message = message_content(args.message)?;
-    let ToolInvocation { session, turn, .. } = invocation;
+    let ToolInvocation {
+        session,
+        turn,
+        source,
+        ..
+    } = invocation;
     let Some(agent_path) = typed_report_agent_path(&turn) else {
         return Err(FunctionCallError::RespondToModel(format!(
             "{REPORT_TOOL_NAME} is only available to subagents with typed reports enabled."
@@ -84,6 +98,9 @@ async fn handle_report(
             "You already reported this turn; your turn ends after this step.".to_string(),
         ));
     }
+    if let Some(rejection) = pending_work_rejection(&session, &turn, terminal_kind, &source) {
+        return Err(FunctionCallError::RespondToModel(rejection));
+    }
     turn.extension_data.insert(PendingTerminalReport {
         kind: terminal_kind,
         message,
@@ -98,6 +115,139 @@ async fn handle_report(
         output.to_string(),
         Some(true),
     ))
+}
+
+/// Rejects a terminal report while the wake assignment holds work this turn can name: yielded
+/// finite completions other than the calling code cell, or open direct children. Any of them
+/// makes turn-end classification hold the report until it settles. Live inline producers and
+/// unseen terminal hints are left to that hold in `maybe_notify_parent_of_terminal_turn`.
+fn pending_work_rejection(
+    session: &crate::session::session::Session,
+    turn: &crate::session::turn_context::TurnContext,
+    kind: TerminalReportKind,
+    source: &ToolCallSource,
+) -> Option<String> {
+    let runtime = &session.services.local_agent_runtime;
+    if !runtime.wake_mode_enabled() {
+        return None;
+    }
+    let assignment = turn.agent_assignment.get()?;
+    let asking_cell = match source {
+        ToolCallSource::CodeMode { cell_id, .. } => Some(cell_id.as_str()),
+        ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => None,
+    };
+    let work = runtime.named_pending_work(assignment, asking_cell)?;
+    pending_work_message(kind, &work.completions, &work.children, turn)
+}
+
+/// Names the pending work, or `None` when there is none, then offers only remedies whose tools
+/// this turn exposes for the kinds still running. Finished results only need delivery.
+fn pending_work_message(
+    kind: TerminalReportKind,
+    completions: &[PendingRecord],
+    children: &[String],
+    turn: &crate::session::turn_context::TurnContext,
+) -> Option<String> {
+    let kind = match kind {
+        TerminalReportKind::Blocked => "blocked",
+        TerminalReportKind::Final => "final",
+    };
+    let mut items = Vec::new();
+    let (mut cells, mut processes) = (false, false);
+    for record in completions {
+        let mut item = match (record.process_id, record.cell_id.as_deref()) {
+            (Some(process_id), _) => {
+                processes |= !record.ready;
+                match record.command.as_deref() {
+                    Some(command) => format!("process {process_id}: `{}`", command_label(command)),
+                    None => format!("process {process_id}"),
+                }
+            }
+            (None, Some(cell_id)) => {
+                cells |= !record.ready;
+                format!("code cell {cell_id}")
+            }
+            (None, None) => continue,
+        };
+        if record.ready {
+            item.push_str(" (finished; its result has not reached you yet)");
+        }
+        items.push(item);
+    }
+    items.extend(children.iter().map(|child| format!("agent `{child}`")));
+    if items.is_empty() {
+        return None;
+    }
+
+    let mut message = format!(
+        "report_to_parent(kind=\"{kind}\") was not recorded: your parent would not receive it until the work below has finished and its results have reached you.\nPending:\n"
+    );
+    for item in items.iter().take(MAX_LISTED_PENDING_WORK) {
+        message.push_str(&format!("- {item}\n"));
+    }
+    if items.len() > MAX_LISTED_PENDING_WORK {
+        message.push_str(&format!(
+            "- and {} more\n",
+            items.len() - MAX_LISTED_PENDING_WORK
+        ));
+    }
+    let running = cells || processes || !children.is_empty();
+    if !running {
+        message.push_str(
+            "To report, end your turn without calling report_to_parent; the results will be delivered to you, and you can report then.",
+        );
+        return Some(message);
+    }
+    message.push_str(
+        "To report, end your turn without calling report_to_parent; you will be woken when this work finishes, and can report then.",
+    );
+    // `wait` is visible unless Code Mode results are delivered automatically, and empty
+    // `write_stdin` polls are refused only while automatic completion is active.
+    let cell_wait = !turn.code_mode_automatic_completion();
+    let process_poll = !turn.automatic_completion_active();
+    let mut waits = Vec::new();
+    if cells && cell_wait {
+        waits.push("`wait` for code cells");
+    }
+    if processes && process_poll {
+        waits.push("`write_stdin` with empty chars for processes");
+    }
+    if !waits.is_empty() {
+        message.push_str(&format!(
+            " Or wait for it now, then report: {}.",
+            waits.join(", ")
+        ));
+    }
+    let mut stops = Vec::new();
+    if cells {
+        stops.push(if cell_wait {
+            "`wait` with `terminate: true` for code cells"
+        } else {
+            "`exec_terminate` for code cells"
+        });
+    }
+    if processes {
+        stops.push("`write_stdin` with chars \"\\u0003\" for processes");
+    }
+    if !children.is_empty() && turn.config.multi_agent_v2.close_agents_tool {
+        stops.push("`close_agents` for agents");
+    }
+    if !stops.is_empty() {
+        message.push_str(&format!(
+            " Or stop it first, then report: {}.",
+            stops.join(", ")
+        ));
+    }
+    Some(message)
+}
+
+fn command_label(command: &str) -> String {
+    let label = codex_utils_string::take_bytes_at_char_boundary(command, MAX_PENDING_COMMAND_BYTES);
+    if label.len() < command.len() {
+        format!("{label}…")
+    } else {
+        label.to_owned()
+    }
 }
 
 async fn send_answer(
@@ -162,3 +312,7 @@ async fn send_answer(
         Err(err) => Err(err),
     }
 }
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

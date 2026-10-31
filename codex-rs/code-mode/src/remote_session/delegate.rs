@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CellTerminalReady;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::NotificationFuture;
@@ -65,6 +66,10 @@ impl CodeModeSessionDelegate for TracedCellDelegate {
             }
             .instrument(span),
         )
+    }
+
+    fn cell_terminal_ready(&self, ready: CellTerminalReady) {
+        self.delegate.cell_terminal_ready(ready);
     }
 
     fn cell_closed(&self, cell_id: &CellId) {
