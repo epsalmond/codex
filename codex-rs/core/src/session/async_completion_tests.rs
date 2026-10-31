@@ -1060,7 +1060,7 @@ async fn collected_cell_identity_survives_acceptance_without_holding_work_or_del
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].item.id(), Some(&id));
     claim.recorded();
-    store.accept(&[id.clone()]);
+    store.accept(std::slice::from_ref(&id));
     assert!(!store.has_owned_work());
     assert!(current_items(&store, &session, &turn).1.is_empty());
     assert_eq!(store.collected_cell("generation:cell"), Some(id));
@@ -1136,7 +1136,7 @@ async fn binding_a_reused_cell_id_clears_its_old_collected_identity(
     }
     drop(first);
     if accept_first {
-        store.accept(&[first_id.clone()]);
+        store.accept(std::slice::from_ref(&first_id));
     }
     let mut second = store
         .reserve_cell(session.thread_id(), &turn, "second")
@@ -1151,7 +1151,7 @@ async fn binding_a_reused_cell_id_clears_its_old_collected_identity(
         .publish(CompletionStatus::CellCompleted, b"second", 0);
     assert_eq!(store.collected_cell("reused"), Some(second_id.clone()));
     drop(second);
-    store.accept(&[second_id.clone()]);
+    store.accept(std::slice::from_ref(&second_id));
     assert_eq!(store.collected_cell("reused"), Some(second_id));
     // Superseding identity does not remove the old cell's pending payload.
     assert_eq!(store.pending().len(), usize::from(!accept_first));
