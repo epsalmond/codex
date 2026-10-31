@@ -1594,6 +1594,10 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(
         fixture.base.published().await;
         fixture
             .provider
+            .fail_termination
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        fixture
+            .provider
             .missing_after_close
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let pending = fixture.base.store().pending();
@@ -1645,6 +1649,13 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(
         assert!(output.success_for_logging());
         assert!(output.log_output().contains(message_id));
         assert!(fixture.base.store().pending().is_empty());
+        assert_eq!(
+            fixture
+                .provider
+                .terminations
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
         assert!(!fixture.live());
     })
     .await

@@ -221,7 +221,17 @@ impl CodeModeWaitHandler {
                 telemetry.cell_id = Some(cell_id.clone());
                 let cell_id_text = cell_id.clone();
                 let cell_id = codex_code_mode::CellId::new(cell_id);
-                let wait_response = if terminate {
+                // An authoritative collected identity also survives provider shutdown/restart.
+                let wait_response = if terminate
+                    && self.mode == Mode::Wait
+                    && let Some(id) = exec
+                        .session
+                        .services
+                        .async_completions
+                        .collected_cell(cell_id.as_str())
+                {
+                    Ok(CellWaitOutcome::AlreadyCollected(id))
+                } else if terminate {
                     exec.session
                         .services
                         .code_mode_service
