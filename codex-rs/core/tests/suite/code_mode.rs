@@ -187,6 +187,32 @@ fn text_item(items: &[Value], index: usize) -> &str {
         .expect("content item should be input_text")
 }
 
+/// Keep the entire header contract explicit: exec classifies its work, whereas
+/// wait/terminate do not, and overhead timing is opt-in.
+fn assert_code_mode_header(
+    header: &str,
+    expected_status: &str,
+    expected_work_kind: Option<&str>,
+    automatic_delivery: bool,
+    show_cell_overhead: bool,
+) {
+    let mut expected = regex::escape(expected_status);
+    if automatic_delivery {
+        expected.push_str(&regex::escape(
+            "\nIts final result will be delivered automatically; continue with other work or end your turn.",
+        ));
+    }
+    if let Some(kind) = expected_work_kind {
+        expected.push_str(&regex::escape(&format!("\nwork_kind={kind}")));
+    }
+    let timing = if show_cell_overhead {
+        r"Wall time \d+\.\d{3} seconds \(code-mode \d+\.\d{3} seconds; overhead -?\d+\.\d{3} seconds\)"
+    } else {
+        r"Wall time \d+\.\d seconds"
+    };
+    assert_regex_match(&format!(r"\A{expected}\n{timing}\nOutput:\n\z"), header);
+}
+
 fn extract_running_cell_id(text: &str) -> String {
     text.strip_prefix("Script running with cell ID ")
         .and_then(|rest| rest.split('\n').next())
@@ -804,39 +830,42 @@ async fn run_code_mode_turn_with_rmcp_config(
 async fn code_mode_can_return_exec_command_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
-        &server,
-        "use exec to run exec_command",
-        r#"
+    for show_cell_overhead in [false, true] {
+        let server = responses::start_mock_server().await;
+        let (test, second_mock) = run_code_mode_turn_with_config(
+            &server,
+            "use exec to run exec_command",
+            r#"
 text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marker" })));
 "#,
-    )
-    .await?;
+            move |config| config.code_mode.experimental_show_cell_overhead = show_cell_overhead,
+        )
+        .await?;
 
-    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
-        text_item(&items, /*index*/ 0),
-    );
-    let parsed: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
-    assert!(
-        parsed
-            .get("chunk_id")
-            .and_then(Value::as_str)
-            .is_some_and(|chunk_id| !chunk_id.is_empty())
-    );
-    assert_eq!(
-        parsed.get("output").and_then(Value::as_str),
-        Some("code_mode_exec_marker"),
-    );
-    assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
-    assert!(parsed.get("wall_time_seconds").is_some());
-    assert!(parsed.get("session_id").is_none());
+        let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+        assert_eq!(items.len(), 2);
+        assert_code_mode_header(
+            text_item(&items, /*index*/ 0),
+            "Script completed",
+            Some("cell"),
+            /*automatic_delivery*/ false,
+            test.config.code_mode.experimental_show_cell_overhead,
+        );
+        let parsed: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
+        assert!(
+            parsed
+                .get("chunk_id")
+                .and_then(Value::as_str)
+                .is_some_and(|chunk_id| !chunk_id.is_empty())
+        );
+        assert_eq!(
+            parsed.get("output").and_then(Value::as_str),
+            Some("code_mode_exec_marker"),
+        );
+        assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
+        assert!(parsed.get("wall_time_seconds").is_some());
+        assert!(parsed.get("session_id").is_none());
+    }
 
     Ok(())
 }
@@ -942,6 +971,7 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
             "request_user_input".to_string(),
             // Multi-agent v2 is on by default in the fork and stays a direct model tool.
             "collaboration".to_string(),
+            "close_agents".to_string(),
             "web_search".to_string()
         ]
     );
@@ -3834,6 +3864,7 @@ if (!tool) {
             "request_user_input".to_string(),
             // Multi-agent v2 is on by default in the fork and stays a direct model tool.
             "collaboration".to_string(),
+            "close_agents".to_string(),
             "web_search".to_string()
         ]
     );
@@ -4656,7 +4687,7 @@ async fn code_mode_returns_accumulated_output_when_script_fails() -> Result<()> 
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (test, second_mock) = run_code_mode_turn(
         &server,
         "use code_mode to surface script failures",
         r#"
@@ -4670,12 +4701,12 @@ throw new Error("boom");
     let req = second_mock.single_request();
     let items = custom_tool_output_items(&req, "call-1");
     assert_eq!(items.len(), 4);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script failed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script failed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&items, /*index*/ 1), "before crash");
     assert_eq!(text_item(&items, /*index*/ 2), "still before crash");
@@ -4960,12 +4991,12 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
@@ -5004,12 +5035,12 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        &format!("Script running with cell ID {cell_id}"),
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(
         extract_running_cell_id(text_item(&second_items, /*index*/ 0)),
@@ -5051,12 +5082,12 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     let third_request = third_completion.single_request();
     let third_items = function_tool_output_items(&third_request, "call-3");
     assert_eq!(third_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&third_items, /*index*/ 0),
+        "Script completed",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "phase 3");
 
@@ -5146,12 +5177,12 @@ for (let index = 0; index < 256; index++) {{
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 1);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
@@ -5185,12 +5216,12 @@ for (let index = 0; index < 256; index++) {{
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert!(!second_items.is_empty());
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        "Script terminated",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     Ok(())
@@ -5610,6 +5641,13 @@ text("phase 2");
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_code_mode_header(
+        text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
+    );
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
 
     responses::mount_sse_once(
@@ -5642,12 +5680,12 @@ text("phase 2");
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 1);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        "Script terminated",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     responses::mount_sse_once(
@@ -5679,12 +5717,12 @@ text("after terminate");
     let third_request = third_completion.single_request();
     let third_items = custom_tool_output_items(&third_request, "call-3");
     assert_eq!(third_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&third_items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
     // The model read the terminated cell's result inline, so no automatic completion follows.
@@ -5768,9 +5806,12 @@ text("phase 2");
     assert_eq!(first_items.len(), 2);
     let header = text_item(&first_items, /*index*/ 0);
     let cell_id = extract_running_cell_id(header);
-    assert!(
-        header.contains("Its final result will be delivered automatically"),
-        "{header}"
+    assert_code_mode_header(
+        header,
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ true,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
 
@@ -5801,12 +5842,12 @@ text("phase 2");
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 1);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        "Script terminated",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     responses::mount_sse_once(
@@ -5838,12 +5879,12 @@ text("after terminate");
     let third_request = third_completion.single_request();
     let third_items = custom_tool_output_items(&third_request, "call-3");
     assert_eq!(third_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&third_items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
     // The model read the terminated cell's result inline, so no automatic completion follows.
@@ -6306,12 +6347,12 @@ text("after yield");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&first_items, /*index*/ 1), "before yield");
 
@@ -6766,7 +6807,7 @@ async fn code_mode_exit_stops_script_immediately() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (test, second_mock) = run_code_mode_turn(
         &server,
         "use exec to stop script early with exit helper",
         r#"
@@ -6786,12 +6827,12 @@ text("after");
         "exec exit helper call failed unexpectedly: {output}"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&items, /*index*/ 1), "before");
     assert_eq!(output, "before");
@@ -7214,12 +7255,12 @@ image(out);
         "code_mode view_image call failed unexpectedly"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     assert_eq!(
@@ -7268,7 +7309,7 @@ const imageItem = out.content.find((item) => item.type === "image");
 image(imageItem);
 "#;
 
-    let (_test, second_mock) = run_code_mode_turn_with_rmcp_model(
+    let (test, second_mock) = run_code_mode_turn_with_rmcp_model(
         &server,
         "use exec to call the rmcp image scenario tool and emit its image output",
         code,
@@ -7285,12 +7326,12 @@ image(imageItem);
         "code_mode mcp image scenario call failed unexpectedly"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     assert_eq!(
@@ -7336,12 +7377,12 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
         "exec apply_patch call failed unexpectedly: {items:?}"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&items, /*index*/ 1), "{}");
 
