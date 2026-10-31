@@ -11,6 +11,7 @@ use codex_core::TurnStartOptions;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::sleep::SleepItem;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
@@ -735,6 +736,8 @@ async fn input_interrupts_wait_agent_and_is_sent_in_follow_up_request(input: Wai
     let codex = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
+            // This fixture exercises interruption of the polling-only wait tool.
+            config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
             config
                 .features
                 .enable(Feature::MultiAgentV2)
@@ -840,6 +843,8 @@ async fn any_new_input_interrupts_sleep(input: WaitInput) {
     let test = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
+            // Wake mode omits sleep; pin this interruption fixture to polling.
+            config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
             config
                 .features
                 .enable(Feature::CurrentTimeReminder)
