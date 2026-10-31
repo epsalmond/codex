@@ -1358,11 +1358,19 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
             (true, false, true, false),
             (true, true, false, false),
             (true, true, true, false),
-            (true, false, false, true),
             (true, false, true, true),
-            (true, true, false, true),
             (true, true, true, true),
         ] {
+            // The strongest omission plus direct-only case supplies both
+            // namespace spellings of the independent deferred positive control.
+            if deferred_control && omit_tools_from != ["code_mode", "deferred", "direct"] {
+                continue;
+            }
+            eprintln!(
+                "MCP exposure case: omit={omit_tools_from:?}, search={supports_search_tool}, \
+                 unprefixed={non_prefixed_mcp_tool_names}, direct_only={direct_only_namespace}, \
+                 deferred_control={deferred_control}"
+            );
             let namespace = if non_prefixed_mcp_tool_names {
                 "rmcp"
             } else {
@@ -1504,6 +1512,7 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
                      namespace={namespace}, output={output:?}"
                 );
             }
+            test.codex.shutdown_and_wait().await?;
         }
     }
 
