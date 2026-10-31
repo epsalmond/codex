@@ -2267,20 +2267,12 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
         ],
         vec![StreamingSseChunk {
             gate: Some(failure_gate),
-            body: failure.clone(),
+            body: failure,
         }],
     ];
-    // Mail arriving during a failed turn may start one fresh turn. That turn must also
-    // stop on the terminal error, persist its mail, and not start another turn for it.
-    let failed_turns = if pending_input == PendingInputAfterFailure::TriggeringMail {
-        streams.push(vec![StreamingSseChunk {
-            gate: None,
-            body: failure,
-        }]);
-        2
-    } else {
-        1
-    };
+    // A terminal wake-mode root failure pauses report delivery. Even triggering
+    // mail must remain held until explicit user recovery, without another failed turn.
+    let failed_turns = 1;
     streams.extend([
         vec![
             chunk(json!({
@@ -2310,6 +2302,11 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
         .with_model("gpt-5.4")
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("enable wake-mode root failure policy");
+            config.multi_agent_v2.agent_polling = AgentPolling::Disabled;
             config.model_provider.base_url = Some(base_url);
             config.model_auto_compact_token_limit = Some(100_000);
             // The streaming fixture records raw request bodies for JSON assertions.
@@ -2359,10 +2356,10 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
 
     let mut errors = Vec::new();
     let mut completed_turns = 0;
+    let mut paused_mail = None;
     wait_for_event(codex, |event| {
         match event {
             EventMsg::Error(error) => {
-                eprintln!("compaction failure observed: {error:?}");
                 assert_eq!(
                     error.codex_error_info,
                     Some(CodexErrorInfo::UsageLimitExceeded)
@@ -2370,13 +2367,12 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
                 errors.push(error.clone());
             }
             EventMsg::TurnComplete(completed) => {
-                eprintln!(
-                    "compaction turn complete: {completed:?}; observed={} expected={failed_turns}",
-                    completed_turns + 1,
-                );
                 assert_eq!(completed.error.as_ref(), errors.last());
                 assert_eq!(completed.last_agent_message, None);
                 completed_turns += 1;
+            }
+            EventMsg::AgentWakeupsUpdated(wakeups) => {
+                paused_mail = Some((wakeups.paused, wakeups.queued_results));
             }
             _ => {}
         }
@@ -2384,6 +2380,13 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
     })
     .await;
     assert_eq!(errors.len(), failed_turns);
+    if pending_input == PendingInputAfterFailure::TriggeringMail {
+        assert_eq!(
+            paused_mail,
+            Some((true, 1)),
+            "the failed root must hold the accepted report for explicit recovery"
+        );
+    }
     let requests = server.requests().await;
     assert_eq!(requests.len(), 1 + failed_turns);
     for request in &requests[1..] {
@@ -2399,35 +2402,40 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
 
     codex.flush_rollout().await?;
     let history = codex.load_history(/*include_archived*/ false).await?;
-    let saved_pending_messages = history
-        .items
-        .iter()
-        .filter_map(|item| {
-            let RolloutItem::ResponseItem(envelope) = item else {
-                return None;
-            };
-            match &envelope.item {
-                ResponseItem::Message { role, content, .. } if role == "user" => {
-                    content.iter().find_map(|item| match item {
-                        ContentItem::InputText { text } if text == PENDING_MESSAGE => {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
+    let count_pending_messages = |items: &[RolloutItem]| {
+        items
+            .iter()
+            .filter_map(|item| {
+                let RolloutItem::ResponseItem(envelope) = item else {
+                    return None;
+                };
+                match &envelope.item {
+                    ResponseItem::Message { role, content, .. } if role == "user" => {
+                        content.iter().find_map(|item| match item {
+                            ContentItem::InputText { text } if text == PENDING_MESSAGE => Some(()),
+                            _ => None,
+                        })
+                    }
+                    ResponseItem::AgentMessage { content, .. } => {
+                        content.iter().find_map(|item| match item {
+                            AgentMessageInputContent::InputText { text }
+                                if text == PENDING_MESSAGE =>
+                            {
+                                Some(())
+                            }
+                            _ => None,
+                        })
+                    }
+                    _ => None,
                 }
-                ResponseItem::AgentMessage { content, .. } => {
-                    content.iter().find_map(|item| match item {
-                        AgentMessageInputContent::InputText { text } if text == PENDING_MESSAGE => {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                }
-                _ => None,
-            }
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(saved_pending_messages, vec![PENDING_MESSAGE]);
+            })
+            .count()
+    };
+    assert_eq!(
+        count_pending_messages(&history.items),
+        usize::from(pending_input != PendingInputAfterFailure::TriggeringMail),
+        "paused triggering mail stays queued; other pending input is recorded on failure"
+    );
 
     // The failed turn must not poison a later explicit retry once compaction can succeed.
     submit_user_input(codex, "retry after quota resets").await;
@@ -2437,7 +2445,31 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
         unreachable!("expected turn completion");
     };
     assert_eq!(completed.error, None);
-    assert_eq!(server.requests().await.len(), 3 + failed_turns);
+    let recovered_requests = server.requests().await;
+    assert_eq!(recovered_requests.len(), 3 + failed_turns);
+    if pending_input == PendingInputAfterFailure::TriggeringMail {
+        let recovered_request: Value = from_slice(recovered_requests.last().unwrap())?;
+        let delivered_reports = recovered_request["input"]
+            .as_array()
+            .expect("recovery input")
+            .iter()
+            .filter(|item| {
+                item["type"] == "agent_message"
+                    && item["content"] == json!([{"type": "input_text", "text": PENDING_MESSAGE}])
+            })
+            .count();
+        assert_eq!(
+            delivered_reports, 1,
+            "recovery must deliver the held report"
+        );
+    }
+    codex.flush_rollout().await?;
+    let recovered_history = codex.load_history(/*include_archived*/ false).await?;
+    assert_eq!(
+        count_pending_messages(&recovered_history.items),
+        1,
+        "explicit recovery must record the preserved input exactly once"
+    );
     server.shutdown().await;
     Ok(())
 }
