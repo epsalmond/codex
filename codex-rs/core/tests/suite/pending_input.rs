@@ -2448,7 +2448,11 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
     let recovered_requests = server.requests().await;
     assert_eq!(recovered_requests.len(), 3 + failed_turns);
     if pending_input == PendingInputAfterFailure::TriggeringMail {
-        let recovered_request: Value = from_slice(recovered_requests.last().unwrap())?;
+        let recovered_request: Value = from_slice(
+            recovered_requests
+                .last()
+                .expect("explicit recovery should produce a model request"),
+        )?;
         let delivered_reports = recovered_request["input"]
             .as_array()
             .expect("recovery input")
