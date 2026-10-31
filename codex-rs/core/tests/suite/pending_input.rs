@@ -1162,21 +1162,27 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
 #[test_case(" \n\t"; "whitespace_final")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn queued_inter_agent_mail_does_not_restart_after_final_answer(final_answer: &str) {
+    let (release_answer, answer_gate) = oneshot::channel();
     let first_chunks = vec![
         chunk(ev_response_created("resp-1")),
         chunk(ev_message_item_added("msg-1", "")),
-        chunk(ev_output_text_delta(final_answer)),
-        chunk(json!({
-            "type": "response.output_item.done",
-            "item": {
-                "type": "message",
-                "role": "assistant",
-                "id": "msg-1",
-                "content": [{"type": "output_text", "text": final_answer}],
-                "phase": "final_answer",
-            }
-        })),
-        chunk(ev_completed("resp-1")),
+        gated_chunk(
+            answer_gate,
+            vec![
+                ev_output_text_delta(final_answer),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "message",
+                        "role": "assistant",
+                        "id": "msg-1",
+                        "content": [{"type": "output_text", "text": final_answer}],
+                        "phase": "final_answer",
+                    }
+                }),
+                ev_completed("resp-1"),
+            ],
+        ),
     ];
 
     let (server, _completions) = start_streaming_sse_server(vec![
@@ -1186,8 +1192,12 @@ async fn queued_inter_agent_mail_does_not_restart_after_final_answer(final_answe
     .await;
     let codex = build_codex(&server).await;
 
-    submit_queue_only_agent_mail(&codex, "queued child update").await;
     submit_user_input(&codex, "first prompt").await;
+    // Idle mail belongs in the first request. Queue it after sampling so this
+    // fixture exercises mail deferred by the final-answer boundary instead.
+    server.wait_for_request_count(/*count*/ 1).await;
+    submit_queue_only_agent_mail(&codex, "queued child update").await;
+    release_answer.send(()).expect("release final answer");
     wait_for_turn_complete(&codex).await;
 
     let mut requests = server.requests().await;
