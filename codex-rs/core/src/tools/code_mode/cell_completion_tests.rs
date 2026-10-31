@@ -1713,8 +1713,10 @@ async fn cell_completion_unknown_model_wait_keeps_the_missing_cell_error() {
     fixture.retire_ready_record();
 }
 
+#[test_case::test_case(false; "wait")]
+#[test_case::test_case(true; "terminating_wait")]
 #[tokio::test]
-async fn cell_completion_model_wait_queued_behind_collector_does_not_read_twice() {
+async fn cell_completion_model_wait_queued_behind_collector_does_not_read_twice(terminate: bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         let fixture = NativeFixture::yielded(
             crate::agent::control::WorkKind::Cell,
@@ -1729,10 +1731,16 @@ async fn cell_completion_model_wait_queued_behind_collector_does_not_read_twice(
         )
         .await;
         let permit = fixture.base.completion.observe().await;
-        let mut collecting = std::pin::pin!(fixture.base.completion.collect());
+        let mut collecting = std::pin::pin!(async {
+            fixture.base.completion.collect().await;
+            fixture
+                .provider
+                .missing_after_close
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        });
         // Queue collector first, then the model on the FIFO observation lock.
         assert!(futures::poll!(collecting.as_mut()).is_pending());
-        let mut waiting = std::pin::pin!(model_wait(&fixture, CELL, false));
+        let mut waiting = std::pin::pin!(model_wait(&fixture, CELL, terminate));
         assert!(futures::poll!(waiting.as_mut()).is_pending());
         drop(permit);
         let ((), output) = tokio::join!(collecting, waiting);
