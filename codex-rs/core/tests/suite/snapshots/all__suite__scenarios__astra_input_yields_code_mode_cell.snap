@@ -6,13 +6,14 @@ Scenario: Astra continues after new user input yields a running code cell, then 
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=fef36ba881ee834f):
-        - namespace/functions; hash=fb85cd4585e56598
+00:additional_tools/developer (2; hash=2a3c9a52a244d439):
+        - namespace/functions; hash=da51c0bc30144bab
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=68c85684d1a848f6
+          - function/close_agents
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -79,15 +80,15 @@ Scenario: Astra continues after new user input yields a running code cell, then 
 
     You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task an...message to a running agent without triggering a turn. [hash=7d40ff8b58977202]
     `send_message` calls may be read by a human, so ensure they are legible. Always put proper spaces between words and/or numbers.
-    <OMITTED 17 LINES; ~243 TOKENS; hash=6048934914270a67>
-    - All agents use the same current working directory.
-    - As a result, edits made by one agent are immediately visible to all other agents.
+    <OMITTED 19 LINES; ~277 TOKENS; hash=24027225ebb92d81>
 
     Child results arrive as new turns; when you're waiting only on children, end your turn with a short status.
 
+    Agents you spawn report to you only through `report_to_parent`: `FINAL_ANSWER` when done, `BLOCKED` when...one, if any, only when an agent genuinely needs that. [hash=1abc2bf4a9f489af]
+
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 
-    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d... so, set `fork_turns` to `"none"`.</multi_agent_role> [hash=d5928243dc643bcc]
+    Full-history forks (`fork_turns` set to `"all"`) inherit the parent model and reasoning effort and do no...ve `fork_turns` unset or `"none"`.</multi_agent_role> [hash=7634be108ccad4c6]
 04:message/developer:
     <multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. D...elegation, or parallel agent work.</multi_agent_mode> [hash=2b6e037067b4390c]
 05:message/user:
