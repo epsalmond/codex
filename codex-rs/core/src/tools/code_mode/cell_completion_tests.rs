@@ -1641,7 +1641,7 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(
         fixture
             .base
             .store()
-            .accept(&[codex_protocol::ResponseItemId::from_server(
+            .accept_for_test(&[codex_protocol::ResponseItemId::from_server(
                 message_id.clone(),
             )]);
         assert!(fixture.base.store().pending().is_empty());

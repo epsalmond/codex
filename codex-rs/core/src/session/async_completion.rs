@@ -235,6 +235,11 @@ impl AsyncCompletions {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn accept_for_test(self: &Arc<Self>, ids: &[ResponseItemId]) {
+        self.accept(ids);
+    }
+
     /// Yielded records not yet accepted by the owner: running producers whose result will be
     /// delivered automatically, and finished results awaiting delivery.
     pub(crate) fn pending(&self) -> Vec<PendingRecord> {
