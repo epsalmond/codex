@@ -687,9 +687,16 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
     }
 }
 
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "close task admission atomically with the active-turn installation lock"
+)]
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     sess.services.async_completions.retire();
     let startup_prewarm = {
+        // Serialize closing admission with task reservation and final installation. Release
+        // both locks before teardown, which aborts tasks and may itself request a wake.
+        let _active_turn = sess.active_turn.lock().await;
         let mut state = sess.state.lock().await;
         // Stop admission and take the current warmup together so resume cannot replace it.
         state.shutting_down = true;

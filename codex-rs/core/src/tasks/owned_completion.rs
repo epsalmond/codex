@@ -61,8 +61,86 @@ mod tests {
     use crate::agent::control::WorkKind;
     use crate::session::tests::make_session_and_context;
     use crate::tasks::PendingWorkStartResult;
+    use codex_protocol::AgentPath;
+    use codex_protocol::protocol::InterAgentCommunication;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "exercise the production shutdown admission lock order"
+    )]
+    async fn shutdown_rejects_finite_hint_without_payload_and_preserves_pending_work() {
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let runtime = &session.services.local_agent_runtime;
+        runtime.enable_wake_mode();
+        let assignment = runtime
+            .begin_wake_assignment_for_turn(
+                session.thread_id(),
+                &turn.session_source,
+                &turn.sub_id,
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        turn.agent_assignment.set(assignment.clone()).unwrap();
+        let work = runtime
+            .reserve_owned_work(&session, &turn, "tty", WorkKind::Task, None)
+            .unwrap();
+        work.mark_started();
+        work.mark_yielded(false);
+        assert_eq!(
+            runtime
+                .classify_wake_turn_end(&assignment, &turn.sub_id, TurnEndDisposition::Succeeded)
+                .await,
+            Ok(AssignmentPhase::Waiting)
+        );
+        // Close admission before releasing the producer, as runtime teardown can release cells
+        // after shutdown's one task-abort pass. The terminal hint has no completion-store payload.
+        {
+            let _active = session.active_turn.lock().await;
+            session.state.lock().await.shutting_down = true;
+        }
+        work.mark_terminal();
+        drop(work);
+        assert!(!session.services.async_completions.has_owned_work());
+        assert!(
+            matches!(session.ready_owned_completion().await, Some(PendingWorkCause::OwnedCompletion(Some(ref ready))) if ready == &assignment)
+        );
+        let communication = InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            Vec::new(),
+            "queued mail survives rejected completion wake".to_string(),
+            false,
+        );
+        session
+            .input_queue
+            .enqueue_mailbox_communication(communication.clone().into(), Default::default())
+            .await;
+        assert_eq!(
+            timeout(
+                Duration::from_secs(5),
+                session.maybe_start_turn_for_pending_work()
+            )
+            .await
+            .expect("rejected completion wake must finish"),
+            PendingWorkStartResult::Stale
+        );
+        assert!(session.active_turn.lock().await.is_none());
+        assert!(runtime.has_ready_owned_completions(&assignment));
+        assert!(runtime.is_current_waiting_assignment(&assignment));
+        assert_eq!(
+            session.input_queue.drain_mailbox_input_items().await.0,
+            vec![crate::session::TurnInput::InterAgentCommunication(
+                communication.into()
+            )]
+        );
+    }
 
     #[tokio::test]
     async fn finite_hint_without_payload_passes_selector_and_bind_and_survives_paused_unstarted_turn()

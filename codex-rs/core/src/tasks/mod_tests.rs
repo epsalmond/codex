@@ -1,16 +1,22 @@
+use super::PendingWorkStartResult;
 use super::SessionTask;
 use super::SessionTaskResult;
 use super::TASK_COMPACT_METRIC;
+use super::TaskStartOutcome;
+use super::TurnReservation;
+use super::TurnStartHoldPoint;
 use super::UserShellCommandTask;
 use super::emit_compact_metric;
 use super::emit_turn_memory_metric;
 use super::emit_turn_network_proxy_metric;
+use super::hold_next_turn_start;
 use crate::session::TurnInput;
 use crate::session::multi_agents::ChildReportMode;
 use crate::session::session::Session;
 use crate::session::tests::make_session_and_context_with_auth_and_config_and_session_source_and_rx;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
+use crate::state::ActiveTurn;
 use crate::state::TaskKind;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -29,6 +35,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnAbortReason;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
@@ -38,6 +45,11 @@ use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use tokio::sync::Notify;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 struct PendingTask;
@@ -60,6 +72,231 @@ impl SessionTask for PendingTask {
     ) -> SessionTaskResult {
         std::future::pending().await
     }
+}
+
+struct ShutdownSignalTask {
+    ran: Arc<AtomicBool>,
+    started: Arc<Notify>,
+    cancelled: Arc<Notify>,
+}
+
+impl SessionTask for ShutdownSignalTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.shutdown_signal"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<Session>,
+        _ctx: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        self.ran.store(true, Ordering::SeqCst);
+        self.started.notify_one();
+        cancellation_token.cancelled().await;
+        self.cancelled.notify_one();
+        Ok(None)
+    }
+}
+
+// Order the admission boundary independently of abort_all_tasks so the final-install tests
+// cannot pass merely because shutdown removed the caller's reservation first.
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "exercise the production shutdown admission lock order"
+)]
+async fn close_task_admission(session: &Session) {
+    let _active = session.active_turn.lock().await;
+    session.state.lock().await.shutting_down = true;
+}
+
+fn shutdown_test_mail() -> TurnInput {
+    TurnInput::InterAgentCommunication(
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            Vec::new(),
+            "mail must survive shutdown admission".to_string(),
+            true,
+        )
+        .into(),
+    )
+}
+
+#[tokio::test]
+async fn shutdown_rejects_reserved_task_before_run_and_preserves_mail() {
+    let (session, turn, _rx) = make_session_and_context_with_rx().await;
+    session.services.local_agent_runtime.enable_wake_mode();
+    session
+        .services
+        .local_agent_runtime
+        .enable_work_observation();
+    let turn_state = {
+        let mut active = session.active_turn.lock().await;
+        Arc::clone(&active.insert(ActiveTurn::default()).turn_state)
+    };
+    let mail = shutdown_test_mail();
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(&turn_state, vec![mail.clone()])
+        .await;
+    close_task_admission(&session).await;
+    let ran = Arc::new(AtomicBool::new(false));
+    let outcome = timeout(
+        Duration::from_secs(5),
+        session.start_task(
+            turn,
+            Vec::new(),
+            ShutdownSignalTask {
+                ran: Arc::clone(&ran),
+                started: Arc::new(Notify::new()),
+                cancelled: Arc::new(Notify::new()),
+            },
+            TurnReservation {
+                turn_state,
+                mail_start_options: Default::default(),
+                return_input_if_lost: false,
+            },
+        ),
+    )
+    .await
+    .expect("rejected task start must finish");
+    assert!(matches!(outcome, TaskStartOutcome::Aborted));
+    assert!(!ran.load(Ordering::SeqCst));
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        session.input_queue.drain_mailbox_input_items().await.0,
+        vec![mail]
+    );
+    assert_eq!(
+        session
+            .services
+            .local_agent_runtime
+            .work_observation()
+            .snapshot()
+            .active_root_turns,
+        0
+    );
+}
+
+#[tokio::test]
+async fn shutdown_rejects_inflight_wake_and_requeues_mail() {
+    let (session, _turn, _rx) = make_session_and_context_with_rx().await;
+    session.services.local_agent_runtime.enable_wake_mode();
+    session
+        .services
+        .local_agent_runtime
+        .enable_work_observation();
+    let mail = shutdown_test_mail();
+    let TurnInput::InterAgentCommunication(communication) = mail.clone() else {
+        unreachable!();
+    };
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, Default::default())
+        .await;
+    let mut hold = hold_next_turn_start(session.thread_id(), TurnStartHoldPoint::WakeBeforeInstall);
+    let starting_session = Arc::clone(&session);
+    let start =
+        tokio::spawn(async move { starting_session.maybe_start_turn_for_pending_work().await });
+    timeout(Duration::from_secs(5), hold.reached())
+        .await
+        .expect("wake must reach the final-install window");
+    assert!(
+        session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .task
+            .is_none()
+    );
+    assert_eq!(
+        session
+            .services
+            .local_agent_runtime
+            .work_observation()
+            .snapshot()
+            .active_root_turns,
+        1
+    );
+    close_task_admission(&session).await;
+    timeout(Duration::from_secs(5), hold.release_and_wait())
+        .await
+        .expect("shutdown-rejected wake must finish");
+    assert_eq!(
+        start.await.expect("wake start joins"),
+        PendingWorkStartResult::Stale
+    );
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        session.input_queue.drain_mailbox_input_items().await.0,
+        vec![mail]
+    );
+    assert_eq!(
+        session
+            .services
+            .local_agent_runtime
+            .work_observation()
+            .snapshot()
+            .active_root_turns,
+        0
+    );
+}
+
+#[tokio::test]
+async fn shutdown_cancels_task_installed_before_admission_closes() {
+    let (session, turn, _rx) = make_session_and_context_with_rx().await;
+    let ran = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    session
+        .spawn_task(
+            turn,
+            Vec::new(),
+            ShutdownSignalTask {
+                ran: Arc::clone(&ran),
+                started: Arc::clone(&started),
+                cancelled: Arc::clone(&cancelled),
+            },
+        )
+        .await;
+    timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("installed task must start");
+    close_task_admission(&session).await;
+    timeout(
+        Duration::from_secs(5),
+        session.abort_all_tasks(TurnAbortReason::Interrupted),
+    )
+    .await
+    .expect("shutdown must abort the installed task");
+    timeout(Duration::from_secs(5), cancelled.notified())
+        .await
+        .expect("installed task must observe cancellation");
+    assert!(ran.load(Ordering::SeqCst));
+    assert!(session.active_turn.lock().await.is_none());
+
+    let ran_after_shutdown = Arc::new(AtomicBool::new(false));
+    session
+        .spawn_task(
+            session.new_default_turn().await,
+            Vec::new(),
+            ShutdownSignalTask {
+                ran: Arc::clone(&ran_after_shutdown),
+                started: Arc::new(Notify::new()),
+                cancelled: Arc::new(Notify::new()),
+            },
+        )
+        .await;
+    assert!(!ran_after_shutdown.load(Ordering::SeqCst));
+    assert!(session.active_turn.lock().await.is_none());
 }
 
 fn test_session_telemetry() -> SessionTelemetry {
