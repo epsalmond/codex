@@ -151,7 +151,7 @@ pub trait CodeModeSessionDelegate: Send + Sync {
     /// do not report readiness. This is neither acknowledgement nor an observer
     /// lease: competing waits, termination, or shutdown can still consume the result.
     /// Text consumers must leave Media output available to compatibility retrieval.
-    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
+    fn cell_terminal_ready(&self, ready: CellTerminalReady);
 
     /// Releases delegate state after terminal consumption or owned cancellation.
     /// A closed cell no longer has retrievable terminal output.
@@ -182,6 +182,8 @@ impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
     ) -> NotificationFuture<'a> {
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, _cell_id: &CellId) {}
 }

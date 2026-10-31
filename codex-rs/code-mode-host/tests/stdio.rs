@@ -97,6 +97,8 @@ impl CodeModeSessionDelegate for OversizedResultDelegate {
         Box::pin(async { Ok(()) })
     }
 
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
+
     fn cell_closed(&self, _cell_id: &CellId) {}
 }
 
@@ -179,6 +181,8 @@ impl CodeModeSessionDelegate for CancellationDelegate {
     ) -> NotificationFuture<'a> {
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, cell_id: &CellId) {
         let _ = self

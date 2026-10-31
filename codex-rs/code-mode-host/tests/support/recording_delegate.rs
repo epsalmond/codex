@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 
 use codex_code_mode::CellId;
+use codex_code_mode::CellTerminalReady;
 use codex_code_mode::CodeModeNestedToolCall;
 use codex_code_mode::CodeModeSessionDelegate;
 use codex_code_mode::NotificationFuture;
@@ -45,6 +46,8 @@ impl CodeModeSessionDelegate for RecordingDelegate {
         self.notification_delivered.notify_one();
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, cell_id: &CellId) {
         self.closed_cells

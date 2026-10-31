@@ -68,8 +68,6 @@ impl CodeModeSessionDelegate for TracedCellDelegate {
         )
     }
 
-    // Without this forward the trait's no-op default drops readiness, so a yielded cell's
-    // automatic completion is never collected and its record keeps the owner's work open.
     fn cell_terminal_ready(&self, ready: CellTerminalReady) {
         self.delegate.cell_terminal_ready(ready);
     }

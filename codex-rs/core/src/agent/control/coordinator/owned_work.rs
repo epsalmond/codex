@@ -2,33 +2,20 @@
 
 use super::AgentAssignmentId;
 use super::AgentWakeCoordinator;
-use crate::agent::control::OwnedWorkRegistration;
 use crate::session::async_completion::AsyncCompletions;
+use crate::session::async_completion::PendingRecord;
 use codex_protocol::ThreadId;
 use std::sync::Arc;
+
+/// Work a terminal report can name as holding its assignment open.
+pub(crate) struct NamedPendingWork {
+    pub(crate) children: Vec<ThreadId>,
+    pub(crate) completions: Vec<PendingRecord>,
+}
 
 impl super::Assignment {
     pub(super) fn has_finite_terminal_hint(&self) -> bool {
         self.finite_terminal_revision != self.acknowledged_finite_terminal_revision
-    }
-
-    /// Whether a successful turn end leaves this assignment Waiting rather than Completed: open
-    /// direct children, live finite producers, an unseen finite terminal or retained finite
-    /// results. `asking` leaves out one live producer, such as the code cell that asks.
-    pub(super) fn owns_pending_work(
-        &self,
-        id: &AgentAssignmentId,
-        asking: Option<&OwnedWorkRegistration>,
-    ) -> bool {
-        let asking_producer = asking.is_some_and(|registration| {
-            registration.kind().is_finite() && registration.assignment() == Some(id)
-        });
-        !self.direct_children.is_empty()
-            || self.finite_owned_producers > usize::from(asking_producer)
-            || self.has_finite_terminal_hint()
-            || self.owned_completions.upgrade().is_some_and(|store| {
-                store.owns_assignment(id, asking.map(OwnedWorkRegistration::id))
-            })
     }
 
     fn has_ready_owned_completion(&self, assignment: &AgentAssignmentId) -> bool {
@@ -41,25 +28,31 @@ impl super::Assignment {
 }
 
 impl AgentWakeCoordinator {
-    /// Open direct children of the current assignment `id` when a successful end of its turn
-    /// would classify it Waiting; `None` when that end would complete it or `id` is not current.
-    /// Shares coordinator -> store lock ordering with turn-end classification.
-    pub(crate) fn pending_turn_end_children(
+    /// Named work holding the current assignment `id` open: its open direct children and its
+    /// yielded finite completion records, leaving out the code cell `asking_cell`. One snapshot,
+    /// in the coordinator -> store order of turn-end classification. A subset of that
+    /// classification: live inline producers and unseen terminal hints are left to its hold.
+    pub(crate) fn named_pending_work(
         &self,
         id: &AgentAssignmentId,
-        asking: Option<&OwnedWorkRegistration>,
-    ) -> Option<Vec<ThreadId>> {
+        asking_cell: Option<&str>,
+    ) -> Option<NamedPendingWork> {
         let state = self.lock_state();
         if state.current_by_thread.get(&id.thread_id) != Some(id) {
             return None;
         }
         let assignment = state.assignments.get(id)?;
-        assignment.owns_pending_work(id, asking).then(|| {
-            assignment
+        Some(NamedPendingWork {
+            children: assignment
                 .direct_children
                 .iter()
                 .map(|child| child.thread_id)
-                .collect()
+                .collect(),
+            completions: assignment
+                .owned_completions
+                .upgrade()
+                .map(|store| store.pending_for_assignment(id, asking_cell))
+                .unwrap_or_default(),
         })
     }
 

@@ -397,6 +397,8 @@ impl CodeModeSessionDelegate for HeldDelegate {
         Box::pin(async { Ok(()) })
     }
 
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
+
     fn cell_closed(&self, cell_id: &CellId) {
         let _ = self
             .events_tx
@@ -422,6 +424,8 @@ impl CodeModeSessionDelegate for PanickingDelegate {
     ) -> NotificationFuture<'a> {
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, _cell_id: &CellId) {}
 }
@@ -449,6 +453,8 @@ impl CodeModeSessionDelegate for RecordingDelegate {
         self.notifications.fetch_add(1, Ordering::Relaxed);
         Box::pin(async { Ok(()) })
     }
+
+    fn cell_terminal_ready(&self, _ready: CellTerminalReady) {}
 
     fn cell_closed(&self, cell_id: &CellId) {
         self.closed_cells

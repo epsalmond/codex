@@ -77,10 +77,6 @@ impl OwnedWorkRegistration {
         self.0.identity.kind
     }
 
-    pub(crate) fn assignment(&self) -> Option<&AgentAssignmentId> {
-        self.0.identity.assignment.as_ref()
-    }
-
     pub(crate) fn matches(
         &self,
         owner: ThreadId,

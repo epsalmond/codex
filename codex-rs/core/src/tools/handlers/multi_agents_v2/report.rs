@@ -2,8 +2,8 @@
 //!
 //! `blocked` and `final` end the turn and reach the parent as its terminal report. `answer`
 //! replies to an ancestor's question without ending the turn and spends one answer credit.
-//! A terminal report is rejected while the agent still owns unfinished work, since its parent
-//! would not receive it until that work settles.
+//! A terminal report is rejected while the agent holds work it can name, since its parent would
+//! not receive the report until that work settles.
 
 use super::message_tool::message_content;
 use super::*;
@@ -117,10 +117,10 @@ async fn handle_report(
     ))
 }
 
-/// Rejects a terminal report while ending the turn would leave the wake assignment Waiting, as
-/// turn-end classification decides, so the report would be held until that work settles. The
-/// code cell making the call is not pending work of its own. The hold in
-/// `maybe_notify_parent_of_terminal_turn` remains the backstop for work started after this check.
+/// Rejects a terminal report while the wake assignment holds work this turn can name: yielded
+/// finite completions other than the calling code cell, or open direct children. Any of them
+/// makes turn-end classification hold the report until it settles. Live inline producers and
+/// unseen terminal hints are left to that hold in `maybe_notify_parent_of_terminal_turn`.
 fn pending_work_rejection(
     session: &crate::session::session::Session,
     turn: &crate::session::turn_context::TurnContext,
@@ -136,33 +136,18 @@ fn pending_work_rejection(
         ToolCallSource::CodeMode { cell_id, .. } => Some(cell_id.as_str()),
         ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => None,
     };
-    let asking = asking_cell.and_then(|cell_id| {
-        session
-            .services
-            .code_mode_service
-            .work_registration(&codex_code_mode::CellId::new(cell_id.to_owned()))
-    });
-    let children = runtime.pending_wake_turn_end(assignment, asking.as_ref())?;
-    let completions = session
-        .services
-        .async_completions
-        .pending()
-        .into_iter()
-        .filter(|record| {
-            record.wakes_owner
-                && !(record.process_id.is_none() && record.cell_id.as_deref() == asking_cell)
-        })
-        .collect::<Vec<_>>();
-    Some(pending_work_message(kind, &completions, &children, turn))
+    let (children, completions) = runtime.named_pending_work(assignment, asking_cell)?;
+    pending_work_message(kind, &completions, &children, turn)
 }
 
-/// Names the pending work, then offers only remedies whose tools this turn exposes.
+/// Names the pending work, or `None` when there is none, then offers only remedies whose tools
+/// this turn exposes for the kinds still running. Finished results only need delivery.
 fn pending_work_message(
     kind: TerminalReportKind,
     completions: &[PendingRecord],
     children: &[String],
     turn: &crate::session::turn_context::TurnContext,
-) -> String {
+) -> Option<String> {
     let kind = match kind {
         TerminalReportKind::Blocked => "blocked",
         TerminalReportKind::Final => "final",
@@ -172,14 +157,14 @@ fn pending_work_message(
     for record in completions {
         let mut item = match (record.process_id, record.cell_id.as_deref()) {
             (Some(process_id), _) => {
-                processes = true;
+                processes |= !record.ready;
                 match record.command.as_deref() {
                     Some(command) => format!("process {process_id}: `{}`", command_label(command)),
                     None => format!("process {process_id}"),
                 }
             }
             (None, Some(cell_id)) => {
-                cells = true;
+                cells |= !record.ready;
                 format!("code cell {cell_id}")
             }
             (None, None) => continue,
@@ -190,13 +175,13 @@ fn pending_work_message(
         items.push(item);
     }
     items.extend(children.iter().map(|child| format!("agent `{child}`")));
+    if items.is_empty() {
+        return None;
+    }
 
     let mut message = format!(
-        "report_to_parent(kind=\"{kind}\") was not recorded: you still own unfinished work, and your parent would not receive this report until it settles.\nPending:\n"
+        "report_to_parent(kind=\"{kind}\") was not recorded: your parent would not receive it until the work below has finished and its results have reached you.\nPending:\n"
     );
-    if items.is_empty() {
-        message.push_str("- background work whose result has not reached you yet\n");
-    }
     for item in items.iter().take(MAX_LISTED_PENDING_WORK) {
         message.push_str(&format!("- {item}\n"));
     }
@@ -205,6 +190,13 @@ fn pending_work_message(
             "- and {} more\n",
             items.len() - MAX_LISTED_PENDING_WORK
         ));
+    }
+    let running = cells || processes || !children.is_empty();
+    if !running {
+        message.push_str(
+            "To report, end your turn without calling report_to_parent; the results will be delivered to you, and you can report then.",
+        );
+        return Some(message);
     }
     message.push_str(
         "To report, end your turn without calling report_to_parent; you will be woken when this work finishes, and can report then.",
@@ -246,7 +238,7 @@ fn pending_work_message(
             stops.join(", ")
         ));
     }
-    message
+    Some(message)
 }
 
 fn command_label(command: &str) -> String {
@@ -320,3 +312,7 @@ async fn send_answer(
         Err(err) => Err(err),
     }
 }
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

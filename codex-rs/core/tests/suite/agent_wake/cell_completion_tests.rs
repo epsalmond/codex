@@ -359,7 +359,7 @@ async fn v2_child_terminal_report_is_rejected_while_it_owns_pending_work(
         assert_eq!(
             rejection,
             format!(
-                "report_to_parent(kind=\"{kind}\") was not recorded: you still own unfinished work, and your parent would not receive this report until it settles.\nPending:\n- code cell controlled:cell-0\nTo report, end your turn without calling report_to_parent; you will be woken when this work finishes, and can report then. Or stop it first, then report: `exec_terminate` for code cells."
+                "report_to_parent(kind=\"{kind}\") was not recorded: your parent would not receive it until the work below has finished and its results have reached you.\nPending:\n- code cell controlled:cell-0\nTo report, end your turn without calling report_to_parent; you will be woken when this work finishes, and can report then. Or stop it first, then report: `exec_terminate` for code cells."
             )
         );
         assert!(
