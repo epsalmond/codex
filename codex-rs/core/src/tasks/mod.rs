@@ -356,7 +356,7 @@ impl Session {
         let turn_state = loop {
             self.abort_all_tasks(TurnAbortReason::Replaced).await;
             let mut active = self.active_turn.lock().await;
-            if self.state.lock().await.shutting_down {
+            if self.is_shutting_down().await {
                 drop(active);
                 self.abandon_root_turn_lifecycle(&turn_context.sub_id);
                 return;
@@ -492,7 +492,7 @@ impl Session {
         // Shutdown takes the same lock before closing admission. Keep it through installation
         // so shutdown either rejects this start or sees the installed task when it aborts tasks.
         // Release the state guard before record_started_turn reacquires it.
-        let shutting_down = self.state.lock().await.shutting_down;
+        let shutting_down = self.is_shutting_down().await;
         let turn = active
             .as_mut()
             .filter(|turn| !shutting_down && Arc::ptr_eq(&turn.turn_state, &turn_state));
@@ -744,7 +744,7 @@ impl Session {
 
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
-            if self.state.lock().await.shutting_down {
+            if self.is_shutting_down().await {
                 return PendingWorkStartResult::Stale;
             }
             if active_turn.is_some() {

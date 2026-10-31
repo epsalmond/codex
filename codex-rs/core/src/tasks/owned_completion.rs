@@ -69,10 +69,6 @@ mod tests {
     use tokio::time::timeout;
 
     #[tokio::test]
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "exercise the production shutdown admission lock order"
-    )]
     async fn shutdown_rejects_finite_hint_without_payload_and_preserves_pending_work() {
         let (session, turn) = make_session_and_context().await;
         let session = Arc::new(session);
@@ -101,10 +97,7 @@ mod tests {
         );
         // Close admission before releasing the producer, as runtime teardown can release cells
         // after shutdown's one task-abort pass. The terminal hint has no completion-store payload.
-        {
-            let _active = session.active_turn.lock().await;
-            session.state.lock().await.shutting_down = true;
-        }
+        session.close_task_admission_for_test().await;
         work.mark_terminal();
         drop(work);
         assert!(!session.services.async_completions.has_owned_work());

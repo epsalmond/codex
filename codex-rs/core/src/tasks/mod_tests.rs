@@ -104,17 +104,6 @@ impl SessionTask for ShutdownSignalTask {
     }
 }
 
-// Order the admission boundary independently of abort_all_tasks so the final-install tests
-// cannot pass merely because shutdown removed the caller's reservation first.
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "exercise the production shutdown admission lock order"
-)]
-async fn close_task_admission(session: &Session) {
-    let _active = session.active_turn.lock().await;
-    session.state.lock().await.shutting_down = true;
-}
-
 fn shutdown_test_mail() -> TurnInput {
     TurnInput::InterAgentCommunication(
         InterAgentCommunication::new(
@@ -145,7 +134,7 @@ async fn shutdown_rejects_reserved_task_before_run_and_preserves_mail() {
         .input_queue
         .extend_pending_input_for_turn_state(&turn_state, vec![mail.clone()])
         .await;
-    close_task_admission(&session).await;
+    session.close_task_admission_for_test().await;
     let ran = Arc::new(AtomicBool::new(false));
     let outcome = timeout(
         Duration::from_secs(5),
@@ -226,7 +215,7 @@ async fn shutdown_rejects_inflight_wake_and_requeues_mail() {
             .active_root_turns,
         1
     );
-    close_task_admission(&session).await;
+    session.close_task_admission_for_test().await;
     timeout(Duration::from_secs(5), hold.release_and_wait())
         .await
         .expect("shutdown-rejected wake must finish");
@@ -270,7 +259,7 @@ async fn shutdown_cancels_task_installed_before_admission_closes() {
     timeout(Duration::from_secs(5), started.notified())
         .await
         .expect("installed task must start");
-    close_task_admission(&session).await;
+    session.close_task_admission_for_test().await;
     timeout(
         Duration::from_secs(5),
         session.abort_all_tasks(TurnAbortReason::Interrupted),

@@ -692,6 +692,24 @@ async fn warm_plugins_and_skills_for_session_init(
 }
 
 impl Session {
+    /// Callers deciding task admission hold `active_turn` through this read and installation,
+    /// matching shutdown's active-turn -> state lock order.
+    pub(crate) async fn is_shutting_down(&self) -> bool {
+        self.state.lock().await.shutting_down
+    }
+
+    /// Orders the shutdown admission boundary independently of task abortion, so tests can
+    /// prove that a still-owned reservation cannot install its task after admission closes.
+    #[cfg(test)]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "exercise the production shutdown admission lock order"
+    )]
+    pub(crate) async fn close_task_admission_for_test(&self) {
+        let _active = self.active_turn.lock().await;
+        self.state.lock().await.shutting_down = true;
+    }
+
     pub(super) async fn effective_thread_config_snapshot(
         &self,
         configuration: &SessionConfiguration,
