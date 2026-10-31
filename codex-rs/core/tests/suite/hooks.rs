@@ -6238,7 +6238,9 @@ async fn pre_tool_use_observes_code_mode_exec_and_wait_without_gating_them() -> 
         .function_call_output("observe-wait")
         .to_string();
     assert!(
-        wait_output.contains("Script completed") && wait_output.contains("phase 2"),
+        (wait_output.contains("Script completed") && wait_output.contains("phase 2"))
+            || (wait_output.contains("already collected for automatic completion")
+                && wait_output.contains("message id: msg_")),
         "observer deny must not block the wait, got {wait_output}"
     );
     assert!(

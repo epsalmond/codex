@@ -19,6 +19,7 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use serde_json::json;
 
+use super::CellWaitOutcome;
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
 use super::TERMINATE_TOOL_NAME;
@@ -220,12 +221,23 @@ impl CodeModeWaitHandler {
                 telemetry.cell_id = Some(cell_id.clone());
                 let cell_id_text = cell_id.clone();
                 let cell_id = codex_code_mode::CellId::new(cell_id);
-                let wait_response = if terminate {
+                // An authoritative collected identity also survives provider shutdown/restart.
+                let wait_response = if terminate
+                    && self.mode == Mode::Wait
+                    && let Some(id) = exec
+                        .session
+                        .services
+                        .async_completions
+                        .collected_cell(cell_id.as_str())
+                {
+                    Ok(CellWaitOutcome::AlreadyCollected(id))
+                } else if terminate {
                     exec.session
                         .services
                         .code_mode_service
                         .terminate(cell_id.clone())
                         .await
+                        .map(CellWaitOutcome::Runtime)
                 } else {
                     exec.session
                         .services
@@ -236,6 +248,7 @@ impl CodeModeWaitHandler {
                                 yield_time_ms,
                             },
                             step_context.preempt.clone(),
+                            &exec.session.services.async_completions,
                         )
                         .await
                 }
@@ -243,6 +256,39 @@ impl CodeModeWaitHandler {
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
+                // A terminating wait and an interrupt racing a wait can also find a cell
+                // after its terminal result was transferred to automatic completion.
+                let wait_response = if self.mode != Mode::TerminateOnly
+                    && matches!(
+                        wait_response,
+                        CellWaitOutcome::Runtime(codex_code_mode::WaitOutcome::MissingCell(_))
+                    )
+                    && let Some(id) = exec
+                        .session
+                        .services
+                        .async_completions
+                        .collected_cell(cell_id.as_str())
+                {
+                    CellWaitOutcome::AlreadyCollected(id)
+                } else {
+                    wait_response
+                };
+                let wait_response = match wait_response {
+                    CellWaitOutcome::AlreadyCollected(id) => {
+                        telemetry.record_cell_timing(&cell_id, CodeModeCellTiming::CellUnavailable);
+                        exec.session.services.elicitations.wait_until_clear().await;
+                        telemetry.finish(/*success*/ true);
+                        return Ok(boxed_tool_output(
+                            crate::tools::context::FunctionToolOutput::from_text(
+                                format!(
+                                    "Cell {cell_id_text} was already collected for automatic completion (message id: {id}). Delivery may still be pending; this wait does not consume or resend the result."
+                                ),
+                                Some(true),
+                            ),
+                        ));
+                    }
+                    CellWaitOutcome::Runtime(response) => response,
+                };
                 if self.mode == Mode::TerminateOnly
                     && let codex_code_mode::WaitOutcome::MissingCell(_) = &wait_response
                 {
