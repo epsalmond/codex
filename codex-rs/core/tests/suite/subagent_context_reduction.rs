@@ -4,6 +4,8 @@
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_config::config_toml::AgentLifetime;
+use codex_core::config::AgentRoleConfig;
 use codex_core::config::SubagentContextReductionConfig;
 use codex_features::Feature;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
@@ -680,6 +682,14 @@ async fn tool_output_crossing_cap_compacts_before_the_next_sample(code_mode: boo
             }
         })
         .with_config(move |config| {
+            // Inspect the completed worker's reduction below; a task closes after its report.
+            config.agent_roles.insert(
+                "default".to_string(),
+                AgentRoleConfig {
+                    lifetime: Some(AgentLifetime::Persistent),
+                    ..Default::default()
+                },
+            );
             if code_mode {
                 assert!(config.features.enable(Feature::CodeModeHost).is_ok());
                 assert!(config.features.enable(Feature::CodeMode).is_ok());
