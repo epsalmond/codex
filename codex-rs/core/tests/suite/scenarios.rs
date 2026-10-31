@@ -1695,6 +1695,7 @@ async fn multi_agent_catalog_parameters(disable_native_tools: bool) -> Result<()
 async fn astra_settings_release_check_with_direct_and_code_mode_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(Ok(()), "the fixture uses a Unix shell command");
+    const REPORTED_INPUT_TOKENS: i64 = 20_000;
 
     let server = start_mock_server().await;
     let rmcp_server_bin = stdio_server_bin();
@@ -1742,7 +1743,9 @@ async fn astra_settings_release_check_with_direct_and_code_mode_tools() -> Resul
             sse(vec![
                 ev_response_created("agents-response"),
                 ev_function_call_with_namespace("agents-call", "collaboration", "list_agents", "{}"),
-                ev_completed("agents-response"),
+                // The default zero-usage response leaves a prepared estimate that varies
+                // with the fixture's temporary-directory path length.
+                ev_completed_with_tokens("agents-response", REPORTED_INPUT_TOKENS),
             ]),
             sse(vec![
                 ev_response_created("diagnostics-response"),
@@ -1793,11 +1796,28 @@ text(`MCP: ${ping.structuredContent?.echo ?? "missing"}`);"#,
     .await;
 
     test.submit_turn("Check the Settings release. Read release/diagnostics.log, inspect release/settings.png, confirm the local MCP integration responds, and update release/status.md with the result. Tell me whether another agent is working on this task.").await?;
+    let requests = mock.requests();
+    let agents_output = requests[1].function_call_output("agents-call");
+    let listed: serde_json::Value = serde_json::from_str(
+        agents_output["output"]
+            .as_str()
+            .expect("list_agents returns JSON text"),
+    )?;
+    let root = listed["agents"]
+        .as_array()
+        .expect("listed agents")
+        .iter()
+        .find(|agent| agent["agent_name"] == "/root")
+        .expect("root agent");
+    assert_eq!(
+        root["context"]["active_tokens"],
+        json!(REPORTED_INPUT_TOKENS)
+    );
     insta::assert_snapshot!(
         "astra_settings_release_check_tool_shapes",
         context_snapshot::format_request_history_snapshot(
             "Astra checks a Settings release using direct collaboration and Code Mode tools.",
-            &mock.requests(),
+            &requests,
             &ContextSnapshotOptions::default().include_request_settings(),
         )
     );
