@@ -196,14 +196,14 @@ fn assert_code_mode_header(
     automatic_delivery: bool,
     show_cell_overhead: bool,
 ) {
-    let mut expected = regex::escape(expected_status);
+    let mut expected = regex_lite::escape(expected_status);
     if automatic_delivery {
-        expected.push_str(&regex::escape(
+        expected.push_str(&regex_lite::escape(
             "\nIts final result will be delivered automatically; continue with other work or end your turn.",
         ));
     }
     if let Some(kind) = expected_work_kind {
-        expected.push_str(&regex::escape(&format!("\nwork_kind={kind}")));
+        expected.push_str(&regex_lite::escape(&format!("\nwork_kind={kind}")));
     }
     let timing = if show_cell_overhead {
         r"Wall time \d+\.\d{3} seconds \(code-mode \d+\.\d{3} seconds; overhead -?\d+\.\d{3} seconds\)"
