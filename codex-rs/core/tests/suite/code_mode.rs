@@ -3362,6 +3362,15 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
         requests[0].custom_tool_call_output("call-a")["output"],
         old_output["output"]
     );
+    assert_eq!(requests.len(), 2, "starting B should sample exactly twice");
+    assert!(
+        requests[1]
+            .inputs_of_type("custom_tool_call_output")
+            .iter()
+            .any(|item| item["call_id"] == "call-b"),
+        "B's completion sample must include its exec output; input={:?}",
+        requests[1].input(),
+    );
     let new_items = custom_tool_output_items(&requests[1], "call-b");
     assert!(
         text_item(&new_items, /*index*/ 0).starts_with("Script running with cell ID "),
