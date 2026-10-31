@@ -1344,15 +1344,24 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
         &["code_mode", "deferred", "direct"][..],
         &[][..],
     ] {
-        for (supports_search_tool, non_prefixed_mcp_tool_names, direct_only_namespace) in [
-            (false, false, false),
-            (false, false, true),
-            (false, true, false),
-            (false, true, true),
-            (true, false, false),
-            (true, false, true),
-            (true, true, false),
-            (true, true, true),
+        for (
+            supports_search_tool,
+            non_prefixed_mcp_tool_names,
+            direct_only_namespace,
+            deferred_control,
+        ) in [
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, false),
+            (true, false, false, false),
+            (true, false, true, false),
+            (true, true, false, false),
+            (true, true, true, false),
+            (true, false, false, true),
+            (true, false, true, true),
+            (true, true, false, true),
+            (true, true, true, true),
         ] {
             let namespace = if non_prefixed_mcp_tool_names {
                 "rmcp"
@@ -1422,6 +1431,19 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
                     }
 
                     let mut servers = config.mcp_servers.get().clone();
+                    // A separate namespace supplies an independent deferred source;
+                    // the rmcp omissions and direct-only override must not hide it.
+                    if deferred_control {
+                        servers.insert(
+                            "search_control".to_string(),
+                            serde_json::from_value(serde_json::json!({
+                                "command": rmcp_test_server_bin,
+                                "environment_id": environment_id,
+                                "cwd": config.cwd,
+                            }))
+                            .expect("deferred control MCP server config should be valid"),
+                        );
+                    }
                     servers.insert(
                         "rmcp".to_string(),
                         serde_json::from_value(serde_json::json!({
@@ -1439,6 +1461,9 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
                 });
             let test = builder.build_with_auto_env(&server).await?;
             wait_for_mcp_server(&test.codex, "rmcp").await?;
+            if deferred_control {
+                wait_for_mcp_server(&test.codex, "search_control").await?;
+            }
             test.submit_turn("inspect ordinary direct-mode MCP tool exposure")
                 .await?;
 
@@ -1454,11 +1479,14 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
             );
             assert_eq!(
                 tool_names(&body).iter().any(|name| name == "tool_search"),
-                supports_search_tool,
-                "MCP omissions must not disable tool search for other tools; \
+                supports_search_tool
+                    && (deferred_control
+                        || (!direct_only_namespace && !omit_tools_from.contains(&"deferred"))),
+                "tool search requires a searchable deferred source; \
              omit_tools_from={omit_tools_from:?}, \
              supports_search_tool={supports_search_tool}, \
-             direct_only_namespace={direct_only_namespace}, namespace={namespace}, tools={:?}",
+             direct_only_namespace={direct_only_namespace}, deferred_control={deferred_control}, \
+             namespace={namespace}, tools={:?}",
                 tool_names(&body)
             );
             if let Some(follow_up_response) = follow_up_response {
