@@ -573,6 +573,18 @@ impl CodeModeSession for ClosingSession {
             self.terminations
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self
+                .missing_after_close
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Ok(WaitOutcome::MissingCell(RuntimeResponse::Result {
+                    cell_id,
+                    content_items: vec![],
+                    error_text: Some("cell not found".to_owned()),
+                    result_buffered_for: Duration::ZERO,
+                    code_mode_host_duration: None,
+                }));
+            }
+            if self
                 .fail_termination
                 .load(std::sync::atomic::Ordering::SeqCst)
             {
@@ -1498,6 +1510,7 @@ async fn cell_collection_close_timeout_keeps_native_cleanup_authority_until_dela
 async fn model_wait(
     fixture: &NativeFixture,
     id: &str,
+    terminate: bool,
 ) -> Box<dyn crate::tools::context::ToolOutput> {
     use crate::session::step_context::StepContext;
     use crate::tools::context::ToolCallSource;
@@ -1519,7 +1532,9 @@ async fn model_wait(
             tool_name: codex_tools::ToolName::plain(super::super::WAIT_TOOL_NAME),
             source: ToolCallSource::Direct,
             payload: ToolPayload::Function {
-                arguments: serde_json::json!({"cell_id": id, "yield_time_ms": 1}).to_string(),
+                arguments:
+                    serde_json::json!({"cell_id": id, "yield_time_ms": 1, "terminate": terminate})
+                        .to_string(),
             },
             environments: Default::default(),
         })
@@ -1527,10 +1542,15 @@ async fn model_wait(
         .expect("wait handler returns a tool output")
 }
 
-#[test_case::test_case(false; "native_closed")]
-#[test_case::test_case(true; "native_close_pending")]
+#[test_case::test_case(false, false; "native_closed")]
+#[test_case::test_case(true, false; "native_close_pending")]
+#[test_case::test_case(false, true; "terminate_native_closed")]
+#[test_case::test_case(true, true; "terminate_native_close_pending")]
 #[tokio::test]
-async fn cell_completion_late_model_wait_returns_the_one_automatic_message(close_pending: bool) {
+async fn cell_completion_late_model_wait_returns_the_one_automatic_message(
+    close_pending: bool,
+    terminate: bool,
+) {
     tokio::time::timeout(Duration::from_secs(10), async {
         let gate = close_pending.then(CancellationToken::new);
         let fixture = NativeFixture::with_options(
@@ -1548,8 +1568,12 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(close
             false,
         )
         .await;
-        // Drive the actual collector to completion, without a scheduler race or status polling.
-        fixture.base.completion.collect().await;
+        fixture.base.completion.ready(ready(CellOutputKind::Text));
+        fixture.base.published().await;
+        fixture
+            .provider
+            .missing_after_close
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let pending = fixture.base.store().pending();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].ready, !close_pending);
@@ -1557,7 +1581,7 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(close
         let published = fixture.base.store().published_texts();
         assert_eq!(published.len(), 1);
         for _ in 0..2 {
-            let output = model_wait(&fixture, CELL).await;
+            let output = model_wait(&fixture, CELL, terminate).await;
             assert!(output.success_for_logging());
             let text = output.log_output();
             assert!(text.contains("already collected for automatic completion"));
@@ -1588,7 +1612,17 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(close
         }
         assert_eq!(fixture.base.store().published_texts(), published);
         assert!(fixture.base.store().pending()[0].ready);
-        fixture.retire_ready_record();
+        fixture
+            .base
+            .store()
+            .accept(&[codex_protocol::ResponseItemId::from_server(
+                message_id.clone(),
+            )]);
+        assert!(fixture.base.store().pending().is_empty());
+        let output = model_wait(&fixture, CELL, terminate).await;
+        assert!(output.success_for_logging());
+        assert!(output.log_output().contains(message_id));
+        assert!(fixture.base.store().pending().is_empty());
         assert!(!fixture.live());
     })
     .await
@@ -1599,16 +1633,24 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(close
 async fn cell_completion_unknown_model_wait_keeps_the_missing_cell_error() {
     let fixture = NativeFixture::yielded(
         crate::agent::control::WorkKind::Cell,
-        Ok(yielded()),
+        Ok(RuntimeResponse::Result {
+            cell_id: cell_id(),
+            content_items: vec![text("collected known cell")],
+            error_text: None,
+            result_buffered_for: Duration::ZERO,
+            code_mode_host_duration: None,
+        }),
         TerminalReadySupport::Supported,
     )
     .await;
-    let output = model_wait(&fixture, "unknown-generation:cell").await;
+    fixture.base.completion.ready(ready(CellOutputKind::Text));
+    let published = fixture.base.published().await;
+    let output = model_wait(&fixture, "unknown-generation:cell", false).await;
     assert!(!output.success_for_logging());
     assert!(output.log_output().contains("cell not found"));
     assert!(!output.log_output().contains("already collected"));
-    assert!(fixture.base.store().published_texts().is_empty());
-    fixture.delegate.cell_closed(&cell_id());
+    assert_eq!(fixture.base.store().published_texts(), published);
+    fixture.retire_ready_record();
 }
 
 #[tokio::test]
@@ -1630,7 +1672,7 @@ async fn cell_completion_model_wait_queued_behind_collector_does_not_read_twice(
         let mut collecting = std::pin::pin!(fixture.base.completion.collect());
         // Queue collector first, then the model on the FIFO observation lock.
         assert!(futures::poll!(collecting.as_mut()).is_pending());
-        let mut waiting = std::pin::pin!(model_wait(&fixture, CELL));
+        let mut waiting = std::pin::pin!(model_wait(&fixture, CELL, false));
         assert!(futures::poll!(waiting.as_mut()).is_pending());
         drop(permit);
         let ((), output) = tokio::join!(collecting, waiting);

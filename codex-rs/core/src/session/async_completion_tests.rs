@@ -1114,25 +1114,47 @@ async fn collected_cell_history_is_bounded_and_live_records_remain_discoverable(
     store.retire();
 }
 
+#[test_case::test_case(true, true; "accepted_old_record")]
+#[test_case::test_case(false, true; "pending_old_record")]
+#[test_case::test_case(false, false; "old_record_publishes_after_rebind")]
 #[tokio::test]
-async fn binding_a_reused_cell_id_clears_its_old_collected_identity() {
+async fn binding_a_reused_cell_id_clears_its_old_collected_identity(
+    accept_first: bool,
+    publish_first: bool,
+) {
     let (session, turn) = make_session_and_context().await;
     let store = Arc::new(AsyncCompletions::default());
     let mut first = store
         .reserve_cell(session.thread_id(), &turn, "first")
         .unwrap();
     first.bind_cell("reused").unwrap();
-    first
-        .register()
-        .publish(CompletionStatus::CellCompleted, b"first", 0);
-    let id = store.collected_cell("reused").unwrap();
+    let first_publisher = first.register();
+    let first_id = first.id.clone();
+    if publish_first {
+        first_publisher.publish(CompletionStatus::CellCompleted, b"first", 0);
+        assert_eq!(store.collected_cell("reused"), Some(first_id.clone()));
+    }
     drop(first);
-    store.accept(&[id]);
+    if accept_first {
+        store.accept(&[first_id.clone()]);
+    }
     let mut second = store
         .reserve_cell(session.thread_id(), &turn, "second")
         .unwrap();
     second.bind_cell("reused").unwrap();
     assert_eq!(store.collected_cell("reused"), None);
-    second.release();
+    first_publisher.publish(CompletionStatus::CellCompleted, b"first", 0);
     assert_eq!(store.collected_cell("reused"), None);
+    let second_id = second.id.clone();
+    second
+        .register()
+        .publish(CompletionStatus::CellCompleted, b"second", 0);
+    assert_eq!(store.collected_cell("reused"), Some(second_id.clone()));
+    drop(second);
+    store.accept(&[second_id.clone()]);
+    assert_eq!(store.collected_cell("reused"), Some(second_id));
+    // Superseding identity does not remove the old cell's pending payload.
+    assert_eq!(store.pending().len(), usize::from(!accept_first));
+    store.accept(&[first_id]);
+    assert!(!store.has_owned_work());
 }

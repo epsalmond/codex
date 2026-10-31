@@ -102,6 +102,8 @@ struct Record {
     create_time: serde_json::Number,
     call_id: String,
     producer: Producer,
+    /// A later binding of the same provider ID supersedes identity lookup, not delivery.
+    cell_identity_current: bool,
     assignment: Option<AgentAssignmentId>,
     /// A Cell's initial call yielded, even while its native-close delivery fence is retained.
     cell_yielded_for_visibility: bool,
@@ -201,7 +203,12 @@ impl AsyncCompletions {
             .find_map(|(id, record)| match &record.producer {
                 Producer::Cell {
                     cell_id: Some(bound),
-                } if bound == cell_id && record.terminal.is_some() => Some(id.clone()),
+                } if bound == cell_id
+                    && record.cell_identity_current
+                    && record.terminal.is_some() =>
+                {
+                    Some(id.clone())
+                }
                 _ => None,
             });
         live.or_else(|| {
@@ -459,6 +466,7 @@ impl AsyncCompletions {
                 create_time: Session::response_item_create_time(),
                 call_id: call_id.to_owned(),
                 producer,
+                cell_identity_current: true,
                 assignment: turn.agent_assignment.get().cloned(),
                 cell_yielded_for_visibility: false,
                 yielded: false,
@@ -674,6 +682,13 @@ impl CompletionReservation {
             return Err("async completion metadata exceeds the encoded fragment limit");
         }
         // A provider reusing an ID starts a new cell, not a reference to an older result.
+        for (id, record) in &mut state.records {
+            if id != &self.id
+                && matches!(&record.producer, Producer::Cell { cell_id: Some(bound) } if bound == cell_id)
+            {
+                record.cell_identity_current = false;
+            }
+        }
         state.collected_cells.retain(|(bound, _)| bound != cell_id);
         Ok(())
     }
@@ -782,6 +797,7 @@ impl CompletionPublisher {
         if let Producer::Cell {
             cell_id: Some(cell_id),
         } = &record.producer
+            && record.cell_identity_current
         {
             let cell_id = cell_id.clone();
             state.collected_cells.push_back((cell_id, self.id.clone()));
