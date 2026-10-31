@@ -477,6 +477,7 @@ async fn wake_mode_help_round_trip_wakes_root_twice() -> Result<()> {
     let server = start_mock_server().await;
     let test = test_codex()
         .with_model("koffing")
+        .with_session_source(SessionSource::Cli)
         .with_config(|config| {
             configure_multi_agent(config, Some(AgentPolling::Disabled));
             // A task closes after its first final report; this worker must accept a follow-up.
