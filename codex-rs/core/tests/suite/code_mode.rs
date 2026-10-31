@@ -9825,8 +9825,8 @@ async fn code_mode_argument_truncation_preserves_later_wait_completeness() -> Re
         Arc::new(registry.build())
     };
 
-    // Calibrate a first request with the same tools/features/turn prompt; its
-    // exact serialized overhead varies with the model catalog and headers.
+    // Measure the actual yielded websocket delta, rather than the earlier
+    // request whose full input may be larger than its incremental successors.
     let configure = |config: &mut Config| {
         config.base_instructions = Some(String::new());
         config.model_context_window = Some(20_000_000);
@@ -9844,12 +9844,28 @@ async fn code_mode_argument_truncation_preserves_later_wait_completeness() -> Re
         config.model_provider.request_max_retries = Some(0);
         config.model_provider.stream_max_retries = Some(0);
     };
-    let warmup = || vec![ev_response_created("warmup"), ev_completed("warmup")];
-    let probe_server = responses::start_websocket_server(vec![vec![
-        warmup(),
-        vec![ev_response_created("probe"), ev_completed("probe")],
-    ]])
-    .await;
+    // Ensure the metadata-bearing delta has room to exceed the first request
+    // even when the initial prompt/catalog grows. Only wire metadata is trimmed.
+    let code = r#"
+await tools.test_sync_tool({ barrier: { id: "x".repeat(64 * 1024), participants: 1 } });
+text("yielded");
+yield_control();
+await new Promise(() => {});
+"#;
+    let batches = || {
+        let mut exec = ev_custom_tool_call("exec-a", "exec", code);
+        exec["item"]["id"] = serde_json::json!("ctc_exec_a");
+        let mut wait =
+            responses::ev_function_call("wait-a", "wait", r#"{"cell_id":"1","terminate":true}"#);
+        wait["item"]["id"] = serde_json::json!("fc_wait_a");
+        vec![vec![
+            vec![ev_response_created("warmup"), ev_completed("warmup")],
+            vec![ev_response_created("resp-1"), exec, ev_completed("resp-1")],
+            vec![ev_response_created("resp-2"), wait, ev_completed("resp-2")],
+            vec![ev_response_created("resp-3"), ev_completed("resp-3")],
+        ]]
+    };
+    let probe_server = responses::start_websocket_server(batches()).await;
     let mut probe_builder = test_codex()
         .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
@@ -9860,32 +9876,23 @@ async fn code_mode_argument_truncation_preserves_later_wait_completeness() -> Re
         .await?;
     probe.submit_turn(PROMPT).await?;
     let probe_connection = probe_server.single_connection();
-    assert_eq!(probe_connection.len(), 2);
-    let base_bytes = serde_json::to_vec(&probe_connection[1].body_json())?.len();
-    assert!(base_bytes + 4 * 1024 < LIMIT);
+    assert_eq!(probe_connection.len(), 4);
+    let first_base_bytes = serde_json::to_vec(&probe_connection[1].body_json())?.len();
+    let yielded_base_bytes = serde_json::to_vec(&probe_connection[2].body_json())?.len();
+    assert!(yielded_base_bytes + 1024 < LIMIT);
+    // The real yielded request exceeds the limit by 1 KiB before shedding;
+    // enough headroom remains for the first request and variable timing fields.
+    let padding_bytes = LIMIT - yielded_base_bytes + 1024;
+    assert!(
+        first_base_bytes + padding_bytes + 1024 < LIMIT,
+        "calibration must leave the initial request below the limit: \
+         first={first_base_bytes}, yielded={yielded_base_bytes}, padding={padding_bytes}"
+    );
     probe.codex.shutdown_and_wait().await?;
     probe_server.shutdown().await;
 
-    // One 7 KiB invocation pushes the yielded delta over the message budget.
-    let padding = "x".repeat(LIMIT - base_bytes - 4 * 1024);
-    let code = r#"
-await tools.test_sync_tool({ barrier: { id: "x".repeat(7000), participants: 1 } });
-text("yielded");
-yield_control();
-await new Promise(() => {});
-"#;
-    let mut exec = ev_custom_tool_call("exec-a", "exec", code);
-    exec["item"]["id"] = serde_json::json!("ctc_exec_a");
-    let mut wait =
-        responses::ev_function_call("wait-a", "wait", r#"{"cell_id":"1","terminate":true}"#);
-    wait["item"]["id"] = serde_json::json!("fc_wait_a");
-    let server = responses::start_websocket_server(vec![vec![
-        warmup(),
-        vec![ev_response_created("resp-1"), exec, ev_completed("resp-1")],
-        vec![ev_response_created("resp-2"), wait, ev_completed("resp-2")],
-        vec![ev_response_created("resp-3"), ev_completed("resp-3")],
-    ]])
-    .await;
+    let padding = "x".repeat(padding_bytes);
+    let server = responses::start_websocket_server(batches()).await;
     let mut builder = test_codex()
         .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
@@ -9939,7 +9946,11 @@ await new Promise(() => {});
     assert!(
         calls[0]["arguments"]
             .get("_codex_executed_tool_call_truncated")
-            .is_some()
+            .is_some(),
+        "the calibrated yielded delta must trim call arguments: \
+         first_base={first_base_bytes}, yielded_base={yielded_base_bytes}, \
+         padding={padding_bytes}, actual_yielded={}, calls={calls:?}",
+        serde_json::to_vec(&yielded_request)?.len(),
     );
     let terminal = find_output(&terminal_request, "wait-a");
     assert_eq!(
