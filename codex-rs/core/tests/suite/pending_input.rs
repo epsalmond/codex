@@ -2362,6 +2362,7 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
     wait_for_event(codex, |event| {
         match event {
             EventMsg::Error(error) => {
+                eprintln!("compaction failure observed: {error:?}");
                 assert_eq!(
                     error.codex_error_info,
                     Some(CodexErrorInfo::UsageLimitExceeded)
@@ -2369,6 +2370,10 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
                 errors.push(error.clone());
             }
             EventMsg::TurnComplete(completed) => {
+                eprintln!(
+                    "compaction turn complete: {completed:?}; observed={} expected={failed_turns}",
+                    completed_turns + 1,
+                );
                 assert_eq!(completed.error.as_ref(), errors.last());
                 assert_eq!(completed.last_agent_message, None);
                 completed_turns += 1;
