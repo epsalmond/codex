@@ -19,6 +19,7 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use serde_json::json;
 
+use super::CellWaitOutcome;
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
 use super::TERMINATE_TOOL_NAME;
@@ -226,6 +227,7 @@ impl CodeModeWaitHandler {
                         .code_mode_service
                         .terminate(cell_id.clone())
                         .await
+                        .map(CellWaitOutcome::Runtime)
                 } else {
                     exec.session
                         .services
@@ -236,6 +238,7 @@ impl CodeModeWaitHandler {
                                 yield_time_ms,
                             },
                             step_context.preempt.clone(),
+                            &exec.session.services.async_completions,
                         )
                         .await
                 }
@@ -243,6 +246,21 @@ impl CodeModeWaitHandler {
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
+                let wait_response = match wait_response {
+                    CellWaitOutcome::AlreadyCollected(id) => {
+                        exec.session.services.elicitations.wait_until_clear().await;
+                        telemetry.finish(/*success*/ true);
+                        return Ok(boxed_tool_output(
+                            crate::tools::context::FunctionToolOutput::from_text(
+                                format!(
+                                    "Cell {cell_id_text} was already collected for automatic completion (message id: {id}). Delivery may still be pending; this wait does not consume or resend the result."
+                                ),
+                                Some(true),
+                            ),
+                        ));
+                    }
+                    CellWaitOutcome::Runtime(response) => response,
+                };
                 if self.mode == Mode::TerminateOnly
                     && let codex_code_mode::WaitOutcome::MissingCell(_) = &wait_response
                 {

@@ -21,6 +21,7 @@ use codex_code_mode::CodeModeSession;
 use codex_code_mode::CodeModeSessionProvider;
 use codex_code_mode::CodeModeToolKind;
 use codex_code_mode::RuntimeResponse;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use futures::future::join_all;
@@ -77,6 +78,11 @@ pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
 enum TerminateCause {
     Model,
     Interrupt,
+}
+
+pub(crate) enum CellWaitOutcome {
+    Runtime(codex_code_mode::WaitOutcome),
+    AlreadyCollected(ResponseItemId),
 }
 
 #[derive(Clone)]
@@ -236,17 +242,22 @@ impl CodeModeService {
             .map_err(|_| "code mode startup stopped".to_owned())?
     }
 
-    /// Reads a cell under its observation lock; a final result read here is not delivered again.
+    /// Reads a cell under its observation lock; an automatic read returns only its message ID,
+    /// leaving the existing completion and native-close fence untouched.
     pub(crate) async fn wait(
         &self,
         request: codex_code_mode::WaitRequest,
         preempt: Option<CancellationToken>,
-    ) -> Result<codex_code_mode::WaitOutcome, String> {
+        completions: &crate::session::async_completion::AsyncCompletions,
+    ) -> Result<CellWaitOutcome, String> {
         let completion = self.dispatch_broker.completion(&request.cell_id);
         let _permit = match &completion {
             Some(completion) => Some(completion.observe().await),
             None => None,
         };
+        if let Some(id) = completions.collected_cell(request.cell_id.as_str()) {
+            return Ok(CellWaitOutcome::AlreadyCollected(id));
+        }
         let result = match self.session().await {
             Ok(session) => session.wait(request, preempt).await,
             Err(error) => Err(error),
@@ -254,7 +265,7 @@ impl CodeModeService {
         if let Some(completion) = &completion {
             completion.observed(&result);
         }
-        result
+        result.map(CellWaitOutcome::Runtime)
     }
 
     /// Terminates a cell for the model, which receives its result inline.

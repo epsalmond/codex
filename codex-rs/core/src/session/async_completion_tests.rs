@@ -1037,3 +1037,102 @@ async fn lifecycle_attachment_rejects_different_call_and_owner_before_reservatio
             .has_live_owned_work(session.thread_id())
     );
 }
+
+#[tokio::test]
+async fn collected_cell_identity_survives_acceptance_without_holding_work_or_delivery() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let mut reservation = store
+        .reserve_cell(session.thread_id(), &turn, "cell")
+        .unwrap();
+    reservation.bind_cell("generation:cell").unwrap();
+    assert_eq!(store.collected_cell("generation:cell"), None);
+    let publisher = reservation.register();
+    publisher.publish(CompletionStatus::CellCompleted, b"terminal", 0);
+    let id = store.collected_cell("generation:cell").unwrap();
+    publisher.publish(CompletionStatus::CellCompleted, b"duplicate", 0);
+    assert_eq!(store.collected_cell("generation:cell"), Some(id.clone()));
+    assert_eq!(store.state().collected_cells.len(), 1);
+    // Identity does not release the native-close fence or claim the terminal record.
+    assert!(current_items(&store, &session, &turn).1.is_empty());
+    drop(reservation);
+    let (claim, items) = current_items(&store, &session, &turn);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].item.id(), Some(&id));
+    claim.recorded();
+    store.accept(&[id.clone()]);
+    assert!(!store.has_owned_work());
+    assert!(current_items(&store, &session, &turn).1.is_empty());
+    assert_eq!(store.collected_cell("generation:cell"), Some(id));
+    assert_eq!(store.collected_cell("unknown"), None);
+    // Retained identity does not reserve capacity for new producers.
+    let reservations = (0..MAX_RESERVATIONS)
+        .map(|_| reserve(&store, &session, &turn, "new").unwrap())
+        .collect::<Vec<_>>();
+    drop(reservations);
+    store.retire();
+    assert_eq!(store.collected_cell("generation:cell"), None);
+}
+
+#[tokio::test]
+async fn collected_cell_history_is_bounded_and_live_records_remain_discoverable() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let mut live = store
+        .reserve_cell(session.thread_id(), &turn, "live")
+        .unwrap();
+    live.bind_cell("live").unwrap();
+    let publisher = live.register();
+    publisher.publish(CompletionStatus::CellCompleted, b"live", 0);
+    let live_id = store.collected_cell("live").unwrap();
+    for index in 0..=MAX_RESERVATIONS {
+        let cell_id = format!("cell-{index}");
+        let mut reservation = store
+            .reserve_cell(session.thread_id(), &turn, "cell")
+            .unwrap();
+        reservation.bind_cell(&cell_id).unwrap();
+        reservation
+            .register()
+            .publish(CompletionStatus::CellCompleted, b"done", 0);
+        let id = store.collected_cell(&cell_id).unwrap();
+        drop(reservation);
+        let (claim, items) = current_items(&store, &session, &turn);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item.id(), Some(&id));
+        claim.recorded();
+        store.accept(&[id]);
+    }
+    assert_eq!(store.state().collected_cells.len(), MAX_RESERVATIONS);
+    assert_eq!(store.collected_cell("cell-0"), None);
+    assert!(
+        store
+            .collected_cell(&format!("cell-{MAX_RESERVATIONS}"))
+            .is_some()
+    );
+    assert_eq!(store.collected_cell("live"), Some(live_id));
+    drop(live);
+    store.retire();
+}
+
+#[tokio::test]
+async fn binding_a_reused_cell_id_clears_its_old_collected_identity() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let mut first = store
+        .reserve_cell(session.thread_id(), &turn, "first")
+        .unwrap();
+    first.bind_cell("reused").unwrap();
+    first
+        .register()
+        .publish(CompletionStatus::CellCompleted, b"first", 0);
+    let id = store.collected_cell("reused").unwrap();
+    drop(first);
+    store.accept(&[id]);
+    let mut second = store
+        .reserve_cell(session.thread_id(), &turn, "second")
+        .unwrap();
+    second.bind_cell("reused").unwrap();
+    assert_eq!(store.collected_cell("reused"), None);
+    second.release();
+    assert_eq!(store.collected_cell("reused"), None);
+}

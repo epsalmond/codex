@@ -1,5 +1,6 @@
 //! Bounded owner records, retained until ordinary model acceptance.
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -88,6 +89,9 @@ struct CompletionWake {
 struct CompletionState {
     closed: bool,
     records: BTreeMap<ResponseItemId, Record>,
+    /// Recent automatically collected cells, including accepted records. Identity alone keeps
+    /// late `wait` calls friendly without retaining payloads, reservations or owned work.
+    collected_cells: VecDeque<(String, ResponseItemId)>,
 }
 
 struct Record {
@@ -184,6 +188,29 @@ impl AsyncCompletions {
 
     pub(crate) fn has_owned_work(&self) -> bool {
         !self.state().records.is_empty()
+    }
+
+    /// The authoritative automatic message ID, independent of delivery or acceptance. Call under
+    /// the cell's observation lock when racing a collector; this never claims or drains a record.
+    pub(crate) fn collected_cell(&self, cell_id: &str) -> Option<ResponseItemId> {
+        let state = self.state();
+        // Live records must remain discoverable even if newer accepted identities evict history.
+        let live = state
+            .records
+            .iter()
+            .find_map(|(id, record)| match &record.producer {
+                Producer::Cell {
+                    cell_id: Some(bound),
+                } if bound == cell_id && record.terminal.is_some() => Some(id.clone()),
+                _ => None,
+            });
+        live.or_else(|| {
+            state
+                .collected_cells
+                .iter()
+                .rev()
+                .find_map(|(bound, id)| (bound == cell_id).then(|| id.clone()))
+        })
     }
 
     /// Published fragment texts, in record order.
@@ -569,6 +596,7 @@ impl AsyncCompletions {
     pub(crate) fn retire(self: &Arc<Self>) {
         let mut state = self.state();
         state.closed = true;
+        state.collected_cells.clear();
         let removed = std::mem::take(&mut state.records);
         drop(state);
         drop(removed);
@@ -645,6 +673,8 @@ impl CompletionReservation {
             record.producer = Producer::Cell { cell_id: None };
             return Err("async completion metadata exceeds the encoded fragment limit");
         }
+        // A provider reusing an ID starts a new cell, not a reference to an older result.
+        state.collected_cells.retain(|(bound, _)| bound != cell_id);
         Ok(())
     }
 
@@ -747,6 +777,16 @@ impl CompletionPublisher {
                 }
                 removed += json_escaped_len(ch);
                 trim += ch.len_utf8();
+            }
+        }
+        if let Producer::Cell {
+            cell_id: Some(cell_id),
+        } = &record.producer
+        {
+            let cell_id = cell_id.clone();
+            state.collected_cells.push_back((cell_id, self.id.clone()));
+            if state.collected_cells.len() > MAX_RESERVATIONS {
+                state.collected_cells.pop_front();
             }
         }
         drop(state);
