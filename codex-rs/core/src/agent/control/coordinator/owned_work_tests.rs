@@ -95,7 +95,7 @@ async fn service_completion_record_does_not_retain_assignment_or_resurrect_gener
         .unwrap();
     let publisher = reservation.register();
     drop(reservation);
-    assert!(!store.owns_assignment(&assignment));
+    assert!(!store.owns_assignment(&assignment, /*excluded*/ None));
     assert_eq!(
         coordinator.classify_turn_end(&assignment, &turn.sub_id, TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Completed)
@@ -174,7 +174,7 @@ async fn registered_nested_completion_is_admitted_under_original_waiting_generat
     drop(reservation);
     nested.mark_terminal();
     drop(nested);
-    assert!(store.owns_assignment(&assignment));
+    assert!(store.owns_assignment(&assignment, /*excluded*/ None));
     assert!(coordinator.has_ready_owned_completions(&assignment));
     coordinator
         .continue_owned_completion(&assignment, "collector")
@@ -186,5 +186,71 @@ async fn registered_nested_completion_is_admitted_under_original_waiting_generat
     assert_eq!(
         coordinator.classify_turn_end(&assignment, "collector", TurnEndDisposition::Succeeded),
         Ok(AssignmentPhase::Completed)
+    );
+}
+
+#[tokio::test]
+async fn pending_turn_end_leaves_out_only_the_asking_cell() {
+    use crate::agent::control::WorkKind;
+    use crate::agent::control::work_lifecycle::WorkCoordinator;
+
+    let (session, turn) = make_session_and_context().await;
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let lifecycle = Arc::new(WorkCoordinator::new(Arc::clone(&coordinator)));
+    let assignment = coordinator
+        .begin_or_continue_assignment(session.thread_id(), None, &turn.sub_id, true)
+        .unwrap();
+    turn.agent_assignment.set(assignment.clone()).unwrap();
+    assert_eq!(
+        coordinator.pending_turn_end_children(&assignment, /*asking*/ None),
+        None
+    );
+    let cell = lifecycle
+        .reserve_producer(
+            session.thread_id(),
+            &turn.sub_id,
+            "cell",
+            Some(&assignment),
+            WorkKind::Cell,
+            None,
+        )
+        .unwrap();
+    cell.mark_started();
+    let store = Arc::new(AsyncCompletions::default());
+    let _cell_record = store
+        .reserve_cell_with_lifecycle(session.thread_id(), &turn, "cell", &cell)
+        .unwrap();
+    // Neither the asking cell's producer count nor its own record is pending work.
+    assert_eq!(
+        coordinator.pending_turn_end_children(&assignment, Some(&cell)),
+        None
+    );
+    assert_eq!(
+        coordinator.pending_turn_end_children(&assignment, /*asking*/ None),
+        Some(Vec::new())
+    );
+    let nested = lifecycle
+        .reserve_producer(
+            session.thread_id(),
+            &turn.sub_id,
+            "nested",
+            Some(&assignment),
+            WorkKind::Task,
+            Some(&cell),
+        )
+        .unwrap();
+    assert_eq!(
+        coordinator.pending_turn_end_children(&assignment, Some(&cell)),
+        Some(Vec::new())
+    );
+    drop(nested);
+    assert_eq!(
+        coordinator.pending_turn_end_children(&assignment, Some(&cell)),
+        None
+    );
+    // Turn-end classification shares the predicate and counts the cell itself.
+    assert_eq!(
+        coordinator.classify_turn_end(&assignment, &turn.sub_id, TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting)
     );
 }

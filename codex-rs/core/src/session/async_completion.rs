@@ -244,11 +244,19 @@ impl AsyncCompletions {
             .collect()
     }
 
-    pub(crate) fn owns_assignment(&self, assignment: &AgentAssignmentId) -> bool {
+    /// Whether a finite record keeps `assignment` open, leaving out the record of the `excluded`
+    /// producer registration.
+    pub(crate) fn owns_assignment(
+        &self,
+        assignment: &AgentAssignmentId,
+        excluded: Option<uuid::Uuid>,
+    ) -> bool {
         self.state().records.values().any(|record| {
             record.owner == assignment.thread_id
                 && record.assignment.as_ref() == Some(assignment)
                 && record.work_kind.is_finite()
+                && (excluded.is_none()
+                    || record.lifecycle.as_ref().map(OwnedWorkRegistration::id) != excluded)
         })
     }
 

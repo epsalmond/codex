@@ -385,15 +385,7 @@ impl AgentWakeCoordinator {
         assignment.terminal_disposition = Some(disposition);
         assignment.active_turn_id = None;
         assignment.phase = match disposition {
-            TurnEndDisposition::Succeeded
-                if !assignment.direct_children.is_empty()
-                    || assignment.finite_owned_producers != 0
-                    || assignment.has_finite_terminal_hint()
-                    || assignment
-                        .owned_completions
-                        .upgrade()
-                        .is_some_and(|store| store.owns_assignment(id)) =>
-            {
+            TurnEndDisposition::Succeeded if assignment.owns_pending_work(id, None) => {
                 AssignmentPhase::Waiting
             }
             TurnEndDisposition::Succeeded => AssignmentPhase::Completed,

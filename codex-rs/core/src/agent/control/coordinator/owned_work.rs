@@ -2,12 +2,33 @@
 
 use super::AgentAssignmentId;
 use super::AgentWakeCoordinator;
+use crate::agent::control::OwnedWorkRegistration;
 use crate::session::async_completion::AsyncCompletions;
+use codex_protocol::ThreadId;
 use std::sync::Arc;
 
 impl super::Assignment {
     pub(super) fn has_finite_terminal_hint(&self) -> bool {
         self.finite_terminal_revision != self.acknowledged_finite_terminal_revision
+    }
+
+    /// Whether a successful turn end leaves this assignment Waiting rather than Completed: open
+    /// direct children, live finite producers, an unseen finite terminal or retained finite
+    /// results. `asking` leaves out one live producer, such as the code cell that asks.
+    pub(super) fn owns_pending_work(
+        &self,
+        id: &AgentAssignmentId,
+        asking: Option<&OwnedWorkRegistration>,
+    ) -> bool {
+        let asking_producer = asking.is_some_and(|registration| {
+            registration.kind().is_finite() && registration.assignment() == Some(id)
+        });
+        !self.direct_children.is_empty()
+            || self.finite_owned_producers > usize::from(asking_producer)
+            || self.has_finite_terminal_hint()
+            || self.owned_completions.upgrade().is_some_and(|store| {
+                store.owns_assignment(id, asking.map(OwnedWorkRegistration::id))
+            })
     }
 
     fn has_ready_owned_completion(&self, assignment: &AgentAssignmentId) -> bool {
@@ -20,6 +41,28 @@ impl super::Assignment {
 }
 
 impl AgentWakeCoordinator {
+    /// Open direct children of the current assignment `id` when a successful end of its turn
+    /// would classify it Waiting; `None` when that end would complete it or `id` is not current.
+    /// Shares coordinator -> store lock ordering with turn-end classification.
+    pub(crate) fn pending_turn_end_children(
+        &self,
+        id: &AgentAssignmentId,
+        asking: Option<&OwnedWorkRegistration>,
+    ) -> Option<Vec<ThreadId>> {
+        let state = self.lock_state();
+        if state.current_by_thread.get(&id.thread_id) != Some(id) {
+            return None;
+        }
+        let assignment = state.assignments.get(id)?;
+        assignment.owns_pending_work(id, asking).then(|| {
+            assignment
+                .direct_children
+                .iter()
+                .map(|child| child.thread_id)
+                .collect()
+        })
+    }
+
     /// Caller holds lifecycle; the derived scalar is mutated only in this lock order.
     pub(crate) fn admit_finite_producer(
         &self,

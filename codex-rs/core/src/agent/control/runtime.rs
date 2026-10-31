@@ -598,6 +598,30 @@ impl LocalAgentRuntime {
         self.wake_coordinator.current_assignment(thread_id)
     }
 
+    /// Paths of the open direct children when a successful end of the current turn would leave
+    /// `assignment` Waiting, using the turn-end classifier's predicate; `None` when it would
+    /// complete. `asking` leaves out one live producer, such as the code cell that asks.
+    pub(crate) fn pending_wake_turn_end(
+        &self,
+        assignment: &AgentAssignmentId,
+        asking: Option<&super::OwnedWorkRegistration>,
+    ) -> Option<Vec<String>> {
+        let children = self
+            .wake_coordinator
+            .pending_turn_end_children(assignment, asking)?;
+        Some(
+            children
+                .into_iter()
+                .map(|thread_id| {
+                    self.registry
+                        .agent_metadata_for_thread(thread_id)
+                        .and_then(|metadata| metadata.agent_path)
+                        .map_or_else(|| thread_id.to_string(), |path| path.to_string())
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn reserve_owned_work(
         &self,
         owner: &Arc<crate::session::session::Session>,
