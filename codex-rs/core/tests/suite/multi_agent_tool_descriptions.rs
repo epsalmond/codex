@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use codex_core::config::AgentRoleConfig;
+use codex_features::AgentPolling;
 use codex_features::Feature;
 use codex_protocol::openai_models::ToolMessages;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -131,6 +132,8 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
                 model.model_messages.as_mut().expect("model messages").tools = messages;
             })
             .with_config(move |config| {
+                // This catalog comparison includes wait_agent, which wake mode omits.
+                config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
                 if matches!(exposure, Exposure::V1) {
                     config.features.enable(Feature::Collab).expect("enable V1");
                     config

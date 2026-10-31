@@ -4,9 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use codex_config::config_toml::AgentLifetime;
 use codex_core::GuardianRootMessage;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
+use codex_core::config::AgentRoleConfig;
 use codex_core::config::Constrained;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
@@ -740,6 +742,15 @@ async fn run_guardian_subagent_review(
             // This fixture injects saved evidence between explicit user turns. Child reports
             // must not start another turn while that history is being assembled.
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
+            // The worker finishes once before the late authorization arrives, then receives
+            // a follow-up. Task agents close after that first final report.
+            config.agent_roles.insert(
+                "default".to_owned(),
+                AgentRoleConfig {
+                    lifetime: Some(AgentLifetime::Persistent),
+                    ..Default::default()
+                },
+            );
             if block_post_hook {
                 config.model_provider.name = "Local compaction test provider".to_owned();
                 config
@@ -1124,7 +1135,7 @@ async fn run_guardian_subagent_review(
         ]),
     )
     .await;
-    mount_completion(&server, root_thread_id, FOLLOWUP_CALL_ID).await;
+    let followup_completion = mount_completion(&server, root_thread_id, FOLLOWUP_CALL_ID).await;
     let worker_review_request = mount_sse_once_match(
         &server,
         move |request: &wiremock::Request| {
@@ -1222,6 +1233,16 @@ async fn run_guardian_subagent_review(
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    assert_eq!(
+        followup_completion
+            .single_request()
+            .function_call_output_text(FOLLOWUP_CALL_ID)
+            .as_deref(),
+        Some(
+            "Follow-up accepted for turn processing; this does not confirm startup or completion."
+        ),
+        "the worker must accept the authorization follow-up before waiting for its review turn",
+    );
     wait_for_event(worker_thread.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

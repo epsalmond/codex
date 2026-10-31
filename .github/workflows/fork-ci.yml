@@ -8,10 +8,11 @@ name: fork-ci
 # level (`gh workflow disable`), not deleted, so upstream rebases/merges stay
 # conflict-free. This workflow replaces them for PRs with fmt + clippy + build
 # on standard GitHub-hosted Linux, macOS, and Windows runners, plus the focused
-# issue #238 regression tests on Linux. Full workspace test binaries do not fit
-# a standard runner's disk or time budget; broader baseline coverage remains
-# tracked in #155. The build step stays so people running the fork's binaries
-# know they build in CI. Windows also uploads a canonical dev-profile package
+# issue #238 regressions and a Code Mode readiness smoke on Linux. Full workspace
+# test binaries do not fit a standard runner's disk or time budget; broader
+# baseline coverage remains tracked in #155 and #279. The build step stays so
+# people running the fork's binaries know they build in CI. Windows also uploads
+# a canonical dev-profile package
 # for testing on a separate VM.
 # Pushes to main run the same job only to write the Cargo cache
 # that PRs restore; the release itself is fork-release.yml.
@@ -166,6 +167,7 @@ jobs:
           bash .github/scripts/test_fork_release_metadata.sh
           bash .github/scripts/test_build_fork_deb.sh
           bash .github/scripts/test_render_brew_formula.sh
+          python3 .github/scripts/test_check_issue_238_selection.py
           python3 -m unittest scripts/install/test_shake_install.py
 
       # Same step as fork-release.yml's validate job: scripts/format.py
@@ -211,7 +213,7 @@ jobs:
 
       # Reuse the dev build, target triple, V8 archive, and restored cache above.
       # Select only three test targets to avoid linking unrelated test binaries.
-      - name: Test issue 238 regressions
+      - name: Test issue 238 regressions and Code Mode readiness
         if: runner.os == 'Linux'
         working-directory: .
         shell: bash

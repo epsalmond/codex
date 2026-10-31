@@ -747,7 +747,10 @@ impl UnifiedExecProcessManager {
             context.call_id.clone(),
         );
         let launch_request = request.clone();
-        let launch = tokio::spawn(async move {
+        // Acquisition runs on its own task, but approvals still belong to the
+        // initiating nested call, including the refusal policy while idle.
+        let nested_code_mode_call = crate::tools::in_code_mode_nested_call();
+        let launch = async move {
             let mut startup = startup;
             let result = launch_context
                 .session
@@ -774,7 +777,11 @@ impl UnifiedExecProcessManager {
                     startup,
                 )
             })
-        });
+        };
+        let launch = tokio::spawn(crate::tools::scope_code_mode_nested_call(
+            nested_code_mode_call,
+            launch,
+        ));
         let (process, metrics_sidecar, permissions, mut deferred_network_approval, mut startup) =
             match launch.await {
                 Ok(Ok(result)) => result,

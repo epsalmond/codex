@@ -108,8 +108,8 @@ pub(crate) enum TaskStartOutcome {
     Started,
     /// Root-turn admission refused the task. The reservation is released and its mail requeued.
     Rejected(WorkAdmissionError),
-    /// The reservation was released or replaced before the task was installed. The turn ended
-    /// with `TurnAborted` and its mail is requeued.
+    /// The reservation was released or replaced, or shutdown closed admission, before the task
+    /// was installed. The turn ended with `TurnAborted` and its mail is requeued.
     Aborted,
     /// As `Aborted`, for a reservation that asked for its input back: no `TurnAborted` was sent,
     /// and the caller gets the input to deliver elsewhere.
@@ -336,6 +336,10 @@ where
 }
 
 impl Session {
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "check shutdown admission under the active-turn reservation lock"
+    )]
     pub async fn spawn_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -352,6 +356,11 @@ impl Session {
         let turn_state = loop {
             self.abort_all_tasks(TurnAbortReason::Replaced).await;
             let mut active = self.active_turn.lock().await;
+            if self.is_shutting_down().await {
+                drop(active);
+                self.abandon_root_turn_lifecycle(&turn_context.sub_id);
+                return;
+            }
             // A reservation that has not installed its task yet aborts its own start.
             if active.as_ref().is_none_or(|turn| turn.task.is_none()) {
                 break Arc::clone(&active.insert(ActiveTurn::default()).turn_state);
@@ -480,11 +489,18 @@ impl Session {
             )
             .await;
         let mut active = self.active_turn.lock().await;
+        // Shutdown takes the same lock before closing admission. Keep it through installation
+        // so shutdown either rejects this start or sees the installed task when it aborts tasks.
+        // Release the state guard before record_started_turn reacquires it.
+        let shutting_down = self.is_shutting_down().await;
         let turn = active
             .as_mut()
-            .filter(|turn| Arc::ptr_eq(&turn.turn_state, &turn_state));
+            .filter(|turn| !shutting_down && Arc::ptr_eq(&turn.turn_state, &turn_state));
         let Some(turn) = turn else {
             drop(active);
+            if shutting_down {
+                self.clear_reserved_idle_turn(&reservation.turn_state).await;
+            }
             self.emit_turn_abort_lifecycle(
                 TurnAbortReason::Interrupted,
                 turn_context.extension_data.as_ref(),
@@ -676,6 +692,10 @@ impl Session {
     /// session.
     ///
     /// Starts an idle turn for explicit follow-ups, durable sleep, or enabled message wakes.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "check shutdown admission under the active-turn reservation lock"
+    )]
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
@@ -724,6 +744,9 @@ impl Session {
 
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
+            if self.is_shutting_down().await {
+                return PendingWorkStartResult::Stale;
+            }
             if active_turn.is_some() {
                 return PendingWorkStartResult::AlreadyActive;
             }

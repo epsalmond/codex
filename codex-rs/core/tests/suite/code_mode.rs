@@ -187,6 +187,32 @@ fn text_item(items: &[Value], index: usize) -> &str {
         .expect("content item should be input_text")
 }
 
+/// Keep the entire header contract explicit: exec classifies its work, whereas
+/// wait/terminate do not, and overhead timing is opt-in.
+fn assert_code_mode_header(
+    header: &str,
+    expected_status: &str,
+    expected_work_kind: Option<&str>,
+    automatic_delivery: bool,
+    show_cell_overhead: bool,
+) {
+    let mut expected = regex_lite::escape(expected_status);
+    if automatic_delivery {
+        expected.push_str(&regex_lite::escape(
+            "\nIts final result will be delivered automatically; continue with other work or end your turn.",
+        ));
+    }
+    if let Some(kind) = expected_work_kind {
+        expected.push_str(&regex_lite::escape(&format!("\nwork_kind={kind}")));
+    }
+    let timing = if show_cell_overhead {
+        r"Wall time \d+\.\d{3} seconds \(code-mode \d+\.\d{3} seconds; overhead -?\d+\.\d{3} seconds\)"
+    } else {
+        r"Wall time \d+\.\d seconds"
+    };
+    assert_regex_match(&format!(r"\A{expected}\n{timing}\nOutput:\n\z"), header);
+}
+
 fn extract_running_cell_id(text: &str) -> String {
     text.strip_prefix("Script running with cell ID ")
         .and_then(|rest| rest.split('\n').next())
@@ -804,39 +830,42 @@ async fn run_code_mode_turn_with_rmcp_config(
 async fn code_mode_can_return_exec_command_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
-        &server,
-        "use exec to run exec_command",
-        r#"
+    for show_cell_overhead in [false, true] {
+        let server = responses::start_mock_server().await;
+        let (test, second_mock) = run_code_mode_turn_with_config(
+            &server,
+            "use exec to run exec_command",
+            r#"
 text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marker" })));
 "#,
-    )
-    .await?;
+            move |config| config.code_mode.experimental_show_cell_overhead = show_cell_overhead,
+        )
+        .await?;
 
-    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
-        text_item(&items, /*index*/ 0),
-    );
-    let parsed: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
-    assert!(
-        parsed
-            .get("chunk_id")
-            .and_then(Value::as_str)
-            .is_some_and(|chunk_id| !chunk_id.is_empty())
-    );
-    assert_eq!(
-        parsed.get("output").and_then(Value::as_str),
-        Some("code_mode_exec_marker"),
-    );
-    assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
-    assert!(parsed.get("wall_time_seconds").is_some());
-    assert!(parsed.get("session_id").is_none());
+        let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+        assert_eq!(items.len(), 2);
+        assert_code_mode_header(
+            text_item(&items, /*index*/ 0),
+            "Script completed",
+            Some("cell"),
+            /*automatic_delivery*/ false,
+            test.config.code_mode.experimental_show_cell_overhead,
+        );
+        let parsed: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
+        assert!(
+            parsed
+                .get("chunk_id")
+                .and_then(Value::as_str)
+                .is_some_and(|chunk_id| !chunk_id.is_empty())
+        );
+        assert_eq!(
+            parsed.get("output").and_then(Value::as_str),
+            Some("code_mode_exec_marker"),
+        );
+        assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
+        assert!(parsed.get("wall_time_seconds").is_some());
+        assert!(parsed.get("session_id").is_none());
+    }
 
     Ok(())
 }
@@ -942,6 +971,7 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
             "request_user_input".to_string(),
             // Multi-agent v2 is on by default in the fork and stays a direct model tool.
             "collaboration".to_string(),
+            "close_agents".to_string(),
             "web_search".to_string()
         ]
     );
@@ -1297,156 +1327,212 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> Result<()> {
+#[test_case(&["code_mode"]; "omit_code_mode")]
+#[test_case(&["deferred"]; "omit_deferred")]
+#[test_case(&["direct"]; "omit_direct")]
+#[test_case(&["code_mode", "deferred"]; "omit_code_mode_and_deferred")]
+#[test_case(&["code_mode", "direct"]; "omit_code_mode_and_direct")]
+#[test_case(&["deferred", "direct"]; "omit_deferred_and_direct")]
+#[test_case(&["code_mode", "deferred", "direct"]; "omit_all_exposures")]
+#[test_case(&[]; "omit_no_exposures")]
+async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure(
+    omit_tools_from: &'static [&'static str],
+) -> Result<()> {
     skip_if_wine_exec!(
         Ok(()),
         "requires a Windows test_stdio_server in the Wine-exec environment"
     );
     skip_if_no_network!(Ok(()));
 
-    for omit_tools_from in [
-        &["code_mode"][..],
-        &["deferred"][..],
-        &["direct"][..],
-        &["code_mode", "deferred"][..],
-        &["code_mode", "direct"][..],
-        &["deferred", "direct"][..],
-        &["code_mode", "deferred", "direct"][..],
-        &[][..],
+    // Each omission gets an independent nextest budget while preserving the
+    // complete original matrix of model/search/namespace exposure assertions.
+    for (
+        supports_search_tool,
+        non_prefixed_mcp_tool_names,
+        direct_only_namespace,
+        deferred_control,
+    ) in [
+        (false, false, false, false),
+        (false, false, true, false),
+        (false, true, false, false),
+        (false, true, true, false),
+        (true, false, false, false),
+        (true, false, true, false),
+        (true, true, false, false),
+        (true, true, true, false),
+        (true, false, true, true),
+        (true, true, true, true),
     ] {
-        for (supports_search_tool, non_prefixed_mcp_tool_names, direct_only_namespace) in [
-            (false, false, false),
-            (false, false, true),
-            (false, true, false),
-            (false, true, true),
-            (true, false, false),
-            (true, false, true),
-            (true, true, false),
-            (true, true, true),
-        ] {
-            let namespace = if non_prefixed_mcp_tool_names {
-                "rmcp"
-            } else {
-                "mcp__rmcp"
-            };
-            let visible_directly = !omit_tools_from.contains(&"direct")
-                && (!supports_search_tool
-                    || omit_tools_from.contains(&"deferred")
-                    || direct_only_namespace);
-            let server = responses::start_mock_server().await;
-            let response = responses::mount_sse_once(
-                &server,
-                sse(vec![
-                    ev_response_created("resp-1"),
-                    if visible_directly {
-                        responses::ev_function_call_with_namespace(
-                            "call-1",
-                            namespace,
-                            "echo",
-                            r#"{"message":"ping"}"#,
-                        )
-                    } else {
-                        ev_assistant_message("msg-1", "done")
-                    },
-                    ev_completed("resp-1"),
-                ]),
-            )
-            .await;
-            let follow_up_response = if visible_directly {
-                Some(
-                    responses::mount_sse_once(
-                        &server,
-                        sse(vec![
-                            ev_assistant_message("msg-1", "done"),
-                            ev_completed("resp-2"),
-                        ]),
+        // The strongest omission plus direct-only case supplies both
+        // namespace spellings of the independent deferred positive control.
+        if deferred_control && omit_tools_from != ["code_mode", "deferred", "direct"] {
+            continue;
+        }
+        eprintln!(
+            "MCP exposure case: omit={omit_tools_from:?}, search={supports_search_tool}, \
+                 unprefixed={non_prefixed_mcp_tool_names}, direct_only={direct_only_namespace}, \
+                 deferred_control={deferred_control}"
+        );
+        let namespace = if non_prefixed_mcp_tool_names {
+            "rmcp"
+        } else {
+            "mcp__rmcp"
+        };
+        let visible_directly = !omit_tools_from.contains(&"direct")
+            && (!supports_search_tool
+                || omit_tools_from.contains(&"deferred")
+                || direct_only_namespace);
+        let server = responses::start_mock_server().await;
+        let response = responses::mount_sse_once(
+            &server,
+            sse(vec![
+                ev_response_created("resp-1"),
+                if visible_directly {
+                    responses::ev_function_call_with_namespace(
+                        "call-1",
+                        namespace,
+                        "echo",
+                        r#"{"message":"ping"}"#,
                     )
-                    .await,
+                } else {
+                    ev_assistant_message("msg-1", "done")
+                },
+                ev_completed("resp-1"),
+            ]),
+        )
+        .await;
+        let follow_up_response = if visible_directly {
+            Some(
+                responses::mount_sse_once(
+                    &server,
+                    sse(vec![
+                        ev_assistant_message("msg-1", "done"),
+                        ev_completed("resp-2"),
+                    ]),
                 )
-            } else {
-                None
-            };
-            let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
-            let environment_id = remote_aware_environment_id();
-            let mut builder = test_codex()
-                .keep_polling_tools()
-                .with_model_info_override("gpt-5.4", move |model| {
-                    model.supports_search_tool = supports_search_tool;
-                })
-                .with_config(move |config| {
-                    if non_prefixed_mcp_tool_names {
-                        config
-                            .features
-                            .enable(Feature::NonPrefixedMcpToolNames)
-                            .expect("test config should allow unprefixed MCP tools");
-                    }
-                    if direct_only_namespace {
-                        config.code_mode.direct_only_tool_namespaces = vec![
-                            if non_prefixed_mcp_tool_names {
-                                "rmcp"
-                            } else {
-                                "mcp__rmcp"
-                            }
-                            .to_string(),
-                        ];
-                    }
+                .await,
+            )
+        } else {
+            None
+        };
+        let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+        let environment_id = remote_aware_environment_id();
+        let mut builder = test_codex()
+            .keep_polling_tools()
+            .with_model_info_override("gpt-5.4", move |model| {
+                model.supports_search_tool = supports_search_tool;
+            })
+            .with_config(move |config| {
+                if non_prefixed_mcp_tool_names {
+                    config
+                        .features
+                        .enable(Feature::NonPrefixedMcpToolNames)
+                        .expect("test config should allow unprefixed MCP tools");
+                }
+                if direct_only_namespace {
+                    config.code_mode.direct_only_tool_namespaces = vec![
+                        if non_prefixed_mcp_tool_names {
+                            "rmcp"
+                        } else {
+                            "mcp__rmcp"
+                        }
+                        .to_string(),
+                    ];
+                }
 
-                    let mut servers = config.mcp_servers.get().clone();
+                let mut servers = config.mcp_servers.get().clone();
+                // A separate namespace supplies an independent deferred source;
+                // the rmcp omissions and direct-only override must not hide it.
+                if deferred_control {
                     servers.insert(
-                        "rmcp".to_string(),
+                        "search_control".to_string(),
                         serde_json::from_value(serde_json::json!({
                             "command": rmcp_test_server_bin,
                             "environment_id": environment_id,
                             "cwd": config.cwd,
-                            "omit_tools_from": omit_tools_from,
                         }))
-                        .expect("test MCP server config should be valid"),
+                        .expect("deferred control MCP server config should be valid"),
                     );
-                    config
-                        .mcp_servers
-                        .set(servers)
-                        .expect("test config should allow MCP servers");
-                });
-            let test = builder.build_with_auto_env(&server).await?;
-            wait_for_mcp_server(&test.codex, "rmcp").await?;
-            test.submit_turn("inspect ordinary direct-mode MCP tool exposure")
-                .await?;
+                }
+                servers.insert(
+                    "rmcp".to_string(),
+                    serde_json::from_value(serde_json::json!({
+                        "command": rmcp_test_server_bin,
+                        "environment_id": environment_id,
+                        "cwd": config.cwd,
+                        "omit_tools_from": omit_tools_from,
+                    }))
+                    .expect("test MCP server config should be valid"),
+                );
+                config
+                    .mcp_servers
+                    .set(servers)
+                    .expect("test config should allow MCP servers");
+            });
+        let test = builder.build_with_auto_env(&server).await?;
+        // Startup publishes one summary for every configured server. Waiting
+        // twice would consume the only summary, then block forever on the second.
+        let startup = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::McpStartupComplete(summary) => Some(summary.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(startup.failed.is_empty(), "{startup:?}");
+        assert!(startup.cancelled.is_empty(), "{startup:?}");
+        let expected_servers = if deferred_control {
+            BTreeSet::from(["rmcp", "search_control"])
+        } else {
+            BTreeSet::from(["rmcp"])
+        };
+        assert_eq!(
+            startup
+                .ready
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_servers,
+        );
+        test.submit_turn("inspect ordinary direct-mode MCP tool exposure")
+            .await?;
 
-            let body = response.single_request().body_json();
-            assert_eq!(
-                namespace_child_tool(&body, namespace, "echo").is_some(),
-                visible_directly,
-                "MCP omissions must determine direct-mode tool exposure; \
+        let body = response.single_request().body_json();
+        assert_eq!(
+            namespace_child_tool(&body, namespace, "echo").is_some(),
+            visible_directly,
+            "MCP omissions must determine direct-mode tool exposure; \
              omit_tools_from={omit_tools_from:?}, \
              supports_search_tool={supports_search_tool}, \
              direct_only_namespace={direct_only_namespace}, namespace={namespace}, tools={:?}",
-                tool_names(&body)
-            );
-            assert_eq!(
-                tool_names(&body).iter().any(|name| name == "tool_search"),
-                supports_search_tool,
-                "MCP omissions must not disable tool search for other tools; \
+            tool_names(&body)
+        );
+        assert_eq!(
+            tool_names(&body).iter().any(|name| name == "tool_search"),
+            supports_search_tool
+                && (deferred_control
+                    || (!direct_only_namespace && !omit_tools_from.contains(&"deferred"))),
+            "tool search requires a searchable deferred source; \
              omit_tools_from={omit_tools_from:?}, \
              supports_search_tool={supports_search_tool}, \
-             direct_only_namespace={direct_only_namespace}, namespace={namespace}, tools={:?}",
-                tool_names(&body)
-            );
-            if let Some(follow_up_response) = follow_up_response {
-                let output = follow_up_response
-                    .single_request()
-                    .function_call_output("call-1");
-                assert!(
-                    output["output"]
-                        .as_str()
-                        .is_some_and(|output| output.contains("ECHOING: ping")),
-                    "the advertised MCP tool must remain callable; \
+             direct_only_namespace={direct_only_namespace}, deferred_control={deferred_control}, \
+             namespace={namespace}, tools={:?}",
+            tool_names(&body)
+        );
+        if let Some(follow_up_response) = follow_up_response {
+            let output = follow_up_response
+                .single_request()
+                .function_call_output("call-1");
+            assert!(
+                output["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("ECHOING: ping")),
+                "the advertised MCP tool must remain callable; \
                      omit_tools_from={omit_tools_from:?}, \
                      supports_search_tool={supports_search_tool}, \
                      direct_only_namespace={direct_only_namespace}, \
                      namespace={namespace}, output={output:?}"
-                );
-            }
+            );
         }
+        test.codex.shutdown_and_wait().await?;
     }
 
     Ok(())
@@ -3219,6 +3305,10 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
     initial.submit_turn("Start A").await?;
     let old_output = seed.requests()[1].custom_tool_call_output("call-a");
     let old_items = custom_tool_output_items(&seed.requests()[1], "call-a");
+    assert!(
+        text_item(&old_items, /*index*/ 0).starts_with("Script running with cell ID "),
+        "the initial exec must yield before testing stale metadata: {old_items:?}"
+    );
     let old_cell_id = extract_running_cell_id(text_item(&old_items, /*index*/ 0));
     assert_eq!(old_cell_id, "1");
     assert_eq!(text_item(&old_items, /*index*/ 1), "A");
@@ -3291,7 +3381,28 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
         requests[0].custom_tool_call_output("call-a")["output"],
         old_output["output"]
     );
+    assert_eq!(
+        requests.len(),
+        2,
+        "starting B should sample exactly twice; actual inputs={:?}",
+        requests
+            .iter()
+            .map(ResponsesRequest::input)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        requests[1]
+            .inputs_of_type("custom_tool_call_output")
+            .iter()
+            .any(|item| item["call_id"] == "call-b"),
+        "B's completion sample must include its exec output; input={:?}",
+        requests[1].input(),
+    );
     let new_items = custom_tool_output_items(&requests[1], "call-b");
+    assert!(
+        text_item(&new_items, /*index*/ 0).starts_with("Script running with cell ID "),
+        "the restarted exec must yield before testing reused runtime IDs: {new_items:?}"
+    );
     assert_eq!(
         extract_running_cell_id(text_item(&new_items, /*index*/ 0)),
         old_cell_id
@@ -3834,6 +3945,7 @@ if (!tool) {
             "request_user_input".to_string(),
             // Multi-agent v2 is on by default in the fork and stays a direct model tool.
             "collaboration".to_string(),
+            "close_agents".to_string(),
             "web_search".to_string()
         ]
     );
@@ -4656,7 +4768,7 @@ async fn code_mode_returns_accumulated_output_when_script_fails() -> Result<()> 
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (test, second_mock) = run_code_mode_turn(
         &server,
         "use code_mode to surface script failures",
         r#"
@@ -4670,12 +4782,12 @@ throw new Error("boom");
     let req = second_mock.single_request();
     let items = custom_tool_output_items(&req, "call-1");
     assert_eq!(items.len(), 4);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script failed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script failed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&items, /*index*/ 1), "before crash");
     assert_eq!(text_item(&items, /*index*/ 2), "still before crash");
@@ -4960,12 +5072,12 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
@@ -5004,12 +5116,12 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        &format!("Script running with cell ID {cell_id}"),
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(
         extract_running_cell_id(text_item(&second_items, /*index*/ 0)),
@@ -5051,12 +5163,12 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     let third_request = third_completion.single_request();
     let third_items = function_tool_output_items(&third_request, "call-3");
     assert_eq!(third_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&third_items, /*index*/ 0),
+        "Script completed",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "phase 3");
 
@@ -5146,12 +5258,12 @@ for (let index = 0; index < 256; index++) {{
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 1);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
@@ -5185,12 +5297,12 @@ for (let index = 0; index < 256; index++) {{
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert!(!second_items.is_empty());
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        "Script terminated",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     Ok(())
@@ -5610,6 +5722,13 @@ text("phase 2");
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_code_mode_header(
+        text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
+    );
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
 
     responses::mount_sse_once(
@@ -5642,12 +5761,12 @@ text("phase 2");
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 1);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        "Script terminated",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     responses::mount_sse_once(
@@ -5679,12 +5798,12 @@ text("after terminate");
     let third_request = third_completion.single_request();
     let third_items = custom_tool_output_items(&third_request, "call-3");
     assert_eq!(third_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&third_items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
     // The model read the terminated cell's result inline, so no automatic completion follows.
@@ -5768,9 +5887,12 @@ text("phase 2");
     assert_eq!(first_items.len(), 2);
     let header = text_item(&first_items, /*index*/ 0);
     let cell_id = extract_running_cell_id(header);
-    assert!(
-        header.contains("Its final result will be delivered automatically"),
-        "{header}"
+    assert_code_mode_header(
+        header,
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ true,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
 
@@ -5801,12 +5923,12 @@ text("phase 2");
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 1);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&second_items, /*index*/ 0),
+        "Script terminated",
+        None,
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     responses::mount_sse_once(
@@ -5838,12 +5960,12 @@ text("after terminate");
     let third_request = third_completion.single_request();
     let third_items = custom_tool_output_items(&third_request, "call-3");
     assert_eq!(third_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&third_items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
     // The model read the terminated cell's result inline, so no automatic completion follows.
@@ -6306,12 +6428,12 @@ text("after yield");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&first_items, /*index*/ 0),
+        "Script running with cell ID 1",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&first_items, /*index*/ 1), "before yield");
 
@@ -6766,7 +6888,7 @@ async fn code_mode_exit_stops_script_immediately() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (test, second_mock) = run_code_mode_turn(
         &server,
         "use exec to stop script early with exit helper",
         r#"
@@ -6786,12 +6908,12 @@ text("after");
         "exec exit helper call failed unexpectedly: {output}"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&items, /*index*/ 1), "before");
     assert_eq!(output, "before");
@@ -7214,12 +7336,12 @@ image(out);
         "code_mode view_image call failed unexpectedly"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     assert_eq!(
@@ -7268,7 +7390,7 @@ const imageItem = out.content.find((item) => item.type === "image");
 image(imageItem);
 "#;
 
-    let (_test, second_mock) = run_code_mode_turn_with_rmcp_model(
+    let (test, second_mock) = run_code_mode_turn_with_rmcp_model(
         &server,
         "use exec to call the rmcp image scenario tool and emit its image output",
         code,
@@ -7285,12 +7407,12 @@ image(imageItem);
         "code_mode mcp image scenario call failed unexpectedly"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
 
     assert_eq!(
@@ -7336,12 +7458,12 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
         "exec apply_patch call failed unexpectedly: {items:?}"
     );
     assert_eq!(items.len(), 2);
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
+    assert_code_mode_header(
         text_item(&items, /*index*/ 0),
+        "Script completed",
+        Some("cell"),
+        /*automatic_delivery*/ false,
+        test.config.code_mode.experimental_show_cell_overhead,
     );
     assert_eq!(text_item(&items, /*index*/ 1), "{}");
 
@@ -9756,8 +9878,8 @@ async fn code_mode_argument_truncation_preserves_later_wait_completeness() -> Re
         Arc::new(registry.build())
     };
 
-    // Calibrate a first request with the same tools/features/turn prompt; its
-    // exact serialized overhead varies with the model catalog and headers.
+    // Measure the actual yielded websocket delta, rather than the earlier
+    // request whose full input may be larger than its incremental successors.
     let configure = |config: &mut Config| {
         config.base_instructions = Some(String::new());
         config.model_context_window = Some(20_000_000);
@@ -9775,12 +9897,28 @@ async fn code_mode_argument_truncation_preserves_later_wait_completeness() -> Re
         config.model_provider.request_max_retries = Some(0);
         config.model_provider.stream_max_retries = Some(0);
     };
-    let warmup = || vec![ev_response_created("warmup"), ev_completed("warmup")];
-    let probe_server = responses::start_websocket_server(vec![vec![
-        warmup(),
-        vec![ev_response_created("probe"), ev_completed("probe")],
-    ]])
-    .await;
+    // Ensure the metadata-bearing delta has room to exceed the first request
+    // even when the initial prompt/catalog grows. Only wire metadata is trimmed.
+    let code = r#"
+await tools.test_sync_tool({ barrier: { id: "x".repeat(64 * 1024), participants: 1 } });
+text("yielded");
+yield_control();
+await new Promise(() => {});
+"#;
+    let batches = || {
+        let mut exec = ev_custom_tool_call("exec-a", "exec", code);
+        exec["item"]["id"] = serde_json::json!("ctc_exec_a");
+        let mut wait =
+            responses::ev_function_call("wait-a", "wait", r#"{"cell_id":"1","terminate":true}"#);
+        wait["item"]["id"] = serde_json::json!("fc_wait_a");
+        vec![vec![
+            vec![ev_response_created("warmup"), ev_completed("warmup")],
+            vec![ev_response_created("resp-1"), exec, ev_completed("resp-1")],
+            vec![ev_response_created("resp-2"), wait, ev_completed("resp-2")],
+            vec![ev_response_created("resp-3"), ev_completed("resp-3")],
+        ]]
+    };
+    let probe_server = responses::start_websocket_server(batches()).await;
     let mut probe_builder = test_codex()
         .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
@@ -9791,32 +9929,23 @@ async fn code_mode_argument_truncation_preserves_later_wait_completeness() -> Re
         .await?;
     probe.submit_turn(PROMPT).await?;
     let probe_connection = probe_server.single_connection();
-    assert_eq!(probe_connection.len(), 2);
-    let base_bytes = serde_json::to_vec(&probe_connection[1].body_json())?.len();
-    assert!(base_bytes + 4 * 1024 < LIMIT);
+    assert_eq!(probe_connection.len(), 4);
+    let first_base_bytes = serde_json::to_vec(&probe_connection[1].body_json())?.len();
+    let yielded_base_bytes = serde_json::to_vec(&probe_connection[2].body_json())?.len();
+    assert!(yielded_base_bytes + 1024 < LIMIT);
+    // The real yielded request exceeds the limit by 1 KiB before shedding;
+    // enough headroom remains for the first request and variable timing fields.
+    let padding_bytes = LIMIT - yielded_base_bytes + 1024;
+    assert!(
+        first_base_bytes + padding_bytes + 1024 < LIMIT,
+        "calibration must leave the initial request below the limit: \
+         first={first_base_bytes}, yielded={yielded_base_bytes}, padding={padding_bytes}"
+    );
     probe.codex.shutdown_and_wait().await?;
     probe_server.shutdown().await;
 
-    // One 7 KiB invocation pushes the yielded delta over the message budget.
-    let padding = "x".repeat(LIMIT - base_bytes - 4 * 1024);
-    let code = r#"
-await tools.test_sync_tool({ barrier: { id: "x".repeat(7000), participants: 1 } });
-text("yielded");
-yield_control();
-await new Promise(() => {});
-"#;
-    let mut exec = ev_custom_tool_call("exec-a", "exec", code);
-    exec["item"]["id"] = serde_json::json!("ctc_exec_a");
-    let mut wait =
-        responses::ev_function_call("wait-a", "wait", r#"{"cell_id":"1","terminate":true}"#);
-    wait["item"]["id"] = serde_json::json!("fc_wait_a");
-    let server = responses::start_websocket_server(vec![vec![
-        warmup(),
-        vec![ev_response_created("resp-1"), exec, ev_completed("resp-1")],
-        vec![ev_response_created("resp-2"), wait, ev_completed("resp-2")],
-        vec![ev_response_created("resp-3"), ev_completed("resp-3")],
-    ]])
-    .await;
+    let padding = "x".repeat(padding_bytes);
+    let server = responses::start_websocket_server(batches()).await;
     let mut builder = test_codex()
         .keep_polling_tools()
         .with_model("test-gpt-5.1-codex")
@@ -9831,8 +9960,11 @@ await new Promise(() => {});
     let terminal_request = connection[3].body_json();
     assert!(serde_json::to_vec(&first)?.len() <= LIMIT);
     assert!(serde_json::to_vec(&yielded_request)?.len() <= LIMIT);
+    assert!(serde_json::to_vec(&terminal_request)?.len() <= LIMIT);
     assert_eq!(yielded_request["previous_response_id"], "resp-1");
-    assert_eq!(terminal_request["previous_response_id"], "resp-2");
+    // Shedding changes the wire copy, so client.rs deliberately discards its
+    // continuation baseline and resends full history on the next request.
+    assert!(terminal_request.get("previous_response_id").is_none());
 
     let find_output = |request: &Value, call_id: &str| -> Value {
         request["input"]
@@ -9870,7 +10002,11 @@ await new Promise(() => {});
     assert!(
         calls[0]["arguments"]
             .get("_codex_executed_tool_call_truncated")
-            .is_some()
+            .is_some(),
+        "the calibrated yielded delta must trim call arguments: \
+         first_base={first_base_bytes}, yielded_base={yielded_base_bytes}, \
+         padding={padding_bytes}, actual_yielded={}, calls={calls:?}",
+        serde_json::to_vec(&yielded_request)?.len(),
     );
     let terminal = find_output(&terminal_request, "wait-a");
     assert_eq!(

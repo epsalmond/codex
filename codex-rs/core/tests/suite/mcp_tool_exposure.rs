@@ -1550,6 +1550,8 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
     let code_mode_host = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
     let builder = || {
         search_capable_apps_builder(apps.chatgpt_base_url.clone())
+            // This fixture explicitly waits for the yielded recovery call.
+            .keep_polling_tools()
             .with_extensions(Arc::clone(&extensions))
             .with_code_mode_host_program(code_mode_host.clone())
             .with_model_info_override("gpt-5.5", |model| {
@@ -1733,20 +1735,49 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
     })
     .await;
 
-    let output = finished
-        .completion
-        .single_request()
-        .function_call_output("finish");
-    assert!(
-        output["output"]
-            .as_array()
-            .expect("wait should return Code Mode content items")
+    let final_request = finished.completion.single_request();
+    let output = final_request.function_call_output("finish");
+    let result = if let Some(items) = output["output"].as_array() {
+        items
             .iter()
-            .any(|item| item["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("called calendar_list_events"))),
-        "{output}"
-    );
+            .filter_map(|item| item["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        // Automatic collection can win the race with the explicit wait. Its pointer alone
+        // is insufficient: the same request must also carry this cell's successful result.
+        let note = output["output"]
+            .as_str()
+            .expect("wait returns content items or an automatic-completion pointer");
+        let message_id = note
+            .strip_prefix(&format!(
+                "Cell {cell_id} was already collected for automatic completion (message id: "
+            ))
+            .and_then(|text| {
+                text.strip_suffix(
+                    "). Delivery may still be pending; this wait does not consume or resend the result.",
+                )
+            })
+            .expect("wait must point to the automatically collected cell result");
+        assert!(message_id.starts_with("msg_"), "{note}");
+        let completions = final_request
+            .message_input_texts("user")
+            .into_iter()
+            .filter(|text| {
+                text.starts_with("<async_tool_completion>")
+                    && text.contains(&format!("id={message_id} "))
+                    && text.contains(&format!("call=invoke kind=cell cell={cell_id} "))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completions.len(), 1, "{output}");
+        let result = completions.into_iter().next().expect("one completion");
+        assert!(
+            result.contains("status=completed truncated=0\n"),
+            "{result}"
+        );
+        result
+    };
+    assert!(result.contains("called calendar_list_events"), "{result}");
     let calls = core_test_support::apps_test_server::recorded_apps_tool_calls(&mcp_server).await;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["params"]["name"], "calendar_list_events");

@@ -7,8 +7,9 @@ The workflows in this directory are split so that pull requests get fast, review
 In `epsalmond/codex`, `fork-ci.yml` replaces the upstream checks that require
 unavailable runner groups. It runs formatting, clippy, and dev builds, plus a
 focused Linux nextest gate for the confirmed issue #238 regressions, including
-the footer-selection snapshot also reported in issue #232. Broader baseline
-test triage and coverage remain tracked in issue #155.
+the footer-selection snapshot also reported in issue #232, and one real-host
+Code Mode readiness smoke from issue #279. Broader baseline test triage and
+coverage remain tracked in issues #155 and #279.
 
 Run the same focused gate from the repository root:
 
@@ -29,9 +30,9 @@ sets `RUST_MIN_STACK=16777216`, matching `just test`, and preserves the caller's
 temporary directory settings; fixtures keep their normal private directory
 permissions.
 
-Only these targets and selectors run (14 test cases):
+The issue #238 selections remain separate (18 test cases):
 
-- `codex-core --test all`: all four
+- `codex-core --test all`: all eight
   `suite::agent_execution::v2_residency_reload_preserves_inherited_environment_and_tools::`
   parameter cases.
 - `codex-core --lib`: `cancelled_v2_send_finishes_reload_registration`, all three
@@ -49,9 +50,14 @@ Only these targets and selectors run (14 test cases):
   `app::owned_transcript::tests::footer_selection_defers_warning_clicks_and_preserves_the_draft`.
 
 Before running each target, the runner checks nextest's JSON listing against the
-exact required test names and binary: four residency, eight core unit, and two
-TUI cases. Missing, ignored, filtered-out, renamed, or extra selected cases fail
-the gate, including changes within either parameterized family. Tests run without
+exact required test names and binary: eight residency, eight core unit, and two
+TUI cases. A separate exact selection adds
+`suite::async_cell_completion_tests::cell_polling_another_cells_process_delivers_its_completion`
+from `codex-core --test all`. This real stdio-host smoke checks completion of a
+process polled by another cell, exactly-once result delivery, and owner work
+closure. It must select exactly one runnable case. Missing, ignored, filtered-out,
+renamed, or extra selected cases fail the gate, including changes within either
+parameterized family. Tests run without
 retries or snapshot updates. The gate reuses the current Linux job's cache and V8
 setup; it does not build the full workspace test suite. macOS and Windows keep
 their existing checks and builds.

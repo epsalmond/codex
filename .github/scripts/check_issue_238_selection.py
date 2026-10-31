@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the repaired cases in `cargo nextest list --message-format json`."""
+"""Check focused regressions and readiness in nextest's JSON listing."""
 
 from collections import Counter
 import json
@@ -15,7 +15,7 @@ WAKE = CONTROL + "multi_agent_v2_completion_marks_only_root_parent_wake::"
 THREAD = "thread_manager::tests::"
 TUI = "app::owned_transcript::tests::"
 
-# Exact cases in the focused gate: 8 residency + 8 core + 2 TUI.
+# Issue #238 cases remain 8 residency + 8 core + 2 TUI; readiness is separate.
 SELECTIONS = {
     "residency": (
         "codex-core::all",
@@ -51,6 +51,13 @@ SELECTIONS = {
         [
             TUI + "fullscreen_composer_mouse_copy_and_input_ownership",
             TUI + "footer_selection_defers_warning_clicks_and_preserves_the_draft",
+        ],
+    ),
+    "code-mode-readiness": (
+        "codex-core::all",
+        [
+            "suite::async_cell_completion_tests::"
+            "cell_polling_another_cells_process_delivers_its_completion",
         ],
     ),
 }

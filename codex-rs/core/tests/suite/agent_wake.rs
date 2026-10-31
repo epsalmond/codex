@@ -8,12 +8,14 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
+use codex_config::config_toml::AgentLifetime;
 use codex_core::CodexThread;
 use codex_core::GuardedShutdownOutcome;
 use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::WorkObservation;
+use codex_core::config::AgentRoleConfig;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_extension_items::sleep::SleepItem;
@@ -473,7 +475,22 @@ async fn wake_mode_help_round_trip_wakes_root_twice() -> Result<()> {
     const FOLLOWUP: &str = "use blue";
     const ANSWER: &str = "painted it blue";
     let server = start_mock_server().await;
-    let test = build_multi_agent(&server, Some(AgentPolling::Disabled)).await?;
+    let test = test_codex()
+        .with_model("koffing")
+        .with_session_source(SessionSource::Cli)
+        .with_config(|config| {
+            configure_multi_agent(config, Some(AgentPolling::Disabled));
+            // A task closes after its first final report; this worker must accept a follow-up.
+            config.agent_roles.insert(
+                "default".to_string(),
+                AgentRoleConfig {
+                    lifetime: Some(AgentLifetime::Persistent),
+                    ..Default::default()
+                },
+            );
+        })
+        .build(&server)
+        .await?;
     let root = test.session_configured.thread_id;
     mount_spawn_then_status(&server, root).await;
     mount_sse_once_match(

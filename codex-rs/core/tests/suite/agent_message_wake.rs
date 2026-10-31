@@ -238,27 +238,34 @@ async fn pending_agent_message_wake_respects_control_changes(
         .send(())
         .expect("control change must complete while wake discovery is paused");
 
-    let (mail_request_index, final_turn_id) = if wakes_on_agent_messages {
-        // StartIfIdle cannot replace the reserved wake. Acceptance is the barrier
-        // proving that the pending wake relinquished admission; no sleep is needed.
-        let user_turn_id = timeout(Duration::from_secs(10), async {
-            loop {
-                match test
-                    .codex
-                    .start_turn_if_idle(input("Read the deferred worker updates now."))
-                    .await?
-                {
-                    StartIfIdleSubmission::Started { turn_id, .. } => {
-                        return Ok::<_, anyhow::Error>(turn_id);
+    let explicit_user_turn =
+        if wakes_on_agent_messages || matches!(boundary, WakeBoundary::Interrupt) {
+            // StartIfIdle cannot replace the reserved wake. Acceptance is the barrier
+            // proving that the pending wake relinquished admission; no sleep is needed.
+            let user_turn_id = timeout(Duration::from_secs(10), async {
+                loop {
+                    match test
+                        .codex
+                        .start_turn_if_idle(input("Read the deferred worker updates now."))
+                        .await?
+                    {
+                        StartIfIdleSubmission::Started { turn_id, .. } => {
+                            return Ok::<_, anyhow::Error>(turn_id);
+                        }
+                        StartIfIdleSubmission::NotSubmitted {
+                            reason: NotSubmittedReason::NotIdle,
+                        } => tokio::task::yield_now().await,
+                        other => anyhow::bail!("unexpected explicit user turn result: {other:?}"),
                     }
-                    StartIfIdleSubmission::NotSubmitted {
-                        reason: NotSubmittedReason::NotIdle,
-                    } => tokio::task::yield_now().await,
-                    other => anyhow::bail!("unexpected explicit user turn result: {other:?}"),
                 }
-            }
-        })
-        .await??;
+            })
+            .await??;
+            Some(user_turn_id)
+        } else {
+            None
+        };
+    let (mail_request_index, final_turn_id) = if wakes_on_agent_messages {
+        let user_turn_id = explicit_user_turn.expect("message wakes need an explicit turn");
         wait_for_event(
             &test.codex,
             |event| matches!(event, EventMsg::TurnComplete(done) if done.turn_id == user_turn_id),
@@ -296,12 +303,16 @@ async fn pending_agent_message_wake_respects_control_changes(
         ThreadIdle::wait(&test.codex).await;
         (2, next_user_turn_id)
     } else {
-        // With the feature disabled, explicit follow-ups still run. In the
-        // interrupt case, the second follow-up also delivers the preserved first.
-        let EventMsg::TurnComplete(completed) = wait_for_event(
-            &test.codex,
-            |event| matches!(event, EventMsg::TurnComplete(done) if done.turn_id != initial_turn_id),
-        )
+        // Esc pauses root report wakeups independently of WakeOnAgentMessages.
+        // The explicit user turn resumes them and delivers both preserved reports.
+        // A Plan change alone still allows the pending explicit follow-up.
+        let EventMsg::TurnComplete(completed) = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(done)
+            if explicit_user_turn.as_ref().map_or(
+                done.turn_id != initial_turn_id,
+                |turn_id| &done.turn_id == turn_id,
+            ))
+        })
         .await
         else {
             unreachable!("waited for the explicit follow-up to complete");
