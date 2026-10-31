@@ -1327,193 +1327,194 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> Result<()> {
+#[test_case(&["code_mode"]; "omit_code_mode")]
+#[test_case(&["deferred"]; "omit_deferred")]
+#[test_case(&["direct"]; "omit_direct")]
+#[test_case(&["code_mode", "deferred"]; "omit_code_mode_and_deferred")]
+#[test_case(&["code_mode", "direct"]; "omit_code_mode_and_direct")]
+#[test_case(&["deferred", "direct"]; "omit_deferred_and_direct")]
+#[test_case(&["code_mode", "deferred", "direct"]; "omit_all_exposures")]
+#[test_case(&[]; "omit_no_exposures")]
+async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure(
+    omit_tools_from: &'static [&'static str],
+) -> Result<()> {
     skip_if_wine_exec!(
         Ok(()),
         "requires a Windows test_stdio_server in the Wine-exec environment"
     );
     skip_if_no_network!(Ok(()));
 
-    for omit_tools_from in [
-        &["code_mode"][..],
-        &["deferred"][..],
-        &["direct"][..],
-        &["code_mode", "deferred"][..],
-        &["code_mode", "direct"][..],
-        &["deferred", "direct"][..],
-        &["code_mode", "deferred", "direct"][..],
-        &[][..],
+    // Each omission gets an independent nextest budget while preserving the
+    // complete original matrix of model/search/namespace exposure assertions.
+    for (
+        supports_search_tool,
+        non_prefixed_mcp_tool_names,
+        direct_only_namespace,
+        deferred_control,
+    ) in [
+        (false, false, false, false),
+        (false, false, true, false),
+        (false, true, false, false),
+        (false, true, true, false),
+        (true, false, false, false),
+        (true, false, true, false),
+        (true, true, false, false),
+        (true, true, true, false),
+        (true, false, true, true),
+        (true, true, true, true),
     ] {
-        for (
-            supports_search_tool,
-            non_prefixed_mcp_tool_names,
-            direct_only_namespace,
-            deferred_control,
-        ) in [
-            (false, false, false, false),
-            (false, false, true, false),
-            (false, true, false, false),
-            (false, true, true, false),
-            (true, false, false, false),
-            (true, false, true, false),
-            (true, true, false, false),
-            (true, true, true, false),
-            (true, false, true, true),
-            (true, true, true, true),
-        ] {
-            // The strongest omission plus direct-only case supplies both
-            // namespace spellings of the independent deferred positive control.
-            if deferred_control && omit_tools_from != ["code_mode", "deferred", "direct"] {
-                continue;
-            }
-            eprintln!(
-                "MCP exposure case: omit={omit_tools_from:?}, search={supports_search_tool}, \
+        // The strongest omission plus direct-only case supplies both
+        // namespace spellings of the independent deferred positive control.
+        if deferred_control && omit_tools_from != ["code_mode", "deferred", "direct"] {
+            continue;
+        }
+        eprintln!(
+            "MCP exposure case: omit={omit_tools_from:?}, search={supports_search_tool}, \
                  unprefixed={non_prefixed_mcp_tool_names}, direct_only={direct_only_namespace}, \
                  deferred_control={deferred_control}"
-            );
-            let namespace = if non_prefixed_mcp_tool_names {
-                "rmcp"
-            } else {
-                "mcp__rmcp"
-            };
-            let visible_directly = !omit_tools_from.contains(&"direct")
-                && (!supports_search_tool
-                    || omit_tools_from.contains(&"deferred")
-                    || direct_only_namespace);
-            let server = responses::start_mock_server().await;
-            let response = responses::mount_sse_once(
-                &server,
-                sse(vec![
-                    ev_response_created("resp-1"),
-                    if visible_directly {
-                        responses::ev_function_call_with_namespace(
-                            "call-1",
-                            namespace,
-                            "echo",
-                            r#"{"message":"ping"}"#,
-                        )
-                    } else {
-                        ev_assistant_message("msg-1", "done")
-                    },
-                    ev_completed("resp-1"),
-                ]),
-            )
-            .await;
-            let follow_up_response = if visible_directly {
-                Some(
-                    responses::mount_sse_once(
-                        &server,
-                        sse(vec![
-                            ev_assistant_message("msg-1", "done"),
-                            ev_completed("resp-2"),
-                        ]),
+        );
+        let namespace = if non_prefixed_mcp_tool_names {
+            "rmcp"
+        } else {
+            "mcp__rmcp"
+        };
+        let visible_directly = !omit_tools_from.contains(&"direct")
+            && (!supports_search_tool
+                || omit_tools_from.contains(&"deferred")
+                || direct_only_namespace);
+        let server = responses::start_mock_server().await;
+        let response = responses::mount_sse_once(
+            &server,
+            sse(vec![
+                ev_response_created("resp-1"),
+                if visible_directly {
+                    responses::ev_function_call_with_namespace(
+                        "call-1",
+                        namespace,
+                        "echo",
+                        r#"{"message":"ping"}"#,
                     )
-                    .await,
+                } else {
+                    ev_assistant_message("msg-1", "done")
+                },
+                ev_completed("resp-1"),
+            ]),
+        )
+        .await;
+        let follow_up_response = if visible_directly {
+            Some(
+                responses::mount_sse_once(
+                    &server,
+                    sse(vec![
+                        ev_assistant_message("msg-1", "done"),
+                        ev_completed("resp-2"),
+                    ]),
                 )
-            } else {
-                None
-            };
-            let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
-            let environment_id = remote_aware_environment_id();
-            let mut builder = test_codex()
-                .keep_polling_tools()
-                .with_model_info_override("gpt-5.4", move |model| {
-                    model.supports_search_tool = supports_search_tool;
-                })
-                .with_config(move |config| {
-                    if non_prefixed_mcp_tool_names {
-                        config
-                            .features
-                            .enable(Feature::NonPrefixedMcpToolNames)
-                            .expect("test config should allow unprefixed MCP tools");
-                    }
-                    if direct_only_namespace {
-                        config.code_mode.direct_only_tool_namespaces = vec![
-                            if non_prefixed_mcp_tool_names {
-                                "rmcp"
-                            } else {
-                                "mcp__rmcp"
-                            }
-                            .to_string(),
-                        ];
-                    }
+                .await,
+            )
+        } else {
+            None
+        };
+        let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+        let environment_id = remote_aware_environment_id();
+        let mut builder = test_codex()
+            .keep_polling_tools()
+            .with_model_info_override("gpt-5.4", move |model| {
+                model.supports_search_tool = supports_search_tool;
+            })
+            .with_config(move |config| {
+                if non_prefixed_mcp_tool_names {
+                    config
+                        .features
+                        .enable(Feature::NonPrefixedMcpToolNames)
+                        .expect("test config should allow unprefixed MCP tools");
+                }
+                if direct_only_namespace {
+                    config.code_mode.direct_only_tool_namespaces = vec![
+                        if non_prefixed_mcp_tool_names {
+                            "rmcp"
+                        } else {
+                            "mcp__rmcp"
+                        }
+                        .to_string(),
+                    ];
+                }
 
-                    let mut servers = config.mcp_servers.get().clone();
-                    // A separate namespace supplies an independent deferred source;
-                    // the rmcp omissions and direct-only override must not hide it.
-                    if deferred_control {
-                        servers.insert(
-                            "search_control".to_string(),
-                            serde_json::from_value(serde_json::json!({
-                                "command": rmcp_test_server_bin,
-                                "environment_id": environment_id,
-                                "cwd": config.cwd,
-                            }))
-                            .expect("deferred control MCP server config should be valid"),
-                        );
-                    }
+                let mut servers = config.mcp_servers.get().clone();
+                // A separate namespace supplies an independent deferred source;
+                // the rmcp omissions and direct-only override must not hide it.
+                if deferred_control {
                     servers.insert(
-                        "rmcp".to_string(),
+                        "search_control".to_string(),
                         serde_json::from_value(serde_json::json!({
                             "command": rmcp_test_server_bin,
                             "environment_id": environment_id,
                             "cwd": config.cwd,
-                            "omit_tools_from": omit_tools_from,
                         }))
-                        .expect("test MCP server config should be valid"),
+                        .expect("deferred control MCP server config should be valid"),
                     );
-                    config
-                        .mcp_servers
-                        .set(servers)
-                        .expect("test config should allow MCP servers");
-                });
-            let test = builder.build_with_auto_env(&server).await?;
-            wait_for_mcp_server(&test.codex, "rmcp").await?;
-            if deferred_control {
-                wait_for_mcp_server(&test.codex, "search_control").await?;
-            }
-            test.submit_turn("inspect ordinary direct-mode MCP tool exposure")
-                .await?;
+                }
+                servers.insert(
+                    "rmcp".to_string(),
+                    serde_json::from_value(serde_json::json!({
+                        "command": rmcp_test_server_bin,
+                        "environment_id": environment_id,
+                        "cwd": config.cwd,
+                        "omit_tools_from": omit_tools_from,
+                    }))
+                    .expect("test MCP server config should be valid"),
+                );
+                config
+                    .mcp_servers
+                    .set(servers)
+                    .expect("test config should allow MCP servers");
+            });
+        let test = builder.build_with_auto_env(&server).await?;
+        wait_for_mcp_server(&test.codex, "rmcp").await?;
+        if deferred_control {
+            wait_for_mcp_server(&test.codex, "search_control").await?;
+        }
+        test.submit_turn("inspect ordinary direct-mode MCP tool exposure")
+            .await?;
 
-            let body = response.single_request().body_json();
-            assert_eq!(
-                namespace_child_tool(&body, namespace, "echo").is_some(),
-                visible_directly,
-                "MCP omissions must determine direct-mode tool exposure; \
+        let body = response.single_request().body_json();
+        assert_eq!(
+            namespace_child_tool(&body, namespace, "echo").is_some(),
+            visible_directly,
+            "MCP omissions must determine direct-mode tool exposure; \
              omit_tools_from={omit_tools_from:?}, \
              supports_search_tool={supports_search_tool}, \
              direct_only_namespace={direct_only_namespace}, namespace={namespace}, tools={:?}",
-                tool_names(&body)
-            );
-            assert_eq!(
-                tool_names(&body).iter().any(|name| name == "tool_search"),
-                supports_search_tool
-                    && (deferred_control
-                        || (!direct_only_namespace && !omit_tools_from.contains(&"deferred"))),
-                "tool search requires a searchable deferred source; \
+            tool_names(&body)
+        );
+        assert_eq!(
+            tool_names(&body).iter().any(|name| name == "tool_search"),
+            supports_search_tool
+                && (deferred_control
+                    || (!direct_only_namespace && !omit_tools_from.contains(&"deferred"))),
+            "tool search requires a searchable deferred source; \
              omit_tools_from={omit_tools_from:?}, \
              supports_search_tool={supports_search_tool}, \
              direct_only_namespace={direct_only_namespace}, deferred_control={deferred_control}, \
              namespace={namespace}, tools={:?}",
-                tool_names(&body)
-            );
-            if let Some(follow_up_response) = follow_up_response {
-                let output = follow_up_response
-                    .single_request()
-                    .function_call_output("call-1");
-                assert!(
-                    output["output"]
-                        .as_str()
-                        .is_some_and(|output| output.contains("ECHOING: ping")),
-                    "the advertised MCP tool must remain callable; \
+            tool_names(&body)
+        );
+        if let Some(follow_up_response) = follow_up_response {
+            let output = follow_up_response
+                .single_request()
+                .function_call_output("call-1");
+            assert!(
+                output["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("ECHOING: ping")),
+                "the advertised MCP tool must remain callable; \
                      omit_tools_from={omit_tools_from:?}, \
                      supports_search_tool={supports_search_tool}, \
                      direct_only_namespace={direct_only_namespace}, \
                      namespace={namespace}, output={output:?}"
-                );
-            }
-            test.codex.shutdown_and_wait().await?;
+            );
         }
+        test.codex.shutdown_and_wait().await?;
     }
 
     Ok(())
