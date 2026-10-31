@@ -246,16 +246,18 @@ impl CodeModeWaitHandler {
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
-                // Model termination and an interrupt racing a wait can also find a cell
+                // A terminating wait and an interrupt racing a wait can also find a cell
                 // after its terminal result was transferred to automatic completion.
-                let wait_response = if matches!(
-                    wait_response,
-                    CellWaitOutcome::Runtime(codex_code_mode::WaitOutcome::MissingCell(_))
-                ) && let Some(id) = exec
-                    .session
-                    .services
-                    .async_completions
-                    .collected_cell(cell_id.as_str())
+                let wait_response = if self.mode != Mode::TerminateOnly
+                    && matches!(
+                        wait_response,
+                        CellWaitOutcome::Runtime(codex_code_mode::WaitOutcome::MissingCell(_))
+                    )
+                    && let Some(id) = exec
+                        .session
+                        .services
+                        .async_completions
+                        .collected_cell(cell_id.as_str())
                 {
                     CellWaitOutcome::AlreadyCollected(id)
                 } else {

@@ -1512,6 +1512,17 @@ async fn model_wait(
     id: &str,
     terminate: bool,
 ) -> Box<dyn crate::tools::context::ToolOutput> {
+    model_wait_or_terminate(fixture, id, terminate, false)
+        .await
+        .expect("wait handler returns a tool output")
+}
+
+async fn model_wait_or_terminate(
+    fixture: &NativeFixture,
+    id: &str,
+    terminate: bool,
+    terminate_only: bool,
+) -> Result<Box<dyn crate::tools::context::ToolOutput>, crate::function_tool::FunctionCallError> {
     use crate::session::step_context::StepContext;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
@@ -1519,7 +1530,12 @@ async fn model_wait(
     use crate::tools::registry::ToolExecutor;
 
     let turn = Arc::clone(&fixture.base.completion.turn);
-    super::super::CodeModeWaitHandler::new(None, None)
+    let handler = if terminate_only {
+        super::super::CodeModeWaitHandler::terminate_only()
+    } else {
+        super::super::CodeModeWaitHandler::new(None, None)
+    };
+    handler
         .handle(ToolInvocation {
             session: Arc::clone(&fixture.base.session),
             step_context: StepContext::for_test(Arc::clone(&turn)),
@@ -1529,17 +1545,23 @@ async fn model_wait(
                 crate::turn_diff_tracker::TurnDiffTracker::new(),
             )),
             call_id: "late-wait".to_owned(),
-            tool_name: codex_tools::ToolName::plain(super::super::WAIT_TOOL_NAME),
+            tool_name: codex_tools::ToolName::plain(if terminate_only {
+                super::super::TERMINATE_TOOL_NAME
+            } else {
+                super::super::WAIT_TOOL_NAME
+            }),
             source: ToolCallSource::Direct,
             payload: ToolPayload::Function {
-                arguments:
+                arguments: if terminate_only {
+                    serde_json::json!({"cell_id": id})
+                } else {
                     serde_json::json!({"cell_id": id, "yield_time_ms": 1, "terminate": terminate})
-                        .to_string(),
+                }
+                .to_string(),
             },
             environments: Default::default(),
         })
         .await
-        .expect("wait handler returns a tool output")
 }
 
 #[test_case::test_case(false, false; "native_closed")]
@@ -1627,6 +1649,33 @@ async fn cell_completion_late_model_wait_returns_the_one_automatic_message(
     })
     .await
     .expect("late wait preserves automatic result and native close fence");
+}
+
+#[tokio::test]
+async fn cell_completion_terminate_only_preserves_the_already_finished_response() {
+    let fixture = NativeFixture::yielded(
+        crate::agent::control::WorkKind::Cell,
+        Ok(RuntimeResponse::Terminated {
+            cell_id: cell_id(),
+            content_items: vec![],
+            code_mode_host_duration: None,
+        }),
+        TerminalReadySupport::Supported,
+    )
+    .await;
+    fixture.base.completion.ready(ready(CellOutputKind::Text));
+    let published = fixture.base.published().await;
+    fixture
+        .provider
+        .missing_after_close
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let output = model_wait_or_terminate(&fixture, CELL, true, true).await;
+    assert!(
+        matches!(output, Err(crate::function_tool::FunctionCallError::RespondToModel(text))
+        if text == format!("cell {CELL} already finished; its result was delivered automatically"))
+    );
+    assert_eq!(fixture.base.store().published_texts(), published);
+    fixture.retire_ready_record();
 }
 
 #[tokio::test]
