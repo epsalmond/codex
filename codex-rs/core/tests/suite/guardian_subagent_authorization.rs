@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use codex_config::config_toml::AgentLifetime;
-use codex_config::config_toml::AgentRoleConfig;
 use codex_core::GuardianRootMessage;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
+use codex_core::config::AgentRoleConfig;
 use codex_core::config::Constrained;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
