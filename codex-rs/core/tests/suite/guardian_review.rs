@@ -712,7 +712,8 @@ async fn guardian_review_recovers_after_compaction(
         .join("");
     assert!(
         latest_review.contains("POST_REVIEW_DIAGNOSTIC"),
-        "recovery must retain evidence not yet admitted to the reviewer"
+        "recovery must retain evidence not yet admitted to the reviewer; second request: {}",
+        second_request.body_json()
     );
     if with_parent_checkpoint {
         assert!(latest_review.contains(">>> TRANSCRIPT START\n"));
