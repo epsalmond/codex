@@ -3363,7 +3363,15 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
         requests[0].custom_tool_call_output("call-a")["output"],
         old_output["output"]
     );
-    assert_eq!(requests.len(), 2, "starting B should sample exactly twice");
+    assert_eq!(
+        requests.len(),
+        2,
+        "starting B should sample exactly twice; actual inputs={:?}",
+        requests
+            .iter()
+            .map(ResponsesRequest::input)
+            .collect::<Vec<_>>(),
+    );
     assert!(
         requests[1]
             .inputs_of_type("custom_tool_call_output")
