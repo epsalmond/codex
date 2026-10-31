@@ -6172,6 +6172,8 @@ async fn pre_tool_use_observes_code_mode_exec_and_wait_without_gating_them() -> 
         })
         .with_config(|config| {
             let _ = config.features.enable(Feature::CodeMode);
+            // The model reads the result with `wait`; automatic delivery would collect it first.
+            let _ = config.features.disable(Feature::AsyncProcessCompletion);
             trust_discovered_hooks(config);
         });
     let test = builder.build(&server).await?;
