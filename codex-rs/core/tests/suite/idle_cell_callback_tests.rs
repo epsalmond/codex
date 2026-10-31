@@ -18,6 +18,7 @@ use codex_code_mode::StartedCell;
 use codex_code_mode::ToolInvocationFuture;
 use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
+use core_test_support::ThreadIdle;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 use tokio::sync::Notify;
@@ -203,7 +204,10 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
     });
 
     let server = responses::start_mock_server().await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .keep_polling_tools()
         .with_thread_manager(move |manager| {
             manager.with_code_mode_session_provider(Arc::new(Provider(session)))
@@ -259,6 +263,9 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
     .await;
 
     test.submit_text_turn("launch hosted work").await?;
+    // TurnComplete precedes active-turn cleanup. Refusal requires the owner to
+    // have actually relinquished that turn before the callback is released.
+    ThreadIdle::wait(&test.codex).await;
     tokio::time::timeout(HOLD_TIMEOUT, gates.reached.notified()).await?;
     let first_items =
         custom_tool_output_items(&first_completion.single_request(), "original-cell-call");
