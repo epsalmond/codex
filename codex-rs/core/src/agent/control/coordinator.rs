@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 mod assignments;
 mod owned_work;
-pub(crate) use owned_work::NamedPendingWork;
 pub(crate) use assignments::AssignmentReservation;
+pub(crate) use owned_work::NamedPendingWork;
 mod reports;
 pub(crate) use reports::ClaimedTerminalReport;
 pub(crate) use reports::TerminalReportDeliveryGuard;
