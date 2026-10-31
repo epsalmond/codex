@@ -1470,10 +1470,28 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure(
                     .expect("test config should allow MCP servers");
             });
         let test = builder.build_with_auto_env(&server).await?;
-        wait_for_mcp_server(&test.codex, "rmcp").await?;
-        if deferred_control {
-            wait_for_mcp_server(&test.codex, "search_control").await?;
-        }
+        // Startup publishes one summary for every configured server. Waiting
+        // twice would consume the only summary, then block forever on the second.
+        let startup = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::McpStartupComplete(summary) => Some(summary.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(startup.failed.is_empty(), "{startup:?}");
+        assert!(startup.cancelled.is_empty(), "{startup:?}");
+        let expected_servers = if deferred_control {
+            BTreeSet::from(["rmcp", "search_control"])
+        } else {
+            BTreeSet::from(["rmcp"])
+        };
+        assert_eq!(
+            startup
+                .ready
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_servers,
+        );
         test.submit_turn("inspect ordinary direct-mode MCP tool exposure")
             .await?;
 
