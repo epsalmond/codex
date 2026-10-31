@@ -9916,7 +9916,9 @@ await new Promise(() => {});
     assert!(serde_json::to_vec(&first)?.len() <= LIMIT);
     assert!(serde_json::to_vec(&yielded_request)?.len() <= LIMIT);
     assert_eq!(yielded_request["previous_response_id"], "resp-1");
-    assert_eq!(terminal_request["previous_response_id"], "resp-2");
+    // Shedding changes the wire copy, so client.rs deliberately discards its
+    // continuation baseline and resends full history on the next request.
+    assert!(terminal_request.get("previous_response_id").is_none());
 
     let find_output = |request: &Value, call_id: &str| -> Value {
         request["input"]
