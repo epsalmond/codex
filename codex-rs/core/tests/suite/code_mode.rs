@@ -3277,6 +3277,10 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
     initial.submit_turn("Start A").await?;
     let old_output = seed.requests()[1].custom_tool_call_output("call-a");
     let old_items = custom_tool_output_items(&seed.requests()[1], "call-a");
+    assert!(
+        text_item(&old_items, /*index*/ 0).starts_with("Script running with cell ID "),
+        "the initial exec must yield before testing stale metadata: {old_items:?}"
+    );
     let old_cell_id = extract_running_cell_id(text_item(&old_items, /*index*/ 0));
     assert_eq!(old_cell_id, "1");
     assert_eq!(text_item(&old_items, /*index*/ 1), "A");
@@ -3350,6 +3354,10 @@ async fn code_mode_resumed_wait_does_not_certify_a_reused_runtime_cell() -> Resu
         old_output["output"]
     );
     let new_items = custom_tool_output_items(&requests[1], "call-b");
+    assert!(
+        text_item(&new_items, /*index*/ 0).starts_with("Script running with cell ID "),
+        "the restarted exec must yield before testing reused runtime IDs: {new_items:?}"
+    );
     assert_eq!(
         extract_running_cell_id(text_item(&new_items, /*index*/ 0)),
         old_cell_id
