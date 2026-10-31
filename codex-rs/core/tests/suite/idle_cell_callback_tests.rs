@@ -18,6 +18,7 @@ use codex_code_mode::StartedCell;
 use codex_code_mode::ToolInvocationFuture;
 use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
+use codex_config::test_support::CloudConfigBundleFixture;
 use core_test_support::ThreadIdle;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -172,17 +173,22 @@ fn callback_source(callback: Callback) -> &'static str {
 
 // Without automatic delivery the model reads the cell with `wait`; with it, the finished cell
 // wakes the idle owner once with its bounded tail.
-#[test_case(Callback::Native, false; "native_callback_after_idle")]
-#[test_case(Callback::Notify, false; "notify_after_idle")]
-#[test_case(Callback::UserApproval, false; "user_approval_refused_while_idle")]
-#[test_case(Callback::GuardianApproval, false; "guardian_approval_refused_while_idle")]
-#[test_case(Callback::Shutdown, false; "shutdown_stops_idle_callback")]
-#[test_case(Callback::Native, true; "native_callback_after_idle_delivered_automatically")]
-#[test_case(Callback::UserApproval, true; "user_approval_refusal_delivered_automatically")]
+#[test_case(Callback::Native, false, false; "native_callback_after_idle")]
+#[test_case(Callback::Notify, false, false; "notify_after_idle")]
+#[test_case(Callback::UserApproval, false, false; "user_approval_refused_while_idle")]
+#[test_case(Callback::GuardianApproval, false, false; "guardian_approval_refused_while_idle")]
+#[test_case(Callback::Shutdown, false, false; "shutdown_stops_idle_callback")]
+#[test_case(Callback::Native, true, false; "native_callback_after_idle_delivered_automatically")]
+#[test_case(Callback::UserApproval, true, false; "user_approval_refusal_delivered_automatically")]
+#[test_case(Callback::Native, false, true; "one_shot_native_callback_after_idle")]
+#[test_case(Callback::UserApproval, false, true; "one_shot_user_approval_refused_while_idle")]
+#[test_case(Callback::GuardianApproval, false, true; "one_shot_guardian_approval_refused_while_idle")]
+#[test_case(Callback::UserApproval, true, true; "one_shot_user_approval_refusal_delivered_automatically")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hosted_callback_settles_after_original_owner_becomes_idle(
     callback: Callback,
     automatic_delivery: bool,
+    one_shot: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -206,7 +212,7 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
     let server = responses::start_mock_server().await;
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
-    let test = test_codex()
+    let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .keep_polling_tools()
         .with_thread_manager(move |manager| {
@@ -236,9 +242,19 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
             if callback == Callback::GuardianApproval {
                 config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             }
-        })
-        .build(&server)
-        .await?;
+        });
+    if one_shot {
+        builder = builder.with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                "[features]\nunified_exec = false\nshell_tool = true\n",
+            ),
+        );
+    }
+    let test = builder.build(&server).await?;
+    assert_eq!(
+        test.config.features.enabled(Feature::UnifiedExec),
+        !one_shot
+    );
 
     let code = format!(
         "text('initial');\nyield_control();\n{}\ntext('cell-tail');\n",

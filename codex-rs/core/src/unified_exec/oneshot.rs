@@ -138,6 +138,10 @@ impl UnifiedExecProcessManager {
             });
             (result, outcome)
         };
+        // The owned task must retain the caller's idle approval policy before
+        // it starts the separate cancellation-safe acquisition task.
+        let nested_code_mode_call = crate::tools::in_code_mode_nested_call();
+        let task = crate::tools::scope_code_mode_nested_call(nested_code_mode_call, task);
         let (result, outcome) = match tokio::spawn(task.in_current_span()).await {
             Ok(result) => result,
             Err(err) => (
