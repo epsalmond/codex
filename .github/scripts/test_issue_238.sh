@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repaired issue #238 cases only; broader baseline triage belongs to #155.
+# Issue #238 regressions plus one Code Mode readiness smoke from issue #279.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -63,3 +63,7 @@ run_selection core-unit -p codex-core --lib -E "$core_unit_filter"
 
 run_selection tui -p codex-tui --lib \
   -E 'test(=app::owned_transcript::tests::fullscreen_composer_mouse_copy_and_input_ownership) | test(=app::owned_transcript::tests::footer_selection_defers_warning_clicks_and_preserves_the_draft)'
+
+# Keep this real-host readiness check separate from the issue #238 manifest.
+run_selection code-mode-readiness -p codex-core --test all \
+  -E 'test(=suite::async_cell_completion_tests::cell_polling_another_cells_process_delivers_its_completion)'
