@@ -16,6 +16,7 @@ use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -1324,6 +1325,9 @@ async fn steer_interrupts_and_drains_websocket(
 ) -> anyhow::Result<()> {
     core_test_support::skip_if_no_network!(Ok(()));
 
+    // Continuation compares server output with outgoing history, whose IDs must
+    // have the protocol prefix to survive request preparation.
+    let reasoning_id = ResponseItemId::with_suffix("rs", "interrupted");
     let mut interrupted = ev_completed_with_tokens("resp-interrupted", /*total_tokens*/ 42);
     if acknowledgement == Some("response.interrupt.accepted") {
         interrupted["type"] = json!("response.incomplete");
@@ -1334,7 +1338,7 @@ async fn steer_interrupts_and_drains_websocket(
         vec![ev_response_created("warm-1"), ev_completed("warm-1")],
         vec![
             ev_response_created("resp-interrupted"),
-            ev_reasoning_item_added("reason-1", &["thinking"]),
+            ev_reasoning_item_added(reasoning_id.as_str(), &["thinking"]),
         ],
         // Finish the active response only after receiving response.interrupt.
         [
@@ -1349,12 +1353,12 @@ async fn steer_interrupts_and_drains_websocket(
                 json!({
                     "type": "response.output_item.interrupted",
                     "response_id": "resp-interrupted",
-                    "item_id": "reason-1",
+                    "item_id": reasoning_id.as_str(),
                     "output_index": 0,
                     "sequence_number": 4,
                 })
             } else {
-                ev_reasoning_item("reason-1", &["thinking"], &[])
+                ev_reasoning_item(reasoning_id.as_str(), &["thinking"], &[])
             }),
             Some(interrupted),
         ]
