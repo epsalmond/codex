@@ -8,8 +8,8 @@ use codex_protocol::ThreadId;
 use std::sync::Arc;
 
 /// Work a terminal report can name as holding its assignment open.
-pub(crate) struct NamedPendingWork {
-    pub(crate) children: Vec<ThreadId>,
+pub(crate) struct NamedPendingWork<Child = ThreadId> {
+    pub(crate) children: Vec<Child>,
     pub(crate) completions: Vec<PendingRecord>,
 }
 

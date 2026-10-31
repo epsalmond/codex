@@ -255,6 +255,8 @@ impl AsyncCompletions {
             .collect()
     }
 
+    /// Whether any finite record, yielded or still inline, keeps `assignment` open at turn end.
+    /// Broader than [`Self::pending_for_assignment`], which names only yielded records.
     pub(crate) fn owns_assignment(&self, assignment: &AgentAssignmentId) -> bool {
         self.state().records.values().any(|record| {
             record.owner == assignment.thread_id

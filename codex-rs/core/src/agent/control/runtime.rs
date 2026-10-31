@@ -6,6 +6,7 @@ use super::coordinator::AgentAssignmentId;
 use super::coordinator::AgentWakeCoordinator;
 use super::coordinator::AssignmentPhase;
 use super::coordinator::ClaimedTerminalReport;
+use super::coordinator::NamedPendingWork;
 use super::coordinator::TerminalReportDeliveryGuard;
 use super::coordinator::TurnEndDisposition;
 use super::dispatcher::WakeDispatcherLifetime;
@@ -604,10 +605,7 @@ impl LocalAgentRuntime {
         &self,
         assignment: &AgentAssignmentId,
         asking_cell: Option<&str>,
-    ) -> Option<(
-        Vec<String>,
-        Vec<crate::session::async_completion::PendingRecord>,
-    )> {
+    ) -> Option<NamedPendingWork<String>> {
         let work = self
             .wake_coordinator
             .named_pending_work(assignment, asking_cell)?;
@@ -621,7 +619,10 @@ impl LocalAgentRuntime {
                     .map_or_else(|| thread_id.to_string(), |path| path.to_string())
             })
             .collect();
-        Some((children, work.completions))
+        Some(NamedPendingWork {
+            children,
+            completions: work.completions,
+        })
     }
 
     pub(crate) fn reserve_owned_work(

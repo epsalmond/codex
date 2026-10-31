@@ -136,8 +136,8 @@ fn pending_work_rejection(
         ToolCallSource::CodeMode { cell_id, .. } => Some(cell_id.as_str()),
         ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => None,
     };
-    let (children, completions) = runtime.named_pending_work(assignment, asking_cell)?;
-    pending_work_message(kind, &completions, &children, turn)
+    let work = runtime.named_pending_work(assignment, asking_cell)?;
+    pending_work_message(kind, &work.completions, &work.children, turn)
 }
 
 /// Names the pending work, or `None` when there is none, then offers only remedies whose tools
