@@ -710,9 +710,16 @@ async fn guardian_review_recovers_after_compaction(
         .pop()
         .expect("second review")
         .join("");
-    assert!(
-        latest_review.contains("POST_REVIEW_DIAGNOSTIC"),
-        "recovery must retain evidence not yet admitted to the reviewer; second request: {}",
+    // A failed inference can admit its input before compaction. Remote v2
+    // compaction retains those user messages, so the evidence can precede the
+    // newest delta rather than needing reinjection into it.
+    let retained_review = second_request.message_input_texts("user").join("\n");
+    assert_eq!(
+        retained_review
+            .matches("Output:\nPOST_REVIEW_DIAGNOSTIC")
+            .count(),
+        1,
+        "recovery must retain the actual tool-result evidence exactly once; second request: {}",
         second_request.body_json()
     );
     if with_parent_checkpoint {
