@@ -199,6 +199,22 @@ async fn load_agent_model_context(
     }
 }
 
+/// Moves selections at the parent's cwd into a child directory; others keep their cwd.
+fn rebased_selections(
+    selections: Vec<codex_protocol::protocol::TurnEnvironmentSelection>,
+    directory: &crate::agent::child_directory::ChildDirectory,
+) -> Vec<codex_protocol::protocol::TurnEnvironmentSelection> {
+    selections
+        .into_iter()
+        .map(|mut selection| {
+            if let Some(cwd) = directory.rebase_environment_cwd(&selection.cwd) {
+                selection.cwd = cwd;
+            }
+            selection
+        })
+        .collect()
+}
+
 impl LocalAgentControl {
     /// Restore persisted V2 agent identities without reopening their runtimes.
     pub(crate) async fn restore_v2_agent_metadata(
@@ -533,55 +549,37 @@ impl LocalAgentControl {
                 .map_err(|err| {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
-            // A role's directory is resolved against the parent's current cwd, as at spawn.
-            if parent.is_some()
-                && let Some(role_cwd) = crate::agent::role::resolve_role_config(&config, &role_name)
-                    .and_then(|role| role.cwd.clone())
+        }
+        // The thread records the cwd the child ran in, whichever role or argument chose it.
+        let stored_cwd = stored_thread.cwd.clone();
+        {
+            let invalid_directory = |err: String| {
+                CodexErr::InvalidRequest(format!(
+                    "cannot resume multi-agent v2 child {thread_id}: {err}"
+                ))
+            };
+            let parent_cwd = config.cwd.clone();
+            if let Some(directory) = crate::agent::child_directory::ChildDirectory::from_thread_cwd(
+                &parent_cwd,
+                &stored_cwd,
+            )
+            .map_err(invalid_directory)?
             {
-                let parent_cwd = config.cwd.clone();
-                let invalid_directory = |err: String| {
-                    CodexErr::InvalidRequest(format!(
-                        "cannot resume multi-agent v2 child {thread_id}: {err}"
-                    ))
-                };
-                if let Some(mut directory_config) =
-                    crate::agent::child_directory::load_child_directory_config(
-                        &config,
-                        &parent_cwd,
-                        Some(role_cwd.as_path()),
-                    )
-                    .await
-                    .map_err(invalid_directory)?
-                {
-                    directory_config
-                        .apply_settings(&mut config)
+                let mut directory_config =
+                    crate::agent::child_directory::ChildDirectoryConfig::load(&config, directory)
+                        .await
                         .map_err(invalid_directory)?;
-                    directory_config
-                        .apply_runtime(&mut config)
-                        .map_err(invalid_directory)?;
-                    let directory = directory_config.directory().clone();
-                    // Without retained selections the child would otherwise follow the
-                    // parent's environments back to the parent's cwd.
-                    if environment_selections.is_none()
-                        && let Some((_, parent_environments)) = parent.as_ref()
-                    {
-                        environment_selections = Some(
-                            parent_environments
-                                .inheritable_selections()
-                                .into_iter()
-                                .map(|mut selection| {
-                                    if let Some(cwd) =
-                                        directory.rebase_environment_cwd(&selection.cwd)
-                                    {
-                                        selection.cwd = cwd;
-                                    }
-                                    selection
-                                })
-                                .collect(),
-                        );
-                    }
-                    child_directory = Some(directory);
-                }
+                directory_config
+                    .apply_settings(&mut config)
+                    .map_err(invalid_directory)?;
+                directory_config
+                    .apply_runtime(&mut config)
+                    .map_err(invalid_directory)?;
+                child_directory = Some(directory_config.directory().clone());
+                // Surface directory problems on the resumed thread, as spawn does in its result.
+                config
+                    .startup_warnings
+                    .extend(directory_config.into_warnings());
             }
         }
         // Selections a child directory moved still belong to the parent's workspace.
@@ -620,15 +618,32 @@ impl LocalAgentControl {
         ) =
             parent.as_ref()
         {
-            let parent_config = parent.session.get_config().await;
-            let uses_parent_exec_policy =
-                crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config);
-            // A child directory adds project layers, so its rules load from its own stack.
-            if !uses_parent_exec_policy && child_directory.is_none() {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
-                )));
-            }
+            // A child directory keeps the parent's live rules and adds only its restrictions;
+            // any other difference from the parent's rule sources still rejects the reload.
+            let exec_policy = match &child_directory {
+                Some(directory) => self
+                    .child_directory_exec_policy(
+                        &state,
+                        Some(parent.session.thread_id),
+                        &config,
+                        directory,
+                    )
+                    .await
+                    .map_err(|err| {
+                        CodexErr::InvalidRequest(format!(
+                            "cannot resume multi-agent v2 child {thread_id}: {err}"
+                        ))
+                    })?,
+                None => {
+                    let parent_config = parent.session.get_config().await;
+                    if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
+                        return Err(CodexErr::InvalidRequest(format!(
+                            "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
+                        )));
+                    }
+                    Arc::clone(&parent.session.services.exec_policy)
+                }
+            };
             if let Some(selections) = environment_selections.as_mut() {
                 let parent_selections = parent_environments.all_selections();
                 let ready_parent = parent_environments.refresh_readiness();
@@ -731,7 +746,7 @@ impl LocalAgentControl {
                         .unwrap_or(parent_environments)
                         .clone(),
                 ),
-                uses_parent_exec_policy.then(|| Arc::clone(&parent.session.services.exec_policy)),
+                Some(exec_policy),
                 Some(parent.client_mcp_extensions()),
             )
         } else {
@@ -743,11 +758,44 @@ impl LocalAgentControl {
                             .await
                     }
                 },
-                self.inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-                    .await,
+                match &child_directory {
+                    Some(directory) => Some(
+                        self.child_directory_exec_policy(
+                            &state,
+                            session_source.parent_thread_id(),
+                            &config,
+                            directory,
+                        )
+                        .await
+                        .map_err(|err| {
+                            CodexErr::InvalidRequest(format!(
+                                "cannot resume multi-agent v2 child {thread_id}: {err}"
+                            ))
+                        })?,
+                    ),
+                    None => {
+                        self.inherited_exec_policy_for_source(
+                            &state,
+                            Some(&session_source),
+                            &config,
+                        )
+                        .await
+                    }
+                },
                 None,
             )
         };
+        // Without retained selections the child would follow the inherited environments
+        // back to the parent's cwd.
+        if let Some(directory) = &child_directory
+            && environment_selections.is_none()
+            && let Some(environments) = &inherited_environments
+        {
+            environment_selections = Some(rebased_selections(
+                environments.inheritable_selections(),
+                directory,
+            ));
+        }
         let inherited_parent = if let Some((parent, _)) = parent.as_ref() {
             Some(Arc::clone(parent))
         } else if let Some(parent_thread_id) = parent_thread_id {
@@ -945,9 +993,16 @@ impl LocalAgentControl {
                     .disabled_plugin_ids,
             );
         }
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
-            .await;
+        let inherited_exec_policy = match &options.child_directory {
+            Some(directory) => Some(
+                self.child_directory_exec_policy(&state, parent_thread_id, &config, directory)
+                    .await?,
+            ),
+            None => {
+                self.inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
+                    .await
+            }
+        };
         let (session_source, mut agent_metadata) = match session_source {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -985,25 +1040,28 @@ impl LocalAgentControl {
         let mut start_options = StartThreadOptions {
             session_source: session_source.clone(),
             thread_source: session_source.as_ref().map(|_| ThreadSource::Subagent),
-            environments: options.environments.as_ref().map(|snapshot| {
-                snapshot
-                    .inheritable_selections()
-                    .into_iter()
-                    .map(|selection| {
-                        let mut request = selection.into_request();
-                        // A child directory moves environments rooted at the parent's cwd; the
-                        // workspace roots, and so the permission boundary, stay the parent's.
-                        if let Some(cwd) = options
-                            .child_directory
-                            .as_ref()
-                            .and_then(|directory| directory.rebase_environment_cwd(&request.cwd))
-                        {
-                            request.cwd = cwd;
-                        }
-                        request
-                    })
-                    .collect()
-            }),
+            environments: match &options.child_directory {
+                // A child directory moves environments rooted at the parent's cwd, including
+                // inherited ones; the workspace roots, and so the permission boundary, stay
+                // the parent's.
+                Some(directory) => options
+                    .environments
+                    .as_ref()
+                    .or(inherited_environments.as_ref())
+                    .map(|snapshot| {
+                        rebased_selections(snapshot.inheritable_selections(), directory)
+                            .into_iter()
+                            .map(codex_protocol::protocol::TurnEnvironmentSelection::into_request)
+                            .collect()
+                    }),
+                None => options.environments.as_ref().map(|snapshot| {
+                    snapshot
+                        .inheritable_selections()
+                        .into_iter()
+                        .map(codex_protocol::protocol::TurnEnvironmentSelection::into_request)
+                        .collect()
+                }),
+            },
             inherited_environments,
             disabled_plugin_ids,
             reserved_thread_id,
@@ -1658,7 +1716,7 @@ impl LocalAgentControl {
 
     async fn resume_single_agent_from_rollout(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
@@ -1670,6 +1728,43 @@ impl LocalAgentControl {
                 include_history: false,
             })
             .await?;
+        // A child that ran in a subdirectory resumes there with that directory's settings.
+        let child_directory = match stored_thread.parent_thread_id {
+            Some(_) => {
+                let invalid_directory = |err: String| {
+                    CodexErr::InvalidRequest(format!("cannot resume agent {thread_id}: {err}"))
+                };
+                let parent_cwd = config.cwd.clone();
+                match crate::agent::child_directory::ChildDirectory::from_thread_cwd(
+                    &parent_cwd,
+                    &stored_thread.cwd,
+                )
+                .map_err(invalid_directory)?
+                {
+                    Some(directory) => {
+                        let mut directory_config =
+                            crate::agent::child_directory::ChildDirectoryConfig::load(
+                                &config, directory,
+                            )
+                            .await
+                            .map_err(invalid_directory)?;
+                        directory_config
+                            .apply_settings(&mut config)
+                            .map_err(invalid_directory)?;
+                        directory_config
+                            .apply_runtime(&mut config)
+                            .map_err(invalid_directory)?;
+                        let directory = directory_config.directory().clone();
+                        config
+                            .startup_warnings
+                            .extend(directory_config.into_warnings());
+                        Some(directory)
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
         let resumed_agent_path = stored_thread
             .agent_path
             .as_deref()
@@ -1725,9 +1820,21 @@ impl LocalAgentControl {
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-            .await;
+        let inherited_exec_policy = match &child_directory {
+            Some(directory) => Some(
+                self.child_directory_exec_policy(&state, parent_thread_id, &config, directory)
+                    .await?,
+            ),
+            None => {
+                self.inherited_exec_policy_for_source(&state, Some(&session_source), &config)
+                    .await
+            }
+        };
+        let environment_selections = child_directory.as_ref().and_then(|directory| {
+            inherited_environments.as_ref().map(|environments| {
+                rebased_selections(environments.inheritable_selections(), directory)
+            })
+        });
 
         let resumed_thread = state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
@@ -1738,7 +1845,7 @@ impl LocalAgentControl {
                 agent_control: self.clone(),
                 session_source,
                 parent_thread_id,
-                environment_selections: None,
+                environment_selections,
                 inherited_environments,
                 inherited_instructions: None,
                 inherited_exec_policy,

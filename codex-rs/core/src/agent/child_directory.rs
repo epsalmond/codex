@@ -1,14 +1,23 @@
 //! Rebases a child agent onto a subdirectory of its parent's working directory.
 //!
 //! The child runs as if Codex had started in that directory: project `.codex` layers between the
-//! directory and its project root replace the parent's, and the settings those new layers set win
-//! over the parent's. Settings they leave unset keep the parent's values. The parent's approval
-//! policy and permission profile remain a ceiling the directory can tighten but never loosen.
+//! directory and its project root are added above the parent's, and the settings those new layers
+//! set win over the parent's. Settings they leave unset keep the parent's values.
+//!
+//! The parent's authority is a ceiling the directory can tighten but never loosen:
+//! - approval policy and permission profile are clamped to the parent's;
+//! - command rules start from the parent's live rules, and the directory adds only `prompt` and
+//!   `forbidden` rules (see [`ChildDirectory::rule_folders`]);
+//! - the directory's MCP servers run, but their tools cannot be pre-approved, so every call goes
+//!   through the child's clamped approval policy;
+//! - the directory's hooks follow the normal per-hook trust review.
 
 use crate::config::Config;
 use crate::config::PermissionProfileSnapshot;
+use codex_config::AppToolApproval;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
+use codex_config::McpServerConfig;
 use codex_config::loader::load_project_layers_for_cwd;
 use codex_config::merge_toml_values;
 use codex_exec_server::LOCAL_FS;
@@ -43,12 +52,16 @@ const DIRECTORY_DISABLEABLE_FEATURES: &[Feature] = &[
 /// A validated child working directory below the parent's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChildDirectory {
-    /// Normalized path relative to the parent's cwd, never empty.
+    /// Path of `cwd` relative to the parent's canonical cwd, never empty.
     pub(crate) relative: PathBuf,
-    /// `relative` joined onto the parent's cwd.
+    /// Canonical child cwd, so a symlink repointed after validation cannot move the child.
     pub(crate) cwd: AbsolutePathBuf,
-    /// The parent's cwd that `relative` is resolved against.
+    /// The parent's cwd as the parent sees it.
     pub(crate) parent_cwd: AbsolutePathBuf,
+    /// Canonical form of `parent_cwd`.
+    canonical_parent_cwd: PathBuf,
+    /// `.codex` folders the directory added; only their `prompt` and `forbidden` rules apply.
+    pub(crate) rule_folders: Vec<AbsolutePathBuf>,
 }
 
 impl ChildDirectory {
@@ -79,42 +92,75 @@ impl ChildDirectory {
         if relative.as_os_str().is_empty() {
             return Ok(None);
         }
-        let cwd = parent_cwd.join(&relative);
-        let metadata = std::fs::metadata(cwd.as_path()).map_err(|err| {
+        let joined = parent_cwd.join(&relative);
+        let metadata = std::fs::metadata(joined.as_path()).map_err(|err| {
             format!(
                 "cwd `{shown}` cannot be used: {} ({err})",
-                cwd.as_path().display()
+                joined.as_path().display()
             )
         })?;
         if !metadata.is_dir() {
             return Err(format!(
                 "cwd `{shown}` is not a directory: {}",
-                cwd.as_path().display()
+                joined.as_path().display()
             ));
         }
-        let canonical_parent = dunce::canonicalize(parent_cwd.as_path())
+        let canonical_parent_cwd = dunce::canonicalize(parent_cwd.as_path())
             .map_err(|err| format!("cwd `{shown}` cannot be checked: {err}"))?;
-        let canonical_child = dunce::canonicalize(cwd.as_path())
+        let canonical_child = dunce::canonicalize(joined.as_path())
             .map_err(|err| format!("cwd `{shown}` cannot be checked: {err}"))?;
-        if !canonical_child.starts_with(&canonical_parent) {
+        let Ok(relative) = canonical_child.strip_prefix(&canonical_parent_cwd) else {
             return Err(format!(
                 "cwd `{shown}` resolves outside the parent agent's working directory"
             ));
+        };
+        if relative.as_os_str().is_empty() {
+            return Ok(None);
         }
+        let relative = relative.to_path_buf();
+        let cwd = AbsolutePathBuf::from_absolute_path(&canonical_child)
+            .map_err(|err| format!("cwd `{shown}` cannot be checked: {err}"))?;
         Ok(Some(Self {
             relative,
             cwd,
             parent_cwd: parent_cwd.clone(),
+            canonical_parent_cwd,
+            rule_folders: Vec::new(),
         }))
     }
 
-    /// Rebases an environment cwd that equals the parent's cwd onto this directory.
-    pub(crate) fn rebase_environment_cwd(&self, environment_cwd: &PathUri) -> Option<PathUri> {
-        if *environment_cwd != PathUri::from_abs_path(&self.parent_cwd) {
-            return None;
+    /// Recovers the directory of a child whose recorded cwd lies below `parent_cwd`.
+    ///
+    /// The child's thread records its cwd, so resume and cold reload restore the directory the
+    /// child actually ran in, whichever role or spawn argument chose it.
+    pub(crate) fn from_thread_cwd(
+        parent_cwd: &AbsolutePathBuf,
+        thread_cwd: &Path,
+    ) -> Result<Option<Self>, String> {
+        let (Ok(canonical_parent), Ok(canonical_thread)) = (
+            dunce::canonicalize(parent_cwd.as_path()),
+            dunce::canonicalize(thread_cwd),
+        ) else {
+            return Ok(None);
+        };
+        match canonical_thread.strip_prefix(&canonical_parent) {
+            Ok(relative) if !relative.as_os_str().is_empty() => Self::resolve(parent_cwd, relative),
+            _ => Ok(None),
         }
-        let relative = self.relative.to_str()?;
-        environment_cwd.join_descendant(relative).ok()
+    }
+
+    /// Moves an environment cwd at the parent's cwd into this directory.
+    ///
+    /// Paths are compared canonically, so a parent whose environment spells its cwd differently
+    /// (a symlink or trailing component) still moves. Other environments stay where they are.
+    pub(crate) fn rebase_environment_cwd(&self, environment_cwd: &PathUri) -> Option<PathUri> {
+        let at_parent = *environment_cwd == PathUri::from_abs_path(&self.parent_cwd)
+            || environment_cwd
+                .to_abs_path()
+                .ok()
+                .and_then(|path| dunce::canonicalize(path.as_path()).ok())
+                .is_some_and(|path| path == self.canonical_parent_cwd);
+        at_parent.then(|| PathUri::from_abs_path(&self.cwd))
     }
 }
 
@@ -150,9 +196,12 @@ pub(crate) struct ChildDirectoryConfig {
 
 impl ChildDirectoryConfig {
     /// Loads the project layers for `directory` using the trust inputs of `base`'s stack.
-    pub(crate) async fn load(base: &Config, directory: ChildDirectory) -> Result<Self, String> {
+    ///
+    /// The parent's project layers always stay underneath, even when the directory has its own
+    /// project-root marker such as a submodule's `.git`.
+    pub(crate) async fn load(base: &Config, mut directory: ChildDirectory) -> Result<Self, String> {
         let shown = directory.relative.display().to_string();
-        let project_layers = load_project_layers_for_cwd(
+        let discovered = load_project_layers_for_cwd(
             LOCAL_FS.as_ref(),
             base.codex_home.as_path(),
             &base.config_layer_stack,
@@ -160,34 +209,39 @@ impl ChildDirectoryConfig {
         )
         .await
         .map_err(|err| format!("cwd `{shown}` config could not be loaded: {err}"))?;
-        let parent_folders = base
+        let mut project_layers = base
             .config_layer_stack
             .all_layers_low_to_high()
-            .filter_map(|layer| match &layer.name {
-                ConfigLayerSource::Project { dot_codex_folder } => Some(dot_codex_folder.clone()),
-                _ => None,
-            })
+            .filter(|layer| matches!(layer.name, ConfigLayerSource::Project { .. }))
+            .cloned()
             .collect::<Vec<_>>();
         let mut directory_toml = TomlValue::Table(Default::default());
-        let mut warnings = project_layers.startup_warnings;
-        for layer in &project_layers.layers {
+        let mut warnings = discovered.startup_warnings;
+        for layer in discovered.layers {
+            if project_layers
+                .iter()
+                .any(|existing| existing.name == layer.name)
+            {
+                continue;
+            }
             let ConfigLayerSource::Project { dot_codex_folder } = &layer.name else {
                 continue;
             };
-            if parent_folders.contains(dot_codex_folder) {
-                continue;
-            }
             match &layer.disabled_reason {
                 Some(reason) => warnings.push(format!(
                     "Project config in {} was not loaded for cwd `{shown}`: {reason}",
                     dot_codex_folder.as_path().display()
                 )),
-                None => merge_toml_values(&mut directory_toml, &layer.config),
+                None => {
+                    merge_toml_values(&mut directory_toml, &layer.config);
+                    directory.rule_folders.push(dot_codex_folder.clone());
+                }
             }
+            project_layers.push(layer);
         }
         let config_layer_stack = base
             .config_layer_stack
-            .with_project_layers(project_layers.layers)
+            .with_project_layers(project_layers)
             .map_err(|err| format!("cwd `{shown}` config is invalid: {err}"))?;
         let materialized = base
             .load_for_cwd_and_layer_stack(&directory.cwd, config_layer_stack.clone())
@@ -240,8 +294,23 @@ impl ChildDirectoryConfig {
                 .developer_instructions
                 .clone_from(&directory.developer_instructions);
         }
-        if self.sets("mcp_servers") {
+        if let Some(directory_servers) = self
+            .directory_toml
+            .get("mcp_servers")
+            .and_then(TomlValue::as_table)
+        {
+            // The directory's servers run, but none of their tools may skip approval.
+            let mut servers = directory.mcp_servers.get().clone();
+            for name in directory_servers.keys() {
+                if let Some(server) = servers.get_mut(name) {
+                    cap_mcp_tool_approval(server);
+                }
+            }
             config.mcp_servers = directory.mcp_servers.clone();
+            config
+                .mcp_servers
+                .set(servers)
+                .map_err(|err| format!("mcp_servers is invalid: {err}"))?;
         }
         if self.sets("project_doc_max_bytes") {
             config.project_doc_max_bytes = directory.project_doc_max_bytes;
@@ -323,27 +392,54 @@ impl ChildDirectoryConfig {
         Ok(())
     }
 
+    pub(crate) fn push_warning(&mut self, warning: String) {
+        self.warnings.push(warning);
+    }
+
     pub(crate) fn into_warnings(self) -> Vec<String> {
         self.warnings
     }
 }
 
-/// Orders approval policies by how much user oversight they keep.
-fn approval_oversight(policy: AskForApproval) -> u8 {
-    match policy {
-        AskForApproval::Never => 0,
-        AskForApproval::Granular(_) => 1,
-        AskForApproval::OnRequest => 2,
-        AskForApproval::UnlessTrusted => 3,
+/// Keeps a directory's MCP tools from being pre-approved; `auto` defers to the approval policy.
+fn cap_mcp_tool_approval(server: &mut McpServerConfig) {
+    let cap = |mode: &mut Option<AppToolApproval>| {
+        if *mode == Some(AppToolApproval::Approve) {
+            *mode = Some(AppToolApproval::Auto);
+        }
+    };
+    cap(&mut server.default_tools_approval_mode);
+    for tool in server.tools.values_mut() {
+        cap(&mut tool.approval_mode);
     }
 }
 
+/// Whether `requested` grants no approval path that `parent` does not.
+///
+/// Sandboxed commands run without a prompt under `never`, `granular`, and `on-request`, while
+/// `untrusted` asks first, so nothing may replace `untrusted`. `never` escalates nothing, so it
+/// may replace any of the others. A `granular` child must keep every prompt category its parent
+/// auto-rejects rejected, since an allowed prompt can be approved by the reviewer, not a person.
 fn approval_is_at_least_as_strict(requested: AskForApproval, parent: AskForApproval) -> bool {
+    use AskForApproval::Granular;
+    use AskForApproval::Never;
+    use AskForApproval::OnRequest;
+    use AskForApproval::UnlessTrusted;
     match (requested, parent) {
-        (AskForApproval::Granular(requested), AskForApproval::Granular(parent)) => {
-            requested == parent
+        _ if requested == parent => true,
+        (_, UnlessTrusted) => false,
+        (Never, _) => true,
+        (_, Never) => false,
+        (Granular(requested), Granular(parent)) => {
+            (!requested.sandbox_approval || parent.sandbox_approval)
+                && (!requested.rules || parent.rules)
+                && (!requested.skill_approval || parent.skill_approval)
+                && (!requested.request_permissions || parent.request_permissions)
+                && (!requested.mcp_elicitations || parent.mcp_elicitations)
         }
-        _ => approval_oversight(requested) >= approval_oversight(parent),
+        (Granular(_) | UnlessTrusted, OnRequest) => true,
+        (OnRequest | UnlessTrusted, Granular(_)) => false,
+        (OnRequest, OnRequest) => true,
     }
 }
 

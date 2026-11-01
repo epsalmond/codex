@@ -201,6 +201,34 @@ impl Policy {
         )
     }
 
+    /// Returns only the rules that can make a command or host stricter: `prompt` and
+    /// `forbidden` prefix and network rules.
+    ///
+    /// Merging the result over another policy never allows anything that policy would not,
+    /// because evaluation takes the strictest matching decision. Host executable mappings are
+    /// dropped so the overlay cannot change how the base policy resolves programs.
+    pub fn restrictions_only(&self) -> Policy {
+        let mut rules_by_program = MultiMap::new();
+        for (program, rules) in self.rules_by_program.iter_all() {
+            for rule in rules {
+                let restricts = rule
+                    .as_any()
+                    .downcast_ref::<PrefixRule>()
+                    .is_some_and(|rule| rule.decision != Decision::Allow);
+                if restricts {
+                    rules_by_program.insert(program.clone(), rule.clone());
+                }
+            }
+        }
+        let network_rules = self
+            .network_rules
+            .iter()
+            .filter(|rule| rule.decision != Decision::Allow)
+            .cloned()
+            .collect();
+        Policy::from_parts(rules_by_program, network_rules, HashMap::new())
+    }
+
     pub fn compiled_network_domains(&self) -> (Vec<String>, Vec<String>) {
         let mut allowed = Vec::new();
         let mut denied = Vec::new();

@@ -1142,6 +1142,64 @@ async fn multi_agent_v2_spawn_runs_role_child_in_role_cwd() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_full_history_fork_ignores_default_role_cwd() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    // A fork without agent_type inherits the parent's type, so the default role does not apply.
+    config.agent_roles.insert(
+        crate::agent::role::DEFAULT_ROLE_NAME.to_string(),
+        AgentRoleConfig {
+            description: Some("Default agent.".to_string()),
+            cwd: Some("src".into()),
+            ..Default::default()
+        },
+    );
+    let mut turn = turn;
+    turn.config = Arc::new(config);
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+    #[allow(deprecated)]
+    let parent_cwd = turn.cwd.clone();
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "continue this work",
+                "task_name": "forked",
+                "fork_turns": "all"
+            })),
+        ))
+        .await
+        .expect("full-history fork should spawn");
+    let agent_id = manager
+        .captured_ops()
+        .into_iter()
+        .map(|(thread_id, _)| thread_id)
+        .find(|thread_id| *thread_id != root.thread_id)
+        .expect("spawned agent should receive an op");
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.cwd(), &parent_cwd);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_rejects_missing_role_cwd() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();

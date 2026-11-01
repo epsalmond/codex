@@ -72,14 +72,33 @@ pub(crate) async fn prepare_agent_spawn_config(
     }
     #[allow(deprecated)]
     let parent_cwd = turn.cwd.clone();
+    // A role's cwd applies exactly where the role itself is applied below.
+    let applies_role = !options.full_history_fork
+        || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some());
     let requested_cwd = options.cwd.map(Path::to_path_buf).or_else(|| {
-        resolve_role_config(&turn.config, options.role_name.unwrap_or(DEFAULT_ROLE_NAME))
-            .and_then(|role| role.cwd.clone())
+        applies_role
+            .then(|| {
+                resolve_role_config(&turn.config, options.role_name.unwrap_or(DEFAULT_ROLE_NAME))
+                    .and_then(|role| role.cwd.clone())
+            })
+            .flatten()
     });
     let mut directory_config =
         load_child_directory_config(&config, &parent_cwd, requested_cwd.as_deref()).await?;
-    if let Some(directory_config) = &directory_config {
+    if let Some(directory_config) = &mut directory_config {
         directory_config.apply_settings(&mut config)?;
+        let directory = directory_config.directory();
+        let moves_an_environment = step_context
+            .inherited_environments
+            .inheritable_selections()
+            .iter()
+            .any(|selection| directory.rebase_environment_cwd(&selection.cwd).is_some());
+        if !moves_an_environment {
+            let shown = directory.relative.display().to_string();
+            directory_config.push_warning(format!(
+                "No environment of the parent is at its cwd, so the child's tools still run in the parent's environments rather than `{shown}`"
+            ));
+        }
     }
     let directory_sets = |key: &str| {
         directory_config

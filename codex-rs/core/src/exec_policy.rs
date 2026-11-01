@@ -183,13 +183,24 @@ struct ExecPolicyCommands {
 }
 
 pub(crate) fn child_uses_parent_exec_policy(parent_config: &Config, child_config: &Config) -> bool {
-    fn exec_policy_config_folders(config: &Config) -> Vec<AbsolutePathBuf> {
+    child_uses_parent_exec_policy_except(parent_config, child_config, &[])
+}
+
+/// Like [`child_uses_parent_exec_policy`], ignoring config folders the child added on purpose,
+/// such as a child directory's project layers whose rules only add restrictions.
+pub(crate) fn child_uses_parent_exec_policy_except(
+    parent_config: &Config,
+    child_config: &Config,
+    added_folders: &[AbsolutePathBuf],
+) -> bool {
+    let exec_policy_config_folders = |config: &Config| -> Vec<AbsolutePathBuf> {
         config
             .config_layer_stack
             .layers_low_to_high()
             .filter_map(codex_config::ConfigLayerEntry::config_folder)
+            .filter(|folder| !added_folders.contains(folder))
             .collect()
-    }
+    };
 
     exec_policy_config_folders(parent_config) == exec_policy_config_folders(child_config)
         && parent_config
@@ -315,6 +326,17 @@ impl ExecPolicyManager {
 
     pub(crate) fn current(&self) -> Arc<Policy> {
         self.policy.load_full()
+    }
+
+    /// Rules for a child that adds `restrictions` to this live policy, session approvals
+    /// included. Without restrictions the child shares this manager, as other children do.
+    pub(crate) fn with_restrictions(parent: &Arc<Self>, restrictions: &Policy) -> Arc<Self> {
+        if restrictions.rules().is_empty() && restrictions.network_rules().is_empty() {
+            return Arc::clone(parent);
+        }
+        Arc::new(Self::new(Arc::new(
+            parent.current().merge_overlay(restrictions),
+        )))
     }
 
     #[cfg(test)]
@@ -662,6 +684,34 @@ pub(crate) async fn load_exec_policy_with_warning(
         }
         Err(err) => Err(err),
     }
+}
+
+/// Loads the `prompt` and `forbidden` rules from the `rules/` directories under `folders`.
+///
+/// `allow` rules are dropped: a child directory may restrict its parent's commands but never
+/// let a command run without the approval or sandbox the parent would apply.
+pub(crate) async fn load_exec_policy_restrictions(
+    folders: &[AbsolutePathBuf],
+) -> Result<Policy, ExecPolicyError> {
+    let mut parser = PolicyParser::new();
+    for folder in folders {
+        for policy_path in collect_policy_files(folder.join(RULES_DIR_NAME)).await? {
+            let contents = fs::read_to_string(&policy_path).await.map_err(|source| {
+                ExecPolicyError::ReadFile {
+                    path: policy_path.clone(),
+                    source,
+                }
+            })?;
+            let identifier = policy_path.to_string_lossy().to_string();
+            parser.parse(&identifier, &contents).map_err(|source| {
+                ExecPolicyError::ParsePolicy {
+                    path: identifier,
+                    source,
+                }
+            })?;
+        }
+    }
+    Ok(parser.build().restrictions_only())
 }
 
 pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy, ExecPolicyError> {

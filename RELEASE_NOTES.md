@@ -1,6 +1,6 @@
 ## Subagents in a subdirectory
 
-An agent role can set `cwd = "experts/pricing"` so its children run in that subdirectory as if Codex had started there, loading its `AGENTS.md`, `.codex/config.toml`, hooks, and MCP servers; the parent's approval policy and permissions remain a ceiling the directory can only tighten. See [subagents in a subdirectory](README.md#subagents-in-a-subdirectory).
+An agent role can set `cwd = "experts/pricing"` so its children run in that subdirectory as if Codex had started there, loading its `AGENTS.md`, `.codex/config.toml`, hooks, and MCP servers; the parent's approval policy, permissions, and command rules remain a ceiling the directory can only tighten. See [subagents in a subdirectory](README.md#subagents-in-a-subdirectory).
 
 ## Agents see and close every open subagent
 
