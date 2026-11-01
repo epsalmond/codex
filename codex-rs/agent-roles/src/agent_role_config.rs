@@ -18,6 +18,8 @@ pub struct AgentRoleConfig {
     pub nickname_candidates: Option<Vec<String>>,
     /// Default MultiAgentV2 lifetime for agents spawned with this role.
     pub lifetime: Option<AgentLifetime>,
+    /// Child working directory, relative to the spawning agent's cwd.
+    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
@@ -27,6 +29,7 @@ struct RawAgentRoleFileToml {
     description: Option<String>,
     nickname_candidates: Option<Vec<String>>,
     lifetime: Option<AgentLifetime>,
+    cwd: Option<PathBuf>,
     #[serde(flatten)]
     config: ConfigToml,
 }
@@ -37,6 +40,7 @@ pub struct ResolvedAgentRoleFile {
     pub description: Option<String>,
     pub nickname_candidates: Option<Vec<String>>,
     pub lifetime: Option<AgentLifetime>,
+    pub cwd: Option<PathBuf>,
     pub config: TomlValue,
 }
 
@@ -114,12 +118,14 @@ pub fn parse_agent_role_file_contents(
     config_table.remove("description");
     config_table.remove("nickname_candidates");
     config_table.remove("lifetime");
+    config_table.remove("cwd");
 
     Ok(ResolvedAgentRoleFile {
         role_name,
         description,
         nickname_candidates,
         lifetime: parsed.lifetime,
+        cwd: parsed.cwd,
         config,
     })
 }

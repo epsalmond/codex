@@ -28,6 +28,9 @@ pub enum ConfigLayerSource {
 }
 
 impl ConfigLayerSource {
+    /// Precedence shared by every project `.codex` layer.
+    pub const PROJECT_PRECEDENCE: i16 = 25;
+
     /// A setting from a layer with a higher precedence overrides a setting
     /// from a layer with a lower precedence.
     pub fn precedence(&self) -> i16 {
@@ -43,7 +46,7 @@ impl ConfigLayerSource {
                     20
                 }
             }
-            ConfigLayerSource::Project { .. } => 25,
+            ConfigLayerSource::Project { .. } => Self::PROJECT_PRECEDENCE,
             ConfigLayerSource::SessionFlags => 30,
             ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. } => 40,
             ConfigLayerSource::LegacyManagedConfigTomlFromMdm => 50,

@@ -1,3 +1,7 @@
+## Subagents in a subdirectory
+
+An agent role can set `cwd = "experts/pricing"` so its children run in that subdirectory as if Codex had started there, loading its `AGENTS.md`, `.codex/config.toml`, hooks, and MCP servers; the parent's approval policy, permissions, and command rules remain a ceiling the directory can only tighten. See [subagents in a subdirectory](README.md#subagents-in-a-subdirectory).
+
 ## Agents see and close every open subagent
 
 `list_agents` now lists every open subagent, including idle ones whose runtime was unloaded (status `"unloaded"`), so the root no longer mistakes unloaded children for closed ones. `/subagents` reads the same lifecycle from the agent tree, so an unloaded idle child shows as idle rather than closed. A new top-level `close_agents` tool lets an agent close named descendants, or every idle one with `["idle"]`; set `close_agents_tool = false` under `[features.multi_agent_v2]` to hide it. Press `c` in `/subagents` to close every idle child. See [closing subagents](README.md#closing-subagents).

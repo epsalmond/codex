@@ -104,11 +104,13 @@ async fn handle_spawn_agent(
             role_name,
             model: args.model.as_deref(),
             reasoning_effort: args.reasoning_effort.clone(),
+            cwd: None,
         },
     )
     .await
     .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
+    let warnings = prepared.warnings;
     let fork_mode = args.fork_context.then_some(SpawnAgentForkMode::FullHistory);
     let result = session
         .services
@@ -135,6 +137,7 @@ async fn handle_spawn_agent(
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 cyber_access_program: turn.cyber_access_program,
                 lifetime: None,
+                child_directory: prepared.directory,
             },
         })
         .await
@@ -207,6 +210,7 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),
         nickname,
+        warnings,
     })
 }
 
@@ -231,6 +235,8 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl ToolOutput for SpawnAgentResult {

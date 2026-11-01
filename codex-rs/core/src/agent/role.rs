@@ -401,6 +401,13 @@ pub(crate) mod spawn_tool_spec {
             }
             _ => "",
         };
+        let role_notes = match &declaration.cwd {
+            Some(cwd) => format!(
+                "{lifetime_note}\n- Runs in `{}` with that directory's AGENTS.md and config.",
+                cwd.display()
+            ),
+            None => lifetime_note.to_string(),
+        };
         if let Some(description) = &declaration.description {
             let locked_settings_note = declaration
                 .config_file
@@ -446,9 +453,9 @@ pub(crate) mod spawn_tool_spec {
                     format!("{model_note}{provider_note}")
                 })
                 .unwrap_or_default();
-            format!("{name}: {{\n{description}{locked_settings_note}{lifetime_note}\n}}")
+            format!("{name}: {{\n{description}{locked_settings_note}{role_notes}\n}}")
         } else {
-            format!("{name}: no description{lifetime_note}")
+            format!("{name}: no description{role_notes}")
         }
     }
 }
@@ -472,6 +479,7 @@ mod built_in {
                         config_file: None,
                         nickname_candidates: None,
                         lifetime: None,
+                        cwd: None,
                     }
                 ),
                 (
@@ -487,6 +495,7 @@ Rules:
                         config_file: Some("explorer.toml".to_string().parse().unwrap_or_default()),
                         nickname_candidates: None,
                         lifetime: None,
+                        cwd: None,
                     }
                 ),
                 (
@@ -503,6 +512,7 @@ Rules:
                         config_file: None,
                         nickname_candidates: None,
                         lifetime: None,
+                        cwd: None,
                     }
                 ),
                 // Awaiter is temp removed

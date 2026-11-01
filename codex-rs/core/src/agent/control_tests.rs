@@ -5134,6 +5134,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
             config_file: None,
             nickname_candidates: Some(vec!["Atlas".to_string()]),
             lifetime: None,
+            cwd: None,
         },
     );
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
@@ -6474,4 +6475,191 @@ async fn capacity_rejected_followup_does_not_record_recovery() {
     assert_eq!(session.input_queue.wakeup_generation(), generation);
     assert_eq!(session.input_queue.trigger_turn_mailbox_count().await, 0);
     assert!(session.input_queue.suppress_automatic_starts(generation));
+}
+
+#[tokio::test]
+async fn v2_reload_keeps_child_directory_and_parent_rule_ceiling() {
+    use crate::agent::child_directory::load_child_directory_config;
+    use codex_execpolicy::Decision;
+
+    const EXPERT: &str = "experts/pricing";
+    let home = TempDir::new().expect("create temp dir");
+    let workspace = TempDir::new().expect("create workspace");
+    let root_dir = dunce::canonicalize(workspace.path())
+        .expect("canonical workspace")
+        .join("project");
+    let expert_dir = root_dir.join(EXPERT);
+    std::fs::create_dir_all(root_dir.join(".git")).expect("git marker");
+    std::fs::write(root_dir.join(".git/HEAD"), "ref: refs/heads/main\n").expect("git HEAD");
+    std::fs::create_dir_all(expert_dir.join(".codex/rules")).expect("expert rules dir");
+    std::fs::write(
+        expert_dir.join(".codex/config.toml"),
+        "developer_instructions = \"You are the pricing expert.\"\n",
+    )
+    .expect("expert config");
+    std::fs::write(
+        expert_dir.join(".codex/rules/expert.rules"),
+        "prefix_rule(pattern=[\"rm\"], decision=\"allow\")\nprefix_rule(pattern=[\"curl\"], decision=\"forbidden\")\n",
+    )
+    .expect("expert rules");
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "[projects.{key:?}]\ntrust_level = \"trusted\"\n",
+            key = codex_config::loader::project_trust_key(&root_dir)
+        ),
+    )
+    .expect("user config");
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .cli_overrides(vec![(
+            "model".to_string(),
+            TomlValue::String("gpt-5.5".to_string()),
+        )])
+        .harness_overrides(crate::config::ConfigOverrides {
+            cwd: Some(root_dir.clone()),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("load test config");
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    // The role sets the same key as the directory; the role wins at spawn and after reload.
+    let role_file = config.codex_home.join("pricing-role.toml");
+    std::fs::write(
+        role_file.as_path(),
+        "developer_instructions = \"Role instructions win.\"\n",
+    )
+    .expect("role file");
+    config.agent_roles.insert(
+        "pricing".to_string(),
+        AgentRoleConfig {
+            description: Some("Pricing expert".to_string()),
+            config_file: Some(role_file.to_path_buf()),
+            ..Default::default()
+        },
+    );
+    config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let root = harness
+        .manager
+        .start_thread(StartThreadOptions::new(harness.config.clone()))
+        .await
+        .expect("start root thread");
+    let control = root
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.thread.session.session_id());
+
+    let mut child_config = harness.config.clone();
+    let parent_cwd = child_config.cwd.clone();
+    let mut directory_config = load_child_directory_config(
+        &child_config,
+        &parent_cwd,
+        Some(std::path::Path::new(EXPERT)),
+    )
+    .await
+    .expect("child directory config")
+    .expect("child directory applies");
+    directory_config
+        .apply_settings(&mut child_config)
+        .expect("directory settings");
+    crate::agent::role::apply_role_to_config(&mut child_config, Some("pricing"))
+        .await
+        .expect("role applies");
+    directory_config
+        .apply_runtime(&mut child_config)
+        .expect("directory runtime");
+    let source = thread_spawn_source(
+        root.thread.session.thread_id,
+        &root.thread.session_source,
+        next_thread_spawn_depth(&root.thread.session_source),
+        Some("pricing"),
+        Some("pricing".to_string()),
+    )
+    .expect("child source");
+    let spawned = control
+        .spawn_agent_with_metadata(
+            child_config,
+            text_input("hello expert"),
+            source,
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread.session.thread_id),
+                child_directory: Some(directory_config.directory().clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn child in directory");
+    let expert = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&expert_dir)
+        .expect("absolute expert");
+    let check_child = |thread: Arc<CodexThread>| {
+        let expert = expert.clone();
+        async move {
+            let snapshot = thread.config_snapshot().await;
+            assert_eq!(snapshot.cwd(), &expert);
+            for selection in snapshot.environment_selections() {
+                assert_eq!(selection.cwd, PathUri::from_abs_path(&expert));
+            }
+            let rules = thread.session.services.exec_policy.current();
+            let decide = |command: &[&str]| {
+                let command = command.iter().map(ToString::to_string).collect::<Vec<_>>();
+                rules.check(&command, &|_| Decision::Prompt).decision
+            };
+            // The directory's `allow` is ignored; its `forbidden` applies.
+            assert_eq!(decide(&["rm", "-rf", "build"]), Decision::Prompt);
+            assert_eq!(decide(&["curl", "example.com"]), Decision::Forbidden);
+            assert_eq!(
+                thread
+                    .session
+                    .get_config()
+                    .await
+                    .developer_instructions
+                    .as_deref(),
+                Some("Role instructions win.")
+            );
+        }
+    };
+    let child_thread = harness
+        .manager
+        .get_thread(spawned.thread_id)
+        .await
+        .expect("child thread should exist");
+    check_child(Arc::clone(&child_thread)).await;
+
+    child_thread
+        .inject_response_items(vec![assistant_message(
+            "expert persisted",
+            Some(MessagePhase::FinalAnswer),
+        )])
+        .await
+        .expect("child rollout should persist");
+    child_thread
+        .shutdown_and_wait()
+        .await
+        .expect("child thread should shut down");
+    assert!(
+        harness
+            .manager
+            .remove_thread(&spawned.thread_id)
+            .await
+            .is_some()
+    );
+    let _pin = control
+        .ensure_v2_agent_loaded(
+            harness.config.clone(),
+            spawned.thread_id,
+            /*parent*/ None,
+        )
+        .await
+        .expect("child should reload");
+    let reloaded = harness
+        .manager
+        .get_thread(spawned.thread_id)
+        .await
+        .expect("reloaded child should exist");
+    check_child(reloaded).await;
 }

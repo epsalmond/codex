@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::HooksToml;
 use crate::browser_use::BrowserUseConfigToml;
@@ -1129,6 +1130,7 @@ pub struct AgentsToml {
     /// config_file = "./agents/researcher.toml"
     /// nickname_candidates = ["Herodotus", "Ibn Battuta"]
     /// lifetime = "persistent"
+    /// cwd = "experts/research"
     /// ```
     #[serde(default, flatten)]
     pub roles: BTreeMap<String, AgentRoleToml>,
@@ -1150,6 +1152,11 @@ pub struct AgentRoleToml {
 
     /// MultiAgentV2 lifetime for agents spawned with this role; without it, agents use `task`.
     pub lifetime: Option<AgentLifetime>,
+
+    /// Working directory for agents spawned with this role, relative to the spawning agent's
+    /// cwd. The child loads that directory's `.codex` config, AGENTS.md, hooks, and MCP servers
+    /// as if Codex had started there; the parent's permissions remain its ceiling.
+    pub cwd: Option<PathBuf>,
 }
 
 /// How long a spawned MultiAgentV2 agent stays available after it reports.

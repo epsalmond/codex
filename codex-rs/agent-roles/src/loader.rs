@@ -159,6 +159,7 @@ async fn read_declared_role(
         role.description = parsed_file.description.or(role.description);
         role.nickname_candidates = parsed_file.nickname_candidates.or(role.nickname_candidates);
         role.lifetime = parsed_file.lifetime.or(role.lifetime);
+        role.cwd = parsed_file.cwd.or(role.cwd);
     }
 
     Ok((role_name, role))
@@ -172,6 +173,7 @@ fn merge_missing_role_fields(role: &mut AgentRoleConfig, fallback: &AgentRoleCon
         .clone()
         .or(fallback.nickname_candidates.clone());
     role.lifetime = role.lifetime.or(fallback.lifetime);
+    role.cwd = role.cwd.clone().or(fallback.cwd.clone());
 }
 
 fn agents_toml_from_layer(
@@ -216,6 +218,7 @@ async fn agent_role_config_from_toml(
         config_file: config_file.map(AbsolutePathBuf::into_path_buf),
         nickname_candidates,
         lifetime: role.lifetime,
+        cwd: role.cwd.clone(),
     })
 }
 
@@ -331,6 +334,7 @@ async fn discover_agent_roles_in_dir(
                 config_file: Some(agent_file.to_path_buf()),
                 nickname_candidates: parsed_file.nickname_candidates,
                 lifetime: parsed_file.lifetime,
+                cwd: parsed_file.cwd,
             },
         );
     }

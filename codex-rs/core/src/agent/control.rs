@@ -677,6 +677,87 @@ impl LocalAgentControl {
         Some(Arc::clone(&parent_thread.session.services.exec_policy))
     }
 
+    /// Rules for a child in a subdirectory: the parent's live rules, session approvals included,
+    /// plus the directory's `prompt` and `forbidden` rules. The directory's `allow` rules are
+    /// ignored, so they cannot let a command skip the parent's approval or sandbox.
+    ///
+    /// When the parent is not loaded, its rules are rebuilt from the child's sources without the
+    /// directory's layers, which is what the parent itself would load.
+    ///
+    /// `verify_parent_sources` rejects a reload whose rule sources differ from the parent's for a
+    /// reason other than the directory. A fresh spawn or resume derives the child config from
+    /// the parent's turn, so it skips the check.
+    pub(super) async fn child_directory_exec_policy(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        parent_thread_id: Option<ThreadId>,
+        child_config: &Config,
+        directory: &crate::agent::child_directory::ChildDirectory,
+        verify_parent_sources: bool,
+    ) -> CodexResult<Arc<crate::exec_policy::ExecPolicyManager>> {
+        let parent = match parent_thread_id {
+            Some(parent_thread_id) => state.get_thread(parent_thread_id).await.ok(),
+            None => None,
+        };
+        let base = match parent {
+            Some(parent) => {
+                let parent_config = parent.session.get_config().await;
+                if verify_parent_sources
+                    && !crate::exec_policy::child_uses_parent_exec_policy_except(
+                        &parent_config,
+                        child_config,
+                        &directory.rule_folders,
+                    )
+                {
+                    return Err(CodexErr::InvalidRequest(
+                        "parent execution policy has changed; retry through the parent".to_string(),
+                    ));
+                }
+                Arc::clone(&parent.session.services.exec_policy)
+            }
+            None => {
+                let project_layers = child_config
+                    .config_layer_stack
+                    .all_layers_low_to_high()
+                    .filter(|layer| match &layer.name {
+                        codex_config::ConfigLayerSource::Project { dot_codex_folder } => {
+                            !directory.rule_folders.contains(dot_codex_folder)
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect();
+                let parent_stack = child_config
+                    .config_layer_stack
+                    .with_project_layers(project_layers)
+                    .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
+                let policy = crate::exec_policy::load_exec_policy(&parent_stack)
+                    .await
+                    .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
+                Arc::new(crate::exec_policy::ExecPolicyManager::new(Arc::new(policy)))
+            }
+        };
+        let restrictions = if child_config
+            .config_layer_stack
+            .ignore_user_and_project_exec_policy_rules()
+        {
+            codex_execpolicy::Policy::empty()
+        } else {
+            crate::exec_policy::load_exec_policy_restrictions(&directory.rule_folders)
+                .await
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!(
+                        "cwd `{}` rules could not be loaded: {err}",
+                        directory.relative.display()
+                    ))
+                })?
+        };
+        Ok(crate::exec_policy::ExecPolicyManager::with_restrictions(
+            &base,
+            &restrictions,
+        ))
+    }
+
     async fn persist_thread_spawn_edge_for_source(
         &self,
         child_thread: &crate::CodexThread,

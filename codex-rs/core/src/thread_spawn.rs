@@ -42,6 +42,8 @@ pub(crate) struct ThreadSpawnResult {
     pub agent: LiveAgent,
     pub config: ThreadConfigSnapshot,
     pub task_name: AgentPath,
+    /// Non-fatal child-directory problems, such as untrusted project config left unloaded.
+    pub warnings: Vec<String>,
 }
 
 /// Separates preparation errors from backend failures to preserve native tool error reporting.
@@ -89,11 +91,14 @@ pub(crate) async fn spawn(
             role_name,
             model: model.as_deref(),
             reasoning_effort,
+            cwd: None,
         },
     )
     .await
     .map_err(ThreadSpawnError::Preparation)?;
     let config = prepared.config;
+    let child_directory = prepared.directory;
+    let warnings = prepared.warnings;
     // The agent type sets the lifetime; `spawn_agent` has no `lifetime` parameter because the
     // server requires reserved collaboration tools to keep upstream's parameter schema.
     let lifetime =
@@ -141,6 +146,7 @@ pub(crate) async fn spawn(
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 cyber_access_program: turn.cyber_access_program,
                 lifetime: Some(lifetime),
+                child_directory,
             },
         })
         .await?;
@@ -148,5 +154,6 @@ pub(crate) async fn spawn(
         agent,
         config,
         task_name,
+        warnings,
     })
 }

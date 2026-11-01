@@ -5999,6 +5999,7 @@ enabled = false
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
             lifetime: None,
+            cwd: None,
         },
     );
     crate::agent::role::apply_role_to_config(&mut child_config, Some("custom"))
@@ -13870,6 +13871,7 @@ async fn restored_agent_lifetime_follows_its_role() {
             config_file: None,
             nickname_candidates: None,
             lifetime: Some(AgentLifetime::Persistent),
+            cwd: None,
         },
     );
     let spawned_as = |agent_role: Option<&str>| {

@@ -1,6 +1,7 @@
 pub(crate) mod agent_resolver;
 pub(crate) mod api;
 pub(crate) mod child_config;
+pub(crate) mod child_directory;
 pub(crate) mod control;
 mod registry;
 pub(crate) mod role;

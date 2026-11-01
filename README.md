@@ -442,6 +442,67 @@ rules and current limitations.
 A provider-switching role cannot fork the parent's history; spawn it with
 `fork_turns = "none"` (the default).
 
+### Subagents in a subdirectory
+
+An agent role can run its children in a subdirectory of the spawning agent's
+working directory, so a project can keep "experts" in subdirectories, each
+with its own `AGENTS.md`, `.codex/config.toml`, hooks, rules, and MCP servers:
+
+```toml
+# <project>/.codex/config.toml (or ~/.codex/config.toml)
+
+[agents.pricing]
+description = "Pricing expert. Ask it anything about pricing rules."
+cwd = "experts/pricing"
+```
+
+`spawn_agent(agent_type="pricing")` then starts the child as if Codex had
+been started in `experts/pricing`: its shell and file tools run there, it
+reads that directory's `AGENTS.md`, and it loads the `.codex` layers between
+that directory and its project root on top of the parent's project layers
+(which stay even if the subdirectory is its own repository). A role file can
+set `cwd` too.
+
+- `cwd` is relative to the spawning agent's cwd and must be an existing
+  directory inside it; `..`, absolute paths, and symlinks that escape are
+  rejected. Symlinks inside the parent's cwd are resolved, while the child's
+  path keeps the parent's spelling of its own cwd so it stays inside the
+  parent's workspace roots.
+- Settings the subdirectory's own `.codex` layers set (model, reasoning
+  effort and summary, verbosity, personality, developer instructions, MCP
+  servers, AGENTS.md limits) win over the parent's; anything they leave unset
+  is inherited. Explicit `spawn_agent` `model` and `reasoning_effort`
+  arguments, then the role's `config_file`, still win over the directory.
+  Feature flags from the directory can only switch capabilities off, and
+  `profile`/`[profiles.*]` are ignored in project config as usual.
+- The parent's authority is a ceiling the directory can tighten but never
+  loosen:
+  - approval policy: a directory value applies only if it opens no approval
+    path the parent lacks (for a `granular` parent, every category must stay
+    as strict); permissions are intersected with the parent's;
+  - command rules: the child follows the parent's live rules, so "don't ask
+    again" approvals made in either agent reach both, and the directory adds
+    only its `prompt` and `forbidden` rules; its `allow` rules are ignored;
+  - the directory's own layers cannot grant approval authority:
+    `approvals_reviewer` is dropped and any `approve` tool approval mode for
+    MCP servers or `[apps]` becomes `auto`, including after an MCP or config
+    refresh. Its MCP servers still run, and each call goes through the child's
+    approval policy and sandbox;
+  - hooks from the directory follow the normal per-hook trust review.
+  Anything ignored is reported in the `spawn_agent` result's `warnings`.
+- Normal project trust applies. If the project is untrusted, the
+  subdirectory's layers stay disabled, the child keeps the parent's settings,
+  and `warnings` says which layers were skipped.
+- The child's thread records its directory, so a cold reload or a resume
+  after restart puts it back there with the same settings and order. If that
+  directory no longer exists, the resume fails rather than falling back to
+  the parent's settings.
+- `cwd` applies wherever the role is applied: typed spawns and untyped
+  spawns that use the default role, but not full-history forks without
+  `agent_type`. Roles without `cwd` behave exactly as before. `spawn_agent`
+  itself has no `cwd` argument: it lives in the reserved `collaboration` tool
+  namespace, whose parameters must match upstream.
+
 ### Automatic goal continuation
 
 When Goals is enabled, the host checks admitted automatic goal turns for empty
