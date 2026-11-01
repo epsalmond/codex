@@ -127,9 +127,7 @@ pub(crate) async fn prepare_agent_spawn_config(
         requested_reasoning_effort.clone(),
     )
     .await;
-    if !options.full_history_fork
-        || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
-    {
+    if applies_role {
         // The root catalog only describes the root provider, so a role that switches providers
         // keeps the unchecked request instead of failing on it.
         if requested_overrides.is_err() {

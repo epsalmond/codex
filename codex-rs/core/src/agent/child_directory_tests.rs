@@ -3,6 +3,7 @@ use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::exec_policy::ExecPolicyManager;
 use crate::exec_policy::load_exec_policy_restrictions;
+use codex_config::AppToolApproval;
 use codex_config::loader::project_trust_key;
 use codex_execpolicy::Decision;
 use codex_protocol::protocol::GranularApprovalConfig;
@@ -513,7 +514,7 @@ fn approval_ceiling_never_opens_an_approval_path() {
 }
 
 #[tokio::test]
-async fn child_directory_uses_the_canonical_path() {
+async fn child_directory_resolves_symlinks_inside_the_parent() {
     let fixture = Fixture::new("", "", true);
     let expert = fixture.root.join(EXPERT);
     #[cfg(unix)]
@@ -541,9 +542,10 @@ fn rebases_environments_whose_cwd_matches_after_normalization() {
     {
         std::os::unix::fs::symlink(base.join("project"), base.join("alias")).expect("symlink");
         let alias = AbsolutePathBuf::from_absolute_path(base.join("alias")).expect("abs");
+        // The environment keeps its own spelling of the path.
         assert_eq!(
             directory.rebase_environment_cwd(&PathUri::from_abs_path(&alias)),
-            Some(PathUri::from_abs_path(&directory.cwd))
+            Some(PathUri::from_abs_path(&alias.join(EXPERT)))
         );
     }
 }
@@ -581,4 +583,187 @@ async fn child_directory_profiles_are_ignored_with_a_warning() {
         warnings.iter().any(|warning| warning.contains("profile")),
         "{warnings:?}"
     );
+}
+
+#[tokio::test]
+async fn child_directory_cannot_grant_app_mcp_or_reviewer_authority() {
+    let fixture = Fixture::new(
+        "",
+        r#"
+approvals_reviewer = "auto_review"
+
+[apps._default]
+default_tools_approval_mode = "approve"
+approvals_reviewer = "auto_review"
+
+[apps.calendar.tools.create_event]
+approval_mode = "approve"
+
+[mcp_servers.pricing]
+command = "pricing-mcp"
+default_tools_approval_mode = "approve"
+"#,
+        true,
+    );
+    let parent = fixture.parent_config().await;
+    let (child, _) = fixture.child_config(&parent).await;
+    let effective = child.config_layer_stack.effective_config();
+
+    assert_eq!(
+        effective["apps"]["_default"]["default_tools_approval_mode"].as_str(),
+        Some("auto")
+    );
+    assert_eq!(
+        effective["apps"]["calendar"]["tools"]["create_event"]["approval_mode"].as_str(),
+        Some("auto")
+    );
+    assert_eq!(
+        effective["mcp_servers"]["pricing"]["default_tools_approval_mode"].as_str(),
+        Some("auto")
+    );
+    assert!(effective.get("approvals_reviewer").is_none());
+    assert!(
+        effective["apps"]["_default"]
+            .get("approvals_reviewer")
+            .is_none()
+    );
+    assert_eq!(
+        crate::connectors::mcp_approvals_reviewer_from_layers(
+            &child.config_layer_stack,
+            codex_protocol::config_types::ApprovalsReviewer::User,
+            /*model*/ None,
+            codex_mcp::CODEX_APPS_MCP_SERVER_NAME,
+            Some("calendar"),
+            /*link_id*/ None,
+        ),
+        codex_protocol::config_types::ApprovalsReviewer::User
+    );
+}
+
+#[tokio::test]
+async fn mcp_refresh_keeps_the_child_directory_cap() {
+    let fixture = Fixture::new(
+        "",
+        "[mcp_servers.pricing]\ncommand = \"pricing-mcp\"\ndefault_tools_approval_mode = \"approve\"\n",
+        true,
+    );
+    let parent = fixture.parent_config().await;
+    let (child, _) = fixture.child_config(&parent).await;
+    // The host reloads config from the child's cwd, which sees the uncapped directory layer.
+    let incoming = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(fixture.codex_home.clone())
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(child.cwd.to_path_buf()),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("refreshed config");
+    assert_eq!(
+        incoming.mcp_servers.get()["pricing"].default_tools_approval_mode,
+        Some(AppToolApproval::Approve)
+    );
+    for scope in [
+        crate::config::RuntimeConfigRefresh::Mcp,
+        crate::config::RuntimeConfigRefresh::User,
+    ] {
+        let refreshed = child
+            .resolve_runtime_refresh(&incoming, scope)
+            .expect("refresh");
+        assert_eq!(
+            refreshed.mcp_servers.get()["pricing"].default_tools_approval_mode,
+            Some(AppToolApproval::Auto)
+        );
+        assert_eq!(
+            refreshed.config_layer_stack.effective_config()["mcp_servers"]["pricing"]
+                ["default_tools_approval_mode"]
+                .as_str(),
+            Some("auto")
+        );
+    }
+}
+
+#[tokio::test]
+async fn child_directory_rules_follow_live_approvals_both_ways() {
+    let fixture = Fixture::new("", "", true);
+    write(
+        fixture
+            .root
+            .join(EXPERT)
+            .join(".codex/rules/expert.rules")
+            .as_path(),
+        r#"prefix_rule(pattern=["curl"], decision="forbidden")"#,
+    );
+    let parent = fixture.parent_config().await;
+    let directory_config =
+        load_child_directory_config(&parent, &fixture.root, Some(Path::new(EXPERT)))
+            .await
+            .expect("child directory config")
+            .expect("child directory applies");
+    let (parent_rules, child) = child_rules(&parent, directory_config.directory()).await;
+    let approve = |command: &[&str]| codex_protocol::approvals::ExecPolicyAmendment {
+        command: command.iter().map(ToString::to_string).collect(),
+    };
+
+    parent_rules
+        .append_amendment_and_update(&fixture.codex_home, &approve(&["make"]))
+        .await
+        .expect("parent approval");
+    assert_eq!(decision(&child, &["make"]), Decision::Allow);
+    child
+        .append_amendment_and_update(&fixture.codex_home, &approve(&["cargo", "test"]))
+        .await
+        .expect("child approval");
+    assert_eq!(decision(&parent_rules, &["cargo", "test"]), Decision::Allow);
+    assert_eq!(
+        decision(&child, &["curl", "example.com"]),
+        Decision::Forbidden
+    );
+}
+
+#[tokio::test]
+async fn deleted_recorded_directory_fails_closed() {
+    let tmp = TempDir::new().expect("tempdir");
+    let base = dunce::canonicalize(tmp.path()).expect("canonical");
+    fs::create_dir_all(base.join("project")).expect("dirs");
+    let parent_cwd = AbsolutePathBuf::from_absolute_path(base.join("project")).expect("abs");
+    let err = ChildDirectory::from_thread_cwd(&parent_cwd, &base.join("project").join(EXPERT))
+        .expect_err("a vanished directory must not resume with the parent's settings");
+    assert!(err.contains("can no longer be used"), "{err}");
+}
+
+#[tokio::test]
+async fn child_cwd_stays_inside_the_parents_workspace_roots() {
+    let fixture = Fixture::new("sandbox_mode = \"workspace-write\"\n", "", true);
+    #[cfg(unix)]
+    {
+        // The parent sees its cwd through a symlink, as macOS does for `/var`.
+        let alias = fixture
+            .root
+            .as_path()
+            .parent()
+            .expect("parent")
+            .join("alias");
+        std::os::unix::fs::symlink(fixture.root.as_path(), &alias).expect("symlink");
+        let parent = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(fixture.codex_home.clone())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(alias.clone()),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("parent config");
+        let alias = AbsolutePathBuf::from_absolute_path(&alias).expect("abs");
+        let directory = ChildDirectory::resolve(&alias, Path::new(EXPERT))
+            .expect("valid")
+            .expect("directory");
+        assert_eq!(directory.cwd, alias.join(EXPERT));
+        for root in &parent.workspace_roots {
+            assert!(
+                directory.cwd.as_path().starts_with(root.as_path()),
+                "{root:?}"
+            );
+        }
+    }
 }

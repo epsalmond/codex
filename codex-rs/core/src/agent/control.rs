@@ -683,12 +683,17 @@ impl LocalAgentControl {
     ///
     /// When the parent is not loaded, its rules are rebuilt from the child's sources without the
     /// directory's layers, which is what the parent itself would load.
+    ///
+    /// `verify_parent_sources` rejects a reload whose rule sources differ from the parent's for a
+    /// reason other than the directory. A fresh spawn or resume derives the child config from
+    /// the parent's turn, so it skips the check.
     pub(super) async fn child_directory_exec_policy(
         &self,
         state: &Arc<ThreadManagerState>,
         parent_thread_id: Option<ThreadId>,
         child_config: &Config,
         directory: &crate::agent::child_directory::ChildDirectory,
+        verify_parent_sources: bool,
     ) -> CodexResult<Arc<crate::exec_policy::ExecPolicyManager>> {
         let parent = match parent_thread_id {
             Some(parent_thread_id) => state.get_thread(parent_thread_id).await.ok(),
@@ -697,11 +702,13 @@ impl LocalAgentControl {
         let base = match parent {
             Some(parent) => {
                 let parent_config = parent.session.get_config().await;
-                if !crate::exec_policy::child_uses_parent_exec_policy_except(
-                    &parent_config,
-                    child_config,
-                    &directory.rule_folders,
-                ) {
+                if verify_parent_sources
+                    && !crate::exec_policy::child_uses_parent_exec_policy_except(
+                        &parent_config,
+                        child_config,
+                        &directory.rule_folders,
+                    )
+                {
                     return Err(CodexErr::InvalidRequest(
                         "parent execution policy has changed; retry through the parent".to_string(),
                     ));

@@ -112,6 +112,50 @@ impl LoaderOverrides {
     }
 }
 
+/// Top-level keys a child agent's directory may not set in its layers. The child's approval
+/// policy and permissions are clamped to the parent's from the directory's request instead.
+const CHILD_DIRECTORY_AUTHORITY_KEYS: &[&str] = &[
+    "approval_policy",
+    "sandbox_mode",
+    "sandbox_workspace_write",
+    "default_permissions",
+    "permissions",
+];
+
+/// Removes approval and reviewer authority from a child directory's layer.
+///
+/// Every reader of the layer stack (MCP and app tool approval, reviewer selection, permission
+/// profile lookup) then sees only what the parent allows: `approvals_reviewer` is dropped at any
+/// depth, any `approve` tool approval mode becomes `auto`, and the permission keys are removed.
+pub fn cap_child_directory_layer(config: &mut TomlValue) {
+    fn cap(value: &mut TomlValue) {
+        match value {
+            TomlValue::Table(table) => {
+                table.remove("approvals_reviewer");
+                for (key, value) in table.iter_mut() {
+                    if matches!(
+                        key.as_str(),
+                        "default_tools_approval_mode" | "approval_mode"
+                    ) && value.as_str() == Some("approve")
+                    {
+                        *value = TomlValue::String("auto".to_string());
+                    } else {
+                        cap(value);
+                    }
+                }
+            }
+            TomlValue::Array(items) => items.iter_mut().for_each(cap),
+            _ => {}
+        }
+    }
+    if let Some(table) = config.as_table_mut() {
+        for key in CHILD_DIRECTORY_AUTHORITY_KEYS {
+            table.remove(*key);
+        }
+    }
+    cap(config);
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigLayerEntry {
     pub name: ConfigLayerSource,
@@ -179,6 +223,20 @@ impl ConfigLayerEntry {
 
     pub fn is_disabled(&self) -> bool {
         self.disabled_reason.is_some()
+    }
+
+    /// This layer with [`cap_child_directory_layer`] applied to its settings.
+    pub fn capped_for_child_directory(&self) -> Self {
+        let mut config = self.config.clone();
+        cap_child_directory_layer(&mut config);
+        Self {
+            name: self.name.clone(),
+            version: version_for_toml(&config),
+            config,
+            disabled_reason: self.disabled_reason.clone(),
+            raw_toml: None,
+            hooks_config_folder_override: self.hooks_config_folder_override.clone(),
+        }
     }
 
     pub fn raw_toml(&self) -> Option<&str> {
@@ -279,6 +337,9 @@ pub struct ConfigLayerStack {
     pub(crate) is_projectless: bool,
     /// Whether the loader skipped project `.codex` layers for this stack.
     pub(crate) project_config_ignored: bool,
+    /// `.codex` folders a child agent's directory added; their layers are capped so they
+    /// cannot grant approval or reviewer authority, and refreshes keep that cap.
+    child_directory_folders: Vec<AbsolutePathBuf>,
 }
 
 impl PartialEq for ConfigLayerStack {
@@ -295,6 +356,7 @@ impl PartialEq for ConfigLayerStack {
             startup_warnings,
             is_projectless,
             project_config_ignored: _,
+            child_directory_folders: _,
         } = self;
         applied_config_server == &other.applied_config_server
             && model_provider_requirements == &other.model_provider_requirements
@@ -331,6 +393,7 @@ impl ConfigLayerStack {
             startup_warnings: None,
             is_projectless: false,
             project_config_ignored: false,
+            child_directory_folders: Vec::new(),
         };
         stack.validate_project_mitm_profiles()?;
         Ok(stack)
@@ -449,6 +512,27 @@ impl ConfigLayerStack {
         self.project_config_ignored
     }
 
+    /// `.codex` folders added by a child agent's directory, whose layers are capped.
+    pub fn child_directory_folders(&self) -> &[AbsolutePathBuf] {
+        &self.child_directory_folders
+    }
+
+    /// Marks `folders` as a child directory's layers and caps them with
+    /// [`cap_child_directory_layer`].
+    pub fn with_child_directory_folders(&self, folders: Vec<AbsolutePathBuf>) -> Self {
+        let mut stack = self.clone();
+        for layer in &mut stack.layers {
+            if layer
+                .config_folder()
+                .is_some_and(|folder| folders.contains(&folder))
+            {
+                *layer = layer.capped_for_child_directory();
+            }
+        }
+        stack.child_directory_folders = folders;
+        stack
+    }
+
     /// Returns the active raw user config layer, if any.
     ///
     /// This does not merge other config layers or apply any requirements. When
@@ -560,6 +644,7 @@ impl ConfigLayerStack {
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
             project_config_ignored: self.project_config_ignored,
+            child_directory_folders: self.child_directory_folders.clone(),
         })
     }
 
@@ -607,6 +692,7 @@ impl ConfigLayerStack {
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
             project_config_ignored: self.project_config_ignored,
+            child_directory_folders: self.child_directory_folders.clone(),
         };
         stack.validate_project_mitm_profiles()?;
         Ok(stack)
@@ -649,6 +735,7 @@ impl ConfigLayerStack {
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
             project_config_ignored: self.project_config_ignored,
+            child_directory_folders: self.child_directory_folders.clone(),
         }
     }
 

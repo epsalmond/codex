@@ -292,6 +292,18 @@ impl From<ExecPolicyRuleError> for ExecPolicyUpdateError {
 pub(crate) struct ExecPolicyManager {
     policy: ArcSwap<Policy>,
     update_lock: Semaphore,
+    /// Set for a child directory: rules come from the parent's live manager plus restrictions.
+    overlay: Option<ExecPolicyOverlay>,
+}
+
+/// A child directory's view of its parent's rules: always the parent's current rules, with the
+/// directory's `prompt` and `forbidden` rules on top. Amendments go to the parent, so approvals
+/// made in either agent reach both.
+struct ExecPolicyOverlay {
+    parent: Arc<ExecPolicyManager>,
+    restrictions: Arc<Policy>,
+    /// The last merge, keyed by the parent policy it was built from.
+    merged: ArcSwap<(Arc<Policy>, Arc<Policy>)>,
 }
 
 pub(crate) struct ExecApprovalRequest<'a> {
@@ -312,6 +324,7 @@ impl ExecPolicyManager {
         Self {
             policy: ArcSwap::from(policy),
             update_lock: Semaphore::new(/*permits*/ 1),
+            overlay: None,
         }
     }
 
@@ -325,18 +338,40 @@ impl ExecPolicyManager {
     }
 
     pub(crate) fn current(&self) -> Arc<Policy> {
-        self.policy.load_full()
+        let Some(overlay) = &self.overlay else {
+            return self.policy.load_full();
+        };
+        let parent = overlay.parent.current();
+        let cached = overlay.merged.load();
+        if Arc::ptr_eq(&cached.0, &parent) {
+            return Arc::clone(&cached.1);
+        }
+        let merged = Arc::new(parent.merge_overlay(&overlay.restrictions));
+        overlay
+            .merged
+            .store(Arc::new((parent, Arc::clone(&merged))));
+        merged
     }
 
-    /// Rules for a child that adds `restrictions` to this live policy, session approvals
-    /// included. Without restrictions the child shares this manager, as other children do.
+    /// Rules for a child that adds `restrictions` to this manager's live rules, so approvals
+    /// made later in either agent reach both. Without restrictions the child shares this
+    /// manager, as other children do.
     pub(crate) fn with_restrictions(parent: &Arc<Self>, restrictions: &Policy) -> Arc<Self> {
         if restrictions.rules().is_empty() && restrictions.network_rules().is_empty() {
             return Arc::clone(parent);
         }
-        Arc::new(Self::new(Arc::new(
-            parent.current().merge_overlay(restrictions),
-        )))
+        let parent_policy = parent.current();
+        let restrictions = Arc::new(restrictions.clone());
+        let merged = Arc::new(parent_policy.merge_overlay(&restrictions));
+        Arc::new(Self {
+            policy: ArcSwap::from(Arc::clone(&merged)),
+            update_lock: Semaphore::new(/*permits*/ 1),
+            overlay: Some(ExecPolicyOverlay {
+                parent: Arc::clone(parent),
+                restrictions,
+                merged: ArcSwap::from_pointee((parent_policy, merged)),
+            }),
+        })
     }
 
     #[cfg(test)]
@@ -493,6 +528,14 @@ impl ExecPolicyManager {
         codex_home: &Path,
         amendment: &ExecPolicyAmendment,
     ) -> Result<(), ExecPolicyUpdateError> {
+        if let Some(overlay) = &self.overlay {
+            return Box::pin(
+                overlay
+                    .parent
+                    .append_amendment_and_update(codex_home, amendment),
+            )
+            .await;
+        }
         let _update_guard =
             self.update_lock
                 .acquire()
@@ -546,6 +589,16 @@ impl ExecPolicyManager {
         decision: Decision,
         justification: Option<String>,
     ) -> Result<(), ExecPolicyUpdateError> {
+        if let Some(overlay) = &self.overlay {
+            return Box::pin(overlay.parent.append_network_rule_and_update(
+                codex_home,
+                host,
+                protocol,
+                decision,
+                justification,
+            ))
+            .await;
+        }
         let _update_guard =
             self.update_lock
                 .acquire()
@@ -693,25 +746,32 @@ pub(crate) async fn load_exec_policy_with_warning(
 pub(crate) async fn load_exec_policy_restrictions(
     folders: &[AbsolutePathBuf],
 ) -> Result<Policy, ExecPolicyError> {
-    let mut parser = PolicyParser::new();
+    let mut policy_paths = Vec::new();
     for folder in folders {
-        for policy_path in collect_policy_files(folder.join(RULES_DIR_NAME)).await? {
-            let contents = fs::read_to_string(&policy_path).await.map_err(|source| {
-                ExecPolicyError::ReadFile {
+        policy_paths.extend(collect_policy_files(folder.join(RULES_DIR_NAME)).await?);
+    }
+    Ok(parse_policy_files(&policy_paths).await?.restrictions_only())
+}
+
+async fn parse_policy_files(policy_paths: &[PathBuf]) -> Result<Policy, ExecPolicyError> {
+    let mut parser = PolicyParser::new();
+    for policy_path in policy_paths {
+        let contents =
+            fs::read_to_string(policy_path)
+                .await
+                .map_err(|source| ExecPolicyError::ReadFile {
                     path: policy_path.clone(),
                     source,
-                }
+                })?;
+        let identifier = policy_path.to_string_lossy().to_string();
+        parser
+            .parse(&identifier, &contents)
+            .map_err(|source| ExecPolicyError::ParsePolicy {
+                path: identifier,
+                source,
             })?;
-            let identifier = policy_path.to_string_lossy().to_string();
-            parser.parse(&identifier, &contents).map_err(|source| {
-                ExecPolicyError::ParsePolicy {
-                    path: identifier,
-                    source,
-                }
-            })?;
-        }
     }
-    Ok(parser.build().restrictions_only())
+    Ok(parser.build())
 }
 
 pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy, ExecPolicyError> {
@@ -741,25 +801,7 @@ pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy,
         "loaded exec policies"
     );
 
-    let mut parser = PolicyParser::new();
-    for policy_path in &policy_paths {
-        let contents =
-            fs::read_to_string(policy_path)
-                .await
-                .map_err(|source| ExecPolicyError::ReadFile {
-                    path: policy_path.clone(),
-                    source,
-                })?;
-        let identifier = policy_path.to_string_lossy().to_string();
-        parser
-            .parse(&identifier, &contents)
-            .map_err(|source| ExecPolicyError::ParsePolicy {
-                path: identifier,
-                source,
-            })?;
-    }
-
-    let policy = parser.build();
+    let policy = parse_policy_files(&policy_paths).await?;
     tracing::debug!("loaded rules from {} files", policy_paths.len());
     tracing::trace!(rules = ?policy, "exec policy rules loaded");
 

@@ -6525,6 +6525,21 @@ async fn v2_reload_keeps_child_directory_and_parent_rule_ceiling() {
         .expect("load test config");
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
+    // The role sets the same key as the directory; the role wins at spawn and after reload.
+    let role_file = config.codex_home.join("pricing-role.toml");
+    std::fs::write(
+        role_file.as_path(),
+        "developer_instructions = \"Role instructions win.\"\n",
+    )
+    .expect("role file");
+    config.agent_roles.insert(
+        "pricing".to_string(),
+        AgentRoleConfig {
+            description: Some("Pricing expert".to_string()),
+            config_file: Some(role_file.to_path_buf()),
+            ..Default::default()
+        },
+    );
     config.multi_agent_v2.agent_polling = AgentPolling::Enabled;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let root = harness
@@ -6552,6 +6567,9 @@ async fn v2_reload_keeps_child_directory_and_parent_rule_ceiling() {
     directory_config
         .apply_settings(&mut child_config)
         .expect("directory settings");
+    crate::agent::role::apply_role_to_config(&mut child_config, Some("pricing"))
+        .await
+        .expect("role applies");
     directory_config
         .apply_runtime(&mut child_config)
         .expect("directory runtime");
@@ -6559,7 +6577,7 @@ async fn v2_reload_keeps_child_directory_and_parent_rule_ceiling() {
         root.thread.session.thread_id,
         &root.thread.session_source,
         next_thread_spawn_depth(&root.thread.session_source),
-        /*agent_role*/ None,
+        Some("pricing"),
         Some("pricing".to_string()),
     )
     .expect("child source");
@@ -6594,6 +6612,15 @@ async fn v2_reload_keeps_child_directory_and_parent_rule_ceiling() {
             // The directory's `allow` is ignored; its `forbidden` applies.
             assert_eq!(decide(&["rm", "-rf", "build"]), Decision::Prompt);
             assert_eq!(decide(&["curl", "example.com"]), Decision::Forbidden);
+            assert_eq!(
+                thread
+                    .session
+                    .get_config()
+                    .await
+                    .developer_instructions
+                    .as_deref(),
+                Some("Role instructions win.")
+            );
         }
     };
     let child_thread = harness

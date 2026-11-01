@@ -8,16 +8,17 @@
 //! - approval policy and permission profile are clamped to the parent's;
 //! - command rules start from the parent's live rules, and the directory adds only `prompt` and
 //!   `forbidden` rules (see [`ChildDirectory::rule_folders`]);
-//! - the directory's MCP servers run, but their tools cannot be pre-approved, so every call goes
-//!   through the child's clamped approval policy;
+//! - the directory's layers are capped ([`codex_config::cap_child_directory_layer`]): no `approvals_reviewer`,
+//!   no `approve` tool approval for MCP servers or apps, no approval or permission keys, so every
+//!   reader of the child's layer stack sees only the parent's authority;
+//! - the directory's MCP servers run, and every call goes through the child's clamped approval
+//!   policy;
 //! - the directory's hooks follow the normal per-hook trust review.
 
 use crate::config::Config;
 use crate::config::PermissionProfileSnapshot;
-use codex_config::AppToolApproval;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::McpServerConfig;
 use codex_config::loader::load_project_layers_for_cwd;
 use codex_config::merge_toml_values;
 use codex_exec_server::LOCAL_FS;
@@ -52,9 +53,11 @@ const DIRECTORY_DISABLEABLE_FEATURES: &[Feature] = &[
 /// A validated child working directory below the parent's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChildDirectory {
-    /// Path of `cwd` relative to the parent's canonical cwd, never empty.
+    /// Path of `cwd` relative to the parent's cwd with symlinks resolved, never empty.
     pub(crate) relative: PathBuf,
-    /// Canonical child cwd, so a symlink repointed after validation cannot move the child.
+    /// `relative` joined onto the parent's cwd. It keeps the parent's spelling of that prefix so
+    /// it stays lexically inside the parent's workspace roots, while `relative` holds no
+    /// symlinks that could be repointed after validation.
     pub(crate) cwd: AbsolutePathBuf,
     /// The parent's cwd as the parent sees it.
     pub(crate) parent_cwd: AbsolutePathBuf,
@@ -118,8 +121,7 @@ impl ChildDirectory {
             return Ok(None);
         }
         let relative = relative.to_path_buf();
-        let cwd = AbsolutePathBuf::from_absolute_path(&canonical_child)
-            .map_err(|err| format!("cwd `{shown}` cannot be checked: {err}"))?;
+        let cwd = parent_cwd.join(&relative);
         Ok(Some(Self {
             relative,
             cwd,
@@ -132,19 +134,33 @@ impl ChildDirectory {
     /// Recovers the directory of a child whose recorded cwd lies below `parent_cwd`.
     ///
     /// The child's thread records its cwd, so resume and cold reload restore the directory the
-    /// child actually ran in, whichever role or spawn argument chose it.
+    /// child actually ran in, whichever role or spawn argument chose it. A recorded directory
+    /// that no longer resolves fails instead of silently giving the child the parent's settings.
     pub(crate) fn from_thread_cwd(
         parent_cwd: &AbsolutePathBuf,
         thread_cwd: &Path,
     ) -> Result<Option<Self>, String> {
-        let (Ok(canonical_parent), Ok(canonical_thread)) = (
-            dunce::canonicalize(parent_cwd.as_path()),
-            dunce::canonicalize(thread_cwd),
-        ) else {
-            return Ok(None);
-        };
-        match canonical_thread.strip_prefix(&canonical_parent) {
-            Ok(relative) if !relative.as_os_str().is_empty() => Self::resolve(parent_cwd, relative),
+        let canonical_parent =
+            dunce::canonicalize(parent_cwd.as_path()).unwrap_or_else(|_| parent_cwd.to_path_buf());
+        let relative = [parent_cwd.as_path(), canonical_parent.as_path()]
+            .into_iter()
+            .find_map(|prefix| thread_cwd.strip_prefix(prefix).ok().map(Path::to_path_buf))
+            .or_else(|| {
+                dunce::canonicalize(thread_cwd)
+                    .ok()?
+                    .strip_prefix(&canonical_parent)
+                    .ok()
+                    .map(Path::to_path_buf)
+            });
+        match relative.as_deref() {
+            Some(relative) if !relative.as_os_str().is_empty() => {
+                Self::resolve(parent_cwd, relative).map_err(|err| {
+                    format!(
+                        "the agent's recorded directory {} can no longer be used: {err}",
+                        thread_cwd.display()
+                    )
+                })
+            }
             _ => Ok(None),
         }
     }
@@ -152,7 +168,9 @@ impl ChildDirectory {
     /// Moves an environment cwd at the parent's cwd into this directory.
     ///
     /// Paths are compared canonically, so a parent whose environment spells its cwd differently
-    /// (a symlink or trailing component) still moves. Other environments stay where they are.
+    /// (a symlink or trailing component) still moves. The result joins the relative path onto
+    /// the environment's own URI, so a remote environment keeps its own path. Other environments
+    /// stay where they are.
     pub(crate) fn rebase_environment_cwd(&self, environment_cwd: &PathUri) -> Option<PathUri> {
         let at_parent = *environment_cwd == PathUri::from_abs_path(&self.parent_cwd)
             || environment_cwd
@@ -160,7 +178,12 @@ impl ChildDirectory {
                 .ok()
                 .and_then(|path| dunce::canonicalize(path.as_path()).ok())
                 .is_some_and(|path| path == self.canonical_parent_cwd);
-        at_parent.then(|| PathUri::from_abs_path(&self.cwd))
+        if !at_parent {
+            return None;
+        }
+        environment_cwd
+            .join_descendant(self.relative.to_str()?)
+            .ok()
     }
 }
 
@@ -185,10 +208,13 @@ pub(crate) async fn load_child_directory_config(
 /// Settings loaded for a child directory, ready to layer onto a parent-derived child config.
 pub(crate) struct ChildDirectoryConfig {
     directory: ChildDirectory,
-    /// The parent's stack with its project layers replaced by the directory's.
+    /// The parent's stack plus the directory's layers, capped by [`codex_config::cap_child_directory_layer`].
     config_layer_stack: ConfigLayerStack,
-    /// The directory's materialized config; settings are copied from it selectively.
+    /// The capped stack materialized; settings are copied from it selectively.
     materialized: Config,
+    /// The uncapped directory request for approval and permissions, materialized only when the
+    /// directory sets them, so it can be clamped to the parent's.
+    requested: Option<Config>,
     /// Merged enabled layers that the parent's stack did not already contain.
     directory_toml: TomlValue,
     warnings: Vec<String>,
@@ -216,6 +242,7 @@ impl ChildDirectoryConfig {
             .cloned()
             .collect::<Vec<_>>();
         let mut directory_toml = TomlValue::Table(Default::default());
+        let mut directory_folders = Vec::new();
         let mut warnings = discovered.startup_warnings;
         for layer in discovered.layers {
             if project_layers
@@ -227,6 +254,7 @@ impl ChildDirectoryConfig {
             let ConfigLayerSource::Project { dot_codex_folder } = &layer.name else {
                 continue;
             };
+            directory_folders.push(dot_codex_folder.clone());
             match &layer.disabled_reason {
                 Some(reason) => warnings.push(format!(
                     "Project config in {} was not loaded for cwd `{shown}`: {reason}",
@@ -239,21 +267,31 @@ impl ChildDirectoryConfig {
             }
             project_layers.push(layer);
         }
-        let config_layer_stack = base
+        let uncapped_stack = base
             .config_layer_stack
             .with_project_layers(project_layers)
             .map_err(|err| format!("cwd `{shown}` config is invalid: {err}"))?;
+        let config_layer_stack = uncapped_stack.with_child_directory_folders(directory_folders);
         let materialized = base
             .load_for_cwd_and_layer_stack(&directory.cwd, config_layer_stack.clone())
             .await
             .map_err(|err| format!("cwd `{shown}` config is invalid: {err}"))?;
-        Ok(Self {
+        let mut loaded = Self {
             directory,
             config_layer_stack,
             materialized,
+            requested: None,
             directory_toml,
             warnings,
-        })
+        };
+        if loaded.sets("approval_policy") || PERMISSION_KEYS.iter().any(|key| loaded.sets(key)) {
+            loaded.requested = Some(
+                base.load_for_cwd_and_layer_stack(&loaded.directory.cwd, uncapped_stack)
+                    .await
+                    .map_err(|err| format!("cwd `{shown}` config is invalid: {err}"))?,
+            );
+        }
+        Ok(loaded)
     }
 
     pub(crate) fn directory(&self) -> &ChildDirectory {
@@ -294,23 +332,9 @@ impl ChildDirectoryConfig {
                 .developer_instructions
                 .clone_from(&directory.developer_instructions);
         }
-        if let Some(directory_servers) = self
-            .directory_toml
-            .get("mcp_servers")
-            .and_then(TomlValue::as_table)
-        {
-            // The directory's servers run, but none of their tools may skip approval.
-            let mut servers = directory.mcp_servers.get().clone();
-            for name in directory_servers.keys() {
-                if let Some(server) = servers.get_mut(name) {
-                    cap_mcp_tool_approval(server);
-                }
-            }
+        if self.sets("mcp_servers") {
+            // Capped by the layer cap: none of the directory's tools can skip approval.
             config.mcp_servers = directory.mcp_servers.clone();
-            config
-                .mcp_servers
-                .set(servers)
-                .map_err(|err| format!("mcp_servers is invalid: {err}"))?;
         }
         if self.sets("project_doc_max_bytes") {
             config.project_doc_max_bytes = directory.project_doc_max_bytes;
@@ -344,7 +368,9 @@ impl ChildDirectoryConfig {
     /// has been copied onto `config`. The directory can only narrow that policy.
     pub(crate) fn apply_runtime(&mut self, config: &mut Config) -> Result<(), String> {
         config.cwd = self.directory.cwd.clone();
-        let directory = &self.materialized;
+        let Some(directory) = &self.requested else {
+            return Ok(());
+        };
         let shown = self.directory.relative.display().to_string();
         if self.sets("approval_policy") {
             let parent = config.permissions.approval_policy.value();
@@ -401,16 +427,57 @@ impl ChildDirectoryConfig {
     }
 }
 
-/// Keeps a directory's MCP tools from being pre-approved; `auto` defers to the approval policy.
-fn cap_mcp_tool_approval(server: &mut McpServerConfig) {
+/// Keeps a child directory's capped project layers through a runtime refresh.
+///
+/// The host reloads project config from the child's cwd, which would bring back the directory's
+/// uncapped layers and drop the parent's; the session's own project layers are kept instead.
+pub(crate) fn keep_child_directory_layers(
+    session: &ConfigLayerStack,
+    refreshed: ConfigLayerStack,
+) -> std::io::Result<ConfigLayerStack> {
+    let folders = session.child_directory_folders();
+    if folders.is_empty() {
+        return Ok(refreshed);
+    }
+    let project_layers = session
+        .all_layers_low_to_high()
+        .filter(|layer| matches!(layer.name, ConfigLayerSource::Project { .. }))
+        .cloned()
+        .collect();
+    Ok(refreshed
+        .with_project_layers(project_layers)?
+        .with_child_directory_folders(folders.to_vec()))
+}
+
+/// Caps tool approval for refreshed MCP servers that a child directory's layers define.
+pub(crate) fn cap_child_directory_mcp_servers(
+    session: &ConfigLayerStack,
+    servers: &mut std::collections::HashMap<String, codex_config::McpServerConfig>,
+) {
+    use codex_config::AppToolApproval;
+    let folders = session.child_directory_folders();
+    let names = session
+        .all_layers_low_to_high()
+        .filter(|layer| {
+            layer
+                .config_folder()
+                .is_some_and(|folder| folders.contains(&folder))
+        })
+        .filter_map(|layer| layer.config.get("mcp_servers")?.as_table().cloned())
+        .flat_map(|table| table.into_iter().map(|(name, _)| name))
+        .collect::<Vec<_>>();
     let cap = |mode: &mut Option<AppToolApproval>| {
         if *mode == Some(AppToolApproval::Approve) {
             *mode = Some(AppToolApproval::Auto);
         }
     };
-    cap(&mut server.default_tools_approval_mode);
-    for tool in server.tools.values_mut() {
-        cap(&mut tool.approval_mode);
+    for name in names {
+        if let Some(server) = servers.get_mut(&name) {
+            cap(&mut server.default_tools_approval_mode);
+            for tool in server.tools.values_mut() {
+                cap(&mut tool.approval_mode);
+            }
+        }
     }
 }
 

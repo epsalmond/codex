@@ -199,6 +199,47 @@ async fn load_agent_model_context(
     }
 }
 
+/// Loads the directory a child's thread recorded below `config.cwd` and applies its settings.
+///
+/// Callers re-apply the child's role, then [`finish_recorded_child_directory`].
+async fn load_recorded_child_directory(
+    config: &mut Config,
+    thread_cwd: &std::path::Path,
+    context: &str,
+) -> CodexResult<Option<crate::agent::child_directory::ChildDirectoryConfig>> {
+    let invalid = |err: String| CodexErr::InvalidRequest(format!("{context}: {err}"));
+    let parent_cwd = config.cwd.clone();
+    let Some(directory) =
+        crate::agent::child_directory::ChildDirectory::from_thread_cwd(&parent_cwd, thread_cwd)
+            .map_err(invalid)?
+    else {
+        return Ok(None);
+    };
+    let directory_config =
+        crate::agent::child_directory::ChildDirectoryConfig::load(config, directory)
+            .await
+            .map_err(invalid)?;
+    directory_config.apply_settings(config).map_err(invalid)?;
+    Ok(Some(directory_config))
+}
+
+/// Clamps a recorded child directory to the parent's live policy and surfaces its warnings on
+/// the resumed thread, as spawn does in its result.
+fn finish_recorded_child_directory(
+    config: &mut Config,
+    mut directory_config: crate::agent::child_directory::ChildDirectoryConfig,
+    context: &str,
+) -> CodexResult<crate::agent::child_directory::ChildDirectory> {
+    directory_config
+        .apply_runtime(config)
+        .map_err(|err| CodexErr::InvalidRequest(format!("{context}: {err}")))?;
+    let directory = directory_config.directory().clone();
+    config
+        .startup_warnings
+        .extend(directory_config.into_warnings());
+    Ok(directory)
+}
+
 /// Moves selections at the parent's cwd into a child directory; others keep their cwd.
 fn rebased_selections(
     selections: Vec<codex_protocol::protocol::TurnEnvironmentSelection>,
@@ -513,7 +554,14 @@ impl LocalAgentControl {
             None
         };
         config.model_reasoning_effort = stored_reasoning_effort;
-        let mut child_directory = None;
+        // The thread records the cwd the child ran in. Its settings go under the role's, as at
+        // spawn: parent < directory < role.
+        let directory_config = load_recorded_child_directory(
+            &mut config,
+            &stored_thread.cwd,
+            &format!("cannot resume multi-agent v2 child {thread_id}"),
+        )
+        .await?;
         if let Some(role_name) = session_source.get_agent_role() {
             let runtime_approval_policy = config.permissions.approval_policy.value();
             let runtime_approvals_reviewer = config.approvals_reviewer;
@@ -550,38 +598,15 @@ impl LocalAgentControl {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
         }
-        // The thread records the cwd the child ran in, whichever role or argument chose it.
-        let stored_cwd = stored_thread.cwd.clone();
-        {
-            let invalid_directory = |err: String| {
-                CodexErr::InvalidRequest(format!(
-                    "cannot resume multi-agent v2 child {thread_id}: {err}"
-                ))
-            };
-            let parent_cwd = config.cwd.clone();
-            if let Some(directory) = crate::agent::child_directory::ChildDirectory::from_thread_cwd(
-                &parent_cwd,
-                &stored_cwd,
-            )
-            .map_err(invalid_directory)?
-            {
-                let mut directory_config =
-                    crate::agent::child_directory::ChildDirectoryConfig::load(&config, directory)
-                        .await
-                        .map_err(invalid_directory)?;
-                directory_config
-                    .apply_settings(&mut config)
-                    .map_err(invalid_directory)?;
-                directory_config
-                    .apply_runtime(&mut config)
-                    .map_err(invalid_directory)?;
-                child_directory = Some(directory_config.directory().clone());
-                // Surface directory problems on the resumed thread, as spawn does in its result.
-                config
-                    .startup_warnings
-                    .extend(directory_config.into_warnings());
-            }
-        }
+        // Clamp after the role so the role cannot restore authority the directory narrowed.
+        let child_directory = match directory_config {
+            Some(directory_config) => Some(finish_recorded_child_directory(
+                &mut config,
+                directory_config,
+                &format!("cannot resume multi-agent v2 child {thread_id}"),
+            )?),
+            None => None,
+        };
         // Selections a child directory moved still belong to the parent's workspace.
         let same_workspace =
             |owner: &codex_protocol::protocol::TurnEnvironmentSelection,
@@ -627,6 +652,7 @@ impl LocalAgentControl {
                         Some(parent.session.thread_id),
                         &config,
                         directory,
+                        /*verify_parent_sources*/ true,
                     )
                     .await
                     .map_err(|err| {
@@ -765,6 +791,7 @@ impl LocalAgentControl {
                             session_source.parent_thread_id(),
                             &config,
                             directory,
+                            /*verify_parent_sources*/ true,
                         )
                         .await
                         .map_err(|err| {
@@ -995,8 +1022,14 @@ impl LocalAgentControl {
         }
         let inherited_exec_policy = match &options.child_directory {
             Some(directory) => Some(
-                self.child_directory_exec_policy(&state, parent_thread_id, &config, directory)
-                    .await?,
+                self.child_directory_exec_policy(
+                    &state,
+                    parent_thread_id,
+                    &config,
+                    directory,
+                    /*verify_parent_sources*/ false,
+                )
+                .await?,
             ),
             None => {
                 self.inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
@@ -1044,16 +1077,12 @@ impl LocalAgentControl {
                 // A child directory moves environments rooted at the parent's cwd, including
                 // inherited ones; the workspace roots, and so the permission boundary, stay
                 // the parent's.
-                Some(directory) => options
-                    .environments
-                    .as_ref()
-                    .or(inherited_environments.as_ref())
-                    .map(|snapshot| {
-                        rebased_selections(snapshot.inheritable_selections(), directory)
-                            .into_iter()
-                            .map(codex_protocol::protocol::TurnEnvironmentSelection::into_request)
-                            .collect()
-                    }),
+                Some(directory) => inherited_environments.as_ref().map(|snapshot| {
+                    rebased_selections(snapshot.inheritable_selections(), directory)
+                        .into_iter()
+                        .map(codex_protocol::protocol::TurnEnvironmentSelection::into_request)
+                        .collect()
+                }),
                 None => options.environments.as_ref().map(|snapshot| {
                     snapshot
                         .inheritable_selections()
@@ -1729,41 +1758,19 @@ impl LocalAgentControl {
             })
             .await?;
         // A child that ran in a subdirectory resumes there with that directory's settings.
-        let child_directory = match stored_thread.parent_thread_id {
-            Some(_) => {
-                let invalid_directory = |err: String| {
-                    CodexErr::InvalidRequest(format!("cannot resume agent {thread_id}: {err}"))
-                };
-                let parent_cwd = config.cwd.clone();
-                match crate::agent::child_directory::ChildDirectory::from_thread_cwd(
-                    &parent_cwd,
-                    &stored_thread.cwd,
-                )
-                .map_err(invalid_directory)?
-                {
-                    Some(directory) => {
-                        let mut directory_config =
-                            crate::agent::child_directory::ChildDirectoryConfig::load(
-                                &config, directory,
-                            )
-                            .await
-                            .map_err(invalid_directory)?;
-                        directory_config
-                            .apply_settings(&mut config)
-                            .map_err(invalid_directory)?;
-                        directory_config
-                            .apply_runtime(&mut config)
-                            .map_err(invalid_directory)?;
-                        let directory = directory_config.directory().clone();
-                        config
-                            .startup_warnings
-                            .extend(directory_config.into_warnings());
-                        Some(directory)
-                    }
-                    None => None,
-                }
+        // Rollout resume does not re-apply roles, so the directory is the only overlay.
+        let child_directory = if stored_thread.parent_thread_id.is_some() {
+            let context = format!("cannot resume agent {thread_id}");
+            match load_recorded_child_directory(&mut config, &stored_thread.cwd, &context).await? {
+                Some(directory_config) => Some(finish_recorded_child_directory(
+                    &mut config,
+                    directory_config,
+                    &context,
+                )?),
+                None => None,
             }
-            None => None,
+        } else {
+            None
         };
         let resumed_agent_path = stored_thread
             .agent_path
@@ -1822,8 +1829,14 @@ impl LocalAgentControl {
             .await;
         let inherited_exec_policy = match &child_directory {
             Some(directory) => Some(
-                self.child_directory_exec_policy(&state, parent_thread_id, &config, directory)
-                    .await?,
+                self.child_directory_exec_policy(
+                    &state,
+                    parent_thread_id,
+                    &config,
+                    directory,
+                    /*verify_parent_sources*/ false,
+                )
+                .await?,
             ),
             None => {
                 self.inherited_exec_policy_for_source(&state, Some(&session_source), &config)

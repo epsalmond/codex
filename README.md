@@ -465,7 +465,9 @@ set `cwd` too.
 
 - `cwd` is relative to the spawning agent's cwd and must be an existing
   directory inside it; `..`, absolute paths, and symlinks that escape are
-  rejected. The child gets the canonical path.
+  rejected. Symlinks inside the parent's cwd are resolved, while the child's
+  path keeps the parent's spelling of its own cwd so it stays inside the
+  parent's workspace roots.
 - Settings the subdirectory's own `.codex` layers set (model, reasoning
   effort and summary, verbosity, personality, developer instructions, MCP
   servers, AGENTS.md limits) win over the parent's; anything they leave unset
@@ -478,19 +480,23 @@ set `cwd` too.
   - approval policy: a directory value applies only if it opens no approval
     path the parent lacks (for a `granular` parent, every category must stay
     as strict); permissions are intersected with the parent's;
-  - command rules: the child starts from the parent's live rules, including
-    "don't ask again" approvals, and the directory adds only its `prompt` and
-    `forbidden` rules; its `allow` rules are ignored;
-  - MCP servers from the directory run, but their tools cannot be
-    pre-approved (`approve` becomes `auto`), so each call goes through the
-    child's approval policy and sandbox;
+  - command rules: the child follows the parent's live rules, so "don't ask
+    again" approvals made in either agent reach both, and the directory adds
+    only its `prompt` and `forbidden` rules; its `allow` rules are ignored;
+  - the directory's own layers cannot grant approval authority:
+    `approvals_reviewer` is dropped and any `approve` tool approval mode for
+    MCP servers or `[apps]` becomes `auto`, including after an MCP or config
+    refresh. Its MCP servers still run, and each call goes through the child's
+    approval policy and sandbox;
   - hooks from the directory follow the normal per-hook trust review.
   Anything ignored is reported in the `spawn_agent` result's `warnings`.
 - Normal project trust applies. If the project is untrusted, the
   subdirectory's layers stay disabled, the child keeps the parent's settings,
   and `warnings` says which layers were skipped.
 - The child's thread records its directory, so a cold reload or a resume
-  after restart puts it back there with the same settings.
+  after restart puts it back there with the same settings and order. If that
+  directory no longer exists, the resume fails rather than falling back to
+  the parent's settings.
 - `cwd` applies wherever the role is applied: typed spawns and untyped
   spawns that use the default role, but not full-history forks without
   `agent_type`. Roles without `cwd` behave exactly as before. `spawn_agent`
