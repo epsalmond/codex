@@ -167,6 +167,7 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
                         config_file: None,
                         nickname_candidates: None,
                         lifetime: None,
+                        cwd: None,
                     },
                 );
             })

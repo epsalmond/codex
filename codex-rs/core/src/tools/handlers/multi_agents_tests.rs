@@ -80,6 +80,7 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::test_codex::run_test_with_large_stack;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
@@ -191,6 +192,7 @@ model_reasoning_effort = "minimal"
             config_file: Some(role_config_path),
             nickname_candidates: None,
             lifetime: None,
+            cwd: None,
         },
     );
     turn.config = Arc::new(config);
@@ -532,6 +534,7 @@ async fn multi_agent_v2_forked_spawn_rejects_provider_switching_role() {
                 config_file: Some(role_config_path),
                 nickname_candidates: None,
                 lifetime: None,
+                cwd: None,
             },
         );
         config
@@ -758,6 +761,7 @@ service_tier = "priority"
                 config_file: Some(role_config_path),
                 nickname_candidates: None,
                 lifetime: None,
+                cwd: None,
             },
         );
         config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
@@ -830,6 +834,7 @@ service_tier = "turbo"
             config_file: Some(role_config_path),
             nickname_candidates: None,
             lifetime: None,
+            cwd: None,
         },
     );
     config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
@@ -1063,6 +1068,128 @@ async fn multi_agent_v2_spawn_without_history_allows_agent_type_override() {
     assert_eq!(snapshot.model, "gpt-5-role-override");
     assert_eq!(snapshot.model_provider_id, parent_provider_id);
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_runs_role_child_in_role_cwd() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    // Tests run from the crate directory, which always has `src`.
+    config.agent_roles.insert(
+        "src-expert".to_string(),
+        AgentRoleConfig {
+            description: Some("Works in src".to_string()),
+            cwd: Some("src".into()),
+            ..Default::default()
+        },
+    );
+    let mut turn = turn;
+    turn.config = Arc::new(config);
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+    #[allow(deprecated)]
+    let parent_cwd = turn.cwd.clone();
+    let parent_approval_policy = turn.approval_policy();
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect src",
+                "task_name": "src_expert",
+                "agent_type": "src-expert"
+            })),
+        ))
+        .await
+        .expect("role cwd spawn should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result["task_name"], "/root/src_expert");
+    assert!(result.get("warnings").is_none(), "{result}");
+    let agent_id = manager
+        .captured_ops()
+        .into_iter()
+        .map(|(thread_id, _)| thread_id)
+        .find(|thread_id| *thread_id != root.thread_id)
+        .expect("spawned agent should receive an op");
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    let child_cwd = parent_cwd.join("src");
+    assert_eq!(snapshot.cwd(), &child_cwd);
+    assert!(!snapshot.environment_selections().is_empty());
+    for selection in snapshot.environment_selections() {
+        assert_eq!(selection.cwd, PathUri::from_abs_path(&child_cwd));
+    }
+    assert_eq!(snapshot.approval_policy, parent_approval_policy);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_missing_role_cwd() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.agent_roles.insert(
+        "missing-expert".to_string(),
+        AgentRoleConfig {
+            description: Some("Works nowhere".to_string()),
+            cwd: Some("experts/does-not-exist".into()),
+            ..Default::default()
+        },
+    );
+    let mut turn = turn;
+    turn.config = Arc::new(config);
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+
+    let Err(err) = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect",
+                "task_name": "missing_expert",
+                "agent_type": "missing-expert"
+            })),
+        ))
+        .await
+    else {
+        panic!("missing role cwd should be rejected");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected a model-facing error, got {err:?}");
+    };
+    assert!(
+        message.contains("cwd `experts/does-not-exist` cannot be used"),
+        "{message}"
+    );
 }
 
 #[tokio::test]

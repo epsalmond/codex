@@ -82,6 +82,7 @@ fn configure_priority_role(config: &mut Config) {
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
             lifetime: None,
+            cwd: None,
         },
     );
 }

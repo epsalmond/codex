@@ -110,6 +110,7 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
                     config_file: Some(role_path.to_path_buf()),
                     nickname_candidates: Some(vec!["Captured".to_string()]),
                     lifetime: None,
+                    cwd: None,
                 },
             );
         })

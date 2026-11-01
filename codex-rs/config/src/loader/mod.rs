@@ -505,11 +505,85 @@ pub async fn load_config_layers_state(
     .with_applied_config_server(applied_config_server)
     .with_user_and_project_exec_policy_rules_ignored(ignore_user_and_project_exec_policy_rules);
     config_layer_stack.is_projectless = is_projectless;
+    config_layer_stack.project_config_ignored = ignore_project_config;
     startup_warnings.extend(ignored_config_warning(
         &config_layer_stack,
         &requirements_layers,
     ));
     Ok(config_layer_stack.with_startup_warnings(startup_warnings))
+}
+
+/// Project layers that a session started in `cwd` would load.
+///
+/// Trust, project-root markers, requirements, and managed config come from the
+/// already-loaded `base` stack, so the result matches what a fresh load for
+/// `cwd` would produce without re-reading user, managed, or session layers.
+/// Untrusted project layers are returned disabled, as in a normal load.
+pub async fn load_project_layers_for_cwd(
+    fs: &dyn ExecutorFileSystem,
+    codex_home: &Path,
+    base: &ConfigLayerStack,
+    cwd: &AbsolutePathBuf,
+) -> io::Result<ProjectLayersForCwd> {
+    if base.ignore_project_config() {
+        return Ok(ProjectLayersForCwd::default());
+    }
+    let mut merged = TomlValue::Table(toml::map::Map::new());
+    for layer in base
+        .layers_low_to_high()
+        .filter(|layer| !matches!(layer.name, ConfigLayerSource::Project { .. }))
+    {
+        merge_toml_values(&mut merged, &layer.config);
+    }
+    let project_root_markers =
+        project_root_markers_from_config(&merged)?.unwrap_or_else(default_project_root_markers);
+    let user_config_file = match base.get_user_config_file() {
+        Some(file) => file.clone(),
+        None => AbsolutePathBuf::resolve_path_against_base(CONFIG_TOML_FILE, codex_home),
+    };
+    let mut trust_context = project_trust_context(
+        fs,
+        &merged,
+        &merged,
+        cwd,
+        &project_root_markers,
+        codex_home,
+        &user_config_file,
+    )
+    .await?;
+    let requirements = base.requirements_toml();
+    apply_credential_broker_feature_requirements(
+        &mut trust_context,
+        requirements.feature_requirements.as_ref(),
+        requirements
+            .network
+            .as_ref()
+            .is_none_or(|network| network.enabled != Some(false)),
+        &merged,
+    );
+    let LoadedProjectLayers {
+        layers,
+        startup_warnings,
+    } = load_project_layers(
+        fs,
+        cwd,
+        &trust_context.project_root,
+        &trust_context,
+        codex_home,
+        /*strict_config*/ false,
+    )
+    .await?;
+    Ok(ProjectLayersForCwd {
+        layers,
+        startup_warnings,
+    })
+}
+
+/// Project layers discovered for a working directory, lowest precedence first.
+#[derive(Debug, Default)]
+pub struct ProjectLayersForCwd {
+    pub layers: Vec<ConfigLayerEntry>,
+    pub startup_warnings: Vec<String>,
 }
 
 async fn load_user_config_layer(
@@ -1010,9 +1084,24 @@ fn apply_credential_broker_requirements(
     requirements: &crate::ConfigRequirementsWithSources,
     trusted_broker_config: &TomlValue,
 ) {
-    let credential_masking_enabled = requirements
-        .feature_requirements
-        .as_ref()
+    apply_credential_broker_feature_requirements(
+        context,
+        requirements.feature_requirements.as_deref(),
+        requirements
+            .network
+            .as_ref()
+            .is_none_or(|network| network.enabled != Some(false)),
+        trusted_broker_config,
+    );
+}
+
+fn apply_credential_broker_feature_requirements(
+    context: &mut ProjectTrustContext,
+    feature_requirements: Option<&crate::FeatureRequirementsToml>,
+    network_allowed: bool,
+    trusted_broker_config: &TomlValue,
+) {
+    let credential_masking_enabled = feature_requirements
         .and_then(|requirements| requirements.entries.get("credential_masking"))
         .copied()
         .or_else(|| {
@@ -1028,18 +1117,11 @@ fn apply_credential_broker_requirements(
         return;
     }
     let enabled = credential_masking_enabled
-        || requirements
-            .feature_requirements
-            .as_ref()
+        || feature_requirements
             .and_then(|requirements| requirements.entries.get("network_proxy"))
             .copied()
             .unwrap_or(context.credential_broker == CredentialBrokerProjectState::Enabled);
-    context.credential_broker = if enabled
-        && requirements
-            .network
-            .as_ref()
-            .is_none_or(|network| network.enabled != Some(false))
-    {
+    context.credential_broker = if enabled && network_allowed {
         CredentialBrokerProjectState::Enabled
     } else {
         CredentialBrokerProjectState::Disabled

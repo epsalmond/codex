@@ -435,6 +435,7 @@ async fn configured_agent_roles_control_spawn_agent_type(
                         config_file: None,
                         nickname_candidates: None,
                         lifetime: None,
+                        cwd: None,
                     },
                 );
             }

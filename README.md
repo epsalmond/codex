@@ -442,6 +442,46 @@ rules and current limitations.
 A provider-switching role cannot fork the parent's history; spawn it with
 `fork_turns = "none"` (the default).
 
+### Subagents in a subdirectory
+
+An agent role can run its children in a subdirectory of the spawning agent's
+working directory, so a project can keep "experts" in subdirectories, each
+with its own `AGENTS.md`, `.codex/config.toml`, hooks, rules, and MCP servers:
+
+```toml
+# <project>/.codex/config.toml (or ~/.codex/config.toml)
+
+[agents.pricing]
+description = "Pricing expert. Ask it anything about pricing rules."
+cwd = "experts/pricing"
+```
+
+`spawn_agent(agent_type="pricing")` then starts the child as if Codex had
+been started in `experts/pricing`: its shell and file tools run there, it
+reads that directory's `AGENTS.md`, and it loads every `.codex` layer between
+that directory and the project root, including their `[mcp_servers.*]`,
+hooks, and rules. A role file can set `cwd` too.
+
+- `cwd` is relative to the spawning agent's cwd and must be an existing
+  directory inside it; `..`, absolute paths, and symlinks that escape are
+  rejected with an error.
+- Settings the subdirectory's own `.codex` layers set (model, reasoning
+  effort and summary, verbosity, personality, developer instructions, MCP
+  servers, AGENTS.md limits) win over the parent's; anything they leave unset
+  is inherited. Explicit `spawn_agent` `model` and `reasoning_effort`
+  arguments, then the role's `config_file`, still win over the directory.
+  Feature flags from the directory can only switch capabilities off.
+- The parent's approval policy and permissions are a ceiling. A directory
+  may tighten them (for example `sandbox_mode = "read-only"`); a looser
+  `approval_policy` or `sandbox_mode` is ignored and reported in the
+  `spawn_agent` result's `warnings`. Workspace roots stay the parent's.
+- Normal project trust applies. If the project is untrusted, the
+  subdirectory's layers stay disabled, the child keeps the parent's settings,
+  and `warnings` says which layers were skipped.
+- Roles without `cwd` behave exactly as before. `spawn_agent` itself has no
+  `cwd` argument: it lives in the reserved `collaboration` tool namespace,
+  whose parameters must match upstream.
+
 ### Automatic goal continuation
 
 When Goals is enabled, the host checks admitted automatic goal turns for empty

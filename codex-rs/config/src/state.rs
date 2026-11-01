@@ -277,6 +277,8 @@ pub struct ConfigLayerStack {
     /// `Some(vec![])` means it checked and found nothing to report.
     startup_warnings: Option<Vec<String>>,
     pub(crate) is_projectless: bool,
+    /// Whether the loader skipped project `.codex` layers for this stack.
+    pub(crate) project_config_ignored: bool,
 }
 
 impl PartialEq for ConfigLayerStack {
@@ -292,6 +294,7 @@ impl PartialEq for ConfigLayerStack {
             ignore_user_and_project_exec_policy_rules,
             startup_warnings,
             is_projectless,
+            project_config_ignored: _,
         } = self;
         applied_config_server == &other.applied_config_server
             && model_provider_requirements == &other.model_provider_requirements
@@ -327,6 +330,7 @@ impl ConfigLayerStack {
             ignore_user_and_project_exec_policy_rules: false,
             startup_warnings: None,
             is_projectless: false,
+            project_config_ignored: false,
         };
         stack.validate_project_mitm_profiles()?;
         Ok(stack)
@@ -440,6 +444,11 @@ impl ConfigLayerStack {
         self.is_projectless
     }
 
+    /// Whether project `.codex` layers were deliberately skipped when loading.
+    pub fn ignore_project_config(&self) -> bool {
+        self.project_config_ignored
+    }
+
     /// Returns the active raw user config layer, if any.
     ///
     /// This does not merge other config layers or apply any requirements. When
@@ -550,7 +559,57 @@ impl ConfigLayerStack {
                 .ignore_user_and_project_exec_policy_rules,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
+            project_config_ignored: self.project_config_ignored,
         })
+    }
+
+    /// Returns a new stack whose project layers are exactly `project_layers`,
+    /// preserving every other layer, the requirements, and runtime bindings.
+    ///
+    /// Used to rebase a loaded stack onto another working directory without
+    /// reloading user, managed, or session layers.
+    pub fn with_project_layers(
+        &self,
+        project_layers: Vec<ConfigLayerEntry>,
+    ) -> std::io::Result<Self> {
+        if let Some(layer) = project_layers
+            .iter()
+            .find(|layer| !matches!(layer.name, ConfigLayerSource::Project { .. }))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("expected a project config layer, got {:?}", layer.name),
+            ));
+        }
+        validate_enabled_config_layers(&project_layers)?;
+        let mut layers = self
+            .layers
+            .iter()
+            .filter(|layer| !matches!(layer.name, ConfigLayerSource::Project { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        let insertion_index = layers
+            .iter()
+            .position(|layer| layer.name.precedence() > ConfigLayerSource::PROJECT_PRECEDENCE)
+            .unwrap_or(layers.len());
+        layers.splice(insertion_index..insertion_index, project_layers);
+        verify_layer_ordering(&layers)?;
+        let stack = Self {
+            layers,
+            cloud_config_binding: self.cloud_config_binding.clone(),
+            mcp_ema_cancellation: self.mcp_ema_cancellation.clone(),
+            applied_config_server: self.applied_config_server.clone(),
+            model_provider_requirements: self.model_provider_requirements.clone(),
+            requirements: self.requirements.clone(),
+            requirements_toml: self.requirements_toml.clone(),
+            ignore_user_and_project_exec_policy_rules: self
+                .ignore_user_and_project_exec_policy_rules,
+            startup_warnings: self.startup_warnings.clone(),
+            is_projectless: self.is_projectless,
+            project_config_ignored: self.project_config_ignored,
+        };
+        stack.validate_project_mitm_profiles()?;
+        Ok(stack)
     }
 
     /// Returns a new stack with the user layer copied from `other`, preserving
@@ -589,6 +648,7 @@ impl ConfigLayerStack {
                 .ignore_user_and_project_exec_policy_rules,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
+            project_config_ignored: self.project_config_ignored,
         }
     }
 

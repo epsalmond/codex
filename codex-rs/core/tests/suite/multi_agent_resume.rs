@@ -175,6 +175,7 @@ fn configure_multi_agent_v2_with_role(config: &mut codex_core::config::Config) {
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
             lifetime: None,
+            cwd: None,
         },
     );
 }

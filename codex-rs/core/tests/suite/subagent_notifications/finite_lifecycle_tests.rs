@@ -746,6 +746,7 @@ impl TypedReportsRun {
                         config_file: None,
                         nickname_candidates: None,
                         lifetime: Some(AgentLifetime::Persistent),
+                        cwd: None,
                     },
                 );
             })

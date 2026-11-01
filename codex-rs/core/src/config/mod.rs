@@ -1748,6 +1748,34 @@ impl ConfigBuilder {
     }
 }
 
+impl Config {
+    /// Materializes `config_layer_stack` as if Codex had started in `cwd`.
+    ///
+    /// Only the host's executable paths carry over from `self`; other harness
+    /// overrides, host post-processing, and live session state are not replayed,
+    /// so callers copy just the settings they intend to take from the result.
+    pub(crate) async fn load_for_cwd_and_layer_stack(
+        &self,
+        cwd: &AbsolutePathBuf,
+        config_layer_stack: ConfigLayerStack,
+    ) -> std::io::Result<Config> {
+        let config_toml = config_toml_from_layers(&config_layer_stack).await?;
+        Self::load_config_with_layer_stack(
+            LOCAL_FS.as_ref(),
+            config_toml,
+            ConfigOverrides {
+                cwd: Some(cwd.to_path_buf()),
+                codex_self_exe: self.codex_self_exe.clone(),
+                codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
+                ..Default::default()
+            },
+            self.codex_home.clone(),
+            config_layer_stack,
+        )
+        .await
+    }
+}
+
 async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<ConfigToml> {
     // The loader resolves paths relative to each layer's file before deserialization.
     match layers.effective_config().try_into() {

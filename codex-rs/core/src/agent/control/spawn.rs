@@ -497,6 +497,7 @@ impl LocalAgentControl {
             None
         };
         config.model_reasoning_effort = stored_reasoning_effort;
+        let mut child_directory = None;
         if let Some(role_name) = session_source.get_agent_role() {
             let runtime_approval_policy = config.permissions.approval_policy.value();
             let runtime_approvals_reviewer = config.approvals_reviewer;
@@ -532,7 +533,69 @@ impl LocalAgentControl {
                 .map_err(|err| {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
+            // A role's directory is resolved against the parent's current cwd, as at spawn.
+            if parent.is_some()
+                && let Some(role_cwd) = crate::agent::role::resolve_role_config(&config, &role_name)
+                    .and_then(|role| role.cwd.clone())
+            {
+                let parent_cwd = config.cwd.clone();
+                let invalid_directory = |err: String| {
+                    CodexErr::InvalidRequest(format!(
+                        "cannot resume multi-agent v2 child {thread_id}: {err}"
+                    ))
+                };
+                if let Some(mut directory_config) =
+                    crate::agent::child_directory::load_child_directory_config(
+                        &config,
+                        &parent_cwd,
+                        Some(role_cwd.as_path()),
+                    )
+                    .await
+                    .map_err(invalid_directory)?
+                {
+                    directory_config
+                        .apply_settings(&mut config)
+                        .map_err(invalid_directory)?;
+                    directory_config
+                        .apply_runtime(&mut config)
+                        .map_err(invalid_directory)?;
+                    let directory = directory_config.directory().clone();
+                    // Without retained selections the child would otherwise follow the
+                    // parent's environments back to the parent's cwd.
+                    if environment_selections.is_none()
+                        && let Some((_, parent_environments)) = parent.as_ref()
+                    {
+                        environment_selections = Some(
+                            parent_environments
+                                .inheritable_selections()
+                                .into_iter()
+                                .map(|mut selection| {
+                                    if let Some(cwd) =
+                                        directory.rebase_environment_cwd(&selection.cwd)
+                                    {
+                                        selection.cwd = cwd;
+                                    }
+                                    selection
+                                })
+                                .collect(),
+                        );
+                    }
+                    child_directory = Some(directory);
+                }
+            }
         }
+        // Selections a child directory moved still belong to the parent's workspace.
+        let same_workspace =
+            |owner: &codex_protocol::protocol::TurnEnvironmentSelection,
+             selection: &codex_protocol::protocol::TurnEnvironmentSelection| {
+                owner.has_same_workspace(selection)
+                    || child_directory.as_ref().is_some_and(|directory| {
+                        owner.environment_id == selection.environment_id
+                            && owner.workspace_roots == selection.workspace_roots
+                            && directory.rebase_environment_cwd(&owner.cwd).as_ref()
+                                == Some(&selection.cwd)
+                    })
+            };
         config.service_tier = self.root_service_tier();
         if let Some(model) = stored_model {
             config.model = Some(model);
@@ -558,7 +621,10 @@ impl LocalAgentControl {
             parent.as_ref()
         {
             let parent_config = parent.session.get_config().await;
-            if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
+            let uses_parent_exec_policy =
+                crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config);
+            // A child directory adds project layers, so its rules load from its own stack.
+            if !uses_parent_exec_policy && child_directory.is_none() {
                 return Err(CodexErr::InvalidRequest(format!(
                     "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
                 )));
@@ -581,7 +647,13 @@ impl LocalAgentControl {
                     // roots and permissions rather than restoring superseded authority.
                     let owner_environments = if parent_selections.iter().any(|parent_selection| {
                         parent_selection.environment_id == selection.environment_id
-                            && parent_selection.cwd == selection.cwd
+                            && (parent_selection.cwd == selection.cwd
+                                || child_directory.as_ref().is_some_and(|directory| {
+                                    directory
+                                        .rebase_environment_cwd(&parent_selection.cwd)
+                                        .as_ref()
+                                        == Some(&selection.cwd)
+                                }))
                     }) {
                         &ready_parent
                     } else {
@@ -589,7 +661,7 @@ impl LocalAgentControl {
                     };
                     let owner_environment = owner_environments
                         .turn_environments()
-                        .find(|environment| environment.selection.has_same_workspace(selection))
+                        .find(|environment| same_workspace(&environment.selection, selection))
                         .ok_or_else(|| {
                             invalid_environment("has no matching ready environment binding")
                         })?;
@@ -659,7 +731,7 @@ impl LocalAgentControl {
                         .unwrap_or(parent_environments)
                         .clone(),
                 ),
-                Some(Arc::clone(&parent.session.services.exec_policy)),
+                uses_parent_exec_policy.then(|| Arc::clone(&parent.session.services.exec_policy)),
                 Some(parent.client_mcp_extensions()),
             )
         } else {
@@ -917,7 +989,19 @@ impl LocalAgentControl {
                 snapshot
                     .inheritable_selections()
                     .into_iter()
-                    .map(codex_protocol::protocol::TurnEnvironmentSelection::into_request)
+                    .map(|selection| {
+                        let mut request = selection.into_request();
+                        // A child directory moves environments rooted at the parent's cwd; the
+                        // workspace roots, and so the permission boundary, stay the parent's.
+                        if let Some(cwd) = options
+                            .child_directory
+                            .as_ref()
+                            .and_then(|directory| directory.rebase_environment_cwd(&request.cwd))
+                        {
+                            request.cwd = cwd;
+                        }
+                        request
+                    })
                     .collect()
             }),
             inherited_environments,

@@ -55,6 +55,10 @@
           ],
           "description": "Path to a role-specific config layer. Relative paths are resolved relative to the `config.toml` that defines them."
         },
+        "cwd": {
+          "description": "Working directory for agents spawned with this role, relative to the spawning agent's cwd. The child loads that directory's `.codex` config, AGENTS.md, hooks, and MCP servers as if Codex had started there; the parent's permissions remain its ceiling.",
+          "type": "string"
+        },
         "description": {
           "description": "Human-facing role documentation used in spawn tool guidance. Required unless supplied by the referenced agent role file.",
           "type": "string"

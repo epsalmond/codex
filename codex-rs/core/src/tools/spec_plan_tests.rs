@@ -3036,6 +3036,7 @@ async fn multi_agent_v2_reserved_tool_parameters_match_upstream() {
                         config_file: None,
                         nickname_candidates: None,
                         lifetime: None,
+                        cwd: None,
                     },
                 );
             });

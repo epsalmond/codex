@@ -344,6 +344,7 @@ async fn blocked_or_persistent_agent_stays_resumable(blocked: bool) -> Result<()
                     config_file: None,
                     nickname_candidates: None,
                     lifetime: Some(AgentLifetime::Persistent),
+                    cwd: None,
                 },
             );
         },

@@ -41,6 +41,8 @@ pub struct SpawnAgentOptions {
     pub cyber_access_program: Option<CyberAccessProgram>,
     /// MultiAgentV2 lifetime resolved by the spawn tool, recorded before the child starts.
     pub lifetime: Option<codex_config::config_toml::AgentLifetime>,
+    /// Subdirectory the child runs in; inherited environments at the parent's cwd move there.
+    pub child_directory: Option<crate::agent::child_directory::ChildDirectory>,
 }
 
 /// Identity and status observed from a loaded agent, without a handle to its runtime.

@@ -3,8 +3,11 @@
 //! Spawn and reload share live runtime policy; role and model precedence, full-history
 //! inheritance, and validation messages remain the same for each multi-agent version.
 
+use crate::agent::child_directory::ChildDirectory;
+use crate::agent::child_directory::load_child_directory_config;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
+use crate::agent::role::resolve_role_config;
 use crate::config::Config;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -17,6 +20,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::MultiAgentVersion;
+use std::path::Path;
 
 pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
 
@@ -41,11 +45,17 @@ pub(crate) struct SpawnConfigOptions<'a> {
     pub(crate) role_name: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
+    /// Child working directory relative to the parent's; overrides the role's `cwd`.
+    pub(crate) cwd: Option<&'a Path>,
 }
 
 pub(crate) struct PreparedSpawnConfig {
     pub(crate) config: Config,
     pub(crate) role_name: Option<String>,
+    /// Subdirectory the child runs in, when it differs from the parent's cwd.
+    pub(crate) directory: Option<ChildDirectory>,
+    /// Non-fatal problems with the child directory's config, for the spawn result.
+    pub(crate) warnings: Vec<String>,
 }
 
 /// Resolves child settings before starting the thread, retaining the invoking tool's precedence.
@@ -60,13 +70,36 @@ pub(crate) async fn prepare_agent_spawn_config(
     if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
         reject_full_fork_agent_type_override(options.role_name)?;
     }
+    #[allow(deprecated)]
+    let parent_cwd = turn.cwd.clone();
+    let requested_cwd = options.cwd.map(Path::to_path_buf).or_else(|| {
+        resolve_role_config(&turn.config, options.role_name.unwrap_or(DEFAULT_ROLE_NAME))
+            .and_then(|role| role.cwd.clone())
+    });
+    let mut directory_config =
+        load_child_directory_config(&config, &parent_cwd, requested_cwd.as_deref()).await?;
+    if let Some(directory_config) = &directory_config {
+        directory_config.apply_settings(&mut config)?;
+    }
+    let directory_sets = |key: &str| {
+        directory_config
+            .as_ref()
+            .is_some_and(|config| config.sets(key))
+    };
     let parent_provider_id = config.model_provider_id.clone();
-    let requested_model = options
-        .model
-        .or(turn.config.agent_default_subagent_model.as_deref());
-    let requested_reasoning_effort = options
-        .reasoning_effort
-        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
+    // The child directory's model settings replace the parent's subagent defaults.
+    let requested_model = options.model.or(if directory_sets("model") {
+        None
+    } else {
+        turn.config.agent_default_subagent_model.as_deref()
+    });
+    let requested_reasoning_effort = options.reasoning_effort.or_else(|| {
+        if directory_sets("model_reasoning_effort") {
+            None
+        } else {
+            turn.config.agent_default_subagent_reasoning_effort.clone()
+        }
+    });
     let requested_overrides = apply_requested_spawn_agent_model_overrides(
         session,
         step_context,
@@ -105,6 +138,9 @@ pub(crate) async fn prepare_agent_spawn_config(
     }
     apply_spawn_agent_service_tier(session, &mut config).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+    if let Some(directory_config) = &mut directory_config {
+        directory_config.apply_runtime(&mut config)?;
+    }
 
     // Remember an applied configured default so cold reload reapplies its restrictions.
     let role_name = options
@@ -115,11 +151,23 @@ pub(crate) async fn prepare_agent_spawn_config(
                 && config
                     .agent_roles
                     .get(DEFAULT_ROLE_NAME)
-                    .is_some_and(|role| role.config_file.is_some()))
+                    .is_some_and(|role| role.config_file.is_some() || role.cwd.is_some()))
             .then_some(DEFAULT_ROLE_NAME)
         })
         .map(str::to_owned);
-    Ok(PreparedSpawnConfig { config, role_name })
+    let (directory, warnings) = match directory_config {
+        Some(directory_config) => (
+            Some(directory_config.directory().clone()),
+            directory_config.into_warnings(),
+        ),
+        None => (None, Vec::new()),
+    };
+    Ok(PreparedSpawnConfig {
+        config,
+        role_name,
+        directory,
+        warnings,
+    })
 }
 
 /// Builds the base config snapshot for a newly spawned sub-agent.

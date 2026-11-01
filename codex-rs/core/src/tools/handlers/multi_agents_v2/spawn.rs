@@ -153,6 +153,7 @@ async fn handle_spawn_agent(
     let spawned_agent = spawned.agent;
     let agent_snapshot = spawned.config;
     let new_agent_path = spawned.task_name;
+    let warnings = spawned.warnings;
     let new_thread_id = spawned_agent.thread_id;
     let agent_status = spawned_agent.status;
     let nickname = agent_snapshot
@@ -182,11 +183,15 @@ async fn handle_spawn_agent(
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
     let output = if hide_agent_metadata {
-        SpawnAgentResult::HiddenMetadata { task_name }
+        SpawnAgentResult::HiddenMetadata {
+            task_name,
+            warnings,
+        }
     } else {
         SpawnAgentResult::WithNickname {
             task_name,
             nickname,
+            warnings,
         }
     };
     Ok((output, new_thread_id, agent_status, agent_snapshot))
@@ -245,9 +250,14 @@ pub(crate) enum SpawnAgentResult {
     WithNickname {
         task_name: String,
         nickname: Option<String>,
+        /// Child-directory config problems the spawning agent should know about.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<String>,
     },
     HiddenMetadata {
         task_name: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<String>,
     },
 }
 
