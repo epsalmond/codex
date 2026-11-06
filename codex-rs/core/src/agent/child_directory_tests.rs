@@ -513,22 +513,21 @@ fn approval_ceiling_never_opens_an_approval_path() {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn child_directory_resolves_symlinks_inside_the_parent() {
     let fixture = Fixture::new("", "", true);
     let expert = fixture.root.join(EXPERT);
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(expert.as_path(), fixture.root.join("pricing").as_path())
-            .expect("symlink");
-        let directory = ChildDirectory::resolve(&fixture.root, Path::new("pricing"))
-            .expect("valid")
-            .expect("directory");
-        assert_eq!(directory.cwd, expert);
-        assert_eq!(directory.relative, PathBuf::from(EXPERT));
-    }
+    std::os::unix::fs::symlink(expert.as_path(), fixture.root.join("pricing").as_path())
+        .expect("symlink");
+    let directory = ChildDirectory::resolve(&fixture.root, Path::new("pricing"))
+        .expect("valid")
+        .expect("directory");
+    assert_eq!(directory.cwd, expert);
+    assert_eq!(directory.relative, PathBuf::from(EXPERT));
 }
 
+#[cfg(unix)]
 #[test]
 fn rebases_environments_whose_cwd_matches_after_normalization() {
     let tmp = TempDir::new().expect("tempdir");
@@ -538,16 +537,13 @@ fn rebases_environments_whose_cwd_matches_after_normalization() {
     let directory = ChildDirectory::resolve(&parent_cwd, Path::new(EXPERT))
         .expect("valid")
         .expect("directory");
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(base.join("project"), base.join("alias")).expect("symlink");
-        let alias = AbsolutePathBuf::from_absolute_path(base.join("alias")).expect("abs");
-        // The environment keeps its own spelling of the path.
-        assert_eq!(
-            directory.rebase_environment_cwd(&PathUri::from_abs_path(&alias)),
-            Some(PathUri::from_abs_path(&alias.join(EXPERT)))
-        );
-    }
+    std::os::unix::fs::symlink(base.join("project"), base.join("alias")).expect("symlink");
+    let alias = AbsolutePathBuf::from_absolute_path(base.join("alias")).expect("abs");
+    // The environment keeps its own spelling of the path.
+    assert_eq!(
+        directory.rebase_environment_cwd(&PathUri::from_abs_path(&alias)),
+        Some(PathUri::from_abs_path(&alias.join(EXPERT)))
+    );
 }
 
 #[test]
@@ -732,38 +728,36 @@ async fn deleted_recorded_directory_fails_closed() {
     assert!(err.contains("can no longer be used"), "{err}");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn child_cwd_stays_inside_the_parents_workspace_roots() {
     let fixture = Fixture::new("sandbox_mode = \"workspace-write\"\n", "", true);
-    #[cfg(unix)]
-    {
-        // The parent sees its cwd through a symlink, as macOS does for `/var`.
-        let alias = fixture
-            .root
-            .as_path()
-            .parent()
-            .expect("parent")
-            .join("alias");
-        std::os::unix::fs::symlink(fixture.root.as_path(), &alias).expect("symlink");
-        let parent = ConfigBuilder::without_managed_config_for_tests()
-            .codex_home(fixture.codex_home.clone())
-            .harness_overrides(ConfigOverrides {
-                cwd: Some(alias.clone()),
-                ..Default::default()
-            })
-            .build()
-            .await
-            .expect("parent config");
-        let alias = AbsolutePathBuf::from_absolute_path(&alias).expect("abs");
-        let directory = ChildDirectory::resolve(&alias, Path::new(EXPERT))
-            .expect("valid")
-            .expect("directory");
-        assert_eq!(directory.cwd, alias.join(EXPERT));
-        for root in &parent.workspace_roots {
-            assert!(
-                directory.cwd.as_path().starts_with(root.as_path()),
-                "{root:?}"
-            );
-        }
+    // The parent sees its cwd through a symlink, as macOS does for `/var`.
+    let alias = fixture
+        .root
+        .as_path()
+        .parent()
+        .expect("parent")
+        .join("alias");
+    std::os::unix::fs::symlink(fixture.root.as_path(), &alias).expect("symlink");
+    let parent = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(fixture.codex_home.clone())
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(alias.clone()),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("parent config");
+    let alias = AbsolutePathBuf::from_absolute_path(&alias).expect("abs");
+    let directory = ChildDirectory::resolve(&alias, Path::new(EXPERT))
+        .expect("valid")
+        .expect("directory");
+    assert_eq!(directory.cwd, alias.join(EXPERT));
+    for root in &parent.workspace_roots {
+        assert!(
+            directory.cwd.as_path().starts_with(root.as_path()),
+            "{root:?}"
+        );
     }
 }
