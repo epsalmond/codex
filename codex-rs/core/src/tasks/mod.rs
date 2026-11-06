@@ -1114,7 +1114,17 @@ impl Session {
             .turn_metadata_state
             .cancel_git_enrichment_task();
 
-        let failed = abort_reason.is_none() && turn_context.terminal_error.lock().await.is_some();
+        let failure_disposition = if abort_reason.is_none() {
+            turn_context
+                .terminal_error
+                .lock()
+                .await
+                .as_ref()
+                .map(crate::agent::control::TurnEndDisposition::for_turn_error)
+        } else {
+            None
+        };
+        let failed = failure_disposition.is_some();
         let finishing = CancellationToken::new();
         let finish_recording = finishing.clone().drop_guard();
         let finished_task = {
@@ -1130,24 +1140,21 @@ impl Session {
                 let failed_cells =
                     failed.then(|| self.services.code_mode_service.active_cell_ids());
                 // Capture descendants before cell termination or hooks can detach them.
-                let failure_work = failed
-                    .then(|| {
-                        turn_context.agent_assignment.get().and_then(|assignment| {
-                        match self.services.local_agent_runtime.prepare_wake_turn_end(
-                            assignment,
-                            &turn_context.sub_id,
-                            crate::agent::control::TurnEndDisposition::Errored,
-                            || self.input_queue.pause_wakeups(),
-                        ) {
-                            Ok(classification) => Some((assignment.clone(), classification)),
-                            Err(error) => {
-                                tracing::warn!(%error, "failed to classify natural turn failure");
-                                None
-                            }
+                let failure_work = failure_disposition.and_then(|disposition| {
+                    let assignment = turn_context.agent_assignment.get()?;
+                    match self.services.local_agent_runtime.prepare_wake_turn_end(
+                        assignment,
+                        &turn_context.sub_id,
+                        disposition,
+                        || self.input_queue.pause_wakeups(),
+                    ) {
+                        Ok(classification) => Some((assignment.clone(), classification)),
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to classify natural turn failure");
+                            None
                         }
-                    })
-                    })
-                    .flatten();
+                    }
+                });
                 let task = active_turn.task.take()?;
                 active_turn.finishing = Some(finishing);
                 if failed {

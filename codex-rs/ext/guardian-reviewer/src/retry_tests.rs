@@ -2,6 +2,7 @@
 use super::*;
 use crate::GuardianAssessment;
 use codex_analytics::GuardianReviewFailureReason;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::GuardianAssessmentOutcome;
 use codex_protocol::protocol::GuardianRiskLevel;
 use codex_protocol::protocol::GuardianUserAuthorization;

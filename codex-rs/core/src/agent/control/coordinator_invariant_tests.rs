@@ -537,3 +537,53 @@ fn failed_root_retains_cleanup_after_reservation_rollback() {
     drop(operation);
     assert!(completion.has_changed().is_err());
 }
+
+#[test]
+fn transient_root_failure_detaches_descendants_instead_of_cancelling_them() {
+    let coordinator = Arc::new(AgentWakeCoordinator::default());
+    let root = new_root(&coordinator);
+    let child = new_child(&coordinator, &root, "child-turn");
+    let grandchild = new_child(&coordinator, &child, "grandchild-turn");
+    let finished = new_child(&coordinator, &root, "finished-turn");
+    let report = terminal_report(&coordinator, &finished, "finished-turn");
+    let mut paused = false;
+
+    let classification = coordinator
+        .prepare_turn_end(
+            &root,
+            "root-turn",
+            TurnEndDisposition::ErroredTransiently,
+            || paused = true,
+        )
+        .expect("failed root");
+
+    assert_eq!(classification.phase, AssignmentPhase::Errored);
+    assert!(classification.cancelled_descendants.is_empty());
+    assert_eq!(
+        classification.undelivered_reports,
+        vec![(finished.thread_id, report.clone())],
+        "a report the failed turn never recorded is handed back for redelivery"
+    );
+    assert!(
+        !coordinator.report_is_current_for_thread(&report.id.expect("report ID"), root.thread_id),
+        "mailbox copies tied to the ended assignment become stale"
+    );
+    assert!(coordinator.current_assignment(finished.thread_id).is_none());
+    assert!(
+        paused,
+        "the failed root still waits for an explicit follow-up"
+    );
+    assert!(coordinator.current_assignment(root.thread_id).is_none());
+    assert!(coordinator.is_current_open_assignment(&child));
+    assert_eq!(coordinator.parent_assignment(&child), None);
+    assert!(coordinator.is_current_open_assignment(&grandchild));
+    assert_eq!(
+        coordinator.parent_assignment(&grandchild),
+        Some(child.clone())
+    );
+    assert_eq!(
+        coordinator.classify_turn_end(&child, "child-turn", TurnEndDisposition::Succeeded),
+        Ok(AssignmentPhase::Waiting),
+        "the detached child keeps waiting on its own work"
+    );
+}

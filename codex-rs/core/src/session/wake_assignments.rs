@@ -11,6 +11,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnCompleteEvent;
 use tracing::warn;
 
 /// Held by a start from the moment it reserves the active-turn slot until its task is
@@ -132,7 +133,9 @@ impl Session {
             return;
         };
         let disposition = match event {
-            EventMsg::TurnComplete(event) if event.error.is_some() => TurnEndDisposition::Errored,
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                error: Some(error), ..
+            }) => TurnEndDisposition::for_turn_error(error),
             EventMsg::TurnComplete(_) => TurnEndDisposition::Succeeded,
             EventMsg::TurnAborted(event) => match event.reason {
                 TurnAbortReason::ReviewEnded => TurnEndDisposition::Cancelled,
@@ -143,7 +146,7 @@ impl Session {
             _ => unreachable!("turn finalization only constructs terminal events"),
         };
         let runtime = &self.services.local_agent_runtime;
-        let phase = if disposition == TurnEndDisposition::Errored {
+        let phase = if disposition.is_error() {
             match runtime.prepare_wake_turn_end(
                 assignment,
                 &turn_context.sub_id,

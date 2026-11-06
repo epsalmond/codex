@@ -44,7 +44,7 @@ impl Session {
             match self.services.local_agent_runtime.prepare_wake_turn_end(
                 assignment,
                 &context.sub_id,
-                TurnEndDisposition::Errored,
+                TurnEndDisposition::for_turn_error(&error),
                 || self.input_queue.pause_wakeups(),
             ) {
                 Ok(classification) => Some((assignment.clone(), classification)),

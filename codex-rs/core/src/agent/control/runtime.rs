@@ -495,7 +495,7 @@ impl LocalAgentRuntime {
         turn_id: &str,
         disposition: TurnEndDisposition,
     ) -> Result<AssignmentPhase, &'static str> {
-        if disposition != TurnEndDisposition::Errored {
+        if !disposition.is_error() {
             return self
                 .wake_coordinator
                 .classify_turn_end(assignment, turn_id, disposition);
@@ -546,6 +546,28 @@ impl LocalAgentRuntime {
                 }
             }))
             .await;
+        }
+        if !classification.undelivered_reports.is_empty() {
+            let control = self.control(assignment.thread_id.into());
+            for (child_thread_id, mut communication) in classification.undelivered_reports {
+                // Plain mail outlives the ended assignment; the next turn reads it once.
+                communication.id = Some(ResponseItemId::new("msg"));
+                communication.trigger_turn = false;
+                if let Err(error) = control
+                    .deliver_polling_completion(
+                        assignment.thread_id,
+                        child_thread_id,
+                        communication,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        %error,
+                        thread_id = %assignment.thread_id,
+                        "failed to keep a child report after a transient turn failure"
+                    );
+                }
+            }
         }
         classification.phase
     }

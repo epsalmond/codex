@@ -15,6 +15,7 @@ use super::super::TurnEndDisposition;
 use crate::config::Config;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::InterAgentCommunication;
 use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -355,6 +356,7 @@ impl AgentWakeCoordinator {
                         phase,
                         newly_classified: false,
                         cancelled_descendants: Vec::new(),
+                        undelivered_reports: Vec::new(),
                     })
                     .ok_or("classified turn has no recorded phase")
             } else {
@@ -369,6 +371,7 @@ impl AgentWakeCoordinator {
                         phase,
                         newly_classified: false,
                         cancelled_descendants: Vec::new(),
+                        undelivered_reports: Vec::new(),
                     })
                     .ok_or("classified turn has no recorded phase")
             } else {
@@ -397,7 +400,9 @@ impl AgentWakeCoordinator {
                 AssignmentPhase::Waiting
             }
             TurnEndDisposition::Succeeded => AssignmentPhase::Completed,
-            TurnEndDisposition::Errored => AssignmentPhase::Errored,
+            TurnEndDisposition::Errored | TurnEndDisposition::ErroredTransiently => {
+                AssignmentPhase::Errored
+            }
             TurnEndDisposition::Interrupted => AssignmentPhase::Interrupted,
             TurnEndDisposition::Cancelled => AssignmentPhase::Cancelled,
         };
@@ -415,10 +420,13 @@ impl AgentWakeCoordinator {
                 })
             });
         let mut cancelled_descendants = Vec::new();
+        let mut undelivered_reports = Vec::new();
         if phase.is_terminal() {
             state.wake_queue.remove_assignment(id);
-            if phase == AssignmentPhase::Errored {
+            if disposition.is_error() {
                 pause_wakeups();
+            }
+            if disposition == TurnEndDisposition::Errored {
                 let mut cleanups = state
                     .assignments
                     .get_mut(id)
@@ -458,6 +466,9 @@ impl AgentWakeCoordinator {
                     cancelled_descendants.push((cleanup.thread_id, Some(cleanup.completion)));
                 }
             } else {
+                if disposition == TurnEndDisposition::ErroredTransiently {
+                    undelivered_reports = Self::take_unrecorded_reports(&mut state, id);
+                }
                 Self::detach_direct_children(&mut state, id);
             }
             if state
@@ -479,6 +490,7 @@ impl AgentWakeCoordinator {
             phase,
             newly_classified: true,
             cancelled_descendants,
+            undelivered_reports,
         })
     }
 
@@ -574,6 +586,41 @@ impl AgentWakeCoordinator {
             assignment: child.clone(),
             terminal_turn_id,
         })
+    }
+
+    /// Releases `parent`'s reports that no prompt has recorded and returns them with their
+    /// senders. Copies already in the parent's mailbox become stale with the reports and are
+    /// discarded when read, so each returned report is delivered once by its new route.
+    fn take_unrecorded_reports(
+        state: &mut CoordinatorState,
+        parent: &AgentAssignmentId,
+    ) -> Vec<(ThreadId, InterAgentCommunication)> {
+        let report_ids = state
+            .pending_by_parent
+            .get(parent)
+            .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut reports = Vec::new();
+        for report_id in report_ids {
+            if state
+                .reports
+                .get(&report_id)
+                .is_none_or(|report| report.delivery == ReportDeliveryState::Recorded)
+            {
+                continue;
+            }
+            let Some(report) = state.reports.remove(&report_id) else {
+                continue;
+            };
+            Self::remove_pending_report(state, parent, &report_id);
+            if let Some(child) = state.assignments.get_mut(&report.child)
+                && child.terminal_report_id.as_ref() == Some(&report_id)
+            {
+                child.terminal_report_id = None;
+            }
+            reports.push((report.child.thread_id, report.communication));
+        }
+        reports
     }
 
     pub(super) fn detach_direct_children(state: &mut CoordinatorState, parent: &AgentAssignmentId) {
