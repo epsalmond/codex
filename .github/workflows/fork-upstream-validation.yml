@@ -88,18 +88,6 @@ jobs:
       - name: Check formatting
         run: just fmt-check
 
-      # Everything else here builds the dev profile, which never compiles
-      # `#[cfg(not(debug_assertions))]` code such as the fork update path
-      # (#209). Type-check the shipped binaries with debug assertions off, as
-      # fork-release's `cargo build --release` sees them. Stays at opt-level 0,
-      # which is cheaper and avoids the rustc query-depth overflow in
-      # codex-core that `cargo check --release` hit on nas (#209).
-      - name: Check release-only code paths
-        working-directory: codex-rs
-        env:
-          CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "false"
-        run: cargo check --locked --bin codex --bin codex-code-mode-host
-
       - name: Test merge, metadata, and release helpers
         run: |
           python3 -m unittest discover -s .github/scripts -p test_fork_upstream_validation_failure.py
@@ -110,6 +98,18 @@ jobs:
           bash .github/scripts/test_build_fork_deb.sh
           bash .github/scripts/test_render_brew_formula.sh
           python3 -m unittest scripts/install/test_shake_install.py
+
+      # Everything else here builds the dev profile, which never compiles
+      # `#[cfg(not(debug_assertions))]` code such as the fork update path
+      # (#209). Type-check the shipped binaries with debug assertions off, as
+      # fork-release's `cargo build --release` sees them. Stays at opt-level 0,
+      # which is cheaper and avoids the rustc query-depth overflow in
+      # codex-core that `cargo check --release` hit on nas (#209).
+      - name: Check release-only code paths
+        working-directory: codex-rs
+        env:
+          CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "false"
+        run: cargo check --bin codex --bin codex-code-mode-host
 
       - name: Test scoped release behavior
         run: |
