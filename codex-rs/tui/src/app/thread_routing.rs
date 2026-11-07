@@ -1421,6 +1421,7 @@ impl App {
                     thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
                     /*is_closed*/ false,
                 );
+                self.sync_agent_picker_thread(thread_id);
             }
             if is_spawn {
                 self.agent_navigation.mark_spawned(thread_id);

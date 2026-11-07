@@ -346,7 +346,8 @@ impl App {
             self.refresh_agent_picker_threads(app_server, root);
         }
 
-        if self.update_agent_picker_rows_if_present()
+        // Also syncs the active agent label and pending approvals before updating rows.
+        if self.refresh_agent_picker()
             && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
         {
             self.refresh_agent_picker_previews(
