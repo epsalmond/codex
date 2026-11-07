@@ -1896,3 +1896,6 @@ mod code_mode_failure_tests;
 
 #[path = "agent_wake/cold_failure_tests.rs"]
 mod cold_failure_tests;
+
+#[path = "agent_wake/transient_failure_tests.rs"]
+mod transient_failure_tests;

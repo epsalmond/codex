@@ -6,7 +6,6 @@ use crate::GuardianReviewError;
 use crate::GuardianReviewOutcome;
 use crate::ReviewDeadline;
 use codex_analytics::GuardianReviewAnalyticsResult;
-use codex_protocol::protocol::CodexErrorInfo;
 use rand::Rng;
 use std::future::Future;
 use std::time::Duration;
@@ -182,33 +181,7 @@ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
         GuardianReviewOutcome::Error(GuardianReviewError::Session {
             error_info: Some(error),
             ..
-        }) => match error {
-            CodexErrorInfo::RateLimitExceeded
-            | CodexErrorInfo::FlexUnavailable
-            | CodexErrorInfo::ServerOverloaded
-            | CodexErrorInfo::InternalServerError => true,
-            CodexErrorInfo::HttpConnectionFailed { http_status_code }
-            | CodexErrorInfo::ResponseStreamConnectionFailed { http_status_code }
-            | CodexErrorInfo::ResponseStreamDisconnected { http_status_code }
-            | CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
-                matches!(http_status_code, None | Some(408 | 429 | 500..=599))
-            }
-            CodexErrorInfo::ContextWindowExceeded
-            | CodexErrorInfo::SessionBudgetExceeded
-            | CodexErrorInfo::UsageLimitExceeded
-            | CodexErrorInfo::CyberPolicy
-            | CodexErrorInfo::BioPolicy
-            | CodexErrorInfo::MisalignmentPolicyViolation
-            | CodexErrorInfo::TooManyDenials
-            | CodexErrorInfo::Unauthorized
-            | CodexErrorInfo::BadRequest
-            | CodexErrorInfo::ModelNotFound
-            | CodexErrorInfo::InvalidPrompt
-            | CodexErrorInfo::SandboxError
-            | CodexErrorInfo::ActiveTurnNotSteerable { .. }
-            | CodexErrorInfo::ThreadRollbackFailed
-            | CodexErrorInfo::Other => false,
-        },
+        }) => error.is_transient(),
         GuardianReviewOutcome::CachedApproval
         | GuardianReviewOutcome::Completed(_)
         | GuardianReviewOutcome::Error(

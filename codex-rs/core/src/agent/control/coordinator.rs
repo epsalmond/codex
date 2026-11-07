@@ -120,14 +120,42 @@ pub(crate) struct TurnEndClassification {
     pub(crate) phase: AssignmentPhase,
     pub(crate) newly_classified: bool,
     pub(crate) cancelled_descendants: Vec<(ThreadId, Option<tokio::sync::watch::Receiver<()>>)>,
+    /// Child reports to a transiently failed turn that its prompt never recorded, each with the
+    /// sending child's thread. They are released from the ended assignment and must be
+    /// redelivered as ordinary mail for the agent's next turn.
+    pub(crate) undelivered_reports: Vec<(ThreadId, InterAgentCommunication)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TurnEndDisposition {
     Succeeded,
+    /// The turn failed; its assignment errors and its descendants are cancelled and stopped.
     Errored,
+    /// The turn failed on a temporary model or transport condition. Its assignment errors like
+    /// `Errored`, but descendants are detached and keep running, as for an interrupted turn, so
+    /// work the turn delegated survives a model that is briefly unavailable.
+    ErroredTransiently,
     Interrupted,
     Cancelled,
+}
+
+impl TurnEndDisposition {
+    /// The disposition of a turn that ended with `error`.
+    pub(crate) fn for_turn_error(error: &codex_protocol::protocol::ErrorEvent) -> Self {
+        if error
+            .codex_error_info
+            .as_ref()
+            .is_some_and(codex_protocol::protocol::CodexErrorInfo::is_transient)
+        {
+            Self::ErroredTransiently
+        } else {
+            Self::Errored
+        }
+    }
+
+    pub(crate) fn is_error(self) -> bool {
+        matches!(self, Self::Errored | Self::ErroredTransiently)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

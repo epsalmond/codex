@@ -39,7 +39,9 @@ impl Session {
                 .local_agent_runtime
                 .retain_assignment_finalization(assignment)
         });
-        // Seal and capture the subtree before aborting work can detach descendants.
+        // Seal and capture the subtree before aborting work can detach descendants. A host-forced
+        // failure always cascades: it can land while the task is still recording a child report,
+        // so redelivering reports here (the transient path) could deliver one twice.
         let failure_work = context.agent_assignment.get().and_then(|assignment| {
             match self.services.local_agent_runtime.prepare_wake_turn_end(
                 assignment,

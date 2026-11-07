@@ -2097,6 +2097,38 @@ impl CodexErrorInfo {
             | Self::Other => true,
         }
     }
+
+    /// Whether this error reports a temporary model or transport condition, such as capacity,
+    /// rate limiting, or a failed connection, that the same request may survive later.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::RateLimitExceeded
+            | Self::FlexUnavailable
+            | Self::ServerOverloaded
+            | Self::InternalServerError => true,
+            Self::HttpConnectionFailed { http_status_code }
+            | Self::ResponseStreamConnectionFailed { http_status_code }
+            | Self::ResponseStreamDisconnected { http_status_code }
+            | Self::ResponseTooManyFailedAttempts { http_status_code } => {
+                matches!(http_status_code, None | Some(408 | 429 | 500..=599))
+            }
+            Self::ContextWindowExceeded
+            | Self::SessionBudgetExceeded
+            | Self::UsageLimitExceeded
+            | Self::CyberPolicy
+            | Self::BioPolicy
+            | Self::MisalignmentPolicyViolation
+            | Self::TooManyDenials
+            | Self::Unauthorized
+            | Self::BadRequest
+            | Self::ModelNotFound
+            | Self::InvalidPrompt
+            | Self::SandboxError
+            | Self::ActiveTurnNotSteerable { .. }
+            | Self::ThreadRollbackFailed
+            | Self::Other => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
