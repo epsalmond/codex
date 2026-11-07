@@ -580,6 +580,9 @@ impl Session {
                 active_turn_id.as_ref()
             };
             if let Some(turn_id) = turn_id {
+                // Aborting an approval is a user interrupt. Pause first, as `interrupt_task`
+                // does, so wake-mode mail held by the aborted turn waits for the next user turn.
+                self.pause_wakeups_for_interrupt().await;
                 self.abort_turn_if_active(
                     turn_id,
                     TurnAbortReason::Interrupted,
