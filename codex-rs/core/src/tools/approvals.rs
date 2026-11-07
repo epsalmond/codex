@@ -700,7 +700,7 @@ impl Session {
             },
             Some(PermissionRequestDecision::Allow) | None => {
                 if let Some(reason) = self
-                    .idle_code_mode_refusal(&idle_refusal_subject(&action, &ctx.tool_name))
+                    .idle_code_mode_refusal(&idle_refusal_subject(action, &ctx.tool_name))
                     .await
                 {
                     return ApprovalResult {

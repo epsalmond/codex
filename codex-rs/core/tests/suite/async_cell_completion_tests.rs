@@ -766,7 +766,7 @@ impl CodeModeSession for ControlledCells {
         &'a self,
         request: codex_code_mode::TerminateRequest,
     ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
-        let cell_id = request.cell_id.clone();
+        let cell_id = request.cell_id;
         Box::pin(async move {
             self.terminations.fetch_add(1, Ordering::SeqCst);
             let Some(delegate) = self.take(&cell_id) else {

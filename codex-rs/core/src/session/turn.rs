@@ -3467,7 +3467,7 @@ async fn try_run_sampling_request(
     };
     let stream = client_session
         .stream(
-            &prompt,
+            prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
             effort,

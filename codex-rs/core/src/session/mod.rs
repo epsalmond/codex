@@ -5888,8 +5888,6 @@ impl Session {
                 info.model_context_window = Some(model_context_window);
             }
 
-            let legacy_available = state.legacy_token_usage_available;
-            state.legacy_token_usage_available = legacy_available;
             state.token_usage_estimated = true;
             // The local estimate already includes every retained reasoning item.
             info.last_usage_includes_reasoning = Some(true);
