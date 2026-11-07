@@ -194,7 +194,7 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
             thread_id: root.to_string(),
             turn_id: "spawn-turn".into(),
             started_at_ms: 0,
-            item: ThreadItem::CollabAgentToolCall {
+            item: ThreadItem::untimed(ThreadItemPayload::CollabAgentToolCall {
                 id: "spawn".into(),
                 tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
@@ -204,7 +204,7 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
-            },
+            }),
         }),
     )
     .await?;
@@ -335,14 +335,14 @@ fn activity_notification(
         thread_id: parent.to_string(),
         turn_id: "parent-turn".to_string(),
         completed_at_ms: 0,
-        item: ThreadItem::SubAgentActivity {
+        item: ThreadItem::untimed(ThreadItemPayload::SubAgentActivity {
             id: "activity".to_string(),
             kind,
             agent_thread_id: child.to_string(),
             agent_path: path.to_string(),
             model: None,
             reasoning_effort: None,
-        },
+        }),
     })
 }
 
@@ -569,7 +569,7 @@ fn legacy_spawn_notification(parent: ThreadId, receivers: Vec<String>) -> Server
         thread_id: parent.to_string(),
         turn_id: "parent-turn".into(),
         completed_at_ms: 0,
-        item: ThreadItem::CollabAgentToolCall {
+        item: ThreadItem::untimed(ThreadItemPayload::CollabAgentToolCall {
             id: "spawn".into(),
             tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
             status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
@@ -579,7 +579,7 @@ fn legacy_spawn_notification(parent: ThreadId, receivers: Vec<String>) -> Server
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
-        },
+        }),
     })
 }
 
@@ -806,7 +806,7 @@ async fn hidden_parent_legacy_spawn_is_pending_and_rejects_invalid_or_not_found_
         vec![child.to_string(), "invalid-id".into(), missing.to_string()],
     );
     if let ServerNotification::ItemCompleted(item) = &mut notification
-        && let ThreadItem::CollabAgentToolCall { agents_states, .. } = &mut item.item
+        && let ThreadItemPayload::CollabAgentToolCall { agents_states, .. } = &mut item.item.payload
     {
         agents_states.insert(
             missing.to_string(),

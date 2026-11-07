@@ -43,7 +43,7 @@ pub(crate) async fn context_window_token_status_for_model(
 ) -> ContextWindowTokenStatus {
     let mut config = config.clone();
     if let Some(selection) = &config.context_settings {
-        let (_, view) = super::context_settings::resolve(
+        let (_, view) = super::context_settings::resolve_model(
             &config,
             selection,
             model_info,

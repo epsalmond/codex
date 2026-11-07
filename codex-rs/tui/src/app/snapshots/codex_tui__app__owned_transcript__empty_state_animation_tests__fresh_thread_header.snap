@@ -45,7 +45,7 @@ enabled:
 
 › Ask Codex to do anything
 
-  GPT-5.6-Sol default · /tmp/project
+  sol · /tmp/project
   ? for shortcuts                                                                              ⚠ 1 warning · f2 to view
 ---
 disabled:
@@ -91,5 +91,5 @@ disabled:
 
 › Ask Codex to do anything
 
-  GPT-5.6-Sol default · /tmp/project
+  sol · /tmp/project
   ? for shortcuts                                                                              ⚠ 1 warning · f2 to view

@@ -14,8 +14,10 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
     let mut processor = EventProcessorWithJsonOutput::new(Some(output_path.clone()));
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        codex_app_server_protocol::ItemCompletedNotification {
-            item: ThreadItem::AgentMessage {
+        codex_app_server_protocol::ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "partial answer".to_string(),
                 phase: None,
@@ -23,10 +25,9 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(collected.status, CodexStatus::Running);
@@ -131,8 +132,10 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        codex_app_server_protocol::ItemCompletedNotification {
-            item: ThreadItem::McpToolCall {
+        codex_app_server_protocol::ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::McpToolCall {
                 id: "mcp-1".to_string(),
                 server: "search service".to_string(),
                 tool: "web_run".to_string(),
@@ -151,10 +154,9 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
                 error: None,
                 duration_ms: Some(42),
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(collected.status, CodexStatus::Running);
@@ -192,13 +194,17 @@ fn root_turn_completed(
             id: turn_id.to_string(),
             items_view: codex_app_server_protocol::TurnItemsView::Full,
             items: message
-                .map(|text| ThreadItem::AgentMessage {
-                    id: format!("{turn_id}-msg"),
-                    text: text.to_string(),
-                    phase: None,
-                    memory_citation: None,
-                    delivery: None,
-                    questions: None,
+                .map(|text| {
+                    codex_app_server_protocol::ThreadItem::untimed(
+                        ThreadItemPayload::AgentMessage {
+                            id: format!("{turn_id}-msg"),
+                            text: text.to_string(),
+                            phase: None,
+                            memory_citation: None,
+                            delivery: None,
+                            questions: None,
+                        },
+                    )
                 })
                 .into_iter()
                 .collect(),

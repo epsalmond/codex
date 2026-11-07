@@ -62,6 +62,7 @@ async fn native_admission_rejects_before_side_effects(rejection: Rejection) {
             call_id,
             tool_name: codex_tools::ToolName::plain("exec_command"),
             source: ToolCallSource::Direct,
+            native_call: None,
             environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
@@ -143,7 +144,11 @@ async fn history_append_is_retained_until_model_acceptance(producer: Producer) {
     let history = session
         .clone_history()
         .await
-        .for_prompt(&turn.capture_current_model_info().input_modalities);
+        .for_prompt(
+            &turn.capture_current_model_info().input_modalities,
+            session.services.image_store.as_ref(),
+        )
+        .await;
     assert_eq!(history, expected);
     assert_eq!(history[0].turn_id(), Some(original_turn.as_str()));
     assert!(serde_json::to_vec(&history[0]).unwrap().len() <= MAX_FRAGMENT_BYTES);

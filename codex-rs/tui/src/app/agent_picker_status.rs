@@ -1,7 +1,7 @@
 //! Bounded response and context details shown in `/subagents` picker rows.
 
 use crate::multi_agents::AgentPickerContextUsage;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::models::MessagePhase;
@@ -21,20 +21,24 @@ pub(super) fn response_preview_for_turn(turn: &Turn) -> Option<String> {
         return None;
     }
 
-    let explicit_final = turn.items.iter().rev().find_map(|item| match item {
-        ThreadItem::AgentMessage {
-            text,
-            phase: Some(MessagePhase::FinalAnswer),
-            ..
-        } => normalized_preview(text),
-        _ => None,
-    });
+    let explicit_final = turn
+        .items
+        .iter()
+        .rev()
+        .find_map(|item| match &item.payload {
+            ThreadItemPayload::AgentMessage {
+                text,
+                phase: Some(MessagePhase::FinalAnswer),
+                ..
+            } => normalized_preview(text),
+            _ => None,
+        });
     explicit_final.or_else(|| {
         turn.items
             .iter()
             .rev()
-            .find_map(|item| match item {
-                ThreadItem::AgentMessage { text, phase, .. } => Some((text, phase)),
+            .find_map(|item| match &item.payload {
+                ThreadItemPayload::AgentMessage { text, phase, .. } => Some((text, phase)),
                 _ => None,
             })
             .and_then(|(text, phase)| phase.is_none().then(|| normalized_preview(text)).flatten())

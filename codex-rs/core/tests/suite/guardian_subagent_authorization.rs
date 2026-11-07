@@ -377,6 +377,8 @@ async fn code_mode_messaging_fixture(
             config.multi_agent_v2.agent_polling = codex_features::AgentPolling::Enabled;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            config.model_catalog =
+                Some(codex_models_manager::bundled_models_response().expect("valid catalog"));
             config
                 .permissions
                 .set_permission_profile(PermissionProfile::workspace_write())

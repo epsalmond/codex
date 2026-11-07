@@ -52,7 +52,7 @@ impl Session {
         let baseline = super::turn::build_prompt(
             history
                 .clone()
-                .for_prompt(&step.settings.model_info.input_modalities),
+                .for_prompt_without_attachment_checks(&step.settings.model_info.input_modalities),
             step,
             prompt.base_instructions.clone(),
             self.current_window_uses_incremental_tools(step).await,
@@ -236,7 +236,7 @@ impl Session {
 impl crate::state::SessionState {
     pub(crate) fn refresh_context_snapshot(&mut self) {
         let active = self
-            .get_total_token_usage(self.server_reasoning_included())
+            .get_total_token_usage()
             .max(self.prepared_context_tokens.unwrap_or(/*default*/ 0))
             .max(self.prepared_request_tokens.unwrap_or(/*default*/ 0));
         let basis = if self.token_info().is_some() && !self.token_usage_estimated {

@@ -897,7 +897,8 @@ pub enum ContentItem {
         detail: Option<ImageDetail>,
     },
     InputAudio {
-        audio_url: String,
+        #[serde(flatten)]
+        audio: AudioReference,
     },
     OutputText {
         text: String,
@@ -935,6 +936,15 @@ impl ContentItem {
 #[ts(untagged)]
 pub enum ImageReference {
     Inline { image_url: String },
+    File { file_id: String },
+}
+
+/// Inline audio data or an uploaded file loaded by the Responses API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(untagged)]
+#[ts(untagged)]
+pub enum AudioReference {
+    Inline { audio_url: String },
     File { file_id: String },
 }
 
@@ -1995,7 +2005,9 @@ fn local_audio_content_items(
             text: local_audio_open_tag_text_with_path(label_number, path),
         },
         ContentItem::InputAudio {
-            audio_url: data_url_from_bytes(mime, file_bytes),
+            audio: AudioReference::Inline {
+                audio_url: data_url_from_bytes(mime, file_bytes),
+            },
         },
         ContentItem::InputText {
             text: LOCAL_AUDIO_CLOSE_TAG.to_string(),
@@ -2212,9 +2224,9 @@ impl ResponseInputItem {
                         )],
                     }
                 }
-                UserInput::Audio { audio_url } => {
+                UserInput::Audio { audio } => {
                     audio_index += 1;
-                    vec![ContentItem::InputAudio { audio_url }]
+                    vec![ContentItem::InputAudio { audio }]
                 }
                 UserInput::LocalAudio { path } => {
                     audio_index += 1;
@@ -2290,7 +2302,12 @@ impl From<ContentItem> for FunctionCallOutputContentItem {
                 Self::InputText { text }
             }
             ContentItem::InputImage { image, detail } => Self::InputImage { image, detail },
-            ContentItem::InputAudio { audio_url } => Self::InputAudio { audio_url },
+            ContentItem::InputAudio {
+                audio: AudioReference::Inline { audio_url },
+            } => Self::InputAudio { audio_url },
+            ContentItem::InputAudio {
+                audio: AudioReference::File { file_id, .. },
+            } => Self::InputText { text: file_id },
         }
     }
 }
@@ -4160,34 +4177,47 @@ mod tests {
 
     #[test]
     fn serializes_audio_user_input_without_tags() -> Result<()> {
-        let audio_url = "data:audio/wav;base64,abc".to_string();
-
-        let item = ResponseInputItem::from(vec![UserInput::Audio {
-            audio_url: audio_url.clone(),
-        }]);
-
-        assert_eq!(
-            item,
-            ResponseInputItem::Message {
-                role: "user".to_string(),
-                content: vec![ContentItem::InputAudio { audio_url }],
-                phase: None,
-            }
-        );
-        assert_eq!(
-            serde_json::to_value(item)?,
-            serde_json::json!({
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "audio_url": "data:audio/wav;base64,abc",
-                    },
-                ],
-            })
-        );
-
+        for (audio, wire) in [
+            (
+                AudioReference::Inline {
+                    audio_url: "data:audio/wav;base64,abc".into(),
+                },
+                serde_json::json!({"type": "input_audio", "audio_url": "data:audio/wav;base64,abc"}),
+            ),
+            (
+                AudioReference::File {
+                    file_id: "file_audio".into(),
+                },
+                serde_json::json!({"type": "input_audio", "file_id": "file_audio"}),
+            ),
+        ] {
+            let input = UserInput::Audio {
+                audio: audio.clone(),
+            };
+            assert_eq!(
+                serde_json::from_value::<UserInput>(serde_json::to_value(&input)?)?,
+                input
+            );
+            let item = ResponseInputItem::from(vec![input]);
+            assert_eq!(
+                item,
+                ResponseInputItem::Message {
+                    role: "user".into(),
+                    content: vec![ContentItem::InputAudio { audio }],
+                    phase: None,
+                }
+            );
+            assert_eq!(
+                serde_json::to_value(&item)?,
+                serde_json::json!({
+                    "type": "message", "role": "user", "content": [wire],
+                })
+            );
+            assert_eq!(
+                serde_json::from_value::<ResponseInputItem>(serde_json::to_value(&item)?)?,
+                item
+            );
+        }
         Ok(())
     }
 
@@ -4220,7 +4250,9 @@ mod tests {
                             ),
                         },
                         ContentItem::InputAudio {
-                            audio_url: format!("data:{mime};base64,YXVkaW8="),
+                            audio: AudioReference::Inline {
+                                audio_url: format!("data:{mime};base64,YXVkaW8=")
+                            },
                         },
                         ContentItem::InputText {
                             text: audio_close_tag_text(),
@@ -4596,7 +4628,9 @@ mod tests {
 
         let item = ResponseInputItem::from(vec![
             UserInput::Audio {
-                audio_url: audio_url.clone(),
+                audio: AudioReference::Inline {
+                    audio_url: audio_url.clone(),
+                },
             },
             UserInput::LocalAudio {
                 path: local_path.clone(),
@@ -4608,7 +4642,9 @@ mod tests {
             ResponseInputItem::Message {
                 role: "user".to_string(),
                 content: vec![
-                    ContentItem::InputAudio { audio_url },
+                    ContentItem::InputAudio {
+                        audio: AudioReference::Inline { audio_url }
+                    },
                     ContentItem::InputText {
                         text: local_audio_open_tag_text_with_path(
                             /*label_number*/ 2,
@@ -4616,7 +4652,9 @@ mod tests {
                         ),
                     },
                     ContentItem::InputAudio {
-                        audio_url: "data:audio/mpeg;base64,YXVkaW8=".to_string(),
+                        audio: AudioReference::Inline {
+                            audio_url: "data:audio/mpeg;base64,YXVkaW8=".to_string()
+                        }
                     },
                     ContentItem::InputText {
                         text: audio_close_tag_text(),

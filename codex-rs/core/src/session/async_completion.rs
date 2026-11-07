@@ -984,7 +984,7 @@ pub(super) async fn record_ready(
     let history = sess
         .clone_history()
         .await
-        .for_prompt(&model.input_modalities);
+        .for_prompt_without_attachment_checks(&model.input_modalities);
     let (claim, items) =
         sess.services
             .async_completions

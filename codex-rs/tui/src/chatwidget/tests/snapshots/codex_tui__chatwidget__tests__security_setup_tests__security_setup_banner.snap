@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/security_setup_tests.rs
-assertion_line: 19
 expression: rendered
 ---
   Keep using Daybreak mode
@@ -14,4 +13,4 @@ expression: rendered
 
 › Ask Codex to do anything
 
-  test-model-a default · /tmp/project
+  test-model-a · /tmp/project

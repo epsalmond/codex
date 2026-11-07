@@ -119,7 +119,7 @@ async fn luna_reserve_status_tracks_the_active_model() {
 
     chat.set_model("gpt-reserve");
     let rendered = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80));
-    assert!(rendered.contains("Luna Reserve default"));
+    assert!(rendered.contains("Luna Reserve · "));
     insta::assert_snapshot!("luna_reserve_usage_wide", rendered);
     insta::assert_snapshot!(
         "luna_reserve_usage_narrow",

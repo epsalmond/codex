@@ -437,6 +437,7 @@ mod tests {
             call_id: "call-extension".to_string(),
             tool_name: codex_tools::ToolName::plain("extension_echo"),
             source: ToolCallSource::Direct,
+            native_call: None,
             environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
@@ -454,6 +455,7 @@ mod tests {
         assert_eq!(
             CoreToolRuntime::post_tool_use_payload(&handler, &invocation, &output),
             Some(PostToolUsePayload {
+                tool_cwd: None,
                 tool_name: HookToolName::new("extension_echo"),
                 tool_use_id: "call-extension".to_string(),
                 tool_input: json!({ "message": "hello" }),
@@ -538,6 +540,7 @@ mod tests {
                 cell_id: "cell-1".to_string(),
                 runtime_tool_call_id: "nested-call-1".to_string(),
             },
+            native_call: None,
             environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
@@ -699,6 +702,7 @@ mod tests {
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "adapter-navigation".into(),
+                native_call: None,
                 tool_name: codex_tools::ToolName::plain("semantic_navigation"),
                 source: source.clone(),
                 payload: ToolPayload::Function {
@@ -916,6 +920,7 @@ mod tests {
                     failure: None,
                     saved_path: Some(expected_path.clone()),
                     input_images: Vec::new(),
+                    generation_id: None,
                 })],
             },
         )

@@ -53,6 +53,8 @@ mod image_cancellation_tests;
 mod large_tool_delegate;
 #[path = "grpc/network_policy_tests.rs"]
 mod network_policy_tests;
+#[path = "grpc/process_metrics_tests.rs"]
+mod process_metrics_tests;
 #[path = "support/recording_delegate.rs"]
 mod recording_delegate;
 #[path = "grpc/session_recovery_tests.rs"]
@@ -334,6 +336,7 @@ async fn grpc_early_yield_preserves_cell_and_later_waits() -> Result<()> {
         WaitRequest {
             cell_id: cell_id.clone(),
             yield_time_ms: 60_000,
+            max_output_tokens: None,
         },
         Some(wait_signal.clone()),
     );
@@ -354,6 +357,7 @@ async fn grpc_early_yield_preserves_cell_and_later_waits() -> Result<()> {
             WaitRequest {
                 cell_id: cell_id.clone(),
                 yield_time_ms: 60_000,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         ),
@@ -404,13 +408,17 @@ async fn shutdown_immediately_rejects_new_operations() -> Result<()> {
                 WaitRequest {
                     cell_id: cell_id("missing"),
                     yield_time_ms: 1,
+                    max_output_tokens: None,
                 },
                 /*preempt*/ None,
             )
             .await,
         Err(expected.clone())
     );
-    assert_eq!(session.terminate(cell_id("missing")).await, Err(expected));
+    assert_eq!(
+        session.terminate(cell_id("missing").into()).await,
+        Err(expected)
+    );
 
     shutdown.await.map_err(anyhow::Error::msg)?;
     Ok(())
@@ -459,6 +467,7 @@ async fn cancelling_execution_before_admission_keeps_the_session_usable() -> Res
                     WaitRequest {
                         cell_id: abandoned_cell.clone(),
                         yield_time_ms: 1,
+                        max_output_tokens: None,
                     },
                     /*preempt*/ None,
                 )
@@ -519,6 +528,7 @@ async fn dropping_a_started_cell_off_runtime_terminates_its_buffered_remote_exec
                     WaitRequest {
                         cell_id: abandoned_cell.clone(),
                         yield_time_ms: 1,
+                        max_output_tokens: None,
                     },
                     /*preempt*/ None,
                 )
@@ -547,6 +557,7 @@ async fn dropping_a_started_cell_off_runtime_terminates_its_buffered_remote_exec
                     WaitRequest {
                         cell_id: abandoned_cell.clone(),
                         yield_time_ms: 1,
+                        max_output_tokens: None,
                     },
                     /*preempt*/ None,
                 )
@@ -758,6 +769,7 @@ async fn concurrent_wait_rejects_without_displacing_the_active_observer() -> Res
         WaitRequest {
             cell_id: running_cell.clone(),
             yield_time_ms: 100,
+            max_output_tokens: None,
         },
     )
     .await?;
@@ -769,6 +781,7 @@ async fn concurrent_wait_rejects_without_displacing_the_active_observer() -> Res
                 WaitRequest {
                     cell_id: running_cell.clone(),
                     yield_time_ms: 60_000,
+                    max_output_tokens: None,
                 },
                 /*preempt*/ None,
             ),
@@ -792,7 +805,7 @@ async fn concurrent_wait_rejects_without_displacing_the_active_observer() -> Res
         })
     );
     let actual = session
-        .terminate(running_cell.clone())
+        .terminate(running_cell.clone().into())
         .await
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
@@ -845,6 +858,7 @@ async fn dropping_a_wait_retires_its_observer_before_the_next_wait() -> Result<(
         WaitRequest {
             cell_id: running_cell.clone(),
             yield_time_ms: 60_000,
+            max_output_tokens: None,
         },
     )
     .await?;
@@ -857,6 +871,7 @@ async fn dropping_a_wait_retires_its_observer_before_the_next_wait() -> Result<(
             WaitRequest {
                 cell_id: running_cell.clone(),
                 yield_time_ms: 1,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         ),
@@ -873,7 +888,7 @@ async fn dropping_a_wait_retires_its_observer_before_the_next_wait() -> Result<(
         })
     );
     let actual = session
-        .terminate(running_cell.clone())
+        .terminate(running_cell.clone().into())
         .await
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
@@ -970,7 +985,7 @@ async fn large_unary_tool_completion_does_not_block_an_independent_session() -> 
     .await?;
     assert_eq!(
         actual,
-        text_response("1", "fast-before", actual.code_mode_host_duration())
+        text_response("g2:1", "fast-before", actual.code_mode_host_duration())
     );
 
     delegate.release.add_permits(/*n*/ 1);
@@ -985,7 +1000,7 @@ async fn large_unary_tool_completion_does_not_block_an_independent_session() -> 
     let actual = fast_response?;
     assert_eq!(
         actual,
-        text_response("2", "fast-during", actual.code_mode_host_duration())
+        text_response("g2:2", "fast-during", actual.code_mode_host_duration())
     );
     let actual = slow_response
         .context("large unary tool response did not complete")?
@@ -1098,6 +1113,7 @@ async fn sessions_enforce_independent_yield_limits() -> Result<()> {
             WaitRequest {
                 cell_id: cell_id("1"),
                 yield_time_ms: 60_000,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         ),
@@ -1121,10 +1137,10 @@ async fn sessions_enforce_independent_yield_limits() -> Result<()> {
     .await?;
     assert_eq!(
         actual,
-        text_response("1", "isolated", actual.code_mode_host_duration())
+        text_response("g2:1", "isolated", actual.code_mode_host_duration())
     );
     let actual = limited
-        .terminate(cell_id("1"))
+        .terminate(cell_id("1").into())
         .await
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
@@ -1164,6 +1180,7 @@ async fn dropping_a_grpc_lease_retires_its_server_session() -> Result<()> {
         .open_session(grpc::OpenSessionRequest {
             cell_execution_limits: None,
             terminal_ready_requested: false,
+            output_truncation: None,
         })
         .await
         .context("open raw gRPC session")?
@@ -1214,6 +1231,24 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
 
+    let actual = execute(
+        &session,
+        request(r#"text("before reload");"#),
+        Arc::new(NoopCodeModeSessionDelegate),
+    )
+    .await?;
+    assert_eq!(
+        actual,
+        text_response("1", "before reload", actual.code_mode_host_duration())
+    );
+    session.shutdown().await.map_err(anyhow::Error::msg)?;
+    // Reloading a thread creates a new session through the same shared provider.
+    let session = provider
+        .clone()
+        .create_session()
+        .await
+        .map_err(anyhow::Error::msg)?;
+
     let saved = execute(
         &session,
         request(r#"store("saved", "before restart"); text(load("saved"));"#),
@@ -1222,7 +1257,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
     .await?;
     assert_eq!(
         saved,
-        text_response("1", "before restart", saved.code_mode_host_duration())
+        text_response("g2:1", "before restart", saved.code_mode_host_duration())
     );
 
     let mut pending = request("await tools.echo({generation: 1}); await new Promise(() => {});");
@@ -1233,7 +1268,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     let old_cell_id = started.cell_id.clone();
-    assert_eq!(old_cell_id, cell_id("2"));
+    assert_eq!(old_cell_id, cell_id("g2:2"));
     assert!(matches!(
         started.initial_response().await,
         Ok(RuntimeResponse::Yielded { .. })
@@ -1244,6 +1279,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
         WaitRequest {
             cell_id: old_cell_id.clone(),
             yield_time_ms: 60_000,
+            max_output_tokens: None,
         },
     )
     .await?;
@@ -1288,7 +1324,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
     .context("host loss did not retire the original generation's cell")?;
 
     let _replacement = HostHarness::start(&listen_url).await?;
-    assert!(session.terminate(old_cell_id.clone()).await.is_err());
+    assert!(session.terminate(old_cell_id.clone().into()).await.is_err());
 
     let mut rejected = request(r#"await tools.echo({must_not_run: true});"#);
     rejected.enabled_tools = vec![tool("echo")];
@@ -1299,6 +1335,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
         WaitRequest {
             cell_id: old_cell_id.clone(),
             yield_time_ms: 1,
+            max_output_tokens: None,
         },
         /*preempt*/ None,
     );
@@ -1363,7 +1400,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
     );
     let mut replacement_cell_ids = [callback_cell_id.as_str(), concurrent_cell_id.as_str()];
     replacement_cell_ids.sort_unstable();
-    assert_eq!(replacement_cell_ids, ["g2:1", "g2:2"]);
+    assert_eq!(replacement_cell_ids, ["g3:1", "g3:2"]);
     assert_eq!(
         delegate
             .invocations
@@ -1396,7 +1433,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     let replacement_cell_id = started.cell_id.clone();
-    assert_eq!(replacement_cell_id, cell_id("g2:3"));
+    assert_eq!(replacement_cell_id, cell_id("g3:3"));
     let actual = started
         .initial_response()
         .await
@@ -1414,6 +1451,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
             WaitRequest {
                 cell_id: replacement_cell_id.clone(),
                 yield_time_ms: 1,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )
@@ -1428,7 +1466,7 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
         })
     );
     let actual = session
-        .terminate(replacement_cell_id.clone())
+        .terminate(replacement_cell_id.clone().into())
         .await
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
@@ -1445,13 +1483,14 @@ async fn cached_session_recovers_after_a_remote_host_restarts() -> Result<()> {
             WaitRequest {
                 cell_id: old_cell_id.clone(),
                 yield_time_ms: 1,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )
         .await
         .unwrap_err();
     assert!(stale_wait.contains("stale code-mode host generation"));
-    let stale_termination = session.terminate(old_cell_id).await.unwrap_err();
+    let stale_termination = session.terminate(old_cell_id.into()).await.unwrap_err();
     assert!(stale_termination.contains("stale code-mode host generation"));
     session.shutdown().await.map_err(anyhow::Error::msg)?;
     Ok(())

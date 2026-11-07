@@ -212,8 +212,11 @@ impl CodeModeSession for RecordingSession {
         self.inner.wait(request, preempt)
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
-        self.inner.terminate(cell_id)
+    fn terminate<'a>(
+        &'a self,
+        request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        self.inner.terminate(request)
     }
 
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {

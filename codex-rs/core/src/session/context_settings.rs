@@ -15,8 +15,10 @@ use codex_protocol::context_settings::ContextSettingsValues;
 use codex_protocol::context_settings::ContextSettingsView;
 use codex_protocol::context_settings::InheritedContextBaseline;
 use codex_protocol::context_settings::ShakeThreshold;
+use codex_protocol::openai_models::CatalogModel;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::SessionSource;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ContextSettingsTarget {
@@ -295,6 +297,22 @@ fn overlay_values(values: &mut ContextSettingsValues, overrides: &ContextSetting
 }
 
 pub(crate) fn resolve(
+    config: &Config,
+    state: &ContextSettingsState,
+    catalog_model: &CatalogModel,
+    target: ContextSettingsTarget,
+) -> (CatalogModel, ContextSettingsView) {
+    let (model, view) = resolve_model(config, state, catalog_model, target);
+    (
+        CatalogModel {
+            model: Arc::new(model),
+            origin: catalog_model.origin,
+        },
+        view,
+    )
+}
+
+pub(super) fn resolve_model(
     config: &Config,
     state: &ContextSettingsState,
     catalog_model: &ModelInfo,

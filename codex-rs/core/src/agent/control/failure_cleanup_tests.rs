@@ -81,8 +81,9 @@ impl codex_code_mode::CodeModeSession for CleanupCell {
     }
     fn terminate<'a>(
         &'a self,
-        cell_id: codex_code_mode::CellId,
+        request: codex_code_mode::TerminateRequest,
     ) -> codex_code_mode::CodeModeSessionResultFuture<'a, codex_code_mode::WaitOutcome> {
+        let cell_id = request.cell_id;
         Box::pin(async move {
             assert!(
                 self.0
@@ -322,6 +323,7 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
         runtime.upgrade().unwrap(),
         child.session.thread_id,
         runtime.admit_start().expect("admit pending spawn"),
+        super::spawn_guard::SpawnOwner::Local,
     );
     guard.operation = Some(operation);
     *held.pending.lock().await = Some(guard);
@@ -341,6 +343,7 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
                 cancellation_token: CancellationToken::new(),
                 tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
                 call_id: "cleanup-cell".to_owned(),
+                native_call: None,
                 tool_name: codex_tools::ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME),
                 source: ToolCallSource::Direct,
                 environments: Default::default(),

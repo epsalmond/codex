@@ -60,7 +60,11 @@ impl CodeModeSession for GatedSession {
         Box::pin(async { Err("fixture does not wait".to_owned()) })
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        let cell_id = request.cell_id;
         Box::pin(async move {
             self.terminating
                 .lock()

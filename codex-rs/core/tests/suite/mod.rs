@@ -111,8 +111,10 @@ mod guardian_cached_score;
 #[path = "guardian_checkpoint_migration_tests.rs"]
 mod guardian_checkpoint_migration;
 // Uses the same command-approval harness as guardian_review below.
+mod builtin_model_catalog;
 mod canonical_plugin_connectors;
 mod context_usage_snapshots;
+mod critical_path_runtime;
 mod gateway_auth;
 mod guardian_connector_trust;
 #[cfg(not(target_os = "windows"))]

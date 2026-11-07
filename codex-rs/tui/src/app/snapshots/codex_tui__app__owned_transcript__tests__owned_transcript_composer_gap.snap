@@ -1,6 +1,5 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
-assertion_line: 350
 expression: "snapshots.join(\"\\n\\n\")"
 ---
 Latest
@@ -14,7 +13,7 @@ Transcript row 40
 
 › draft
 
-  gpt-test default · /tmp/project
+  gpt-test · /tmp/project
 
 
 Reading
@@ -28,7 +27,7 @@ Transcript row 35
 
 › draft
 
-  gpt-test default · /tmp/project
+  gpt-test · /tmp/project
   esc latest
 
 Resized multiline composer
@@ -42,14 +41,14 @@ Transcript row 33
   second line
   third line
 
-  gpt-test default · /tmp/project
+  gpt-test · /tmp/project
   esc latest
 
 Tiny terminal
 
 › draft
 
-  gpt-test default · /tmp/project
+  gpt-test · /tmp/project
   esc latest
 
 Detailed
@@ -63,4 +62,4 @@ Detailed
 
 › preserved draft
 
-  gpt-test default · /tmp/project
+  gpt-test · /tmp/project

@@ -72,9 +72,11 @@ impl OutgoingMessageSender {
         owner: ConnectionId,
         notification: ServerNotification,
     ) -> Option<oneshot::Receiver<()>> {
+        // Same message as other notification paths, so request traces read uniformly.
         tracing::trace!(
             targeted_connections = connection_ids.len(),
-            "app-server terminal event: {notification}"
+            terminal = true,
+            "app-server event: {notification}"
         );
         let outgoing_message = timestamped_server_notification(notification);
         let mut owner_write_complete_rx = None;

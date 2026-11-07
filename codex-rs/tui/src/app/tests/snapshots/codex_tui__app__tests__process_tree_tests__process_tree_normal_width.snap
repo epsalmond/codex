@@ -12,4 +12,6 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
 
 
   ↳    Compiling codex-tui v0.0.0
+
+
   enter show output · x stop · / search · esc back

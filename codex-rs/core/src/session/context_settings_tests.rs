@@ -8,7 +8,7 @@ async fn sparse_overlay_model_default_and_reset_resolve_against_catalog() {
     let (_, turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config.model_auto_compact_token_limit = Some(777);
-    let mut model = (**turn.model_info()).clone();
+    let mut model = turn.initial_settings.model_info.as_ref().clone();
     model.slug = "gpt-5.6-sol".into();
     model.context_window = Some(10000);
     model.max_context_window = Some(10000);
@@ -75,7 +75,7 @@ async fn compaction_scope_keeps_body_limit_distinct_from_full_admission() {
     use codex_protocol::config_types::AutoCompactTokenLimitScope;
     let (_, turn) = make_session_and_context().await;
     let config = &turn.config;
-    let mut model = (**turn.model_info()).clone();
+    let mut model = turn.initial_settings.model_info.as_ref().clone();
     model.context_window = Some(10000);
     model.max_context_window = Some(10000);
     model.effective_context_window_percent = 95;
@@ -114,7 +114,7 @@ async fn child_clamp_can_raise_disable_reset_and_reload_without_becoming_ancesto
     config.model_auto_compact_token_limit = Some(9000);
     config.auto_shake.max_threshold_tokens = Some(8500);
     config.subagent_context_reduction.threshold_tokens = 3000;
-    let mut model = (**turn.model_info()).clone();
+    let mut model = turn.initial_settings.model_info.as_ref().clone();
     model.context_window = Some(20000);
     model.max_context_window = Some(20000);
     inherit(&mut config, &ContextSettingsState::default());

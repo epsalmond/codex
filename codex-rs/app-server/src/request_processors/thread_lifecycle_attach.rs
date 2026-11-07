@@ -1,3 +1,5 @@
+//! Bind observed roots before a newly installed listener can drain terminal events.
+
 use super::thread_lifecycle::EnsureConversationListenerResult;
 use super::thread_lifecycle::ListenerTaskContext;
 use crate::error_code::internal_error;
@@ -8,24 +10,10 @@ use codex_core::WorkObservation;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 
-pub(super) async fn ensure_conversation_listener(
-    listener_task_context: ListenerTaskContext,
-    conversation_id: ThreadId,
-    connection_id: ConnectionId,
-    raw_events_enabled: bool,
-) -> Result<EnsureConversationListenerResult, JSONRPCErrorError> {
-    ensure_conversation_listener_inner(
-        listener_task_context,
-        conversation_id,
-        connection_id,
-        raw_events_enabled,
-        /*lifecycle*/ None,
-    )
-    .await
-    .map(|(result, _)| result)
-    .and_then(|result| result)
-}
-
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "root observer binding must be serialized against pending unloads"
+)]
 pub(super) async fn ensure_root_thread_listener(
     listener_task_context: ListenerTaskContext,
     conversation_id: ThreadId,
@@ -40,85 +28,35 @@ pub(super) async fn ensure_root_thread_listener(
     ),
     JSONRPCErrorError,
 > {
-    ensure_conversation_listener_inner(
-        listener_task_context,
-        conversation_id,
-        connection_id,
-        raw_events_enabled,
-        Some((session_source, observation)),
-    )
-    .await
-}
-
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "listener subscription must be serialized against pending unloads"
-)]
-async fn ensure_conversation_listener_inner(
-    listener_task_context: ListenerTaskContext,
-    conversation_id: ThreadId,
-    connection_id: ConnectionId,
-    raw_events_enabled: bool,
-    lifecycle: Option<(&SessionSource, Option<WorkObservation>)>,
-) -> Result<
-    (
-        Result<EnsureConversationListenerResult, JSONRPCErrorError>,
-        bool,
-    ),
-    JSONRPCErrorError,
-> {
-    let conversation = match listener_task_context
+    let conversation = listener_task_context
         .thread_manager
         .get_thread(conversation_id)
         .await
-    {
-        Ok(conversation) => conversation,
-        Err(_) => {
-            return Err(invalid_request(format!(
-                "thread not found: {conversation_id}"
-            )));
-        }
-    };
-    let (thread_state, result) = {
-        let pending_thread_unloads = listener_task_context.pending_thread_unloads.lock().await;
-        if pending_thread_unloads.contains_key(&conversation_id) {
+        .map_err(|_| invalid_request(format!("thread not found: {conversation_id}")))?;
+    if conversation.has_shutdown_status() {
+        return Err(super::thread_lifecycle::thread_closing_for_resume(
+            conversation_id,
+        ));
+    }
+    let lifecycle_observer_active = {
+        let pending = listener_task_context.pending_thread_unloads.lock().await;
+        if pending.contains_key(&conversation_id) {
             return Err(invalid_request(format!(
                 "thread {conversation_id} is closing; retry after the thread is closed"
             )));
         }
-        match listener_task_context
+        // Claim the output owner before listener startup: queued terminal events must see it.
+        // The normal listener transaction below validates the runtime and installs its drain.
+        let attached = listener_task_context
             .thread_state_manager
-            .try_ensure_connection_subscribed(conversation_id, connection_id, raw_events_enabled)
-            .await
-        {
-            Some(thread_state) => (thread_state, EnsureConversationListenerResult::Attached),
-            None => {
-                if lifecycle
-                    .as_ref()
-                    .is_some_and(|(session_source, observation)| {
-                        matches!(session_source, SessionSource::Exec) && observation.is_some()
-                    })
-                {
-                    return Err(internal_error(format!(
-                        "failed to attach lifecycle observer to root thread {conversation_id}"
-                    )));
-                }
-                // Startup can outlast connection cleanup; the thread still needs a
-                // listener to unload once it is idle and has no subscribers.
-                let thread_state = listener_task_context
-                    .thread_state_manager
-                    .thread_state(conversation_id)
-                    .await;
-                (
-                    thread_state,
-                    EnsureConversationListenerResult::ConnectionClosed,
-                )
-            }
+            .try_add_connection_to_thread(conversation_id, connection_id)
+            .await;
+        if !attached && matches!(session_source, SessionSource::Exec) && observation.is_some() {
+            return Err(internal_error(format!(
+                "failed to attach lifecycle observer to root thread {conversation_id}"
+            )));
         }
-    };
-    let attached = matches!(result, EnsureConversationListenerResult::Attached);
-    let lifecycle_observer_active =
-        if attached && let Some((session_source, observation)) = lifecycle {
+        if attached {
             matches!(
                 super::thread_lifecycle_observer::bind_exec_root_lifecycle_observer(
                     &listener_task_context.thread_state_manager,
@@ -132,20 +70,20 @@ async fn ensure_conversation_listener_inner(
             )
         } else {
             false
-        };
-    if let Err(error) = super::thread_lifecycle::ensure_listener_task_running(
+        }
+    };
+    let result = super::thread_lifecycle::ensure_conversation_listener(
         listener_task_context.clone(),
         conversation_id,
-        conversation,
-        thread_state,
+        connection_id,
+        raw_events_enabled,
     )
-    .await
-    {
+    .await;
+    if result.is_err() {
         let _ = listener_task_context
             .thread_state_manager
             .unsubscribe_connection_from_thread(conversation_id, connection_id)
             .await;
-        return Ok((Err(error), lifecycle_observer_active));
     }
-    Ok((Ok(result), lifecycle_observer_active))
+    Ok((result, lifecycle_observer_active))
 }

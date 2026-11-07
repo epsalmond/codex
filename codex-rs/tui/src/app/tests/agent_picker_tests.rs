@@ -40,22 +40,22 @@ async fn child_notifications_cache_last_context_and_final_response_while_hidden(
         unreachable!();
     };
     completed.turn.items = vec![
-        ThreadItem::AgentMessage {
+        ThreadItem::untimed(ThreadItemPayload::AgentMessage {
             id: "answer".to_string(),
             text: "  review\n complete  ".to_string(),
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: None,
             delivery: None,
             questions: None,
-        },
-        ThreadItem::AgentMessage {
+        }),
+        ThreadItem::untimed(ThreadItemPayload::AgentMessage {
             id: "commentary".to_string(),
             text: "still working".to_string(),
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
             questions: None,
-        },
+        }),
     ];
     app.enqueue_thread_notification(thread_id, completed_notification)
         .await?;
