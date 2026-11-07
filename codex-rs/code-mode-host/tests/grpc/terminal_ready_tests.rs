@@ -134,6 +134,7 @@ async fn terminal_ready_before_initial_yield_preserves_both_intervals_and_one_wa
                 WaitRequest {
                     cell_id: id.clone(),
                     yield_time_ms: 1,
+                    max_output_tokens: None,
                 },
                 /*preempt*/ None,
             )
@@ -241,6 +242,7 @@ async fn terminal_ready_settles_notifications_and_skips_inline_and_termination()
     let observation = WaitRequest {
         cell_id: id.clone(),
         yield_time_ms: 1,
+        max_output_tokens: None,
     };
     let (first, second) = tokio::join!(
         session.wait(observation.clone(), /*preempt*/ None),
@@ -273,7 +275,7 @@ async fn terminal_ready_settles_notifications_and_skips_inline_and_termination()
         .map_err(anyhow::Error::msg)?;
     assert!(matches!(
         session
-            .terminate(id.clone())
+            .terminate(id.clone().into())
             .await
             .map_err(anyhow::Error::msg)?,
         WaitOutcome::LiveCell(RuntimeResponse::Terminated { .. })
@@ -300,7 +302,8 @@ async fn terminal_ready_settles_notifications_and_skips_inline_and_termination()
             .wait(
                 WaitRequest {
                     cell_id: running_id,
-                    yield_time_ms: 1
+                    yield_time_ms: 1,
+                    max_output_tokens: None,
                 },
                 /*preempt*/ None
             )

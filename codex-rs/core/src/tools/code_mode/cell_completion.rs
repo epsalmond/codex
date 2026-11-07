@@ -265,6 +265,7 @@ impl CellCompletion {
                         WaitRequest {
                             cell_id: cell_id.clone(),
                             yield_time_ms: super::DEFAULT_WAIT_YIELD_TIME_MS,
+                            max_output_tokens: None,
                         },
                         Some(self.watch_cancel.clone()),
                     ) => result,
@@ -540,6 +541,7 @@ impl CellCompletion {
                         WaitRequest {
                             cell_id: cell_id.clone(),
                             yield_time_ms: COLLECTION_YIELD_TIME_MS,
+                            max_output_tokens: None,
                         },
                         /*preempt*/ None,
                     ),
@@ -605,7 +607,7 @@ impl CellCompletion {
             if !self.is_closed() {
                 let provider =
                     provider.ok_or_else(|| "terminal provider unavailable".to_owned())?;
-                provider.terminate(cell_id.clone()).await?;
+                provider.terminate(cell_id.clone().into()).await?;
             }
             self.native_closed.cancelled().await;
             Ok::<(), String>(())

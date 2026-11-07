@@ -39,6 +39,9 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
     conversation: &CodexThread,
     token_usage_turn_id: String,
 ) {
+    if token_usage_turn_id.is_empty() {
+        return;
+    }
     let Some(info) = conversation.token_usage_info().await else {
         return;
     };
@@ -191,6 +194,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
                 context_usage: None,
                 info: Some(codex_protocol::protocol::TokenUsageInfo {
+                    last_usage_includes_reasoning: None,
                     total_token_usage: Default::default(),
                     last_token_usage: Default::default(),
                     model_context_window: None,

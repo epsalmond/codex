@@ -13,6 +13,8 @@
 //! Sender evidence is read without the active-turn lock and bound to the accepted turn.
 
 use super::TurnInput;
+use super::UserInputMetadata;
+use super::inject::validate_injected_response_item;
 use super::session::Session;
 use super::session::SessionConfiguration;
 use super::session::SessionSettingsUpdate;
@@ -25,6 +27,7 @@ use crate::agent::control::WorkAdmissionError;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianSenderMessages;
 use crate::state::ActiveTurn;
+use crate::state::AdditionalContextFormat;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
 use crate::tasks::TaskStartOutcome;
@@ -279,6 +282,18 @@ pub(super) async fn handle(
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
     let request = request.into();
+    if let SubmittedTurnInput::ResponseItem(item)
+    | SubmittedTurnInput::AnnotatedResponseItem(AnnotatedResponseItem { item, .. }) =
+        &request.request.input
+    {
+        validate_injected_response_item(item)?;
+    }
+    request
+        .request
+        .additional_context
+        .values()
+        .try_for_each(AdditionalContextEntry::validate)
+        .map_err(|message| CodexErr::InvalidRequest(message.to_owned()))?;
     let result = match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
@@ -403,6 +418,14 @@ fn not_submitted_reason(error: &WorkAdmissionError) -> NotSubmittedReason {
     }
 }
 
+fn user_input_metadata(request: &TurnInputRequest) -> UserInputMetadata {
+    UserInputMetadata {
+        origin: UserInputOrigin::from_turn_trigger(request.start.turn_trigger.as_deref()),
+        response_item_uuid: request.user_item_uuid,
+        ..Default::default()
+    }
+}
+
 async fn start_or_steer(
     session: &Arc<Session>,
     request: WithTurnExtensionData<TurnInputRequest>,
@@ -412,6 +435,7 @@ async fn start_or_steer(
         request,
         turn_extension_init,
     } = request;
+    let input_metadata = user_input_metadata(&request);
     let TurnInputRequest {
         input,
         thread_settings,
@@ -420,7 +444,6 @@ async fn start_or_steer(
         responsesapi_client_metadata,
         ..
     } = request;
-    let origin = UserInputOrigin::from_turn_trigger(start.turn_trigger.as_deref());
     match &input {
         SubmittedTurnInput::UserInput { .. }
         | SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
@@ -489,7 +512,7 @@ async fn start_or_steer(
                     /*expected_turn_id*/ None,
                     settings.required_active_final_output_json_schema(),
                     responsesapi_client_metadata.clone(),
-                    origin,
+                    input_metadata,
                 )
                 .await
             {
@@ -568,7 +591,7 @@ async fn start_or_steer(
                 assignment_guard,
                 settings: settings.take_for_start(),
                 submission_id: &submission_id,
-                origin,
+                input_metadata,
                 responsesapi_client_metadata: &responsesapi_client_metadata,
             },
             &mut input,
@@ -596,7 +619,7 @@ struct ReservedExplicitStart<'a, 's> {
     assignment_guard: UnstartedTurnAssignment<'s>,
     settings: PreparedTurnInputSettings,
     submission_id: &'a str,
-    origin: UserInputOrigin,
+    input_metadata: UserInputMetadata,
     responsesapi_client_metadata: &'a ResponsesApiClientMetadataUpdate,
 }
 
@@ -619,7 +642,7 @@ async fn start_reserved<'s>(
         mut assignment_guard,
         settings,
         submission_id,
-        origin,
+        input_metadata,
         responsesapi_client_metadata,
     } = start;
     let turn_context = match settings
@@ -683,7 +706,8 @@ async fn start_reserved<'s>(
                 | SubmittedTurnInput::AnnotatedResponseItem(_)
                 | SubmittedTurnInput::InterAgentCommunication(_) => true,
             };
-            let mut task_input = merge_additional_context_input(session, additional_context).await;
+            let mut task_input =
+                merge_additional_context_input(session, &turn_context, additional_context).await;
             if has_explicit_input {
                 task_input.push(
                     pending_turn_input(
@@ -691,7 +715,7 @@ async fn start_reserved<'s>(
                         submitted,
                         sender_messages.as_ref(),
                         &turn_context.sub_id,
-                        origin,
+                        input_metadata,
                     )
                     .await,
                 );
@@ -757,6 +781,7 @@ async fn start_if_idle(
         request,
         turn_extension_init,
     } = request;
+    let input_metadata = user_input_metadata(&request);
     let TurnInputRequest {
         mut input,
         thread_settings,
@@ -765,7 +790,6 @@ async fn start_if_idle(
         responsesapi_client_metadata,
         ..
     } = request;
-    let origin = UserInputOrigin::from_turn_trigger(start.turn_trigger.as_deref());
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
@@ -906,7 +930,8 @@ async fn start_if_idle(
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
 
-    let mut task_input = merge_additional_context_input(session, additional_context).await;
+    let mut task_input =
+        merge_additional_context_input(session, &turn_context, additional_context).await;
     let sender_messages = capture_sender_user_messages(session, &mut input).await;
     match kind {
         TurnStartKind::User => {
@@ -918,7 +943,7 @@ async fn start_if_idle(
                     input,
                     sender_messages.as_ref(),
                     &turn_context.sub_id,
-                    origin,
+                    input_metadata,
                 )
                 .await,
             );
@@ -936,7 +961,7 @@ async fn start_if_idle(
                                 input,
                                 sender_messages.as_ref(),
                                 &turn_context.sub_id,
-                                origin,
+                                input_metadata,
                             )
                             .await,
                         ],
@@ -972,6 +997,7 @@ async fn steer(
         request,
         turn_extension_init,
     } = request;
+    let input_metadata = user_input_metadata(&request);
     let TurnInputRequest {
         input,
         thread_settings,
@@ -980,7 +1006,6 @@ async fn steer(
         responsesapi_client_metadata,
         ..
     } = request;
-    let origin = UserInputOrigin::from_turn_trigger(start.turn_trigger.as_deref());
     if !matches!(&input, SubmittedTurnInput::UserInput { .. }) {
         return Err(CodexErr::InvalidRequest(
             "only user input can steer a turn".to_string(),
@@ -1006,7 +1031,7 @@ async fn steer(
             Some(expected_turn_id.as_str()),
             settings.required_active_final_output_json_schema(),
             responsesapi_client_metadata,
-            origin,
+            input_metadata,
         )
         .await
     {
@@ -1188,7 +1213,7 @@ impl Session {
         expected_turn_id: Option<&str>,
         required_final_output_json_schema: Option<&Value>,
         responsesapi_client_metadata: ResponsesApiClientMetadataUpdate,
-        origin: UserInputOrigin,
+        input_metadata: UserInputMetadata,
     ) -> Result<(String, String), NotSubmittedReason> {
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
@@ -1258,8 +1283,12 @@ impl Session {
                 sender_messages,
                 additional_context,
             } => {
-                let mut pending_input =
-                    merge_additional_context_input(self, std::mem::take(additional_context)).await;
+                let mut pending_input = merge_additional_context_input(
+                    self,
+                    &active_task.turn_context,
+                    std::mem::take(additional_context),
+                )
+                .await;
                 let is_user_input = matches!(input.as_ref(), SubmittedTurnInput::UserInput { .. });
                 let input = match input.as_mut() {
                     SubmittedTurnInput::UserInput { content, client_id } => TurnInput::UserInput {
@@ -1267,7 +1296,7 @@ impl Session {
                         client_id: client_id.clone(),
                         metadata: super::UserInputMetadata {
                             acceptance_order: Some(self.reserve_user_input_order().await),
-                            origin,
+                            ..input_metadata
                         },
                     },
                     input => {
@@ -1276,7 +1305,7 @@ impl Session {
                             input.clone(),
                             sender_messages.as_ref(),
                             active_turn_id,
-                            origin,
+                            input_metadata,
                         )
                         .await
                     }
@@ -1314,11 +1343,19 @@ impl Session {
 
 async fn merge_additional_context_input(
     session: &Session,
+    turn_context: &TurnContext,
     additional_context: BTreeMap<String, AdditionalContextEntry>,
 ) -> Vec<TurnInput> {
+    let format = if session.enabled(Feature::UntrustedAsToolOutput) {
+        AdditionalContextFormat::ToolOutputs
+    } else {
+        AdditionalContextFormat::Messages
+    };
     let additional_context_input = {
         let mut state = session.state.lock().await;
-        state.additional_context.merge(additional_context)
+        state
+            .additional_context
+            .merge(additional_context, format, &turn_context.session_telemetry)
     };
     additional_context_input
         .into_iter()
@@ -1352,7 +1389,7 @@ async fn pending_turn_input(
     input: SubmittedTurnInput,
     sender_messages: Option<&GuardianSenderMessages>,
     turn_id: &str,
-    origin: UserInputOrigin,
+    input_metadata: UserInputMetadata,
 ) -> TurnInput {
     let retain = match &input {
         SubmittedTurnInput::AnnotatedResponseItem(input) => input.annotations.retain,
@@ -1364,7 +1401,7 @@ async fn pending_turn_input(
             client_id,
             metadata: super::UserInputMetadata {
                 acceptance_order: Some(session.reserve_user_input_order().await),
-                origin,
+                ..input_metadata
             },
         },
         SubmittedTurnInput::ResponseItem(item)

@@ -1,16 +1,17 @@
 use super::*;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnItemsView;
 use pretty_assertions::assert_eq;
 
 fn agent_message(text: &str, phase: Option<MessagePhase>) -> ThreadItem {
-    ThreadItem::AgentMessage {
+    ThreadItem::untimed(ThreadItemPayload::AgentMessage {
         id: text.to_string(),
         text: text.to_string(),
         phase,
         memory_citation: None,
         delivery: None,
         questions: None,
-    }
+    })
 }
 
 fn turn(id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {

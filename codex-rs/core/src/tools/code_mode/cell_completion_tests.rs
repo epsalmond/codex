@@ -50,7 +50,10 @@ impl CodeModeSession for FixedSession {
         })
     }
 
-    fn terminate<'a>(&'a self, _cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        _request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(async { Err("fixture does not terminate".to_owned()) })
     }
 
@@ -568,7 +571,11 @@ impl CodeModeSession for ClosingSession {
         })
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        let cell_id = request.cell_id;
         Box::pin(async move {
             self.terminations
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -928,7 +935,7 @@ async fn cell_cancel_and_collection_failure_keep_one_terminal_record_and_native_
         .await;
         if cancelled {
             fixture.base.completion.begin_interrupt();
-            let result = fixture.provider.terminate(cell_id()).await;
+            let result = fixture.provider.terminate(cell_id().into()).await;
             fixture.base.completion.interrupted(&result);
             fixture.base.completion.interrupted(&result);
         } else {
@@ -1257,7 +1264,7 @@ async fn cell_model_terminal_read_delayed_close_settles_exact_assignment_without
                 let assignment = turn.agent_assignment.get().unwrap();
                 let result = if terminate {
                     service
-                        .terminate(cell_id())
+                        .terminate(cell_id().into())
                         .await
                         .map(super::super::CellWaitOutcome::Runtime)
                 } else {
@@ -1266,6 +1273,7 @@ async fn cell_model_terminal_read_delayed_close_settles_exact_assignment_without
                             WaitRequest {
                                 cell_id: cell_id(),
                                 yield_time_ms: 1,
+                                max_output_tokens: None,
                             },
                             None,
                             fixture.base.store(),
@@ -1392,6 +1400,7 @@ async fn cell_model_missing_read_preserves_published_fence_without_close_hint() 
                 WaitRequest {
                     cell_id: cell_id(),
                     yield_time_ms: 1,
+                    max_output_tokens: None,
                 },
                 None,
                 fixture.base.store(),
@@ -1445,6 +1454,7 @@ async fn cell_model_wait_error_preserves_automatic_collection_and_native_gate() 
             WaitRequest {
                 cell_id: cell_id(),
                 yield_time_ms: 1,
+                max_output_tokens: None,
             },
             None,
             fixture.base.store(),
@@ -1545,6 +1555,7 @@ async fn model_wait_or_terminate(
                 crate::turn_diff_tracker::TurnDiffTracker::new(),
             )),
             call_id: "late-wait".to_owned(),
+            native_call: None,
             tool_name: codex_tools::ToolName::plain(if terminate_only {
                 super::super::TERMINATE_TOOL_NAME
             } else {

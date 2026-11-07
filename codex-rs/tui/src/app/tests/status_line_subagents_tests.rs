@@ -15,14 +15,14 @@ fn activity_notification(
         thread_id: parent.to_string(),
         turn_id: "parent-turn".to_string(),
         completed_at_ms: 0,
-        item: ThreadItem::SubAgentActivity {
+        item: ThreadItem::untimed(ThreadItemPayload::SubAgentActivity {
             id: "activity".to_string(),
             kind,
             agent_thread_id: child.to_string(),
             agent_path: path.to_string(),
             model: None,
             reasoning_effort: None,
-        },
+        }),
     })
 }
 

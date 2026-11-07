@@ -41,8 +41,10 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use shlex::try_join as shlex_try_join;
 
 mod executable_identity;
+mod inheritance;
 mod model_policy;
 
+pub(crate) use inheritance::InheritedExecPolicy;
 pub(crate) use model_policy::AllowPrefixRules;
 
 const PROMPT_CONFLICT_REASON: &str =
@@ -280,17 +282,15 @@ pub enum ExecPolicyUpdateError {
     JoinBlockingTask { source: tokio::task::JoinError },
 
     #[error("failed to update in-memory rules: {source}")]
-    AddRule { source: ExecPolicyRuleError },
-}
-
-impl From<ExecPolicyRuleError> for ExecPolicyUpdateError {
-    fn from(source: ExecPolicyRuleError) -> Self {
-        Self::AddRule { source }
-    }
+    AddRule {
+        #[from]
+        source: ExecPolicyRuleError,
+    },
 }
 
 pub(crate) struct ExecPolicyManager {
     policy: ArcSwap<Policy>,
+    source_requirements: Option<Arc<RequirementsExecPolicy>>,
     update_lock: Semaphore,
     /// Set for a child directory: rules come from the parent's live manager plus restrictions.
     overlay: Option<ExecPolicyOverlay>,
@@ -321,8 +321,16 @@ pub(crate) struct ExecApprovalRequest<'a> {
 
 impl ExecPolicyManager {
     pub(crate) fn new(policy: Arc<Policy>) -> Self {
+        Self::from_snapshot(policy, /*source_requirements*/ None)
+    }
+
+    pub(crate) fn from_snapshot(
+        policy: Arc<Policy>,
+        source_requirements: Option<Arc<RequirementsExecPolicy>>,
+    ) -> Self {
         Self {
             policy: ArcSwap::from(policy),
+            source_requirements,
             update_lock: Semaphore::new(/*permits*/ 1),
             overlay: None,
         }
@@ -334,7 +342,11 @@ impl ExecPolicyManager {
         if let Some(err) = warning.as_ref() {
             tracing::warn!("failed to parse rules: {err}");
         }
-        Ok(Self::new(Arc::new(policy)))
+        let source_requirements = config_stack.requirements().exec_policy.as_deref().cloned();
+        Ok(Self::from_snapshot(
+            Arc::new(policy),
+            source_requirements.map(Arc::new),
+        ))
     }
 
     pub(crate) fn current(&self) -> Arc<Policy> {
@@ -364,6 +376,7 @@ impl ExecPolicyManager {
         let restrictions = Arc::new(restrictions.clone());
         let merged = Arc::new(parent_policy.merge_overlay(&restrictions));
         Arc::new(Self {
+            source_requirements: parent.source_requirements.clone(),
             policy: ArcSwap::from(Arc::clone(&merged)),
             update_lock: Semaphore::new(/*permits*/ 1),
             overlay: Some(ExecPolicyOverlay {
@@ -372,6 +385,10 @@ impl ExecPolicyManager {
                 merged: ArcSwap::from_pointee((parent_policy, merged)),
             }),
         })
+    }
+
+    pub(crate) fn snapshot(&self) -> (Arc<Policy>, Option<Arc<RequirementsExecPolicy>>) {
+        (self.current(), self.source_requirements.clone())
     }
 
     #[cfg(test)]
@@ -466,9 +483,9 @@ impl ExecPolicyManager {
                     ),
                 ),
             },
-            Decision::Prompt => {
+            Decision::Prompt | Decision::PromptUser => {
                 let prompt_is_rule = evaluation.matched_rules.iter().any(|rule_match| {
-                    is_policy_match(rule_match) && rule_match.decision() == Decision::Prompt
+                    is_policy_match(rule_match) && rule_match.decision() == evaluation.decision
                 });
                 match prompt_is_rejected_by_policy(approval_policy, prompt_is_rule) {
                     Some(reason) if prompt_is_rule => ExecApprovalRequirement::Forbidden {
@@ -485,6 +502,11 @@ impl ExecPolicyManager {
                             ),
                         ),
                     },
+                    None if evaluation.decision == Decision::PromptUser => {
+                        ExecApprovalRequirement::NeedsHumanApproval {
+                            reason: derive_prompt_reason(command, &evaluation),
+                        }
+                    }
                     None => ExecApprovalRequirement::NeedsApproval {
                         reason: derive_prompt_reason(command, &evaluation),
                         proposed_execpolicy_amendment: requested_amendment.or_else(|| {
@@ -774,28 +796,34 @@ async fn parse_policy_files(policy_paths: &[PathBuf]) -> Result<Policy, ExecPoli
     Ok(parser.build())
 }
 
-pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy, ExecPolicyError> {
+async fn policy_files(stack: &ConfigLayerStack) -> Result<Vec<PathBuf>, ExecPolicyError> {
+    let folders = stack.layers_low_to_high().filter_map(|layer| {
+        if stack.ignore_user_and_project_exec_policy_rules()
+            && matches!(
+                layer.name,
+                ConfigLayerSource::User { .. } | ConfigLayerSource::Project { .. }
+            )
+        {
+            None
+        } else {
+            layer.config_folder()
+        }
+    });
     // Disabled project layers already represent the trust decision, so hooks
     // and exec-policy loading can reuse the normal trusted-layer view.
     // Iterate the layers in increasing order of precedence, adding the *.rules
     // from each layer, so that higher-precedence layers can override
     // rules defined in lower-precedence ones.
     let mut policy_paths = Vec::new();
-    for layer in config_stack.layers_low_to_high() {
-        if config_stack.ignore_user_and_project_exec_policy_rules()
-            && matches!(
-                layer.name,
-                ConfigLayerSource::User { .. } | ConfigLayerSource::Project { .. }
-            )
-        {
-            continue;
-        }
-        if let Some(config_folder) = layer.config_folder() {
-            let policy_dir = config_folder.join(RULES_DIR_NAME);
-            let layer_policy_paths = collect_policy_files(&policy_dir).await?;
-            policy_paths.extend(layer_policy_paths);
-        }
+    for config_folder in folders {
+        let policy_dir = config_folder.join(RULES_DIR_NAME);
+        policy_paths.extend(collect_policy_files(&policy_dir).await?);
     }
+    Ok(policy_paths)
+}
+
+pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy, ExecPolicyError> {
+    let policy_paths = policy_files(config_stack).await?;
     tracing::trace!(
         policy_paths = ?policy_paths,
         "loaded exec policies"
@@ -1143,20 +1171,27 @@ fn derive_prompt_reason(command_args: &[String], evaluation: &Evaluation) -> Opt
         .filter_map(|rule_match| match rule_match {
             RuleMatch::PrefixRuleMatch {
                 matched_prefix,
-                decision: Decision::Prompt,
+                decision,
                 justification,
                 ..
-            } => Some((matched_prefix.len(), justification.as_deref())),
+            } if *decision == evaluation.decision => {
+                Some((matched_prefix.len(), justification.as_deref()))
+            }
             _ => None,
         })
         .max_by_key(|(matched_prefix_len, _)| *matched_prefix_len);
 
+    let approval = if evaluation.decision == Decision::PromptUser {
+        "human approval"
+    } else {
+        "approval"
+    };
     match most_specific_prompt {
         Some((_matched_prefix_len, Some(justification))) => {
-            Some(format!("`{command}` requires approval: {justification}"))
+            Some(format!("`{command}` requires {approval}: {justification}"))
         }
         Some((_matched_prefix_len, None)) => {
-            Some(format!("`{command}` requires approval by policy"))
+            Some(format!("`{command}` requires {approval} by policy"))
         }
         None => None,
     }

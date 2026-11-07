@@ -399,8 +399,11 @@ impl App {
         selected: Option<usize>,
     ) -> SelectionViewParams {
         let mut initial_selected_idx = selected;
+        let pending_thread = self.agent_navigation.pending_approval_threads().next();
         let items = self.agent_picker_selection_items(|idx, thread_id| {
-            if initial_selected_idx.is_none() && self.active_thread_id == Some(thread_id) {
+            if initial_selected_idx.is_none()
+                && pending_thread.or(self.active_thread_id) == Some(thread_id)
+            {
                 initial_selected_idx = Some(idx);
             }
         });
@@ -443,6 +446,12 @@ impl App {
             let primary = threads.remove(primary_idx);
             threads.insert(/*index*/ 0, primary);
         }
+        threads.sort_by_key(|(id, _)| {
+            (
+                self.primary_thread_id != Some(*id),
+                !self.agent_navigation.pending_approvals.contains(id),
+            )
+        });
         threads
             .into_iter()
             .enumerate()
@@ -451,6 +460,11 @@ impl App {
                 let id = thread_id;
                 let is_primary = self.primary_thread_id == Some(thread_id);
                 let name = agent_picker_row_name(thread_id, entry, is_primary);
+                let name = if self.agent_navigation.pending_approvals.contains(&thread_id) {
+                    format!("{name} (needs approval)")
+                } else {
+                    name
+                };
                 let details = self.agent_navigation.picker_details(&thread_id);
                 let is_error = details.is_some_and(|details| details.is_error);
                 let status = picker_status_label(entry.is_closed, entry.is_running, is_error);
@@ -615,6 +629,17 @@ impl App {
             }
             _ => {}
         }
+    }
+    /// Refresh approval notices and picker rows from the same navigation state.
+    pub(super) fn refresh_agent_picker(&mut self) -> bool {
+        self.sync_active_agent_label();
+        let pending = self
+            .agent_navigation
+            .pending_approval_threads()
+            .map(|id| self.thread_label(id))
+            .collect();
+        self.chat_widget.set_pending_thread_approvals(pending);
+        self.update_agent_picker_rows_if_present()
     }
 }
 

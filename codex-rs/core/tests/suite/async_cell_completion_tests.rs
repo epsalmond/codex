@@ -254,10 +254,14 @@ impl CodeModeSession for Cell {
             Ok(result)
         })
     }
-    fn terminate<'a>(&'a self, id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        let id = request.cell_id.clone();
         self.terminations.fetch_add(1, Ordering::SeqCst);
         if let Some(inner) = &self.inner {
-            return inner.terminate(id);
+            return inner.terminate(request);
         }
         Box::pin(async move {
             if self.case == Case::TerminateFirst {
@@ -758,7 +762,11 @@ impl CodeModeSession for ControlledCells {
         })
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        let cell_id = request.cell_id.clone();
         Box::pin(async move {
             self.terminations.fetch_add(1, Ordering::SeqCst);
             let Some(delegate) = self.take(&cell_id) else {

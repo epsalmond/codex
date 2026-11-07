@@ -51,10 +51,27 @@ impl Config {
             .with_user_layer_from(&self.config_layer_stack),
         };
         // A child agent's directory layers stay capped and the parent's project layers stay.
-        let layers = crate::agent::child_directory::keep_child_directory_layers(
+        let mut layers = crate::agent::child_directory::keep_child_directory_layers(
             &self.config_layer_stack,
             layers,
         )?;
+        if matches!(scope, RuntimeConfigRefresh::Mcp) {
+            let plugins = incoming
+                .config_layer_stack
+                .all_layers_low_to_high()
+                .filter(|layer| {
+                    layer.name == codex_config::ConfigLayerSource::SessionFlags
+                        && !layer.is_disabled()
+                })
+                .filter_map(|layer| layer.config.get("plugins").cloned())
+                .reduce(|mut plugins, overlay| {
+                    codex_config::merge_toml_values(&mut plugins, &overlay);
+                    plugins
+                });
+            if let Some(plugins) = plugins {
+                layers = layers.with_session_plugins(plugins)?;
+            }
+        }
         // User refreshes retain the session's managed configuration.
         layers.ensure_config_server_applied()?;
         let cfg: McpRefreshToml = layers
@@ -72,6 +89,7 @@ impl Config {
         // These operational controls accept host defaults beneath explicit layer values.
         // Enterprise opt-in always comes from trusted layers instead.
         for feature in [
+            Feature::McpConnectionSharing,
             Feature::SecretAuthStorage,
             Feature::McpOAuthRefreshCoordination,
         ] {

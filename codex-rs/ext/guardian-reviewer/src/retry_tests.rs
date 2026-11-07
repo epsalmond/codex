@@ -47,6 +47,7 @@ fn guardian_review_retry_only_retries_recoverable_errors() {
     };
     let transient_error_info = [
         CodexErrorInfo::ServerOverloaded,
+        CodexErrorInfo::PolicyCapacityUnavailable,
         CodexErrorInfo::FlexUnavailable,
         CodexErrorInfo::HttpConnectionFailed {
             http_status_code: Some(502),

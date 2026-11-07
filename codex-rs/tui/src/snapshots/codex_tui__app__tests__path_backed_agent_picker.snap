@@ -6,7 +6,9 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • /root/worker  mid-turn context ?
+  1. • Main [default] (current)       idle context ?
+› 2. • /root/review (needs approval)  mid-turn context ?
+  3. • /root/worker (needs approval)  mid-turn context ?
 
   enter select · / search · x close agent · c close idle · q hide inactive
   locally · esc back

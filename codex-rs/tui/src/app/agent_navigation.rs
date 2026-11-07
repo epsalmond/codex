@@ -49,6 +49,7 @@ pub(crate) struct AgentNavigationState {
     /// Bounded row details and freshness guards for asynchronous picker refreshes.
     pub(super) picker_state: AgentPickerState,
     /// Stable first-seen traversal order for picker rows and keyboard cycling.
+    /// First-seen order for keyboard cycling. The picker groups waiting threads first.
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
@@ -65,11 +66,13 @@ pub(crate) struct AgentNavigationState {
     subagent_threads: HashSet<ThreadId>,
     /// Unloaded descendants awaiting the backend's lifecycle; unconfirmed ones close.
     pub(super) unload_checks: HashSet<ThreadId>,
+    /// Inactive threads with an approval outstanding in their event store.
+    pub(super) pending_approvals: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<AgentPickerRefreshState>,
 }
 
-/// Direction of keyboard traversal through the stable picker order.
+/// Direction of keyboard traversal through the first-seen order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AgentNavigationDirection {
     /// Move toward the entry that was seen earlier in spawn order, wrapping at the front.
@@ -469,6 +472,7 @@ impl AgentNavigationState {
         self.turn_observed.clear();
         self.subagent_threads.clear();
         self.unload_checks.clear();
+        self.pending_approvals.clear();
         self.picker_refresh = None;
     }
 
@@ -526,6 +530,12 @@ impl AgentNavigationState {
             .collect()
     }
 
+    pub(super) fn pending_approval_threads(&self) -> impl Iterator<Item = ThreadId> + '_ {
+        self.order.iter().copied().filter(|id| {
+            self.pending_approvals.contains(id) && !self.picker_excluded_threads.contains(id)
+        })
+    }
+
     pub(crate) fn set_picker_thread_visibility(
         &mut self,
         thread_id: ThreadId,
@@ -564,7 +574,7 @@ impl AgentNavigationState {
             .collect()
     }
 
-    /// Returns tracked thread ids in the same stable order used by the picker.
+    /// Returns tracked thread ids in first-seen order.
     pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
         self.visible_threads()
             .into_iter()

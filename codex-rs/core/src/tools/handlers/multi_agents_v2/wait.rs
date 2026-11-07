@@ -1,12 +1,13 @@
 use super::*;
-use crate::session::InputQueueActivity;
+use crate::thread_input::InputWaitOutcome;
+use crate::thread_input::subscribe_input_activity;
+use crate::thread_input::wait_for_activity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
-use tokio::time::timeout_at;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -67,14 +68,8 @@ impl Handler {
             None => default_timeout_ms,
         };
 
-        let turn_state = session
-            .input_queue
-            .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
-            .await;
-        let (mut activity_rx, pending_activity) = session
-            .input_queue
-            .subscribe_activity(turn_state.as_deref())
-            .await;
+        let (activity_rx, pending_activity) =
+            subscribe_input_activity(&session, &turn.sub_id).await;
 
         session
             .emit_turn_item_started(
@@ -107,8 +102,13 @@ impl Handler {
         {
             WaitOutcome::NoRunningAgents
         } else {
-            let deadline = wait_started + Duration::from_millis(timeout_ms as u64);
-            wait_for_activity(&mut activity_rx, pending_activity, deadline).await
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms as u64),
+                wait_for_activity(activity_rx, pending_activity),
+            )
+            .await
+            .map(WaitOutcome::from)
+            .unwrap_or(WaitOutcome::TimedOut)
         };
         // A completed wait may wake for a message, user input, or its timeout.
         // Dropped waits do not have an observed outcome and are not included.
@@ -224,22 +224,12 @@ enum WaitOutcome {
     NoRunningAgents,
 }
 
-async fn wait_for_activity(
-    activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
-    pending_activity: Option<InputQueueActivity>,
-    deadline: Instant,
-) -> WaitOutcome {
-    if let Some(activity) = pending_activity {
-        return match activity {
-            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
-            InputQueueActivity::Steer => WaitOutcome::Steered,
-        };
-    }
-    match timeout_at(deadline, activity_rx.changed()).await {
-        Ok(Ok(())) => match *activity_rx.borrow_and_update() {
-            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
-            InputQueueActivity::Steer => WaitOutcome::Steered,
-        },
-        Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
+impl From<InputWaitOutcome> for WaitOutcome {
+    fn from(outcome: InputWaitOutcome) -> Self {
+        match outcome {
+            InputWaitOutcome::MailboxActivity => Self::MailboxActivity,
+            InputWaitOutcome::Steered => Self::Steered,
+            InputWaitOutcome::TimedOut => Self::TimedOut,
+        }
     }
 }

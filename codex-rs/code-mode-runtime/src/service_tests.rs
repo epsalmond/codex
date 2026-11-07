@@ -99,6 +99,7 @@ async fn interrupt_yields_execute_and_wait_without_stopping_the_cell() {
                     WaitRequest {
                         cell_id: cell_id("1"),
                         yield_time_ms: 60_000,
+                        max_output_tokens: None,
                     },
                     Some(wait_signal),
                 )
@@ -126,6 +127,7 @@ async fn interrupt_yields_execute_and_wait_without_stopping_the_cell() {
                     WaitRequest {
                         cell_id: cell_id("1"),
                         yield_time_ms: 60_000,
+                        max_output_tokens: None,
                     },
                     /*preempt*/ None,
                 )
@@ -222,6 +224,7 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
             WaitRequest {
                 cell_id: cell_id("1"),
                 yield_time_ms: 10_000,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )
@@ -244,6 +247,7 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
             WaitRequest {
                 cell_id: cell_id("1"),
                 yield_time_ms: 10_000,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )
@@ -292,6 +296,7 @@ async fn wait_waits_for_nested_tool_during_yield_grace() {
             WaitRequest {
                 cell_id: cell_id("1"),
                 yield_time_ms: 10_000,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )
@@ -367,6 +372,7 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
             WaitRequest {
                 cell_id: cell_id("1"),
                 yield_time_ms: 60_000,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )
@@ -442,7 +448,7 @@ async fn tool_start_acknowledgement_reports_termination_before_invocation() {
 
     let (startup, terminated) = tokio::join!(
         wait_until_tool_started(&delegate),
-        service.terminate(cell_id("1")),
+        service.terminate(cell_id("1").into()),
     );
     assert_eq!(startup, Err("cell closed before nested tool started"));
     let response = RuntimeResponse::Terminated {
@@ -749,6 +755,7 @@ text("after exit");
     let actual = service
         .wait(
             WaitRequest {
+                max_output_tokens: None,
                 cell_id: cell_id("1"),
                 yield_time_ms: 30_000,
             },
@@ -995,7 +1002,7 @@ store("healthy", {[keys[0]]: "null"});
                 vec![FunctionCallOutputContentItem::InputText {
                     text: expected_text.to_string()
                 }],
-                expected_error.map(str::to_string)
+                expected_error.map(str::to_string),
             )
         );
     }
@@ -1109,7 +1116,7 @@ async fn execute_to_pending_returns_once_the_runtime_is_quiescent() {
         }
     );
 
-    let termination = service.terminate(cell_id("1")).await.unwrap();
+    let termination = service.terminate(cell_id("1").into()).await.unwrap();
 
     assert_eq!(
         termination,
@@ -1153,7 +1160,7 @@ await Promise.all([
         }
     );
 
-    let termination = service.terminate(cell_id("1")).await.unwrap();
+    let termination = service.terminate(cell_id("1").into()).await.unwrap();
 
     assert_eq!(
         termination,
@@ -1221,7 +1228,7 @@ await Promise.all([
         })
     );
 
-    let termination = service.terminate(cell_id("1")).await.unwrap();
+    let termination = service.terminate(cell_id("1").into()).await.unwrap();
 
     assert_eq!(
         termination,
@@ -1288,7 +1295,7 @@ await new Promise(() => {});
         })
     );
 
-    let termination = service.terminate(cell_id("1")).await.unwrap();
+    let termination = service.terminate(cell_id("1").into()).await.unwrap();
 
     assert_eq!(
         termination,
@@ -2135,6 +2142,7 @@ async fn wait_reports_missing_cell_separately_from_runtime_results() {
             WaitRequest {
                 cell_id: cell_id("missing"),
                 yield_time_ms: 1,
+                max_output_tokens: None,
             },
             /*preempt*/ None,
         )

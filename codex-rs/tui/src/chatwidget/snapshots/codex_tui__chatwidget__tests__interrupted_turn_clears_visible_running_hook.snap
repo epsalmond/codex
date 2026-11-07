@@ -9,10 +9,10 @@ before interrupt:
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  GPT-5.6-Sol default · /tmp/project                                            "
+"  sol · /tmp/project                                                            "
 after interrupt:
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  GPT-5.6-Sol default · /tmp/project                                            "
+"  sol · /tmp/project                                                            "

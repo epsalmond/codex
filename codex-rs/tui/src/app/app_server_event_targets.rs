@@ -191,6 +191,9 @@ pub(super) fn server_notification_thread_target(
         | ServerNotification::AuthRecoveryCompleted(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadReadStateChanged(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::Warning(notification) => notification.thread_id.as_deref(),
         ServerNotification::GuardianWarning(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::McpServerOauthLoginCompleted(notification) => {
@@ -208,7 +211,7 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ProjectChanged(_)
         | ServerNotification::SkillsChanged(_)
         | ServerNotification::AccountUpdated(_)
-        | ServerNotification::ThreadReadStateChanged(_)
+        | ServerNotification::ThreadSectionChanged(_)
         | ServerNotification::GatewayOAuthChanged(_)
         | ServerNotification::AccountRateLimitsUpdated(_)
         | ServerNotification::AppListUpdated(_)

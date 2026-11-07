@@ -41,6 +41,7 @@ async fn execution_timing_includes_javascript_but_excludes_delayed_reads() -> Re
         .open_session(grpc::OpenSessionRequest {
             cell_execution_limits: None,
             terminal_ready_requested: false,
+            output_truncation: None,
         })
         .await?
         .into_inner();
@@ -165,11 +166,10 @@ async fn stdio_execution_timing_includes_javascript_but_excludes_delayed_reads()
         if suffix.is_empty() {
             assert_eq!(error_text, None);
         } else {
-            assert!(
-                error_text
-                    .context("expected JS failure")?
-                    .contains("timed failure")
-            );
+            let Some(error_text) = error_text else {
+                anyhow::bail!("expected JS failure");
+            };
+            assert!(error_text.contains("timed failure"));
         }
     }
     session.shutdown().await.map_err(anyhow::Error::msg)?;
@@ -230,6 +230,7 @@ async fn observation_timing_excludes_previous_requests_and_background_time() -> 
                     WaitRequest {
                         cell_id: cell_id.clone(),
                         yield_time_ms: 50,
+                        max_output_tokens: None,
                     },
                     /*preempt*/ None,
                 )
@@ -255,7 +256,7 @@ async fn observation_timing_excludes_previous_requests_and_background_time() -> 
 
         let observed = Instant::now();
         let terminated = session
-            .terminate(cell_id.clone())
+            .terminate(cell_id.clone().into())
             .await
             .map_err(anyhow::Error::msg)?;
         let duration = terminated
@@ -277,6 +278,7 @@ async fn observation_timing_excludes_previous_requests_and_background_time() -> 
                 WaitRequest {
                     cell_id: cell_id.clone(),
                     yield_time_ms: 50,
+                    max_output_tokens: None,
                 },
                 /*preempt*/ None,
             )

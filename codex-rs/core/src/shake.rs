@@ -23,6 +23,7 @@
 
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -199,7 +200,10 @@ fn item_model_visible_bytes(item: &ResponseItem) -> usize {
                         ImageReference::Inline { image_url } => image_url.len(),
                         ImageReference::File { file_id } => file_id.len(),
                     },
-                    ContentItem::InputAudio { audio_url } => audio_url.len(),
+                    ContentItem::InputAudio { audio } => match audio {
+                        AudioReference::Inline { audio_url } => audio_url.len(),
+                        AudioReference::File { file_id } => file_id.len(),
+                    },
                 };
             }
         }

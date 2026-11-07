@@ -56,7 +56,11 @@ impl CodeModeSession for ControlledCell {
         Box::pin(async { Err("controlled cell is only terminated by Core".to_owned()) })
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        request: codex_code_mode::TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        let cell_id = request.cell_id.clone();
         Box::pin(async move {
             self.terminating.notify_one();
             self.release_termination.notified().await;
