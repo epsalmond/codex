@@ -252,6 +252,7 @@ jobs:
           CODEX_FORK_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           CODEX_FORK_SOURCE_SHA: ${{ needs.prepare.outputs.release_sha }}
           CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: |
           set -euo pipefail
           bins=(--bin codex --bin codex-code-mode-host)
