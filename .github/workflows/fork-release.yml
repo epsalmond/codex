@@ -237,6 +237,24 @@ jobs:
           set -euo pipefail
           bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-build.sh" stamp-version "$SOURCE_VERSION"
 
+      # Hosted Linux runners have 16 GiB RAM and 4 GiB swap; the parallel
+      # release build has repeatedly lost the runner mid-compile, consistent
+      # with memory exhaustion. Add swap on the temp disk.
+      - name: Add Linux build swap
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=/mnt
+          mountpoint -q /mnt || dir=/
+          swapfile="$dir/fork-release.swap"
+          sudo fallocate -l 16G "$swapfile"
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
+          free -h
+          df -h "$dir"
+
       # bwrap (bundled in the Linux package) links libcap via pkg-config.
       - name: Install Linux bwrap build dependencies
         if: ${{ runner.os == 'Linux' }}
