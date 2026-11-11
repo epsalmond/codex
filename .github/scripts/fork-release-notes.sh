@@ -3,7 +3,7 @@
 #
 # usage: fork-release-notes.sh <repo-root> <fork-repo> <branch> <commit>
 #   <source-version> <stable-lineage> <upstream-main-sha> <glibc-version>
-#   <source-kind> <release-tag> <deb-asset-name> [previous-release-tag]
+#   <source-kind> <release-tag> <deb-asset-name> [previous-release-tag] [linux-arm64-glibc]
 set -euo pipefail
 
 repo_root=$1
@@ -14,6 +14,7 @@ stable_lineage=$6
 upstream_commit=$7
 release_tag=${10}
 previous_tag=${12-}
+linux_arm_glibc=${13-}
 [[ "$previous_tag" != none ]] || previous_tag=''
 git_cmd=(git -C "$repo_root")
 commit=$("${git_cmd[@]}" rev-parse --verify "$commit^{commit}")
@@ -80,6 +81,14 @@ else
   render_commits 'Source history' "$commit"
 fi
 printf '\n[Feature guide](https://github.com/%s/blob/%s/RELEASE_NOTES.md).\n' "$fork_repo" "$commit"
+
+# Legacy callers predate Linux ARM64 release assets. Only advertise them when
+# the publisher has verified both target-specific glibc metadata files.
+if [[ -n "$linux_arm_glibc" ]]; then
+  download_url="https://github.com/$fork_repo/releases/download/$release_tag"
+  printf '\n**Downloads:** [Linux x86_64](%s/codex-x86_64-unknown-linux-gnu.tar.gz) (glibc %s+), [Linux ARM64](%s/codex-aarch64-unknown-linux-gnu.tar.gz) (glibc %s+), [macOS Apple Silicon](%s/codex-aarch64-apple-darwin.tar.gz). The .deb package is x86_64 only.\n' \
+    "$download_url" "$8" "$download_url" "$linux_arm_glibc" "$download_url"
+fi
 
 # Keep this one-line identity compatible with fork-upstream-poll consumers.
 echo

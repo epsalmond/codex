@@ -131,7 +131,7 @@ if bash "$metadata_script" \
   exit 1
 fi
 
-grep -Fq 'bash .github/scripts/fork-release-notes.sh' "$workflow_file"
+grep -Fq 'bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-notes.sh"' "$workflow_file"
 grep -Fq '      - "local-features-v*"' "$workflow_file"
 grep -Fq 'group: ${{ github.workflow }}-${{ github.ref }}' "$workflow_file"
 grep -Fq "if: github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN" "$workflow_file"

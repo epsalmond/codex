@@ -2,7 +2,7 @@ name: fork-release
 
 # Builds and publishes the main test builds on GitHub-hosted
 # runners. A branch push is accepted only for a fast-forward two-parent merge;
-# the workflow then creates its deterministic tag after validation and both
+# the workflow then creates its deterministic tag after validation and all
 # archives succeed. Existing local-features-v* tag pushes remain a manual
 # recovery path.
 on:
@@ -146,6 +146,9 @@ jobs:
           # glibc floor low.
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          # Native ARM64 on the same Ubuntu/glibc baseline as x86_64.
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
           # GitHub-hosted Apple Silicon.
           - runner: macos-15
             target: aarch64-apple-darwin
@@ -173,7 +176,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$PREPARED_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
-            echo "::error::Use Re-run all jobs so both target binaries share this attempt's immutable identity" >&2
+            echo "::error::Use Re-run all jobs so all target binaries share this attempt's immutable identity" >&2
             exit 1
           fi
 
@@ -320,8 +323,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ldd --version | awk 'NR == 1 { print $NF }' > glibc-version.txt
-          test -s glibc-version.txt
+          glibc_file="glibc-version-${{ matrix.target }}.txt"
+          ldd --version | awk 'NR == 1 { print $NF }' > "$glibc_file"
+          test -s "$glibc_file"
 
       # Build the canonical Codex package layout plus the Shake extras; see
       # package-archive in fork-release-build.sh, which scripts/shake-local-install.sh
@@ -352,7 +356,7 @@ jobs:
           path: |
             codex-rs/codex-${{ matrix.target }}.tar.gz
             codex-rs/codex-symbols-${{ matrix.target }}.tar.gz
-            codex-rs/glibc-version.txt
+            codex-rs/glibc-version-${{ matrix.target }}.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -370,6 +374,16 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
+      # Render the new target's notes/formula even when release_sha predates
+      # this workflow; source identity still comes from the main checkout.
+      - name: Check out publisher helpers from the workflow commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: fork-release-tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - name: Verify prepared workflow attempt
         shell: bash
         env:
@@ -377,7 +391,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$PREPARED_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
-            echo "::error::Use Re-run all jobs so both target binaries share this attempt's immutable identity" >&2
+            echo "::error::Use Re-run all jobs so all target binaries share this attempt's immutable identity" >&2
             exit 1
           fi
 
@@ -386,6 +400,15 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+
+      # The amd64 .deb builder (including older release_sha copies) expects
+      # this legacy filename. Only x86_64 metadata may supply its glibc floor.
+      - name: Prepare amd64 glibc metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/glibc-version-x86_64-unknown-linux-gnu.txt
+          cp dist/glibc-version-x86_64-unknown-linux-gnu.txt dist/glibc-version.txt
 
       - name: Build .deb package
         id: deb
@@ -422,20 +445,25 @@ jobs:
           test "$(git rev-parse --verify "$RELEASE_SHA^{commit}")" = "$RELEASE_SHA"
 
           linux_archive="dist/codex-x86_64-unknown-linux-gnu.tar.gz"
+          linux_arm_archive="dist/codex-aarch64-unknown-linux-gnu.tar.gz"
           macos_archive="dist/codex-aarch64-apple-darwin.tar.gz"
           linux_symbols="dist/codex-symbols-x86_64-unknown-linux-gnu.tar.gz"
+          linux_arm_symbols="dist/codex-symbols-aarch64-unknown-linux-gnu.tar.gz"
           macos_symbols="dist/codex-symbols-aarch64-apple-darwin.tar.gz"
-          for archive in "$linux_archive" "$macos_archive" "$linux_symbols" "$macos_symbols"; do
+          for archive in "$linux_archive" "$linux_arm_archive" "$macos_archive" \
+            "$linux_symbols" "$linux_arm_symbols" "$macos_symbols"; do
             test -s "$archive"
             tar -tzf "$archive" >/dev/null
           done
-          test -s dist/glibc-version.txt
+          test -s dist/glibc-version-x86_64-unknown-linux-gnu.txt
+          test -s dist/glibc-version-aarch64-unknown-linux-gnu.txt
           test -s "dist/$DEB_NAME"
 
           (
             cd dist
-            sha256sum "$(basename "$linux_archive")" "$(basename "$macos_archive")" "$DEB_NAME" \
-              "$(basename "$linux_symbols")" "$(basename "$macos_symbols")"
+            sha256sum "$(basename "$linux_archive")" "$(basename "$linux_arm_archive")" \
+              "$(basename "$macos_archive")" "$DEB_NAME" \
+              "$(basename "$linux_symbols")" "$(basename "$linux_arm_symbols")" "$(basename "$macos_symbols")"
           ) > dist/SHA256SUMS
           (
             cd dist
@@ -450,11 +478,12 @@ jobs:
           else
             echo '::warning::Published releases unavailable; showing recent source history'
           fi
-          bash .github/scripts/fork-release-notes.sh \
+          bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-notes.sh" \
             "$GITHUB_WORKSPACE" "$FORK_REPO" "$FORK_BRANCH" \
             "$RELEASE_SHA" "$SOURCE_VERSION" "$STABLE_LINEAGE" \
-            "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version.txt)" \
-            "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" "$previous_tag" > release-body.md
+            "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version-x86_64-unknown-linux-gnu.txt)" \
+            "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" "$previous_tag" \
+            "$(sed -n '1p' dist/glibc-version-aarch64-unknown-linux-gnu.txt)" > release-body.md
 
       - name: Create release publisher token
         id: publisher-token
@@ -500,9 +529,11 @@ jobs:
           test -n "$shake_version"
           assets=(
             dist/codex-x86_64-unknown-linux-gnu.tar.gz
+            dist/codex-aarch64-unknown-linux-gnu.tar.gz
             dist/codex-aarch64-apple-darwin.tar.gz
             "dist/$DEB_NAME"
             dist/codex-symbols-x86_64-unknown-linux-gnu.tar.gz
+            dist/codex-symbols-aarch64-unknown-linux-gnu.tar.gz
             dist/codex-symbols-aarch64-apple-darwin.tar.gz
             dist/SHA256SUMS
           )
@@ -563,11 +594,13 @@ jobs:
 
           darwin_sha=$(awk '$2 == "codex-aarch64-apple-darwin.tar.gz" { print $1 }' dist/SHA256SUMS)
           linux_sha=$(awk '$2 == "codex-x86_64-unknown-linux-gnu.tar.gz" { print $1 }' dist/SHA256SUMS)
+          linux_arm_sha=$(awk '$2 == "codex-aarch64-unknown-linux-gnu.tar.gz" { print $1 }' dist/SHA256SUMS)
           test -n "$darwin_sha"
           test -n "$linux_sha"
+          test -n "$linux_arm_sha"
 
-          bash .github/scripts/render-brew-formula.sh \
-            "$RELEASE_TAG" "$SOURCE_VERSION" "$darwin_sha" "$linux_sha" \
+          bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/render-brew-formula.sh" \
+            "$RELEASE_TAG" "$SOURCE_VERSION" "$darwin_sha" "$linux_sha" "$linux_arm_sha" \
             > rendered-codex-shake.rb
 
           tap_dir=$(mktemp -d)

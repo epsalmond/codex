@@ -99,6 +99,22 @@ jobs:
           bash .github/scripts/test_render_brew_formula.sh
           python3 -m unittest scripts/install/test_shake_install.py
 
+      # A dispatch can validate source that predates the ARM publisher test.
+      # Test the publisher workflow and helpers from the calling workflow's
+      # commit, while the checks above continue validating the source itself.
+      - name: Check out publisher regression from the workflow commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: fork-release-tools
+          sparse-checkout: |
+            .github/scripts
+            .github/workflows
+          persist-credentials: false
+
+      - name: Test publisher artifacts offline
+        run: bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/test_fork_release_artifacts.sh"
+
       # Everything else here builds the dev profile, which never compiles
       # `#[cfg(not(debug_assertions))]` code such as the fork update path
       # (#209). Type-check the shipped binaries with debug assertions off, as

@@ -32,7 +32,8 @@ class CodexShake < Formula
       sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     end
     on_arm do
-      odie "codex-shake has no aarch64 Linux build"
+      url "https://github.com/epsalmond/codex/releases/download/local-features-v0.154.0-main-r20260914110830.00000000000028b2ec76d3de4ab8/codex-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     end
   end
 

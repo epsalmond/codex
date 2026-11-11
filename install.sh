@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/epsalmond/codex/main/install.sh | sh
 #
-# Also available via Homebrew (macOS Apple Silicon, or Linux x86_64):
+# Also available via Homebrew (macOS Apple Silicon, or Linux x86_64/ARM64):
 #   brew install epsalmond/codex-shake/codex-shake
 # ...or as a .deb on Debian/Ubuntu x86_64 (see the release assets for the
 # exact filename, then `sudo dpkg -i codex-shake_<version>_amd64.deb`).

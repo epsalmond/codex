@@ -12,7 +12,7 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 ## Quickstart
 
 This fork ships Codex CLI as `codex-shake`, installed beside the official
-`codex`. Fork releases cover Apple Silicon macOS and x86_64 Linux. Windows
+`codex`. Fork releases cover Apple Silicon macOS and x86_64/ARM64 Linux. Windows
 x86_64 has a [development build](#windows-development-build); for other
 platforms, use [upstream Codex CLI](#installing-upstream-codex-cli).
 
@@ -49,7 +49,7 @@ official `codex`.
 ### Building codex-shake from a commit
 
 To try a commit before its release is published, build and install it on the
-machine that will run it (Linux x86_64 or macOS arm64):
+machine that will run it (Linux x86_64/ARM64 or macOS arm64):
 
 ```sh
 scripts/shake-local-install.sh --dry-run <commit>   # print version, tag, and plan
