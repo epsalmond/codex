@@ -1306,6 +1306,9 @@
             "incremental_tools_legacy": {
               "type": "boolean"
             },
+            "incremental_tools_legacy_gcp": {
+              "type": "boolean"
+            },
             "instant_interrupt": {
               "type": "boolean"
             },
@@ -8166,6 +8169,9 @@
           "type": "boolean"
         },
         "incremental_tools_legacy": {
+          "type": "boolean"
+        },
+        "incremental_tools_legacy_gcp": {
           "type": "boolean"
         },
         "instant_interrupt": {

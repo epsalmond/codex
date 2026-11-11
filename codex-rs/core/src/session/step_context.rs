@@ -17,6 +17,7 @@ use codex_file_system::FileSystemEnvironmentAccessor;
 use codex_mcp::McpBinding;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
+use codex_model_provider_info::GCP_PROVIDER_ID;
 use codex_otel::SessionTelemetry;
 use codex_plugin::ExecutorPluginHookSource;
 use codex_protocol::items::ModelInvocationContext;
@@ -61,11 +62,13 @@ impl StepContext {
         if self.settings.model_info.use_responses_lite {
             Some(Feature::IncrementalTools)
         } else {
-            matches!(
-                self.turn.config.model_provider_id.as_str(),
-                AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
-            )
-            .then_some(Feature::IncrementalToolsLegacy)
+            match self.turn.config.model_provider_id.as_str() {
+                AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID => {
+                    Some(Feature::IncrementalToolsLegacy)
+                }
+                GCP_PROVIDER_ID => Some(Feature::IncrementalToolsLegacyGcp),
+                _ => None,
+            }
         }
     }
 
