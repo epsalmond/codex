@@ -130,4 +130,12 @@ grep -Fq 'Showing 8 of 11 commits; [Full comparison]' <<< "$long_body"
 missing_long_body=$(render rust-v0.156.1 "$upstream_commit" missing-tag)
 grep -Fq "[Source history](https://github.com/epsalmond/codex/commits/$commit) includes the rest." <<< "$missing_long_body"
 
+arm_body=$(bash "$notes_script" "$fixture" epsalmond/codex main "$commit" \
+  0.156.1 rust-v0.156.1 "$upstream_commit" 2.35 branch-merge "$release_tag" \
+  codex-shake_0.156.1_amd64.deb "$previous_tag" 2.36)
+grep -Fq "[Linux ARM64](https://github.com/epsalmond/codex/releases/download/$release_tag/codex-aarch64-unknown-linux-gnu.tar.gz) (glibc 2.36+)" <<< "$arm_body"
+grep -Fq 'codex-x86_64-unknown-linux-gnu.tar.gz) (glibc 2.35+)' <<< "$arm_body"
+grep -Fq 'The .deb package is x86_64 only.' <<< "$arm_body"
+[[ "$(tail -n 1 <<< "$arm_body")" == "$(tail -n 1 <<< "$long_body")" ]]
+
 echo 'fork-release notes tests passed'

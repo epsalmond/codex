@@ -3,25 +3,27 @@
 # and print it on stdout.
 #
 #   render-brew-formula.sh <release-tag> <source-version> \
-#     <darwin-arm64-sha256> <linux-x86_64-sha256>
+#     <darwin-arm64-sha256> <linux-x86_64-sha256> <linux-arm64-sha256>
 #
 # <release-tag>          e.g. local-features-v0.154.0-main-r20260914110830.<sha>
 #                         or local-features-v0.154.0-r202609140816.<sha>
 # <source-version>        workspace Cargo version, e.g. 0.154.0
 # <darwin-arm64-sha256>   sha256 of codex-aarch64-apple-darwin.tar.gz
 # <linux-x86_64-sha256>   sha256 of codex-x86_64-unknown-linux-gnu.tar.gz
+# <linux-arm64-sha256>    sha256 of codex-aarch64-unknown-linux-gnu.tar.gz
 set -euo pipefail
 
 usage() {
-  echo "usage: render-brew-formula.sh <release-tag> <source-version> <darwin-arm64-sha256> <linux-x86_64-sha256>" >&2
+  echo "usage: render-brew-formula.sh <release-tag> <source-version> <darwin-arm64-sha256> <linux-x86_64-sha256> <linux-arm64-sha256>" >&2
 }
 
-[[ $# -eq 4 ]] || { usage; exit 2; }
+[[ $# -eq 5 ]] || { usage; exit 2; }
 
 release_tag=$1
 source_version=$2
 darwin_sha=$3
 linux_sha=$4
+linux_arm_sha=$5
 
 if [[ "$release_tag" =~ -r([0-9]{1,14})\.([0-9a-fA-F]+)$ ]]; then
   counter="${BASH_REMATCH[1]}"
@@ -37,6 +39,10 @@ fi
 }
 [[ "$linux_sha" =~ ^[0-9a-fA-F]{64}$ ]] || {
   echo "render-brew-formula: linux sha256 does not look like a sha256: $linux_sha" >&2
+  exit 1
+}
+[[ "$linux_arm_sha" =~ ^[0-9a-fA-F]{64}$ ]] || {
+  echo "render-brew-formula: linux arm64 sha256 does not look like a sha256: $linux_arm_sha" >&2
   exit 1
 }
 
@@ -93,7 +99,8 @@ class CodexShake < Formula
       sha256 "${linux_sha}"
     end
     on_arm do
-      odie "codex-shake has no aarch64 Linux build"
+      url "https://github.com/epsalmond/codex/releases/download/${release_tag}/codex-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "${linux_arm_sha}"
     end
   end
 

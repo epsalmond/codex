@@ -165,6 +165,8 @@ jobs:
         working-directory: .
         run: |
           bash .github/scripts/test_fork_release_metadata.sh
+          bash .github/scripts/test_fork_release_artifacts.sh
+          bash .github/scripts/test_fork_release_notes.sh
           bash .github/scripts/test_build_fork_deb.sh
           bash .github/scripts/test_render_brew_formula.sh
           python3 .github/scripts/test_check_issue_238_selection.py
