@@ -346,16 +346,17 @@ impl App {
             self.refresh_agent_picker_threads(app_server, root);
         }
 
+        self.refresh_agent_picker_pending_jobs(
+            app_server,
+            root,
+            self.agent_navigation.tracked_thread_ids(),
+        );
+
         // Also syncs the active agent label and pending approvals before updating rows.
         if self.refresh_agent_picker()
             && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
         {
             self.refresh_agent_picker_previews(
-                app_server,
-                root,
-                self.agent_navigation.tracked_thread_ids(),
-            );
-            self.refresh_agent_picker_pending_jobs(
                 app_server,
                 root,
                 self.agent_navigation.tracked_thread_ids(),
@@ -469,8 +470,11 @@ impl App {
                 let details = self.agent_navigation.picker_details(&thread_id);
                 let is_error = details.is_some_and(|details| details.is_error);
                 let status = picker_status_label(entry.is_closed, entry.is_running, is_error);
-                let pending_jobs = details.and_then(|details| details.pending_jobs.as_deref());
-                let status_label = if status == "idle" {
+                let pending_jobs = self.agent_navigation.pending_jobs(&thread_id);
+                let status_label = if !entry.is_closed
+                    && !entry.is_running
+                    && (status == "idle" || pending_jobs.is_some_and(|jobs| !jobs.is_empty()))
+                {
                     idle_status_label(pending_jobs)
                 } else {
                     status.to_string()
@@ -540,6 +544,11 @@ impl App {
         }
 
         match notification {
+            ServerNotification::ThreadPendingCompletionsChanged(_) => {
+                self.agent_navigation.set_pending_jobs(thread_id, None);
+                self.app_event_tx
+                    .send(AppEvent::AgentPickerPendingJobsNeeded(thread_id));
+            }
             ServerNotification::TurnStarted(_) => {
                 self.agent_navigation
                     .set_error(thread_id, /*is_error*/ false);
@@ -556,9 +565,7 @@ impl App {
                     thread_id,
                     matches!(completed.turn.status, TurnStatus::Failed),
                 );
-                if self.primary_thread_id.is_some()
-                    && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
-                {
+                if self.primary_thread_id.is_some() {
                     self.app_event_tx
                         .send(AppEvent::AgentPickerPendingJobsNeeded(thread_id));
                 }

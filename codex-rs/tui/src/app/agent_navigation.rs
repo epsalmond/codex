@@ -46,6 +46,11 @@ mod session_subagents;
 pub(crate) struct AgentNavigationState {
     /// Latest picker metadata for each tracked thread id.
     threads: HashMap<ThreadId, AgentPickerThreadEntry>,
+    /// Pending work is lifecycle state, independent of picker details and visibility.
+    pending_work: HashMap<ThreadId, Vec<crate::multi_agents::AgentPendingJob>>,
+    pending_work_requests: HashMap<ThreadId, Uuid>,
+    /// Last known jobs remain visible while refreshes are pending or unavailable.
+    pending_work_unknown: HashSet<ThreadId>,
     /// Bounded row details and freshness guards for asynchronous picker refreshes.
     pub(super) picker_state: AgentPickerState,
     /// Stable first-seen traversal order for picker rows and keyboard cycling.
@@ -213,12 +218,61 @@ impl AgentNavigationState {
         self.picker_state.set_context_snapshot(thread_id, snapshot);
     }
 
+    pub(crate) fn invalidate_pending_jobs(&mut self) {
+        for thread_id in self.threads.keys().copied().collect::<Vec<_>>() {
+            self.set_pending_jobs(thread_id, None);
+        }
+    }
+
+    pub(crate) fn pending_jobs(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Option<&[crate::multi_agents::AgentPendingJob]> {
+        self.pending_work
+            .get(thread_id)
+            .filter(|jobs| !jobs.is_empty() || !self.pending_work_unknown.contains(thread_id))
+            .map(Vec::as_slice)
+    }
+
+    pub(crate) fn begin_pending_jobs_request(&mut self, thread_id: ThreadId) -> Uuid {
+        let request = Uuid::new_v4();
+        self.pending_work_requests.insert(thread_id, request);
+        request
+    }
+
+    pub(crate) fn pending_work_is_known_empty(&self, thread_id: &ThreadId) -> bool {
+        !self.pending_work_unknown.contains(thread_id)
+            && self.pending_jobs(thread_id).is_some_and(<[_]>::is_empty)
+    }
+
+    pub(crate) fn pending_jobs_request_matches(&self, thread_id: ThreadId, request: Uuid) -> bool {
+        self.pending_work_requests.get(&thread_id) == Some(&request)
+    }
+
     pub(crate) fn set_pending_jobs(
         &mut self,
         thread_id: ThreadId,
         jobs: Option<Vec<crate::multi_agents::AgentPendingJob>>,
     ) {
+        self.begin_pending_jobs_request(thread_id);
         if self.threads.contains_key(&thread_id) {
+            if jobs.as_ref().is_some_and(|jobs| !jobs.is_empty())
+                && self
+                    .threads
+                    .get(&thread_id)
+                    .is_some_and(|entry| !entry.is_closed)
+            {
+                self.dismissed_threads.remove(&thread_id);
+            }
+            match &jobs {
+                Some(jobs) => {
+                    self.pending_work_unknown.remove(&thread_id);
+                    self.pending_work.insert(thread_id, jobs.clone());
+                }
+                None => {
+                    self.pending_work_unknown.insert(thread_id);
+                }
+            }
             self.picker_state.set_pending_jobs(thread_id, jobs);
         }
     }
@@ -400,12 +454,20 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_stopped(&mut self, thread_id: ThreadId) {
+        self.set_pending_jobs(thread_id, None);
         self.picker_state.bump_status_revision(thread_id);
         self.stopped_threads.insert(thread_id);
         self.set_running(thread_id, /*is_running*/ false);
     }
 
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
+        if self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running != is_running)
+        {
+            self.set_pending_jobs(thread_id, None);
+        }
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
             if is_running {
@@ -418,6 +480,13 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn set_running_from_discovery(&mut self, thread_id: ThreadId, is_running: bool) {
+        if self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running != is_running)
+        {
+            self.set_pending_jobs(thread_id, None);
+        }
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
             if is_running {
@@ -462,6 +531,9 @@ impl AgentNavigationState {
     /// to a pristine single-session state.
     pub(crate) fn clear(&mut self) {
         self.threads.clear();
+        self.pending_work.clear();
+        self.pending_work_requests.clear();
+        self.pending_work_unknown.clear();
         self.picker_state.clear();
         self.order.clear();
         self.stopped_threads.clear();
@@ -483,6 +555,9 @@ impl AgentNavigationState {
     /// would leave ghost rows in `/subagents`.
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
         self.threads.remove(&thread_id);
+        self.pending_work.remove(&thread_id);
+        self.pending_work_unknown.remove(&thread_id);
+        self.pending_work_requests.remove(&thread_id);
         self.picker_state.clear_thread(thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
@@ -742,6 +817,7 @@ mod tests {
                 /*is_closed*/ path == "/root/closed",
             );
             state.set_agent_path(thread_id, Some(path.to_string()));
+            state.set_pending_jobs(thread_id, Some(Vec::new()));
         }
         state.mark_running(ids[3]);
         state.note_awaiting_first_turn(ids[5]);

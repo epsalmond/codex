@@ -3205,9 +3205,7 @@ impl App {
                 self.apply_agent_picker_pending_jobs(primary_thread_id, results);
             }
             AppEvent::AgentPickerPendingJobsNeeded(thread_id) => {
-                if let Some(root) = self.primary_thread_id
-                    && self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID)
-                {
+                if let Some(root) = self.primary_thread_id {
                     self.refresh_agent_picker_pending_jobs(app_server, root, vec![thread_id]);
                 }
             }

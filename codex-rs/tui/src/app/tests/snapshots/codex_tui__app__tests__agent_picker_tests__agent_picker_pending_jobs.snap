@@ -7,9 +7,9 @@ expression: "render_bottom_popup(&app.chat_widget, 96)"
 
 
   1. • Main [default]               idle · nothing pending context ?
-  2. • Builder [worker]             idle · waiting on 2 jobs context ?
-› 3. • Reviewer [worker] (current)  idle · waiting on 1 job context ?
-  4. • Scout [worker]               idle context ?
+  2. • Builder [worker]             waiting on 2 jobs context ?
+› 3. • Reviewer [worker] (current)  waiting on 1 job context ?
+  4. • Scout [worker]               checking pending work context ?
   5. • Tests [worker]               mid-turn context ?
 
 

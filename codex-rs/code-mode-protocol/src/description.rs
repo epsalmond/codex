@@ -30,6 +30,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
 - `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to {{ default_exec_yield_time_ms }} ms.
 - `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
+- `title` optionally supplies a short, human-readable display label for pending-work status views. Cell source is never used as a title.
 - `work_kind` optionally declares `"task"` (the default finite cell) or `"service"` (session-owned work excluded from exec drain). A service cell's nested commands remain finite unless separately declared services.
 - When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
 
@@ -173,6 +174,8 @@ pub enum CodeModeWorkKind {
 #[serde(deny_unknown_fields)]
 struct CodeModeExecPragma {
     #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
     work_kind: CodeModeWorkKind,
     #[serde(default)]
     yield_time_ms: Option<u64>,
@@ -182,6 +185,7 @@ struct CodeModeExecPragma {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParsedExecSource {
+    pub title: Option<String>,
     pub work_kind: CodeModeWorkKind,
     pub code: String,
     pub yield_time_ms: Option<u64>,
@@ -196,6 +200,7 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
     }
 
     let mut args = ParsedExecSource {
+        title: None,
         work_kind: CodeModeWorkKind::Task,
         code: input.to_string(),
         yield_time_ms: None,
@@ -219,26 +224,26 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
     let directive = pragma.trim();
     if directive.is_empty() {
         return Err(
-            "exec pragma must be a JSON object with supported fields `yield_time_ms`, `max_output_tokens`, and `work_kind`"
+            "exec pragma must be a JSON object with supported fields `yield_time_ms`, `max_output_tokens`, `work_kind`, and `title`"
                 .to_string(),
         );
     }
 
     let value: serde_json::Value = serde_json::from_str(directive).map_err(|err| {
         format!(
-            "exec pragma must be valid JSON with supported fields `yield_time_ms`, `max_output_tokens`, and `work_kind`: {err}"
+            "exec pragma must be valid JSON with supported fields `yield_time_ms`, `max_output_tokens`, `work_kind`, and `title`: {err}"
         )
     })?;
     let object = value.as_object().ok_or_else(|| {
-        "exec pragma must be a JSON object with supported fields `yield_time_ms`, `max_output_tokens`, and `work_kind`"
+        "exec pragma must be a JSON object with supported fields `yield_time_ms`, `max_output_tokens`, `work_kind`, and `title`"
             .to_string()
     })?;
     for key in object.keys() {
         match key.as_str() {
-            "yield_time_ms" | "max_output_tokens" | "work_kind" => {}
+            "yield_time_ms" | "max_output_tokens" | "work_kind" | "title" => {}
             _ => {
                 return Err(format!(
-                    "exec pragma only supports `yield_time_ms`, `max_output_tokens`, and `work_kind`; got `{key}`"
+                    "exec pragma only supports `yield_time_ms`, `max_output_tokens`, `work_kind`, and `title`; got `{key}`"
                 ));
             }
         }
@@ -249,6 +254,10 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
         .is_some_and(|kind| !matches!(kind.as_str(), Some("task" | "service")))
     {
         return Err("exec pragma field `work_kind` must be `task` or `service`".to_string());
+    }
+
+    if object.get("title").is_some_and(|title| !title.is_string()) {
+        return Err("exec pragma field `title` must be a string".to_string());
     }
 
     let pragma: CodeModeExecPragma = serde_json::from_value(value).map_err(|err| {
@@ -276,6 +285,7 @@ pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
 
     args.code = rest.to_string();
     args.work_kind = pragma.work_kind;
+    args.title = pragma.title;
     args.yield_time_ms = pragma.yield_time_ms;
     args.max_output_tokens = pragma.max_output_tokens;
     Ok(args)
@@ -644,6 +654,7 @@ mod tests {
         assert_eq!(
             parse_exec_source("text('hi')").unwrap(),
             ParsedExecSource {
+                title: None,
                 work_kind: CodeModeWorkKind::Task,
                 code: "text('hi')".to_string(),
                 yield_time_ms: None,
@@ -657,12 +668,38 @@ mod tests {
         assert_eq!(
             parse_exec_source("// @exec: {\"yield_time_ms\": 10}\ntext('hi')").unwrap(),
             ParsedExecSource {
+                title: None,
                 work_kind: CodeModeWorkKind::Task,
                 code: "text('hi')".to_string(),
                 yield_time_ms: Some(10),
                 max_output_tokens: None,
             }
         );
+    }
+
+    #[test]
+    fn parse_exec_source_title_is_optional_display_metadata() {
+        let parsed = parse_exec_source(
+            "// @exec: {\"title\":\"Run focused tests\",\"work_kind\":\"service\",\"yield_time_ms\":0,\"max_output_tokens\":17}\ntext('private source')",
+        ).unwrap();
+        assert_eq!(parsed.title.as_deref(), Some("Run focused tests"));
+        assert_eq!(parsed.work_kind, CodeModeWorkKind::Service);
+        assert_eq!(parsed.code, "text('private source')");
+        assert_eq!(parsed.yield_time_ms, Some(0));
+        assert_eq!(parsed.max_output_tokens, Some(17));
+        assert!(
+            parse_exec_source("text('private source')")
+                .unwrap()
+                .title
+                .is_none()
+        );
+        for value in ["null", "17", "true", "{}", "[]"] {
+            assert_eq!(
+                parse_exec_source(&format!("// @exec: {{\"title\":{value}}}\ntext('hi')"))
+                    .unwrap_err(),
+                "exec pragma field `title` must be a string"
+            );
+        }
     }
 
     #[test]
@@ -677,6 +714,7 @@ mod tests {
             assert_eq!(
                 parse_exec_source(&input).unwrap(),
                 ParsedExecSource {
+                    title: None,
                     code: "text('hi')".to_string(),
                     work_kind: expected,
                     yield_time_ms: Some(0),

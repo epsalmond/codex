@@ -663,6 +663,7 @@ impl UnifiedExecProcessManager {
                 ) {
                 Ok(mut reservation) => {
                     reservation.set_command(&request.prepared.hook_command);
+                    reservation.set_title(request.title.as_deref());
                     Some(reservation)
                 }
                 Err(message) => {

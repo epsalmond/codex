@@ -67,6 +67,8 @@ pub(crate) fn terminal_session_for_input(
 pub(crate) struct ExecCommandArgs {
     pub(crate) cmd: String,
     #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
     work_kind: crate::unified_exec::NativeWorkKind,
     #[serde(default)]
     shell: Option<String>,

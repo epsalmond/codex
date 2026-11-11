@@ -110,7 +110,7 @@ impl CodeModeExecuteHandler {
             .features
             .enabled(codex_features::Feature::AsyncProcessCompletion)
         {
-            let reservation = exec
+            let mut reservation = exec
                 .session
                 .services
                 .async_completions
@@ -121,6 +121,7 @@ impl CodeModeExecuteHandler {
                     &registration,
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_owned()))?;
+            reservation.set_title(args.title.as_deref());
             Some(InitialCompletion(CellCompletion::new(
                 reservation,
                 Some(registration.clone()),

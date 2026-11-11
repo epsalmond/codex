@@ -109,7 +109,8 @@ async fn handle_close_agents(
     let mut failed = Vec::new();
     let close_idle = args.targets.len() == 1 && args.targets[0] == CLOSE_AGENTS_IDLE_TARGET;
     let selected = if close_idle {
-        idle_subtree_roots(&descendants)
+        let idle = idle_agent_ids(&session, &descendants).await;
+        idle_subtree_roots(&descendants, &idle)
     } else {
         let mut selected = Vec::new();
         for target in args.targets {
@@ -177,7 +178,7 @@ async fn subtree_still_idle(
     turn: &std::sync::Arc<crate::session::turn_context::TurnContext>,
     path: &AgentPath,
 ) -> bool {
-    session
+    let Ok(agents) = session
         .services
         .agent_control
         .list(
@@ -187,7 +188,36 @@ async fn subtree_still_idle(
             Some(path.as_str()),
         )
         .await
-        .is_ok_and(|agents| agents.iter().all(ListedAgent::is_idle))
+    else {
+        return false;
+    };
+    // A vanished or uninspectable root is not evidence that the subtree is idle.
+    if !agents
+        .iter()
+        .any(|agent| agent.metadata.agent_path.as_ref() == Some(path))
+    {
+        return false;
+    }
+    idle_agent_ids(session, &agents).await.len() == agents.len()
+}
+
+async fn idle_agent_ids(
+    session: &std::sync::Arc<crate::session::session::Session>,
+    agents: &[ListedAgent],
+) -> HashSet<ThreadId> {
+    let mut idle = HashSet::new();
+    for agent in agents {
+        if agent.is_idle()
+            && session
+                .services
+                .local_agent_runtime
+                .agent_is_idle_for_close(agent.thread_id)
+                .await
+        {
+            idle.insert(agent.thread_id);
+        }
+    }
+    idle
 }
 
 fn agent_name(agent: &ListedAgent) -> String {
@@ -201,15 +231,18 @@ fn agent_name(agent: &ListedAgent) -> String {
 
 /// Idle agents whose open subtree is idle too, without their idle descendants: closing a
 /// subtree root closes the rest, and an agent with busy descendants is left alone.
-fn idle_subtree_roots(descendants: &[ListedAgent]) -> Vec<&ListedAgent> {
+fn idle_subtree_roots<'a>(
+    descendants: &'a [ListedAgent],
+    idle: &HashSet<ThreadId>,
+) -> Vec<&'a ListedAgent> {
     let busy_paths = descendants
         .iter()
-        .filter(|agent| !agent.is_idle())
+        .filter(|agent| !idle.contains(&agent.thread_id))
         .filter_map(|agent| agent.metadata.agent_path.as_ref())
         .collect::<Vec<_>>();
     let idle = descendants
         .iter()
-        .filter(|agent| agent.is_idle())
+        .filter(|agent| idle.contains(&agent.thread_id))
         .filter(|agent| {
             agent
                 .metadata

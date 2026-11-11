@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
-expression: "context_snapshot::format_request_history_snapshot(\"Astra checks a Settings release using direct collaboration and Code Mode tools.\",\n&requests,\n&ContextSnapshotOptions::default().include_request_settings(),)"
+expression: "context_snapshot::format_request_history_snapshot(\"Astra checks a Settings release using direct collaboration and Code Mode tools.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Astra checks a Settings release using direct collaboration and Code Mode tools.
 
@@ -16,8 +16,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=1fe11cc57645f7d3):
-        - namespace/functions; hash=2a185684d78571b5
+00:additional_tools/developer (2; hash=73902749a00246d8):
+        - namespace/functions; hash=f0730ecc03b7c826
           - custom/exec
           - function/exec_terminate
           - function/request_user_input
@@ -105,7 +105,7 @@ Settings:
 07:configuration_update:reasoning={"effort":"low"}
 -- request 2 (turn) --
 08:function_call/collaboration.list_agents:{}
-09:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running","context":{"active_tokens":20000,"basis":"usag...bserved_at":<UNIX_S>,"provider_usage_at":<UNIX_S>}}]} [hash=bc3ac559943e39c8]
+09:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running","context":{"active_tokens":20000,"basis":"usag...at":<UNIX_S>},"pending_work":{"count":0,"jobs":[]}}]} [hash=2a56ac2654fbafd2]
 -- request 3 (turn) --
 10:custom_tool_call/exec:const [log, ping] = await Promise.all([
       tools.exec_command({ cmd: "cat release/diagnostics.log", login: false, max_output_tokens: 4000 }),

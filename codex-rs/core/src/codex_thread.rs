@@ -231,6 +231,8 @@ pub struct BackgroundTerminalInfo {
 /// A yielded async completion the owning thread has not accepted yet.
 #[derive(Debug, Eq, PartialEq)]
 pub struct PendingCompletionInfo {
+    pub title: Option<String>,
+    pub is_finite: bool,
     pub id: String,
     pub call_id: String,
     pub process_id: Option<String>,
@@ -970,6 +972,11 @@ impl CodexThread {
             .unified_exec_manager
             .recent_output(process_id, max_bytes)
             .await
+    }
+
+    /// Status invalidations, independent of model turns and automatic completion delivery.
+    pub fn subscribe_pending_completions(&self) -> watch::Receiver<()> {
+        self.session.services.async_completions.subscribe_pending()
     }
 
     pub async fn list_pending_completions(&self) -> Vec<PendingCompletionInfo> {

@@ -298,6 +298,7 @@ impl ThreadEventStore {
                 | ServerNotification::ServerRequestResolved(_)
                 | ServerNotification::McpToolCallProgress(_)
                 | ServerNotification::ThreadAttachmentUpdated(_)
+                | ServerNotification::ThreadPendingCompletionsChanged(_)
                 | ServerNotification::ThreadRealtimeItemAdded(_)
                 | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
                 | ServerNotification::ThreadRealtimeSdp(_)
@@ -966,6 +967,25 @@ mod tests {
         assert_eq!(store.buffer.len(), 2);
         assert!(store.has_pending_thread_approvals());
         assert_eq!(store.active_turn_id(), Some("turn-1"));
+    }
+
+    #[test]
+    fn pending_work_invalidations_do_not_evict_replay_history() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(/*capacity*/ 1);
+        store.push_notification(turn_started_notification(thread_id, "turn-1"));
+        for _ in 0..4 {
+            store.push_notification_ref(&ServerNotification::ThreadPendingCompletionsChanged(
+                codex_app_server_protocol::ThreadPendingCompletionsChangedNotification {
+                    thread_id: thread_id.to_string(),
+                },
+            ));
+        }
+        assert!(matches!(
+            store.buffer.front(),
+            Some(ThreadBufferedEvent::Notification(notification))
+                if matches!(notification.as_ref(), ServerNotification::TurnStarted(_))
+        ));
     }
 
     #[test]

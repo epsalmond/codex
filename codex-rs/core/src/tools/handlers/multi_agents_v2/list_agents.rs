@@ -1,6 +1,7 @@
 use super::analytics::ToolCallAnalytics;
 use super::*;
 use crate::agent::types::AgentContextUsage;
+use crate::agent::types::PendingAgentWork;
 use crate::session::multi_agents::ChildReportMode;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
@@ -63,6 +64,11 @@ impl Handler {
 
         let mut listed = Vec::with_capacity(agents.len());
         for agent in agents {
+            let pending_work = session
+                .services
+                .local_agent_runtime
+                .agent_pending_work(agent.thread_id)
+                .await;
             let mut context = session
                 .services
                 .local_agent_runtime
@@ -85,6 +91,7 @@ impl Handler {
                     None => ListedAgentStatus::Unloaded(UNLOADED_AGENT_STATUS),
                 },
                 context,
+                pending_work,
             });
         }
         Ok(boxed_tool_output(ListAgentsResult { agents: listed }))
@@ -119,6 +126,7 @@ struct ListedAgent {
     agent_name: String,
     agent_status: ListedAgentStatus,
     context: Option<AgentContextUsage>,
+    pending_work: Option<PendingAgentWork>,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,5 +149,56 @@ impl ToolOutput for ListAgentsResult {
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "list_agents")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::PendingAgentWorkItem;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn pending_work_is_additive_to_turn_status() {
+        let result = ListAgentsResult {
+            agents: vec![
+                ListedAgent {
+                    agent_name: "/root/worker".to_string(),
+                    agent_status: ListedAgentStatus::Live(AgentStatus::Interrupted),
+                    context: None,
+                    pending_work: Some(PendingAgentWork {
+                        count: 1,
+                        jobs: vec![PendingAgentWorkItem {
+                            id: "completion".to_string(),
+                            call_id: "call".to_string(),
+                            title: Some("Compile focused tests".to_string()),
+                            command: Some("cargo test -p codex-core".to_string()),
+                            process_id: Some("27".to_string()),
+                            cell_id: Some("cell".to_string()),
+                            ready: true,
+                        }],
+                    }),
+                },
+                ListedAgent {
+                    agent_name: "/root/unavailable".to_string(),
+                    agent_status: ListedAgentStatus::Live(AgentStatus::Interrupted),
+                    context: None,
+                    pending_work: None,
+                },
+            ],
+        };
+        let result = serde_json::to_value(result).unwrap();
+        let agent = &result["agents"][0];
+        assert_eq!(
+            agent["agent_status"],
+            serde_json::to_value(AgentStatus::Interrupted).unwrap()
+        );
+        assert_eq!(agent["pending_work"]["count"], 1);
+        assert_eq!(
+            agent["pending_work"]["jobs"][0]["title"],
+            "Compile focused tests"
+        );
+        assert_eq!(agent["pending_work"]["jobs"][0]["ready"], true);
+        assert!(result["agents"][1]["pending_work"].is_null());
     }
 }

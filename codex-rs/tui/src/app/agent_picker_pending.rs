@@ -48,32 +48,47 @@ impl App {
         if thread_ids.is_empty() {
             return;
         }
+        let thread_ids: Vec<_> = thread_ids
+            .into_iter()
+            .map(|thread_id| {
+                let request = self.agent_navigation.begin_pending_jobs_request(thread_id);
+                (thread_id, request)
+            })
+            .collect();
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let results = futures::stream::iter(thread_ids.into_iter().map(|thread_id| {
-                let request_handle = request_handle.clone();
-                async move {
-                    let result = request_handle
-                        .request_typed::<ThreadPendingCompletionsListResponse>(
-                            ClientRequest::ThreadPendingCompletionsList {
-                                request_id: RequestId::String(Uuid::new_v4().to_string()),
-                                params: ThreadPendingCompletionsListParams {
-                                    thread_id: thread_id.to_string(),
-                                    cursor: None,
-                                    limit: Some(PENDING_JOBS_PAGE_SIZE),
+            let results =
+                futures::stream::iter(thread_ids.into_iter().map(|(thread_id, request)| {
+                    let request_handle = request_handle.clone();
+                    async move {
+                        let result = request_handle
+                            .request_typed::<ThreadPendingCompletionsListResponse>(
+                                ClientRequest::ThreadPendingCompletionsList {
+                                    request_id: RequestId::String(Uuid::new_v4().to_string()),
+                                    params: ThreadPendingCompletionsListParams {
+                                        thread_id: thread_id.to_string(),
+                                        cursor: None,
+                                        limit: Some(PENDING_JOBS_PAGE_SIZE),
+                                    },
                                 },
-                            },
-                        )
-                        .await
-                        .map(|response| response.data.into_iter().map(pending_job).collect())
-                        .map_err(|error| error.to_string());
-                    (thread_id, result)
-                }
-            }))
-            .buffer_unordered(16)
-            .collect::<Vec<_>>()
-            .await;
+                            )
+                            .await
+                            .map(|response| {
+                                response
+                                    .data
+                                    .into_iter()
+                                    .filter(|completion| completion.is_finite)
+                                    .map(pending_job)
+                                    .collect()
+                            })
+                            .map_err(|error| error.to_string());
+                        (thread_id, request, result)
+                    }
+                }))
+                .buffer_unordered(16)
+                .collect::<Vec<_>>()
+                .await;
             app_event_tx.send(AppEvent::AgentPickerPendingJobsLoaded {
                 primary_thread_id: root,
                 results,
@@ -84,18 +99,15 @@ impl App {
     pub(super) fn apply_agent_picker_pending_jobs(
         &mut self,
         root: ThreadId,
-        results: Vec<(ThreadId, Result<Vec<AgentPendingJob>, String>)>,
+        results: Vec<(ThreadId, Uuid, Result<Vec<AgentPendingJob>, String>)>,
     ) {
         if self.primary_thread_id != Some(root) {
             return;
         }
-        for (thread_id, result) in results {
-            // A list requested before the agent's turn started is stale: the turn consumes
-            // delivered results, and the jobs are relisted once it completes.
-            if self
+        for (thread_id, request, result) in results {
+            if !self
                 .agent_navigation
-                .get(&thread_id)
-                .is_some_and(|entry| entry.is_running)
+                .pending_jobs_request_matches(thread_id, request)
             {
                 continue;
             }
@@ -111,16 +123,21 @@ impl App {
 }
 
 fn pending_job(completion: ThreadPendingCompletion) -> AgentPendingJob {
-    let command = match (
-        &completion.command,
-        &completion.process_id,
-        &completion.cell_id,
-    ) {
-        (Some(command), _, _) => strip_bash_lc_and_escape(&split_command_string(command)),
-        (None, Some(process_id), _) => format!("process {process_id}"),
-        (None, None, Some(cell_id)) => format!("code cell {cell_id}"),
-        (None, None, None) => "code cell".to_string(),
-    };
+    let command = completion
+        .title
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| {
+            match (
+                &completion.command,
+                &completion.process_id,
+                &completion.cell_id,
+            ) {
+                (Some(command), _, _) => strip_bash_lc_and_escape(&split_command_string(command)),
+                (None, Some(process_id), _) => format!("process {process_id}"),
+                (None, None, Some(cell_id)) => format!("code cell {cell_id}"),
+                (None, None, None) => "code cell".to_string(),
+            }
+        });
     AgentPendingJob {
         command,
         started_at: completion.created_at,
@@ -129,18 +146,16 @@ fn pending_job(completion: ThreadPendingCompletion) -> AgentPendingJob {
     }
 }
 
-/// The idle row status, extended with pending work once it has been listed. Only jobs whose
-/// result starts the agent's turn count as waiting; the rest are marked "no wake".
+/// Finite owned work remains waiting even when its completion cannot wake the owner.
 pub(super) fn idle_status_label(jobs: Option<&[AgentPendingJob]>) -> String {
-    let Some(jobs) = jobs else {
-        return "idle".to_string();
-    };
-    let plural = |count: usize| if count == 1 { "job" } else { "jobs" };
-    let waking = jobs.iter().filter(|job| job.wakes_owner).count();
-    match (waking, jobs.len()) {
-        (_, 0) => "idle · nothing pending".to_string(),
-        (0, total) => format!("idle · {total} {}, no wake", plural(total)),
-        (waking, _) => format!("idle · waiting on {waking} {}", plural(waking)),
+    match jobs {
+        None => "checking pending work".to_string(),
+        Some([]) => "idle · nothing pending".to_string(),
+        Some(jobs) => format!(
+            "waiting on {} {}",
+            jobs.len(),
+            if jobs.len() == 1 { "job" } else { "jobs" }
+        ),
     }
 }
 

@@ -74,6 +74,8 @@ impl CompletionDrain {
 #[derive(Default)]
 pub(crate) struct AsyncCompletions {
     state: Mutex<CompletionState>,
+    /// Coalesced invalidations for status consumers; never drives owner wakeups.
+    pending_updates: tokio::sync::watch::Sender<()>,
     owner: OnceLock<Weak<Session>>,
     root_owner: OnceLock<bool>,
     wake: Mutex<CompletionWake>,
@@ -114,10 +116,14 @@ struct Record {
     recorded: bool,
     /// Display-only producer command, bounded by [`MAX_COMMAND_LABEL_BYTES`].
     command: Option<String>,
+    /// Optional display-only title supplied when the producer starts.
+    title: Option<String>,
 }
 
 /// Bounds the display-only command kept with each record for status views.
 const MAX_COMMAND_LABEL_BYTES: usize = 512;
+/// Bounds the optional human-readable title retained by status views.
+const MAX_TITLE_BYTES: usize = 160;
 
 /// One retained, yielded completion record, as shown by status views.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +133,9 @@ pub(crate) struct PendingRecord {
     pub(crate) process_id: Option<i32>,
     pub(crate) cell_id: Option<String>,
     pub(crate) command: Option<String>,
+    pub(crate) title: Option<String>,
+    /// Services stay owned until shutdown; tasks and cells are finite.
+    pub(crate) is_finite: bool,
     /// Unix seconds when the record was reserved, i.e. when its producer started.
     pub(crate) created_at: i64,
     /// The producer finished and its result awaits delivery to the owner.
@@ -188,8 +197,20 @@ impl AsyncCompletions {
         let _ = self.owner.set(Arc::downgrade(owner));
     }
 
+    pub(crate) fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<()> {
+        self.pending_updates.subscribe()
+    }
+
     pub(crate) fn has_owned_work(&self) -> bool {
         !self.state().records.is_empty()
+    }
+
+    /// Includes running work and retained results awaiting owner acceptance.
+    pub(crate) fn has_finite_owned_work(&self) -> bool {
+        self.state()
+            .records
+            .values()
+            .any(|record| record.work_kind.is_finite())
     }
 
     /// The authoritative automatic message ID, independent of delivery or acceptance. Call under
@@ -319,6 +340,7 @@ impl AsyncCompletions {
 
     // Never acquire the coordinator or start a turn while holding the record mutex.
     fn changed(self: &Arc<Self>) {
+        self.pending_updates.send_replace(());
         let Some(owner) = self.owner.get().and_then(Weak::upgrade) else {
             return;
         };
@@ -492,6 +514,7 @@ impl AsyncCompletions {
                 terminal: None,
                 recorded: false,
                 command: None,
+                title: None,
             };
             // Preserve every identifier; reject before launch if escaped metadata cannot fit.
             if !record.metadata_fits(&id) {
@@ -645,6 +668,8 @@ impl Record {
             process_id,
             cell_id,
             command: self.command.clone(),
+            title: self.title.clone(),
+            is_finite: self.work_kind.is_finite(),
             created_at: self.create_time.as_f64().map_or(0, |time| time as i64),
             ready: self.yielded && self.terminal.is_some(),
             wakes_owner,
@@ -742,6 +767,33 @@ impl CompletionReservation {
         }
     }
 
+    /// Stores a bounded, single-line display label without changing producer identity or delivery.
+    pub(crate) fn set_title(&mut self, title: Option<&str>) {
+        let title = title.and_then(|title| {
+            let mut label = String::new();
+            let mut space = false;
+            for ch in title.chars() {
+                if ch.is_whitespace() || ch.is_control() {
+                    space = !label.is_empty();
+                    continue;
+                }
+                let next_len = label.len() + usize::from(space) + ch.len_utf8();
+                if next_len > MAX_TITLE_BYTES {
+                    break;
+                }
+                if space {
+                    label.push(' ');
+                    space = false;
+                }
+                label.push(ch);
+            }
+            (!label.is_empty()).then_some(label)
+        });
+        if let Some(record) = self.store.state().records.get_mut(&self.id) {
+            record.title = title;
+        }
+    }
+
     pub(crate) fn register(&mut self) -> CompletionPublisher {
         self.registered = true;
         CompletionPublisher {
@@ -761,6 +813,7 @@ impl CompletionReservation {
         {
             record.cell_yielded_for_visibility = true;
         }
+        self.store.pending_updates.send_replace(());
     }
 
     pub(crate) fn release(mut self) {

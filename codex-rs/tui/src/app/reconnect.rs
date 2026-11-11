@@ -381,6 +381,7 @@ impl App {
             }
         }
         self.agent_navigation.picker_refresh = None;
+        self.agent_navigation.invalidate_pending_jobs();
         self.last_subagent_backfill_attempt = None;
         self.rate_limit_refresh_state.invalidate_recovery();
         session.worktree_source_config_builder = app_server.worktree_source_config_builder.clone();
@@ -581,6 +582,14 @@ impl App {
         // Only accept fresh task-tool calls once this connection and its event queue are adopted.
         if let ThreadToolTransport::Mcp(server) = app_server.thread_tool_transport() {
             server.reconnect(app_server.request_handle(), self.app_event_tx.clone());
+        }
+        if let Some(root) = self.primary_thread_id {
+            self.refresh_agent_picker_threads(app_server, root);
+            self.refresh_agent_picker_pending_jobs(
+                app_server,
+                root,
+                self.agent_navigation.tracked_thread_ids(),
+            );
         }
         self.reconnect.offline = false;
         self.chat_widget.update_account_state(

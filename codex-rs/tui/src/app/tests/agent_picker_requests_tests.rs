@@ -356,6 +356,8 @@ async fn close_idle_archives_only_idle_subtrees() -> Result<()> {
     }
     let (idle, busy) = (children[0], children[1]);
     app.primary_thread_id = Some(root);
+    app.agent_navigation
+        .set_pending_jobs(idle, Some(Vec::new()));
     app.agent_navigation.mark_running(busy);
     while rx.try_recv().is_ok() {}
 

@@ -115,3 +115,71 @@ async fn idle_unload_finishes_while_writer_coordination_is_locked() -> Result<()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn pending_completions_distinguish_known_unloaded_owner_from_unknown_thread() -> Result<()> {
+    use codex_app_server_protocol::ThreadPendingCompletionsListParams;
+    use codex_app_server_protocol::ThreadPendingCompletionsListResponse;
+    use codex_protocol::ThreadId;
+
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config("thread_unload_delay_secs = 0\napprovals_reviewer = \"user\"")
+        .write(home.path())?;
+    let mut client = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized()
+        .await?;
+    let started = client.start_thread(ThreadStartParams::default()).await?;
+    let thread_id = started.thread.id;
+    client
+        .start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![UserInput::Text {
+                text: "finish".into(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadUnsubscribeResponse = client
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: thread_id.clone(),
+            },
+        })
+        .await?;
+    let closed: ThreadClosedNotification = timeout(
+        Duration::from_secs(30),
+        client.read_notification("thread/closed"),
+    )
+    .await??;
+    assert_eq!(closed.thread_id, thread_id);
+    let list = |thread_id| ThreadPendingCompletionsListParams {
+        thread_id,
+        cursor: None,
+        limit: None,
+    };
+    let pending: ThreadPendingCompletionsListResponse = client
+        .request(|request_id| ClientRequest::ThreadPendingCompletionsList {
+            request_id,
+            params: list(thread_id.clone()),
+        })
+        .await?;
+    assert!(pending.data.is_empty());
+    assert_eq!(pending.next_cursor, None);
+    let missing = client
+        .send_request(
+            "thread/pendingCompletions/list",
+            Some(serde_json::to_value(list(ThreadId::new().to_string()))?),
+        )
+        .await?;
+    let error = client
+        .read_stream_until_error_message(codex_app_server_protocol::RequestId::Integer(missing))
+        .await?;
+    assert_eq!(error.error.code, -32600);
+    assert!(error.error.message.contains("no rollout found"));
+    Ok(())
+}

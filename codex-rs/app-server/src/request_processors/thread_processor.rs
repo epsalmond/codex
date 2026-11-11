@@ -2746,7 +2746,36 @@ impl ThreadRequestProcessor {
             cursor,
             limit,
         } = params;
-        let (_, thread) = self.load_thread(&thread_id).await?;
+        let thread_uuid = ThreadId::from_string(&thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let thread = match self.thread_manager.get_thread(thread_uuid).await {
+            Ok(thread) => thread,
+            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
+                // Unloading requires all owned completion records to be gone. Confirm the
+                // persisted identity before returning an empty list; a failed read remains
+                // unavailable, so clients cannot mistake an unknown thread for idle work.
+                self.thread_store
+                    .read_thread(StoreReadThreadParams {
+                        thread_id: thread_uuid,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await
+                    .map_err(thread_store_resume_read_error)?;
+                // A follow-up may have reloaded the owner during the metadata read.
+                match self.thread_manager.get_thread(thread_uuid).await {
+                    Ok(thread) => thread,
+                    Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
+                        return Ok(ThreadPendingCompletionsListResponse {
+                            data: Vec::new(),
+                            next_cursor: None,
+                        });
+                    }
+                    Err(err) => return Err(internal_error(err.to_string())),
+                }
+            }
+            Err(err) => return Err(internal_error(err.to_string())),
+        };
         // Record IDs are ordered, so the last returned ID is a stable cursor.
         let completions = thread
             .list_pending_completions()
@@ -2759,6 +2788,8 @@ impl ThreadRequestProcessor {
                 process_id: completion.process_id,
                 cell_id: completion.cell_id,
                 command: completion.command,
+                title: completion.title,
+                is_finite: completion.is_finite,
                 created_at: completion.created_at,
                 status: if completion.ready {
                     ThreadPendingCompletionStatus::Ready

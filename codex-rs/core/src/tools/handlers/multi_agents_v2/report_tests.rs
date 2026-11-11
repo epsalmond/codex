@@ -4,6 +4,8 @@ use pretty_assertions::assert_eq;
 
 fn record(process_id: Option<i32>, cell_id: Option<&str>, ready: bool) -> PendingRecord {
     PendingRecord {
+        title: None,
+        is_finite: true,
         id: "msg".to_owned(),
         call_id: "call".to_owned(),
         process_id,

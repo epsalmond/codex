@@ -15,8 +15,8 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (6; hash=13091cbfc6be3fc7):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=5cdb43d3dea1d82b
+  tools (6; hash=61f32a63eeb43734):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=252f1ecb97cae612
     - function/exec_terminate: Stops a running `exec` cell and returns its output so far. A running cell's final result is deliv...; args=[cell_id]; hash=4ded6e8fceba1e98
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77

@@ -7,6 +7,6 @@ expression: "render_bottom_popup(&app.chat_widget, 96)"
 
   p
 
-› • Planner [worker] (current)  idle context 4800 / 32000 (15%) · Finished the dependency revie…
+› • Planner [worker] (current)  checking pending work context 4800 / 32000 (15%) · Finished the…
 
   enter select · esc exit search · ⌃c close

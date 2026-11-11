@@ -375,7 +375,10 @@ tool: pass task names or paths, or `["idle"]` for every idle descendant whose
 own descendants are idle too. Closing works on unloaded agents, marks their
 spawn edges closed, and stops anything still running in the closed subtrees.
 `list_agents` lists every open agent, including idle ones whose runtime was
-unloaded (status `"unloaded"`). The tool lives outside the reserved
+unloaded (status `"unloaded"`). Its `pending_work` summary lists finite jobs whose
+results have not been accepted yet; `null` means that state could not be read.
+`["idle"]` preserves owners of finite jobs, including finished results awaiting
+delivery, and their ancestors. Persistent services do not count as finite work. The tool lives outside the reserved
 `collaboration` namespace, which the server keeps to its own tools.
 
 ```toml
@@ -385,11 +388,13 @@ close_agents_tool = false       # hide close_agents
 
 ### Monitoring subagents
 
-Run `/subagents` to monitor child runs. Each row shows whether a child is mid-turn, idle, closed, or in error, along with its latest reported context tokens against the model window when available. Idle children also show a short preview of their latest final response. Closed means the agent tree closed the child; an idle child whose runtime was unloaded to free a slot stays open and idle, the same as `list_agents` reports it.
+Run `/subagents` to monitor child runs. Each row shows whether a child is mid-turn, waiting on finite work, idle, closed, or in error, along with its latest reported context tokens against the model window when available. Idle children also show a short preview of their latest final response. Closed means the agent tree closed the child; an idle child whose runtime was unloaded to free a slot stays open and idle, the same as `list_agents` reports it.
 
-Press `1`–`9` to select a numbered row (`1` is Main), or use arrows and Enter. Press `/` to search names, paths, or IDs; Esc clears search before closing the picker. Ctrl+U clears the query while keeping search active (Cmd+Delete in Ghostty on macOS). Press `X` to close the selected child and its descendants: they leave the status-bar count and `list_agents`, and later messages to them are refused; the picker keeps the same row selected, clamped to the last remaining row. Press `c` to close every idle child the same way, skipping any child with a mid-turn or starting descendant.
+Press `1`–`9` to select a numbered row (`1` is Main), or use arrows and Enter. Press `/` to search names, paths, or IDs; Esc clears search before closing the picker. Ctrl+U clears the query while keeping search active (Cmd+Delete in Ghostty on macOS). Press `X` to close the selected child and its descendants: they leave the status-bar count and `list_agents`, and later messages to them are refused; the picker keeps the same row selected, clamped to the last remaining row. Press `c` to close every idle child the same way, skipping any child with a mid-turn, starting, or waiting descendant.
 
-Press `q` outside search to hide inactive rows locally. Children awaiting their first turn stay visible. A hidden row returns when its child starts running or its parent contacts it, even while the parent's transcript is hidden. Parent contact alone leaves the child's running or closed status unchanged. These updates happen when notifications arrive; switching transcripts or replaying history preserves later local dismissals.
+The status-bar count includes both working children and children waiting on finite jobs, counting each child once. Pending job details update when work finishes or its result is accepted. Supply an optional `title` to `exec_command`, or `// @exec: {"title": "Wait for CI"}` for a JavaScript cell, to give the job a short display label.
+
+Press `q` outside search to hide inactive rows locally. Children awaiting their first turn or owning finite work stay visible. Both `q` and `c` preserve children whose pending-work state is still being checked or could not be read. A hidden row returns when its child starts running or its parent contacts it, even while the parent's transcript is hidden. Parent contact alone leaves the child's running or closed status unchanged. These updates happen when notifications arrive; switching transcripts or replaying history preserves later local dismissals.
 
 With an empty prompt and no popup or overlay, Option/Alt+Left and Option/Alt+Right switch to the previous or next visible agent, including Main. Terminals that send Alt+b/f for these keys are supported, including macOS terminals connected over SSH; with text in the prompt, the keys retain word editing.
 

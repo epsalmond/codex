@@ -435,15 +435,16 @@ pub(crate) enum AppEvent {
     },
     /// Backfill a missing preview after a completed child turn if the picker is still visible.
     AgentPickerPreviewNeeded(ThreadId),
-    /// Merge pending background jobs listed for picker rows.
+    /// Merge pending background jobs with per-thread freshness guards.
     AgentPickerPendingJobsLoaded {
         primary_thread_id: ThreadId,
         results: Vec<(
             ThreadId,
+            Uuid,
             Result<Vec<crate::multi_agents::AgentPendingJob>, String>,
         )>,
     },
-    /// Relist one agent's pending jobs after its turn ends if the picker is still visible.
+    /// Relist one agent's pending jobs after its lifecycle changes.
     AgentPickerPendingJobsNeeded(ThreadId),
     /// Open `/ps`: tree-wide background terminals when subagents exist.
     OpenProcessTree,

@@ -5972,6 +5972,13 @@ class ThreadNameUpdatedNotification(BaseModel):
     thread_name: Annotated[str | None, Field(alias="threadName")] = None
 
 
+class ThreadPendingCompletionsChangedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class CompletedThreadPredictionResult(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9791,6 +9798,24 @@ class ThreadStatusChangedServerNotification(BaseModel):
         Literal["thread/status/changed"], Field(title="Thread/status/changedNotificationMethod")
     ]
     params: ThreadStatusChangedNotification
+
+
+class ThreadPendingCompletionsChangedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/pendingCompletions/changed"],
+        Field(title="Thread/pendingCompletions/changedNotificationMethod"),
+    ]
+    params: ThreadPendingCompletionsChangedNotification
 
 
 class ThreadArchivedServerNotification(BaseModel):
@@ -13934,6 +13959,7 @@ class ServerNotification(
         ErrorServerNotification
         | ThreadStartedServerNotification
         | ThreadStatusChangedServerNotification
+        | ThreadPendingCompletionsChangedServerNotification
         | ThreadReadStateChangedServerNotification
         | ThreadArchivedServerNotification
         | ThreadDeletedServerNotification
@@ -14025,6 +14051,7 @@ class ServerNotification(
         ErrorServerNotification
         | ThreadStartedServerNotification
         | ThreadStatusChangedServerNotification
+        | ThreadPendingCompletionsChangedServerNotification
         | ThreadReadStateChangedServerNotification
         | ThreadArchivedServerNotification
         | ThreadDeletedServerNotification

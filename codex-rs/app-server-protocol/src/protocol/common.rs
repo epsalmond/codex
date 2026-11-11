@@ -2036,6 +2036,8 @@ server_notification_definitions! {
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),
     ThreadStatusChanged => "thread/status/changed" (v2::ThreadStatusChangedNotification),
+    #[experimental("thread/pendingCompletions/changed")]
+    ThreadPendingCompletionsChanged => "thread/pendingCompletions/changed" (v2::ThreadPendingCompletionsChangedNotification),
     #[experimental("thread/readState/changed")]
     ThreadReadStateChanged => "thread/readState/changed" (v2::ThreadReadStateChangedNotification),
     ThreadArchived => "thread/archived" (v2::ThreadArchivedNotification),
@@ -4144,6 +4146,8 @@ mod tests {
         );
         let response = v2::ThreadPendingCompletionsListResponse {
             data: vec![v2::ThreadPendingCompletion {
+                title: Some("Build Codex".to_string()),
+                is_finite: true,
                 id: "msg_1".to_string(),
                 call_id: "call_1".to_string(),
                 process_id: Some("42".to_string()),
@@ -4163,6 +4167,8 @@ mod tests {
                     "processId": "42",
                     "cellId": null,
                     "command": "cargo build",
+                    "title": "Build Codex",
+                    "isFinite": true,
                     "createdAt": 1_700_000_000,
                     "status": "running",
                     "wakesOwner": true
@@ -4171,6 +4177,18 @@ mod tests {
             }),
             serde_json::to_value(&response)?,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_completion_without_new_metadata_defaults_to_finite() -> Result<()> {
+        let completion: v2::ThreadPendingCompletion = serde_json::from_value(json!({
+            "id": "msg_1", "callId": "call_1", "processId": "42", "cellId": null,
+            "command": "cargo build", "createdAt": 1_700_000_000,
+            "status": "running", "wakesOwner": true
+        }))?;
+        assert_eq!(completion.title, None);
+        assert!(completion.is_finite);
         Ok(())
     }
 

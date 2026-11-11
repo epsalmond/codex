@@ -75,9 +75,28 @@ pub struct ListedAgent {
     pub live_status: Option<AgentStatus>,
 }
 
+/// Display-only finite producers whose owner has not accepted their results yet.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub(crate) struct PendingAgentWork {
+    pub(crate) count: usize,
+    pub(crate) jobs: Vec<PendingAgentWorkItem>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct PendingAgentWorkItem {
+    pub(crate) id: String,
+    pub(crate) call_id: String,
+    pub(crate) title: Option<String>,
+    pub(crate) command: Option<String>,
+    pub(crate) process_id: Option<String>,
+    pub(crate) cell_id: Option<String>,
+    /// False while running; true once the result is ready for its owner to accept.
+    pub(crate) ready: bool,
+}
+
 impl ListedAgent {
-    /// Whether the agent has no work in progress: unloaded, or loaded but not starting,
-    /// running or waiting on delegated work.
+    /// Whether the listed turn is idle. Closing additionally requires a runtime inspection:
+    /// retained finite producer results can outlive the turn status reported here.
     pub fn is_idle(&self) -> bool {
         self.live_status.as_ref().is_none_or(|status| {
             !matches!(

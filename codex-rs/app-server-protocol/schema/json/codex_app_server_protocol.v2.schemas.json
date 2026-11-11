@@ -17067,6 +17067,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/pendingCompletions/changed"
+              ],
+              "title": "Thread/pendingCompletions/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadPendingCompletionsChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/pendingCompletions/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/readState/changed"
               ],
               "title": "Thread/readState/changedNotificationMethod",
@@ -22178,6 +22198,20 @@
         "threadId"
       ],
       "title": "ThreadNameUpdatedNotification",
+      "type": "object"
+    },
+    "ThreadPendingCompletionsChangedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Invalidates the thread's pending completion list, including running, ready and accepted work.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadPendingCompletionsChangedNotification",
       "type": "object"
     },
     "ThreadPredictionResult": {

@@ -6,6 +6,6 @@ expression: "render_bottom_popup(&app.chat_widget, 120)"
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • Main [default]  idle context ?
+› 1. • Main [default]  checking pending work context ?
 
   enter select · / search · c close idle · q hide inactive locally · esc back

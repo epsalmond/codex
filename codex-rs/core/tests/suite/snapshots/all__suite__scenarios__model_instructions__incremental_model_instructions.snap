@@ -15,8 +15,8 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=d536e797c92b515b):
-        - namespace/functions; hash=29f53d8b84d682d4
+00:additional_tools/developer (2; hash=fc1bca171bffb161):
+        - namespace/functions; hash=efbfadd4bf34c0be
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -83,8 +83,8 @@ Settings:
 ## Window 2 (after request 4: input diverged at item 01)
 Settings: same as window 1
 -- request 5 (turn) --
-00:additional_tools/developer (2; hash=d536e797c92b515b):
-        - namespace/functions; hash=29f53d8b84d682d4
+00:additional_tools/developer (2; hash=fc1bca171bffb161):
+        - namespace/functions; hash=efbfadd4bf34c0be
           - function/exec_command
           - function/write_stdin
           - function/request_user_input

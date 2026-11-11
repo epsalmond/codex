@@ -83,6 +83,7 @@ async fn custom_model_display_name_in_status_line_and_fallback() {
     chat.token_info = Some(make_token_info(143_000, 823_000));
     chat.thread_name = Some("my-session".to_string());
     chat.subagent_counts = crate::multi_agents::SubagentCounts {
+        waiting: 0,
         running: 1,
         total: 2,
     };

@@ -119,6 +119,7 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::TurnStarted(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadWorkUpdated(_)
+            | ServerNotification::ThreadPendingCompletionsChanged(_)
             | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadWakeupsUpdated(_)
             | ServerNotification::ThreadSettingsUpdated(_)
@@ -1188,6 +1189,13 @@ mod tests {
                     duration_ms: None,
                 },
             })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadPendingCompletionsChanged(
+                codex_app_server_protocol::ThreadPendingCompletionsChangedNotification {
+                    thread_id: "thread-1".to_string(),
+                }
+            )
         ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {

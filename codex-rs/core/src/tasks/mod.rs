@@ -1539,6 +1539,8 @@ impl Session {
                 process_id: completion.process_id.map(|id| id.to_string()),
                 cell_id: completion.cell_id,
                 command: completion.command,
+                title: completion.title,
+                is_finite: completion.is_finite,
                 created_at: completion.created_at,
                 ready: completion.ready,
                 wakes_owner: completion.wakes_owner,

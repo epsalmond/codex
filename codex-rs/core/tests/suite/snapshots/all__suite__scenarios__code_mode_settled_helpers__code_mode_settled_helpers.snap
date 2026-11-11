@@ -6,8 +6,8 @@ Scenario: Settlement helpers deliver fulfilled and rejected records with input i
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=1fe11cc57645f7d3):
-        - namespace/functions; hash=2a185684d78571b5
+00:additional_tools/developer (2; hash=73902749a00246d8):
+        - namespace/functions; hash=f0730ecc03b7c826
           - custom/exec
           - function/exec_terminate
           - function/request_user_input
