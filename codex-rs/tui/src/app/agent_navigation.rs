@@ -219,8 +219,10 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn invalidate_pending_jobs(&mut self) {
-        for thread_id in self.threads.keys().copied().collect::<Vec<_>>() {
-            self.set_pending_jobs(thread_id, None);
+        for &thread_id in self.threads.keys() {
+            self.pending_work_requests.insert(thread_id, Uuid::new_v4());
+            self.pending_work_unknown.insert(thread_id);
+            self.picker_state.set_pending_jobs(thread_id, None);
         }
     }
 
@@ -830,6 +832,39 @@ mod tests {
                 .collect::<HashSet<_>>(),
             HashSet::from([ids[0], ids[1]])
         );
+    }
+
+    #[test]
+    fn invalidating_pending_jobs_preserves_cached_work_and_rejects_stale_requests() {
+        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+        let jobs = vec![crate::multi_agents::AgentPendingJob {
+            command: "background check".to_string(),
+            started_at: 0,
+            finished: false,
+            wakes_owner: true,
+        }];
+        state.set_pending_jobs(first_agent_id, Some(jobs.clone()));
+        state.set_pending_jobs(second_agent_id, Some(Vec::new()));
+        let requests = [main_thread_id, first_agent_id, second_agent_id]
+            .map(|thread_id| (thread_id, state.begin_pending_jobs_request(thread_id)));
+
+        state.invalidate_pending_jobs();
+
+        assert_eq!(state.pending_jobs(&first_agent_id), Some(jobs.as_slice()));
+        assert_eq!(state.pending_jobs(&second_agent_id), None);
+        assert_eq!(state.pending_jobs(&main_thread_id), None);
+        for (thread_id, request) in requests {
+            assert!(state.pending_work_unknown.contains(&thread_id));
+            assert!(!state.pending_work_is_known_empty(&thread_id));
+            assert!(!state.pending_jobs_request_matches(thread_id, request));
+            assert_eq!(
+                state
+                    .picker_details(&thread_id)
+                    .expect("tracked thread picker details")
+                    .pending_jobs,
+                None
+            );
+        }
     }
 
     #[test]
