@@ -174,6 +174,7 @@ impl ExecCommandHandler {
         let parsed =
             ParsedExecCommand::parse(&arguments, &session, &step_context, turn_environment)?;
         let work_kind = parsed.args.work_kind;
+        let title = parsed.args.title.clone();
         validate_work_kind(self.lifetime, work_kind)?;
         maybe_emit_implicit_skill_invocation(
             &session,
@@ -237,6 +238,7 @@ impl ExecCommandHandler {
             (!prepared.turn_environment.environment.is_remote()).then(|| prepared.cwd.clone());
         let request = ExecCommandRequest {
             work_kind,
+            title,
             prepared,
             process_id,
             network: context.step_context.turn.network.clone(),

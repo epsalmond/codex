@@ -33,6 +33,8 @@ async fn picker_dismissal_preserves_running_grandchildren_and_restores_restarted
         app.agent_navigation
             .set_agent_path(id, Some(path.to_string()));
     }
+    app.agent_navigation
+        .set_pending_jobs(idle, Some(Vec::new()));
     app.ensure_thread_channel(idle);
     app.agent_navigation.mark_running(running);
     app.chat_widget.setup_status_line(
@@ -66,6 +68,7 @@ async fn picker_dismissal_preserves_running_grandchildren_and_restores_restarted
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 1,
             total: 2
         }
@@ -100,6 +103,7 @@ async fn picker_dismissal_preserves_running_grandchildren_and_restores_restarted
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 2,
             total: 2
         }
@@ -109,6 +113,8 @@ async fn picker_dismissal_preserves_running_grandchildren_and_restores_restarted
         turn_completed_notification(idle, "restart", TurnStatus::Completed),
     )
     .await?;
+    app.agent_navigation
+        .set_pending_jobs(idle, Some(Vec::new()));
     // Completion stays reviewable until the user dismisses inactive rows again.
     assert_eq!(
         app.agent_navigation.tracked_thread_ids(),
@@ -123,6 +129,7 @@ async fn picker_dismissal_preserves_running_grandchildren_and_restores_restarted
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 0,
             total: 1
         }
@@ -151,6 +158,8 @@ async fn picker_dismissal_keeps_main_when_every_child_is_inactive() -> Result<()
         );
     }
     app.agent_navigation.mark_subagent(child);
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     app.chat_widget
         .show_selection_view(app.agent_picker_selection_view_params(/*selected*/ None));
     app.chat_widget
@@ -211,6 +220,7 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 0,
             total: 1
         }
@@ -219,6 +229,7 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 0,
             total: 1
         }
@@ -232,11 +243,14 @@ async fn picker_dismissal_and_counts_exclude_side_conversations_but_include_lega
     );
     app.agent_navigation.mark_running(legacy);
     app.agent_navigation.mark_stopped(legacy);
+    app.agent_navigation
+        .set_pending_jobs(legacy, Some(Vec::new()));
     app.dismiss_inactive_subagents();
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, side]);
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 0,
             total: 1
         }
@@ -273,6 +287,7 @@ async fn archived_subagents_leave_status_counts_durably() -> Result<()> {
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 3,
             total: 3
         }
@@ -290,6 +305,7 @@ async fn archived_subagents_leave_status_counts_durably() -> Result<()> {
         );
     }
     let remaining = SubagentCounts {
+        waiting: 0,
         running: 1,
         total: 1,
     };
@@ -420,6 +436,8 @@ async fn picker_dismissal_keeps_spawned_child_until_its_first_turn_ends() -> Res
         turn_completed_notification(child, "first", TurnStatus::Completed),
     )
     .await?;
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
     Ok(())
@@ -458,6 +476,8 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
         activity_notification(root, child, path, SubAgentActivityKind::Completed),
     )
     .await;
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
 
@@ -470,6 +490,8 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
     )
     .await;
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
     for notification in [
@@ -482,6 +504,7 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 1,
             total: 1
         }
@@ -495,6 +518,8 @@ async fn dismissed_child_reappears_for_follow_up_turn_after_idle_eviction() -> R
         app.enqueue_thread_notification(child, notification).await?;
     }
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
     Ok(())
@@ -532,6 +557,8 @@ async fn late_spawn_hints_do_not_pin_a_child_that_already_ran() -> Result<()> {
     )
     .await;
     assert!(!app.agent_navigation.get(&child).unwrap().is_running);
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     assert_eq!(app.agent_navigation.idle_close_targets(root), vec![child]);
 
     press_q(&mut app, &mut rx);
@@ -617,6 +644,7 @@ async fn hidden_parent_arrival_updates_live_picker_and_protects_pending_grandchi
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 2,
             total: 2
         }
@@ -631,6 +659,7 @@ async fn hidden_parent_arrival_updates_live_picker_and_protects_pending_grandchi
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 1,
             total: 2
         }
@@ -647,6 +676,8 @@ async fn hidden_parent_arrival_updates_live_picker_and_protects_pending_grandchi
     ] {
         route_notification(&mut app, &server, notification).await;
     }
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     assert_eq!(app.agent_navigation.idle_close_targets(root), vec![child]);
     press_q(&mut app, &mut rx);
     assert_eq!(
@@ -679,6 +710,7 @@ async fn hidden_parent_contact_restores_order_without_liveness_and_snapshot_cann
             turn_completed_notification(id, "first", TurnStatus::Completed),
         )
         .await?;
+        app.agent_navigation.set_pending_jobs(id, Some(Vec::new()));
     }
     let counts = app.agent_navigation.subagent_counts(Some(root));
     let child_state = app.agent_navigation.get(&child).unwrap().clone();
@@ -762,6 +794,8 @@ async fn active_parent_stale_queue_drain_cannot_undo_later_dismissal() -> Result
     ] {
         app.enqueue_thread_notification(child, notification).await?;
     }
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     app.active_thread_id = None;
     app.activate_thread_channel(parent).await;
@@ -828,6 +862,7 @@ async fn hidden_parent_legacy_spawn_is_pending_and_rejects_invalid_or_not_found_
     assert_eq!(
         app.agent_navigation.subagent_counts(Some(root)),
         SubagentCounts {
+            waiting: 0,
             running: 1,
             total: 2
         }
@@ -924,6 +959,8 @@ async fn rejected_parent_router_arrivals_cannot_create_or_restore_receivers() ->
         ),
     )
     .await;
+    app.agent_navigation
+        .set_pending_jobs(dismissed, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
     app.temporary_structured_requests.insert(structured, sender);
@@ -979,6 +1016,8 @@ async fn full_parent_channel_applies_receiver_visibility_before_display_capacity
         ),
     )
     .await;
+    app.agent_navigation
+        .set_pending_jobs(child, Some(Vec::new()));
     app.dismiss_inactive_subagents();
     assert_eq!(
         app.agent_navigation.tracked_thread_ids(),
@@ -1015,5 +1054,259 @@ async fn full_parent_channel_applies_receiver_visibility_before_display_capacity
             .await?
             .expect("queued parent event");
     }
+    Ok(())
+}
+
+fn pending_changed_notification(thread: ThreadId) -> ServerNotification {
+    ServerNotification::ThreadPendingCompletionsChanged(
+        codex_app_server_protocol::ThreadPendingCompletionsChangedNotification {
+            thread_id: thread.to_string(),
+        },
+    )
+}
+
+fn list_pending_jobs(
+    app: &mut App,
+    root: ThreadId,
+    thread: ThreadId,
+    jobs: Result<Vec<crate::multi_agents::AgentPendingJob>, String>,
+) {
+    let request = app.agent_navigation.begin_pending_jobs_request(thread);
+    app.apply_agent_picker_pending_jobs(root, vec![(thread, request, jobs)]);
+}
+
+async fn press_c_with_no_targets(
+    app: &mut App,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    server: &mut AppServerSession,
+    root: ThreadId,
+) -> Result<()> {
+    while rx.try_recv().is_ok() {}
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(None));
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Char('c')));
+    assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseIdleSubagents)));
+    assert!(app.agent_navigation.idle_close_targets(root).is_empty());
+    let before = app.agent_navigation.tracked_thread_ids();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.close_idle_agent_picker_threads(&mut tui, server)
+        .await?;
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn finite_pending_work_protects_nested_owner_until_delivery_is_consumed() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let mut server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, parent, child] = [800, 801, 802].map(ThreadId::from_u128);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(root, None, None, false);
+    app.agent_navigation
+        .set_agent_path(root, Some("/root".into()));
+    list_pending_jobs(&mut app, root, root, Ok(Vec::new()));
+    for (owner, thread, path) in [
+        (root, parent, "/root/parent"),
+        (parent, child, "/root/parent/nested"),
+    ] {
+        route_notification(
+            &mut app,
+            &server,
+            activity_notification(owner, thread, path, SubAgentActivityKind::Started),
+        )
+        .await;
+        route_notification(&mut app, &server, turn_started_notification(thread, "work")).await;
+    }
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(Some(2)));
+    assert!(render_bottom_popup(&app.chat_widget, 120).contains("mid-turn"));
+
+    route_notification(
+        &mut app,
+        &server,
+        turn_completed_notification(parent, "work", TurnStatus::Completed),
+    )
+    .await;
+    list_pending_jobs(&mut app, root, parent, Ok(Vec::new()));
+    route_notification(
+        &mut app,
+        &server,
+        turn_completed_notification(child, "work", TurnStatus::Completed),
+    )
+    .await;
+    let job = crate::multi_agents::AgentPendingJob {
+        command: "Verify pending work lifecycle".into(),
+        started_at: chrono::Utc::now().timestamp(),
+        finished: false,
+        // Finite work is protected even if publishing cannot wake the owner.
+        wakes_owner: false,
+    };
+    list_pending_jobs(&mut app, root, child, Ok(vec![job.clone()]));
+    let waiting = render_bottom_popup(&app.chat_widget, 120);
+    assert!(waiting.contains("waiting on 1 job"));
+    assert!(waiting.contains("Verify pending work lifecycle"));
+    assert!(!waiting.contains("idle · waiting"));
+    press_c_with_no_targets(&mut app, &mut rx, &mut server, root).await?;
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+
+    // A ready result still belongs to the nested owner until delivery is accepted.
+    route_notification(&mut app, &server, pending_changed_notification(child)).await;
+    list_pending_jobs(
+        &mut app,
+        root,
+        child,
+        Ok(vec![crate::multi_agents::AgentPendingJob {
+            finished: true,
+            ..job
+        }]),
+    );
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(Some(1)));
+    let ready = render_bottom_popup(&app.chat_widget, 120);
+    assert!(ready.contains("waiting on 1 job"));
+    assert!(ready.contains("finished, awaiting delivery"));
+    press_c_with_no_targets(&mut app, &mut rx, &mut server, root).await?;
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+
+    // The pending-work notification reaches the cache even with the picker closed.
+    // Cleanup shortcuts leave their picker open; close each picker the fixture opened.
+    for _ in 0..8 {
+        if app.chat_widget.active_view_id() != Some("agent-picker") {
+            break;
+        }
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Esc));
+    }
+    assert_ne!(app.chat_widget.active_view_id(), Some("agent-picker"));
+    while rx.try_recv().is_ok() {}
+    route_notification(&mut app, &server, pending_changed_notification(child)).await;
+    let mut refresh_requested = false;
+    while let Ok(event) = rx.try_recv() {
+        refresh_requested |=
+            matches!(event, AppEvent::AgentPickerPendingJobsNeeded(id) if id == child);
+    }
+    assert!(refresh_requested);
+    list_pending_jobs(&mut app, root, child, Ok(Vec::new()));
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(Some(1)));
+    assert!(render_bottom_popup(&app.chat_widget, 120).contains("idle · nothing pending"));
+    assert_eq!(app.agent_navigation.idle_close_targets(root), vec![parent]);
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_and_failed_pending_lists_protect_idle_owner_from_q_and_c() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let mut server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, child] = [810, 811].map(ThreadId::from_u128);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(root, None, None, false);
+    route_notification(
+        &mut app,
+        &server,
+        activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
+    )
+    .await;
+    for notification in [
+        turn_started_notification(child, "work"),
+        turn_completed_notification(child, "work", TurnStatus::Completed),
+    ] {
+        route_notification(&mut app, &server, notification).await;
+    }
+    app.chat_widget
+        .show_selection_view(app.agent_picker_selection_view_params(Some(1)));
+    assert!(render_bottom_popup(&app.chat_widget, 120).contains("checking pending work"));
+    press_c_with_no_targets(&mut app, &mut rx, &mut server, root).await?;
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+
+    // An invalidation after a known-empty list revokes cleanup permission immediately.
+    list_pending_jobs(&mut app, root, child, Ok(Vec::new()));
+    route_notification(&mut app, &server, pending_changed_notification(child)).await;
+    list_pending_jobs(&mut app, root, child, Err("list unavailable".into()));
+    press_c_with_no_targets(&mut app, &mut rx, &mut server, root).await?;
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+    list_pending_jobs(&mut app, root, child, Ok(Vec::new()));
+    assert_eq!(app.agent_navigation.idle_close_targets(root), vec![child]);
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_notifications_and_new_turns_reject_stale_list_results() -> Result<()> {
+    let (mut app, mut rx, _) = make_test_app_with_channels().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, child] = [820, 821].map(ThreadId::from_u128);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(root, None, None, false);
+    route_notification(
+        &mut app,
+        &server,
+        activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
+    )
+    .await;
+    for notification in [
+        turn_started_notification(child, "work"),
+        turn_completed_notification(child, "work", TurnStatus::Completed),
+    ] {
+        route_notification(&mut app, &server, notification).await;
+    }
+    let stale_empty = app.agent_navigation.begin_pending_jobs_request(child);
+    route_notification(&mut app, &server, pending_changed_notification(child)).await;
+    app.apply_agent_picker_pending_jobs(root, vec![(child, stale_empty, Ok(Vec::new()))]);
+    assert!(app.agent_navigation.idle_close_targets(root).is_empty());
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root, child]);
+
+    let job = crate::multi_agents::AgentPendingJob {
+        command: "Build release".into(),
+        started_at: 1,
+        finished: true,
+        wakes_owner: true,
+    };
+    let stale_ready = app.agent_navigation.begin_pending_jobs_request(child);
+    route_notification(
+        &mut app,
+        &server,
+        turn_started_notification(child, "delivery"),
+    )
+    .await;
+    app.apply_agent_picker_pending_jobs(root, vec![(child, stale_ready, Ok(vec![job]))]);
+    assert_eq!(app.agent_navigation.pending_jobs(&child), None);
+    assert_eq!(
+        app.agent_navigation.subagent_counts(Some(root)),
+        SubagentCounts {
+            waiting: 0,
+            running: 1,
+            total: 1,
+        }
+    );
+    route_notification(
+        &mut app,
+        &server,
+        turn_completed_notification(child, "delivery", TurnStatus::Completed),
+    )
+    .await;
+    let stale_failure = app.agent_navigation.begin_pending_jobs_request(child);
+    list_pending_jobs(&mut app, root, child, Ok(Vec::new()));
+    app.apply_agent_picker_pending_jobs(
+        root,
+        vec![(child, stale_failure, Err("old failure".into()))],
+    );
+    assert_eq!(app.agent_navigation.idle_close_targets(root), vec![child]);
+    press_q(&mut app, &mut rx);
+    assert_eq!(app.agent_navigation.tracked_thread_ids(), vec![root]);
     Ok(())
 }

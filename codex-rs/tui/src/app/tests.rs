@@ -2826,7 +2826,8 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
 #[test]
 fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
     const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    // Embedded-server shutdown runs the same session teardown as the other integration tests.
+    const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(WORKER_THREADS)

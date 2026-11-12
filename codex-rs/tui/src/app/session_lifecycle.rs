@@ -1289,6 +1289,12 @@ impl App {
         }
         self.refresh_agent_picker();
 
+        self.refresh_agent_picker_pending_jobs(
+            app_server,
+            primary_thread_id,
+            self.agent_navigation.tracked_thread_ids(),
+        );
+
         LoadedSubagentBackfill {
             completed: !had_read_error,
             refreshed_thread_ids,

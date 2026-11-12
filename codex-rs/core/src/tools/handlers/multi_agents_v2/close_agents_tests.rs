@@ -17,6 +17,14 @@ fn names(agents: Vec<&ListedAgent>) -> Vec<String> {
     agents.into_iter().map(agent_name).collect()
 }
 
+fn turn_idle_ids(agents: &[ListedAgent]) -> HashSet<ThreadId> {
+    agents
+        .iter()
+        .filter(|agent| agent.is_idle())
+        .map(|agent| agent.thread_id)
+        .collect()
+}
+
 #[test]
 fn idle_selection_skips_busy_subtrees_and_covered_descendants() {
     let descendants = vec![
@@ -38,8 +46,37 @@ fn idle_selection_skips_busy_subtrees_and_covered_descendants() {
     ];
 
     assert_eq!(
-        names(idle_subtree_roots(&descendants)),
+        names(idle_subtree_roots(
+            &descendants,
+            &turn_idle_ids(&descendants)
+        )),
         vec!["/root/unloaded", "/root/parent/done"]
+    );
+}
+
+#[test]
+fn idle_selection_preserves_finite_work_and_its_idle_ancestors() {
+    let descendants = vec![
+        agent("/root/parent", Some(AgentStatus::Interrupted)),
+        agent(
+            "/root/parent/running_job",
+            Some(AgentStatus::Completed(None)),
+        ),
+        agent("/root/parent/ready_job", Some(AgentStatus::Completed(None))),
+        agent("/root/parent/idle_sibling", None),
+        agent("/root/unknown", Some(AgentStatus::Completed(None))),
+        agent("/root/idle", Some(AgentStatus::Completed(None))),
+    ];
+    // Runtime inspection withholds agents with retained running/ready finite records, and
+    // agents whose runtime could not be inspected, even though their turns are idle.
+    let idle = HashSet::from([
+        descendants[0].thread_id,
+        descendants[3].thread_id,
+        descendants[5].thread_id,
+    ]);
+    assert_eq!(
+        names(idle_subtree_roots(&descendants, &idle)),
+        vec!["/root/parent/idle_sibling", "/root/idle"]
     );
 }
 

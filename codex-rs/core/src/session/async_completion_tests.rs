@@ -1158,3 +1158,68 @@ async fn binding_a_reused_cell_id_clears_its_old_collected_identity(
     store.accept(&[first_id]);
     assert!(!store.has_owned_work());
 }
+
+#[tokio::test]
+async fn pending_titles_are_bounded_display_metadata_for_tasks_and_services() {
+    for kind in [WorkKind::Task, WorkKind::Cell, WorkKind::Service] {
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let store = Arc::clone(&session.services.async_completions);
+        let work = session
+            .services
+            .local_agent_runtime
+            .reserve_owned_work(&session, &turn, "titled", kind, None)
+            .unwrap();
+        let mut reservation = store
+            .reserve_cell_with_lifecycle(session.thread_id(), &turn, "titled", &work)
+            .unwrap();
+        reservation.bind_cell("titled-cell").unwrap();
+        assert_eq!(store.has_finite_owned_work(), kind.is_finite());
+        assert!(store.pending().is_empty());
+        reservation.set_title(Some("  Run\nfocused\tchecks\u{1b}  "));
+        let publisher = reservation.register();
+        reservation.mark_cell_yielded_for_visibility();
+        let pending = store.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].title.as_deref(), Some("Run focused checks"));
+        assert_eq!(pending[0].is_finite, kind.is_finite());
+        assert_eq!(pending[0].command, None);
+        reservation.set_title(Some(&"🦀".repeat(100)));
+        let title = store.pending()[0].title.clone().unwrap();
+        assert!(title.len() <= super::MAX_TITLE_BYTES);
+        assert_eq!(title, "🦀".repeat(super::MAX_TITLE_BYTES / 4));
+        reservation.set_title(Some(" \n\t\u{1b} "));
+        assert_eq!(store.pending()[0].title, None);
+        publisher.publish(CompletionStatus::CellCompleted, b"done", 0);
+        drop(reservation);
+        assert_eq!(store.pending()[0].title, None);
+        assert_eq!(store.has_finite_owned_work(), kind.is_finite());
+        store.retire();
+        assert!(!store.has_finite_owned_work());
+    }
+}
+
+#[tokio::test]
+async fn pending_status_changes_cover_yield_finish_and_accept_without_an_owner_wake() {
+    let (session, turn) = make_session_and_context().await;
+    let store = Arc::new(AsyncCompletions::default());
+    let mut changes = store.subscribe_pending();
+    let mut reservation = reserve(&store, &session, &turn, "status").unwrap();
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    let id = reservation.id.clone();
+    let publisher = reservation.register();
+    drop(reservation);
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    assert_eq!(store.pending().len(), 1);
+    assert!(!store.pending()[0].ready);
+    assert!(!store.pending()[0].wakes_owner);
+    publisher.publish(CompletionStatus::Exited(0), b"done", 0);
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    assert!(store.pending()[0].ready);
+    store.accept(&[id]);
+    assert!(changes.has_changed().unwrap());
+    assert!(store.pending().is_empty());
+}

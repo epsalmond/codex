@@ -126,8 +126,9 @@ async fn hidden_completion_and_token_updates_do_not_schedule_preview_reads() -> 
 
     assert!(matches!(
         app_event_rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        Ok(AppEvent::AgentPickerPendingJobsNeeded(id)) if id == child_id
     ));
+    assert!(app_event_rx.try_recv().is_err());
     assert!(
         app.agent_navigation
             .picker_details(&child_id)
@@ -381,7 +382,7 @@ async fn picker_rows_show_status_context_and_preview_at_normal_and_narrow_widths
     app.chat_widget
         .handle_key_event(KeyEvent::from(KeyCode::Esc));
     let narrow = render_bottom_popup(&app.chat_widget, /*width*/ 48);
-    for status in ["idle", "mid-turn", "closed", "error"] {
+    for status in ["checking", "mid-turn", "closed", "error"] {
         assert!(narrow.contains(status), "narrow picker omitted {status}");
     }
     Ok(())
@@ -711,7 +712,8 @@ async fn idle_picker_rows_show_pending_jobs_once_listed() -> Result<()> {
         render_bottom_popup(&app.chat_widget, /*width*/ 96)
     );
 
-    // A new turn consumes delivered results, so the stale count is dropped until relisted.
+    let request = app.agent_navigation.begin_pending_jobs_request(delivered);
+    // A new turn invalidates requests that could still list already consumed results.
     app.cache_agent_picker_notification(delivered, &turn_started_notification(delivered, "turn-2"));
     assert_eq!(
         app.agent_navigation
@@ -724,7 +726,11 @@ async fn idle_picker_rows_show_pending_jobs_once_listed() -> Result<()> {
     app.agent_navigation.mark_running(delivered);
     app.apply_agent_picker_pending_jobs(
         root,
-        vec![(delivered, Ok(vec![job("sleep 5", /*finished*/ true)]))],
+        vec![(
+            delivered,
+            request,
+            Ok(vec![job("sleep 5", /*finished*/ true)]),
+        )],
     );
     assert_eq!(
         app.agent_navigation

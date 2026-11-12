@@ -135,6 +135,7 @@ impl UnifiedExecContext {
 #[derive(Debug, Clone)]
 pub(crate) struct ExecCommandRequest {
     pub work_kind: NativeWorkKind,
+    pub title: Option<String>,
     pub prepared: PreparedExecCommand,
     pub process_id: i32,
     pub network: Option<NetworkProxy>,

@@ -596,6 +596,7 @@ async fn start_listener(
         ..
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
+    let mut pending_completions = conversation.subscribe_pending_completions();
     tokio::spawn(async move {
         let shutdown_complete = loop {
             tokio::select! {
@@ -654,6 +655,31 @@ async fn start_listener(
                             "failed to encode root work state notification"
                         ),
                         None => work_state_updates = None,
+                    }
+                }
+                changed = pending_completions.changed() => {
+                    if changed.is_err() {
+                        break false;
+                    }
+                    let connection_ids = thread_state_manager.subscribed_connection_ids(conversation_id).await;
+                    let (outgoing, _) = super::thread_lifecycle_observer::thread_scoped_outgoing(
+                        &thread_state_manager,
+                        Arc::clone(&outgoing_for_task),
+                        connection_ids,
+                        conversation_id,
+                    ).await;
+                    let delivery = outgoing.send_server_notification(
+                        ServerNotification::ThreadPendingCompletionsChanged(
+                            codex_app_server_protocol::ThreadPendingCompletionsChangedNotification {
+                                thread_id: conversation_id.to_string(),
+                            },
+                        ),
+                    );
+                    if !super::thread_lifecycle_observer::complete_event_handling_or_cancel(
+                        &mut cancel_rx,
+                        delivery,
+                    ).await {
+                        break false;
                     }
                 }
                 event = conversation.next_event() => {

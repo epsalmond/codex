@@ -791,6 +791,27 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
 }
 
 #[test]
+fn exec_command_title_is_optional_display_metadata() {
+    let args: ExecCommandArgs = parse_arguments(r#"{"cmd":"echo secret"}"#).unwrap();
+    assert!(args.title.is_none());
+    let args: ExecCommandArgs = parse_arguments(
+        r#"{"cmd":"echo secret","title":"Run focused tests","work_kind":"service"}"#,
+    )
+    .unwrap();
+    assert_eq!(args.title.as_deref(), Some("Run focused tests"));
+    assert_eq!(args.cmd, "echo secret");
+    assert_eq!(args.work_kind, crate::unified_exec::NativeWorkKind::Service);
+    for title in ["17", "true", "{}", "[]"] {
+        assert!(
+            parse_arguments::<ExecCommandArgs>(&format!(
+                r#"{{"cmd":"echo secret","title":{title}}}"#
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn native_work_kind_defaults_and_rejects_non_native_kinds() {
     use crate::unified_exec::NativeWorkKind;
     for (declaration, expected) in [

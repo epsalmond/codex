@@ -30,11 +30,20 @@ impl AgentNavigationState {
         };
         self.session_descendants(root)
             .filter(|(_, entry)| !entry.is_closed)
-            .fold(SubagentCounts::default(), |mut counts, (_, entry)| {
-                counts.total += 1;
-                counts.running += usize::from(entry.is_running);
-                counts
-            })
+            .fold(
+                SubagentCounts::default(),
+                |mut counts, (thread_id, entry)| {
+                    counts.total += 1;
+                    counts.running += usize::from(entry.is_running);
+                    counts.waiting += usize::from(
+                        !entry.is_running
+                            && self
+                                .pending_jobs(&thread_id)
+                                .is_some_and(|jobs| !jobs.is_empty()),
+                    );
+                    counts
+                },
+            )
     }
 
     /// Hides inactive descendants locally until they next become running or are messaged.
@@ -46,7 +55,9 @@ impl AgentNavigationState {
             .session_descendants(root)
             .filter(|(thread_id, entry)| {
                 entry.is_closed
-                    || (!entry.is_running && !self.awaiting_first_turn.contains(thread_id))
+                    || (!entry.is_running
+                        && !self.awaiting_first_turn.contains(thread_id)
+                        && self.pending_work_is_known_empty(thread_id))
             })
             .map(|(thread_id, _)| thread_id)
             .collect::<Vec<_>>();
@@ -62,7 +73,9 @@ impl AgentNavigationState {
             .filter(|(_, entry)| !entry.is_closed)
             .collect::<Vec<_>>();
         let is_busy = |thread_id: &ThreadId, entry: &AgentPickerThreadEntry| {
-            entry.is_running || self.awaiting_first_turn.contains(thread_id)
+            entry.is_running
+                || self.awaiting_first_turn.contains(thread_id)
+                || !self.pending_work_is_known_empty(thread_id)
         };
         let busy_paths = open
             .iter()

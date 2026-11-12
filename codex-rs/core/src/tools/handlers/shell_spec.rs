@@ -35,6 +35,12 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             JsonSchema::string(Some("Shell command to execute.".to_string())),
         ),
         (
+            "title".to_string(),
+            JsonSchema::string(Some(
+                "Optional short, human-readable title for this command in pending-work status views. Display-only.".to_string(),
+            )),
+        ),
+        (
             "workdir".to_string(),
             JsonSchema::string(Some(
                 "Working directory for the command. Defaults to the turn cwd."

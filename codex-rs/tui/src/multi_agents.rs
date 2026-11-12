@@ -33,6 +33,7 @@ const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SubagentCounts {
     pub(crate) running: usize,
+    pub(crate) waiting: usize,
     pub(crate) total: usize,
 }
 

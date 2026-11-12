@@ -7,7 +7,7 @@ Archived:
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • Main [default] (current)  idle context ?
+› 1. • Main [default] (current)  checking pending work context ?
 
   enter select · / search · c close idle · q hide inactive locally · esc back
 Unarchived:
@@ -15,7 +15,7 @@ Unarchived:
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • Main [default] (current)  idle context ?
-  2. • Missed archive [worker]   idle context ?
+› 1. • Main [default] (current)  checking pending work context ?
+  2. • Missed archive [worker]   checking pending work context ?
 
   enter select · / search · c close idle · q hide inactive locally · esc back

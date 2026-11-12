@@ -6,9 +6,9 @@ expression: "crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_wi
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-  1. • Main [default] (current)  idle context ?
-  2. • missing                   idle context ?
-› 3. • sibling                   idle context ?
+  1. • Main [default] (current)  checking pending work context ?
+  2. • missing                   checking pending work context ?
+› 3. • sibling                   checking pending work context ?
 
   enter select · / search · x close agent · c close idle · q hide inactive
   locally · esc back

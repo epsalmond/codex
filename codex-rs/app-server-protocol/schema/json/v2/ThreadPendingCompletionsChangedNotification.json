@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Invalidates the thread's pending completion list, including running, ready and accepted work.",
+  "properties": {
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadPendingCompletionsChangedNotification",
+  "type": "object"
+}

@@ -888,7 +888,17 @@ impl ChatWidget {
                 .or_else(|| self.thread_id.map(|id| id.to_string())),
             StatusLineItem::ActiveSubagents => {
                 let counts = self.subagent_counts;
-                Some(format!("SubAgents: {}/{}", counts.running, counts.total))
+                Some(if counts.waiting == 0 {
+                    format!("SubAgents: {}/{}", counts.running, counts.total)
+                } else {
+                    format!(
+                        "SubAgents: {}/{} ({} working, {} waiting)",
+                        counts.running + counts.waiting,
+                        counts.total,
+                        counts.running,
+                        counts.waiting
+                    )
+                })
             }
             StatusLineItem::WorkspaceHeadline => self.status_line_workspace_headline.clone(),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),

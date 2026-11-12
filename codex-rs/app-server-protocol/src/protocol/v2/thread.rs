@@ -1348,6 +1348,14 @@ pub struct ThreadPendingCompletionsListParams {
     pub limit: Option<u32>,
 }
 
+/// Invalidates the thread's pending completion list, including running, ready and accepted work.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPendingCompletionsChangedNotification {
+    pub thread_id: String,
+}
+
 /// Work launched by the thread whose result is delivered to it automatically and has not been
 /// accepted yet: a running background process or code cell, or a finished result awaiting
 /// delivery.
@@ -1355,6 +1363,12 @@ pub struct ThreadPendingCompletionsListParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadPendingCompletion {
+    /// Optional short display title supplied when this work started.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Tasks and cells are finite; services stay owned until session shutdown.
+    #[serde(default = "pending_completion_is_finite_default")]
+    pub is_finite: bool,
     pub id: String,
     pub call_id: String,
     /// Background terminal process ID, for process producers.
@@ -1367,6 +1381,10 @@ pub struct ThreadPendingCompletion {
     pub status: ThreadPendingCompletionStatus,
     /// Whether publication of the result starts a turn for this thread on its own.
     pub wakes_owner: bool,
+}
+
+fn pending_completion_is_finite_default() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]

@@ -205,3 +205,106 @@ async fn status_line_subagents_keeps_root_counts_when_viewing_child() -> Result<
     assert_eq!(rendered_count(&app), "SubAgents: 0/0");
     Ok(())
 }
+
+#[tokio::test]
+async fn status_line_subagents_counts_waiting_owner_through_ready_error_and_restart() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let [root, child] = [900, 901].map(ThreadId::from_u128);
+    app.primary_thread_id = Some(root);
+    app.active_thread_id = Some(root);
+    app.upsert_agent_picker_thread(root, None, None, false);
+    app.chat_widget.setup_status_line(
+        vec![StatusLineItem::ActiveSubagents],
+        /*use_theme_colors*/ false,
+    );
+    let mut stages = Vec::new();
+    for notification in [
+        activity_notification(root, child, "/root/worker", SubAgentActivityKind::Started),
+        turn_started_notification(child, "work"),
+        turn_completed_notification(child, "work", TurnStatus::Completed),
+    ] {
+        app.handle_app_server_event(
+            &server,
+            codex_app_server_client::AppServerEvent::ServerNotification(Box::new(notification)),
+        )
+        .await;
+    }
+    let list = |app: &mut App, jobs: Result<Vec<crate::multi_agents::AgentPendingJob>, String>| {
+        let request = app.agent_navigation.begin_pending_jobs_request(child);
+        app.apply_agent_picker_pending_jobs(root, vec![(child, request, jobs)]);
+    };
+    let job = crate::multi_agents::AgentPendingJob {
+        command: "Run focused checks".into(),
+        started_at: 1,
+        finished: false,
+        wakes_owner: false,
+    };
+    list(&mut app, Ok(vec![job.clone(), job.clone()]));
+    stages.push(rendered_count(&app));
+    assert_eq!(
+        stages.last().unwrap(),
+        "SubAgents: 1/1 (0 working, 1 waiting)"
+    );
+
+    for finished in [false, true] {
+        app.handle_app_server_event(
+            &server,
+            codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+                ServerNotification::ThreadPendingCompletionsChanged(
+                    codex_app_server_protocol::ThreadPendingCompletionsChangedNotification {
+                        thread_id: child.to_string(),
+                    },
+                ),
+            )),
+        )
+        .await;
+        // Invalidations and transient list failures retain the last known owned work count.
+        assert_eq!(
+            rendered_count(&app),
+            "SubAgents: 1/1 (0 working, 1 waiting)"
+        );
+        list(&mut app, Err("temporarily unavailable".into()));
+        assert_eq!(
+            rendered_count(&app),
+            "SubAgents: 1/1 (0 working, 1 waiting)"
+        );
+        list(
+            &mut app,
+            Ok(vec![crate::multi_agents::AgentPendingJob {
+                finished,
+                ..job.clone()
+            }]),
+        );
+        stages.push(rendered_count(&app));
+    }
+    // A running owner with retained pending work counts exactly once, as working.
+    app.handle_app_server_event(
+        &server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+            turn_started_notification(child, "delivery"),
+        )),
+    )
+    .await;
+    stages.push(rendered_count(&app));
+    assert_eq!(stages.last().unwrap(), "SubAgents: 1/1");
+    app.handle_app_server_event(
+        &server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+            turn_completed_notification(child, "delivery", TurnStatus::Completed),
+        )),
+    )
+    .await;
+    list(&mut app, Ok(Vec::new()));
+    stages.push(rendered_count(&app));
+    assert_eq!(stages.last().unwrap(), "SubAgents: 0/1");
+    insta::assert_snapshot!(stages.join("\n"), @"
+    SubAgents: 1/1 (0 working, 1 waiting)
+    SubAgents: 1/1 (0 working, 1 waiting)
+    SubAgents: 1/1 (0 working, 1 waiting)
+    SubAgents: 1/1
+    SubAgents: 0/1
+    ");
+    Ok(())
+}

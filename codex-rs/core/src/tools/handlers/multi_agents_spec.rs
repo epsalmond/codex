@@ -642,9 +642,39 @@ fn list_agents_output_schema() -> Value {
                                 "observed_at": { "type": ["integer", "null"] },
                                 "provider_usage_at": { "type": ["integer", "null"] }
                             }
+                        },
+                        "pending_work": {
+                            "type": ["object", "null"],
+                            "description": "Finite yielded jobs retained until their owner accepts the result. Includes running and ready jobs; excludes services. Null means runtime data is unavailable. This metadata does not change agent_status.",
+                            "properties": {
+                                "count": { "type": "integer", "minimum": 0 },
+                                "jobs": {
+                                    "type": "array",
+                                    "maxItems": 64,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "call_id": { "type": "string" },
+                                            "title": { "type": ["string", "null"], "maxLength": 160 },
+                                            "command": { "type": ["string", "null"], "maxLength": 512 },
+                                            "process_id": { "type": ["string", "null"] },
+                                            "cell_id": { "type": ["string", "null"] },
+                                            "ready": {
+                                                "type": "boolean",
+                                                "description": "False while running; true when the result is ready for its owner to accept."
+                                            }
+                                        },
+                                        "required": ["id", "call_id", "title", "command", "process_id", "cell_id", "ready"],
+                                        "additionalProperties": false
+                                    }
+                                }
+                            },
+                            "required": ["count", "jobs"],
+                            "additionalProperties": false
                         }
                     },
-                    "required": ["agent_name", "agent_status", "context"],
+                    "required": ["agent_name", "agent_status", "context", "pending_work"],
                     "additionalProperties": false
                 },
                 "description": "The root and every open agent in the current root thread tree, loaded or not."

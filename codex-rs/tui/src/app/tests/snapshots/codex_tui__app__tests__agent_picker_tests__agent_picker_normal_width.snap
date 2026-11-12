@@ -6,11 +6,11 @@ expression: "render_bottom_popup(&app.chat_widget, 96)"
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-  1. • Main [default]                          idle context ?
-› 2. • Planner [worker] (current)              idle context 4800 / 32000 (15%) · Finished the d…
+  1. • Main [default]                          checking pending work context ?
+› 2. • Planner [worker] (current)              checking pending work context 4800 / 32000 (15%)…
   3. • /agents/review/long-running-test-agent  mid-turn context ?
   4. • Closed [worker]                         closed context ?
   5. • Error [worker]                          error context ?
-  6. • Agent 00000006                          idle context ?
+  6. • Agent 00000006                          checking pending work context ?
 
   enter select · / search · x close agent · c close idle · q hide inactive locally · esc back

@@ -98,6 +98,14 @@ impl App {
     ) {
         match event {
             AppServerEvent::Lagged { skipped } => {
+                self.agent_navigation.invalidate_pending_jobs();
+                if let Some(root) = self.primary_thread_id {
+                    self.refresh_agent_picker_pending_jobs(
+                        app_server_client,
+                        root,
+                        self.agent_navigation.tracked_thread_ids(),
+                    );
+                }
                 tracing::warn!(
                     skipped,
                     "app-server event consumer lagged; dropping ignored events"
