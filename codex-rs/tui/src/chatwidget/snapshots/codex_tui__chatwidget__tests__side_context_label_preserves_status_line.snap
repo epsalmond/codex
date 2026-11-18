@@ -6,4 +6,5 @@ expression: terminal.backend()
 "                                                                                "
 "› Ask a follow-up question                                                      "
 "                                                                                "
-"  sol               Side from main thread · ctrl+/ to switch · ctrl+c to close  "
+"  sol                                                                           "
+"  ? for shortcuts · Side from main thread · ctrl+/ to switch · ctrl+c to close  "

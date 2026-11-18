@@ -8,7 +8,10 @@ use pretty_assertions::assert_eq;
 #[test]
 fn deferred_report_preserves_its_wake_request_until_history_is_recorded() {
     let communication = InterAgentCommunication {
-        id: Some(ResponseItemId::new("amsg_test-report")),
+        id: Some(ResponseItemId::with_suffix(
+            "amsg_test-report",
+            uuid::Uuid::now_v7(),
+        )),
         trigger_turn: true,
         ..InterAgentCommunication::new(
             AgentPath::try_from("/root/worker").expect("worker path"),

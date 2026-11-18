@@ -49,6 +49,8 @@ fn pin_user_skill_home() {
 mod abort_lifecycle;
 #[cfg(not(target_os = "windows"))]
 mod abort_tasks;
+#[path = "actor_access_program_tests.rs"]
+mod actor_access_program;
 mod additional_context;
 #[path = "agent_control_tests.rs"]
 mod agent_control;
@@ -57,6 +59,7 @@ mod agent_message_wake;
 mod agent_wake;
 mod agent_websocket;
 mod agents_md;
+mod analytics_runtime_auth;
 mod app_tool_exposure;
 mod apply_patch_cli;
 mod apply_patch_serialization;
@@ -65,6 +68,7 @@ mod apply_patch_system_aliases;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
 mod async_cell_completion_tests;
+mod audio_duration_store;
 mod audio_truncation;
 mod auth_recovery_policy;
 mod auto_review;
@@ -210,6 +214,8 @@ mod request_permissions_tool;
 mod request_plugin_install;
 mod request_user_input;
 mod request_user_input_async;
+#[path = "required_access_program_tests.rs"]
+mod required_access_program;
 mod responses_api_proxy_headers;
 mod responses_lite;
 #[cfg(target_os = "linux")]
@@ -222,6 +228,8 @@ mod rmcp_client;
 mod rollout_budget;
 mod rollout_compression;
 mod rollout_list_find;
+mod runtime_auth;
+mod runtime_auth_denials;
 mod safety_buffering;
 mod safety_check_downgrade;
 mod scenarios;

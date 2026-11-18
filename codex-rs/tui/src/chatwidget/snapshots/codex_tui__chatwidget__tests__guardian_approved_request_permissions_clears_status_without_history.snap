@@ -1,8 +1,7 @@
 ---
 source: tui/src/chatwidget/tests/guardian.rs
-expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
+expression: normalize_working_snapshot(term.backend().vt100().screen().contents())
 ---
-
 
 
 
@@ -13,3 +12,4 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 › Ask Codex to do anything
 
   sol · /tmp/project
+  ? for shortcuts

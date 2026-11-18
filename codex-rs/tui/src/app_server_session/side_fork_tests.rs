@@ -15,8 +15,14 @@ use tokio_tungstenite::tungstenite::Message;
 async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Result<()> {
     for mode in [ThreadParamsMode::Embedded, ThreadParamsMode::Remote] {
         for (presentation, retry) in [
-            (ForkPresentation::SideConversation, false),
-            (ForkPresentation::SideConversation, true),
+            (
+                ForkPresentation::SideConversation(SideChatStorage::Temporary),
+                false,
+            ),
+            (
+                ForkPresentation::SideConversation(SideChatStorage::Temporary),
+                true,
+            ),
             (ForkPresentation::Regular, false),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -72,13 +78,14 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
             let local_settings = LocalSettings::from(&config);
             let thread_id = ThreadId::new();
             let result = match presentation {
-                ForkPresentation::SideConversation => {
+                ForkPresentation::SideConversation(storage) => {
                     session
                         .fork_side_thread(
                             &local_settings,
                             config.clone(),
                             thread_id,
                             /*selected_profile*/ None,
+                            storage,
                         )
                         .await
                 }
@@ -106,7 +113,7 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
                 ];
                 let disabled = Value::Bool(false);
                 let expected = match presentation {
-                    ForkPresentation::SideConversation => [Some(&disabled); 3],
+                    ForkPresentation::SideConversation(_) => [Some(&disabled); 3],
                     ForkPresentation::Regular => [None; 3],
                 };
                 assert_eq!(actual, expected);

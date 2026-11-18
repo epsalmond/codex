@@ -55,6 +55,8 @@ pub(super) async fn suspend_turn_and_shutdown(
         CodexErr::Fatal("accepted root turn suspension had no running task".to_string())
     })?;
     let turn_id = task.turn_context.sub_id.clone();
+    // A suspended task emits no terminal outcome.
+    drop(task.outcome_handoff);
     // Normal shutdown records a terminal turn event, preventing another worker from
     // recovering this turn under its original ID. Cancel the task without that event.
     task.cancellation_token.cancel();
@@ -81,6 +83,15 @@ pub(super) async fn suspend_turn_and_shutdown(
             let _ = task_handle.await;
         }
     }
+    // Save any initial input the task had not claimed so a new worker can recover the turn.
+    let recorded = session
+        .record_pending_initial_input(
+            &task.turn_context,
+            &turn.turn_state,
+            task.pending_initial_input,
+            /*abort_reason*/ None,
+        )
+        .await;
     // Pending accepted input and interactive waiters live only in this process. Handoff
     // intentionally drops that state; persisting or replaying it needs a separate protocol.
     let mode = session.child_report_mode().await.unwrap_or_default();
@@ -104,6 +115,7 @@ pub(super) async fn suspend_turn_and_shutdown(
     live_thread.shutdown().await.map_err(|error| {
         CodexErr::Fatal(format!("close suspended root turn writer failed: {error}"))
     })?;
+    recorded?;
     // Announce completion only after extension cleanup and writer closure so a
     // replacement worker cannot write the same thread concurrently.
     session

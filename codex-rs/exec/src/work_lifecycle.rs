@@ -107,6 +107,7 @@ impl WorkLifecycle {
         client: &InProcessAppServerClient,
         request_ids: &mut RequestIdSequencer,
         event_processor: &mut dyn EventProcessor,
+        output: &mut Option<codex_exec_server::BoundOutput>,
     ) -> Option<DrainExit> {
         if !self.ready_to_close() {
             return None;
@@ -116,6 +117,7 @@ impl WorkLifecycle {
             Ok(CloseOutcome::Closed) => {
                 let (output_result, unsubscribe_result) = print_final_output_before_cleanup(
                     event_processor,
+                    output.take(),
                     request_shutdown(client, request_ids, &self.thread_id),
                 )
                 .await;

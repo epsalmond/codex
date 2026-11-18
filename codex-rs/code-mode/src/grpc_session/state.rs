@@ -89,6 +89,8 @@ impl RecentIds {
 
 #[derive(Default)]
 pub(super) struct SessionState {
+    // Only a live session owns a share of the worker connection.
+    client: Option<Arc<super::GrpcClient>>,
     executions: HashMap<String, ExecutionRecord>,
     invocations: HashMap<String, ActiveCallback>,
     notifications: usize,
@@ -99,12 +101,29 @@ pub(super) struct SessionState {
 }
 
 impl SessionState {
+    pub(super) fn with_client(client: Arc<super::GrpcClient>) -> Self {
+        Self {
+            client: Some(client),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn client(&self) -> Result<super::GrpcClient, String> {
+        self.client
+            .as_deref()
+            .cloned()
+            .ok_or_else(|| self.closed_error())
+    }
+
+    fn closed_error(&self) -> String {
+        self.failure
+            .clone()
+            .unwrap_or_else(|| "code-mode gRPC session is closed".to_string())
+    }
+
     pub(super) fn require_open(&self) -> Result<(), String> {
         if self.closed {
-            return Err(self
-                .failure
-                .clone()
-                .unwrap_or_else(|| "code-mode gRPC session is closed".to_string()));
+            return Err(self.closed_error());
         }
         Ok(())
     }
@@ -389,6 +408,7 @@ impl SessionState {
             return Vec::new();
         }
         self.closed = true;
+        self.client = None;
         self.failure = failure;
         self.notifications = 0;
         for (_, callback) in self.invocations.drain() {

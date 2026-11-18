@@ -5,6 +5,7 @@
 
 use crate::agent::child_directory::ChildDirectory;
 use crate::agent::child_directory::load_child_directory_config;
+use crate::agent::host::AgentRuntimeServices;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::role::resolve_role_config;
@@ -128,6 +129,14 @@ pub(crate) async fn prepare_agent_spawn_config(
         requested_reasoning_effort.clone(),
     )
     .await;
+    let shares_service_tier = match &session.agent_runtime {
+        AgentRuntimeServices::Controller => true,
+        AgentRuntimeServices::Host(services) => services.service_tier.is_some(),
+    };
+    if !shares_service_tier {
+        // Inherit the parent's thread preference before applying child role overrides.
+        config.service_tier = session.thread_settings_snapshot().await.service_tier;
+    }
     if applies_role {
         // The root catalog only describes the root provider, so a role that switches providers
         // keeps the unchecked request instead of failing on it.
@@ -154,7 +163,9 @@ pub(crate) async fn prepare_agent_spawn_config(
     } else {
         requested_overrides?;
     }
-    apply_spawn_agent_service_tier(session, &mut config).await?;
+    if shares_service_tier {
+        apply_spawn_agent_service_tier(session, &mut config).await?;
+    }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
     if let Some(directory_config) = &mut directory_config {
         directory_config.apply_runtime(&mut config)?;
@@ -236,6 +247,12 @@ fn build_agent_shared_config(
     // Preserve activation for history forks without freezing the parent's model-owned prompts.
     // Fresh child startup restores configured preferences from the retained snapshot.
     config.token_budget = turn.configured_token_budget.clone();
+    if let Some(thread_namespaces) = &turn.overridden_direct_only_tool_namespaces {
+        config
+            .code_mode
+            .direct_only_tool_namespaces
+            .clone_from(thread_namespaces);
+    }
     config.model = Some(turn.model_info().slug.clone());
     config.model_provider = turn.provider.info().clone();
     config.model_reasoning_effort = turn
@@ -356,7 +373,9 @@ pub(crate) async fn apply_spawn_agent_service_tier(
     session: &Session,
     config: &mut Config,
 ) -> Result<(), String> {
-    let Some(service_tier) = session.services.agent_control.service_tier() else {
+    let Some(service_tier) =
+        crate::agent::host::service_tier(session, config.service_tier.clone()).await
+    else {
         config.service_tier = None;
         return Ok(());
     };

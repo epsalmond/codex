@@ -28,6 +28,8 @@ use tokio_util::sync::CancellationToken;
 /// Request-scoped state that may change between model sampling requests.
 #[derive(Clone)]
 pub(crate) struct StepContext {
+    /// Input prefix captured for this normal inference attempt, acknowledged with its output.
+    pub(crate) sampled_through_sequence: Option<u64>,
     /// Final serving value for this invocation; retained by its code cell across waits.
     pub(crate) serving_assessment: Option<Arc<crate::guardian::ServingAssessment>>,
     pub(crate) turn: Arc<TurnContext>,
@@ -114,11 +116,11 @@ impl StepContext {
         let sandbox = environment.sandbox_context(grants);
         // A pending/failed second selection must not authorize a broader local index.
         let access = local_navigation_access(
-            environment.environment.is_remote(),
+            environment.environment().is_remote(),
             sandbox.should_read_from_sandbox() || self.environments.environments.len() != 1,
         );
         let fs =
-            FileSystemEnvironmentAccessor::new(environment.environment.filesystem_ref(), sandbox);
+            FileSystemEnvironmentAccessor::new(environment.environment().filesystem_ref(), sandbox);
         (fs, access)
     }
 
@@ -240,9 +242,14 @@ mod navigation_authority_tests {
                 .all(|(_, _, access)| *access == LocalNavigationAccess::Restricted)
         );
         // Same id and local-looking cwd, but the actual executor is remote.
-        environment.environment = Arc::new(
-            Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_owned()))
-                .expect("remote environment"),
+        environment = crate::session::turn_context::TurnEnvironment::new(
+            environment.selection.clone(),
+            environment.config_origin.clone(),
+            Arc::new(
+                Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_owned()))
+                    .expect("remote environment"),
+            ),
+            environment.shell.clone(),
         );
         step.environments.environments = vec![TurnEnvironmentState::Ready(environment)];
         assert_eq!(

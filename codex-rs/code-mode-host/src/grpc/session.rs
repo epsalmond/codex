@@ -55,6 +55,7 @@ pub(super) struct GrpcSession {
     events: EventSender,
     cells_changed: Notify,
     delegate_permits: Arc<Semaphore>,
+    client_delegate_permits: Arc<Semaphore>,
 }
 
 #[derive(Default)]
@@ -113,6 +114,7 @@ impl GrpcHostState {
         self: &Arc<Self>,
         options: CodeModeSessionOptions,
         terminal_ready_requested: bool,
+        max_pending_delegate_calls: usize,
     ) -> Result<GrpcStream<proto::SessionEvent>, Status> {
         let id = Uuid::new_v4();
         let (events, receiver) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
@@ -125,6 +127,7 @@ impl GrpcHostState {
             Arc::clone(&self.delegate_permits),
             options,
             terminal_ready_requested,
+            max_pending_delegate_calls,
         );
         events
             .try_send(Ok(proto::SessionEvent {
@@ -227,6 +230,7 @@ impl GrpcSession {
         delegate_permits: Arc<Semaphore>,
         options: CodeModeSessionOptions,
         terminal_ready_supported: bool,
+        max_pending_delegate_calls: usize,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let failure_session = weak.clone();
@@ -248,6 +252,7 @@ impl GrpcSession {
                 events,
                 cells_changed: Notify::new(),
                 delegate_permits,
+                client_delegate_permits: Arc::new(Semaphore::new(max_pending_delegate_calls)),
             }
         })
     }
@@ -426,10 +431,14 @@ impl GrpcSession {
         );
     }
 
-    pub(super) fn delegate_permit(&self) -> Result<OwnedSemaphorePermit, String> {
-        Arc::clone(&self.delegate_permits)
+    pub(super) fn delegate_permit(&self) -> Result<[OwnedSemaphorePermit; 2], String> {
+        let client = Arc::clone(&self.client_delegate_permits)
             .try_acquire_owned()
-            .map_err(|_| "code-mode host has too many pending delegate calls".to_string())
+            .map_err(|_| "code-mode session has too many pending delegate calls".to_string())?;
+        let host = Arc::clone(&self.delegate_permits)
+            .try_acquire_owned()
+            .map_err(|_| "code-mode host has too many pending delegate calls".to_string())?;
+        Ok([client, host])
     }
 
     pub(super) async fn send_event(

@@ -348,6 +348,7 @@ fn activity_notification(
     kind: SubAgentActivityKind,
 ) -> ServerNotification {
     ServerNotification::ItemCompleted(ItemCompletedNotification {
+        content_token_count: None,
         thread_id: parent.to_string(),
         turn_id: "parent-turn".to_string(),
         completed_at_ms: 0,
@@ -593,6 +594,7 @@ async fn route_notification(
 
 fn legacy_spawn_notification(parent: ThreadId, receivers: Vec<String>) -> ServerNotification {
     ServerNotification::ItemCompleted(ItemCompletedNotification {
+        content_token_count: None,
         thread_id: parent.to_string(),
         turn_id: "parent-turn".into(),
         completed_at_ms: 0,

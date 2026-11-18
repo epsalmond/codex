@@ -2,6 +2,7 @@
 //! with checkpoints written directly to storage.
 
 use super::session::Session;
+use super::session::SessionSettingsCommit;
 use super::session::SessionSettingsUpdate;
 use super::step_settings::StepSettingsUpdate;
 use crate::WithTurnExtensionData;
@@ -77,7 +78,8 @@ impl Session {
 pub(super) async fn update(
     session: &Session,
     overrides: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
-) -> ConstraintResult<ThreadSettingsSnapshot> {
+    reply_requested: bool,
+) -> ConstraintResult<SessionSettingsCommit> {
     let overrides = overrides.into();
     let context_only = overrides.turn_extension_init.is_none()
         && overrides.request.context_settings.is_some()
@@ -86,7 +88,8 @@ pub(super) async fn update(
             other.context_settings = None;
             other == ThreadSettingsOverrides::default()
         };
-    let updates = prepare_update(overrides, &session.services.selected_capability_roots);
+    let mut updates = prepare_update(overrides, &session.services.selected_capability_roots);
+    updates.host_acceptance_in_reply = reply_requested;
     let commit = session.update_settings(updates).await?;
     let active_turn = session.active_turn.lock().await;
     // A registered running task retains its lineage so it can be recovered after a daemon
@@ -98,7 +101,7 @@ pub(super) async fn update(
     {
         session.state.lock().await.last_started_turn_id = None;
     }
-    Ok(commit.snapshot)
+    Ok(commit)
 }
 
 /// Converts protocol overrides into the internal settings update shape.

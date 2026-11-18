@@ -18,6 +18,7 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
             "thread-1".to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::AgentMessage {
+                moderation: None,
                 id: "msg-1".to_string(),
                 text: "partial answer".to_string(),
                 phase: None,
@@ -59,7 +60,8 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
     assert_eq!(status, CodexStatus::InitiateShutdown);
     assert_eq!(processor.final_message(), None);
 
-    EventProcessor::print_final_output(&mut processor).expect("final output should succeed");
+    let output = BoundOutput::open(&output_path).expect("bind output");
+    EventProcessor::print_final_output(&mut processor, Some(output)).expect("print final output");
 
     assert_eq!(
         std::fs::read_to_string(&output_path).expect("read output file"),
@@ -69,15 +71,36 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
 
 #[tokio::test]
 async fn failed_final_output_does_not_skip_cleanup() {
-    let tempdir = tempdir().expect("create tempdir");
-    let output_path = tempdir.path().join("missing").join("last-message.txt");
-    let mut processor = EventProcessorWithJsonOutput::new(Some(output_path));
-    processor.final_message = Some("final answer".to_string());
-    processor.emit_final_message_on_shutdown = true;
+    struct FailingOutput;
+    impl EventProcessor for FailingOutput {
+        fn print_config_summary(
+            &mut self,
+            _config: &codex_core::config::Config,
+            _prompt: &str,
+            _session: &codex_protocol::protocol::SessionConfiguredEvent,
+        ) {
+        }
+
+        fn process_server_notification(
+            &mut self,
+            _notification: ServerNotification,
+        ) -> CodexStatus {
+            CodexStatus::Running
+        }
+
+        fn process_warning(&mut self, _message: String) -> CodexStatus {
+            CodexStatus::Running
+        }
+
+        fn print_final_output(&mut self, _output: Option<BoundOutput>) -> anyhow::Result<()> {
+            Err(std::io::Error::other("output failed").into())
+        }
+    }
+    let mut processor = FailingOutput;
     let cleanup_ran = AtomicBool::new(false);
 
     let (output_result, ()) =
-        crate::event_processor::print_final_output_before_cleanup(&mut processor, async {
+        crate::event_processor::print_final_output_before_cleanup(&mut processor, None, async {
             cleanup_ran.store(true, Ordering::Release);
         })
         .await;
@@ -87,17 +110,36 @@ async fn failed_final_output_does_not_skip_cleanup() {
 }
 
 #[test]
+fn final_output_binding_reports_missing_parent_directory() {
+    let tempdir = tempdir().expect("create tempdir");
+    let path = tempdir.path().join("missing").join("last-message.txt");
+    let error = BoundOutput::open(&path)
+        .err()
+        .expect("missing parent must fail binding");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[cfg(unix)]
+#[test]
 fn final_output_reports_last_message_write_failure() {
     let tempdir = tempdir().expect("create tempdir");
-    let output_path = tempdir.path().join("missing").join("last-message.txt");
+    let output_path = tempdir.path().join("last-message.txt");
+    let output = BoundOutput::open(&output_path).expect("bind output");
+    std::fs::remove_file(&output_path).expect("remove bound path");
     let mut processor = EventProcessorWithJsonOutput::new(Some(output_path));
     processor.final_message = Some("final answer".to_string());
     processor.emit_final_message_on_shutdown = true;
 
-    let error = EventProcessor::print_final_output(&mut processor)
-        .expect_err("missing parent directory should fail the write");
+    let error = EventProcessor::print_final_output(&mut processor, Some(output))
+        .expect_err("removed destination should fail the write");
 
-    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .expect("I/O error")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
 }
 
 #[test]
@@ -197,6 +239,7 @@ fn root_turn_completed(
                 .map(|text| {
                     codex_app_server_protocol::ThreadItem::untimed(
                         ThreadItemPayload::AgentMessage {
+                            moderation: None,
                             id: format!("{turn_id}-msg"),
                             text: text.to_string(),
                             phase: None,
@@ -246,7 +289,9 @@ fn failed_or_interrupted_wake_turn_keeps_the_last_completed_answer() {
         ));
 
         assert_eq!(processor.final_message(), Some("answer A"), "{status:?}");
-        EventProcessor::print_final_output(&mut processor).expect("final output should succeed");
+        let output = BoundOutput::open(&output_path).expect("bind output");
+        EventProcessor::print_final_output(&mut processor, Some(output))
+            .expect("final output should succeed");
         assert_eq!(
             std::fs::read_to_string(&output_path).expect("read output file"),
             "answer A",

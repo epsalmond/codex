@@ -117,6 +117,7 @@ async fn failed_root_quiesces_descendants_and_allows_explicit_followup(
         )
         .await?;
     let error = ErrorEvent {
+        rejected_audio_file_ids: Vec::new(),
         message: "host failed this turn".to_owned(),
         codex_error_info: info,
         misalignment: None,
@@ -283,6 +284,7 @@ async fn failed_root_waits_for_reserved_child_cleanup_after_rollback() -> Result
         .submit(Op::FailTurn {
             turn_id,
             error: ErrorEvent {
+                rejected_audio_file_ids: Vec::new(),
                 message: "fail while child starts".to_owned(),
                 codex_error_info: None,
                 misalignment: None,
@@ -407,6 +409,7 @@ async fn failed_root_waits_for_detached_child_finalization() -> Result<()> {
         .submit(Op::FailTurn {
             turn_id,
             error: ErrorEvent {
+                rejected_audio_file_ids: Vec::new(),
                 message: "fail during child finalization".to_owned(),
                 codex_error_info: None,
                 misalignment: None,

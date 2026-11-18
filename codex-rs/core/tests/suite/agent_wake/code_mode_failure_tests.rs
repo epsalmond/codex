@@ -157,6 +157,7 @@ async fn failure_waits_for_yielded_cell_termination_without_interrupt_feature(
                 .submit(Op::FailTurn {
                     turn_id: turn_id.clone(),
                     error: codex_protocol::protocol::ErrorEvent {
+                        rejected_audio_file_ids: Vec::new(),
                         message: "host failure".to_owned(),
                         codex_error_info: None,
                         misalignment: None,
