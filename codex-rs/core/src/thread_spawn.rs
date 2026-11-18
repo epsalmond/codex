@@ -7,6 +7,7 @@ use crate::agent::api::SpawnRequest;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::helper_daybreak::turn::explicit_program_for_spawn;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::AgentMessage;
@@ -14,6 +15,7 @@ use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
+use crate::agent::types::SpawnProgramSource;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::session::session::Session;
@@ -198,7 +200,8 @@ pub(crate) async fn prepare(
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                 environments: Some(step_context.inherited_environments.clone()),
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
-                cyber_access_program: turn.cyber_access_program,
+                cyber_access_program: explicit_program_for_spawn(turn),
+                cyber_access_program_source: SpawnProgramSource::ParentTurn,
                 lifetime: Some(lifetime),
                 child_directory,
             },
