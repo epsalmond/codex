@@ -226,6 +226,7 @@ impl SessionTask for HoldCommittedSpawn {
                 .send_event(
                     &context,
                     EventMsg::Error(ErrorEvent {
+                        rejected_audio_file_ids: Vec::new(),
                         message: "natural failure".to_owned(),
                         codex_error_info: None,
                         misalignment: None,
@@ -390,6 +391,7 @@ async fn failure_captures_grandchild_before_committed_spawn_cleanup_detaches_it(
             .fail_turn_if_active(
                 &context.sub_id,
                 ErrorEvent {
+                    rejected_audio_file_ids: Vec::new(),
                     message: "root host failure".to_owned(),
                     codex_error_info: None,
                     misalignment: None,

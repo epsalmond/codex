@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::future::Future;
 use std::io;
 use std::io::Write;
@@ -5,6 +6,7 @@ use std::path::Path;
 
 use codex_app_server_protocol::ServerNotification;
 use codex_core::config::Config;
+use codex_exec_server::BoundOutput;
 use codex_protocol::protocol::SessionConfiguredEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,47 +30,32 @@ pub(crate) trait EventProcessor {
     /// Handle a local exec warning that is not represented as an app-server notification.
     fn process_warning(&mut self, message: String) -> CodexStatus;
 
-    fn print_final_output(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    fn print_final_output(&mut self, output: Option<BoundOutput>) -> anyhow::Result<()>;
 }
 
 pub(crate) async fn print_final_output_before_cleanup<T>(
     event_processor: &mut dyn EventProcessor,
+    output: Option<BoundOutput>,
     cleanup: impl Future<Output = T>,
-) -> (io::Result<()>, T) {
-    let output_result = event_processor.print_final_output();
+) -> (anyhow::Result<()>, T) {
+    let output_result = event_processor.print_final_output(output);
     let cleanup_result = cleanup.await;
     (output_result, cleanup_result)
 }
 
 pub(crate) fn handle_last_message(
     last_agent_message: Option<&str>,
-    output_file: &Path,
-) -> io::Result<()> {
-    let message = last_agent_message.unwrap_or_default();
-    write_last_message_file(message, Some(output_file))?;
+    path: &Path,
+    file: BoundOutput,
+) -> anyhow::Result<()> {
+    file.write(last_agent_message.unwrap_or_default().as_bytes())
+        .with_context(|| format!("Failed to write last message file {path:?}"))?;
     if last_agent_message.is_none() {
         writeln!(
             io::stderr().lock(),
             "Warning: no last agent message; wrote empty content to {}",
-            output_file.display()
+            path.display()
         )?;
-    }
-    Ok(())
-}
-
-fn write_last_message_file(contents: &str, last_message_path: Option<&Path>) -> io::Result<()> {
-    if let Some(path) = last_message_path {
-        std::fs::write(path, contents).map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!(
-                    "failed to write last message file {}: {err}",
-                    path.display()
-                ),
-            )
-        })?;
     }
     Ok(())
 }

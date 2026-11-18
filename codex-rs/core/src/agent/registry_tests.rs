@@ -408,6 +408,8 @@ async fn register_root_thread_again_preserves_retained_root_state() {
     registry.save_evicted_settings(
         root_thread_id,
         EvictedEnvironments {
+            config: Arc::new(config.clone()),
+            has_independent_service_tier: false,
             selections: Vec::new(),
             bindings: TurnEnvironmentSnapshot::default(),
         },

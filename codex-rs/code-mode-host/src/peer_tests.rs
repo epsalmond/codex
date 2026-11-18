@@ -6,6 +6,7 @@ use codex_code_mode_protocol::CellId;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::host::DelegateRequest;
+use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_code_mode_protocol::host::RequestId;
 use codex_code_mode_protocol::host::SessionId;
 use pretty_assertions::assert_eq;
@@ -16,7 +17,6 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
 
 use super::HostPeer;
-use super::MAX_PENDING_DELEGATE_CALLS;
 
 fn session_id(value: &str) -> SessionId {
     SessionId::new(value).expect("session ID")
@@ -28,6 +28,7 @@ async fn start_cell_reports_when_initial_response_is_enqueued() {
     let peer = Arc::new(HostPeer::new(
         outgoing_tx,
         /*terminal_ready_supported*/ false,
+        MAX_PENDING_DELEGATE_CALLS,
     ));
     let cell_id = CellId::new("cell-1".to_string());
     let (response_tx, response_rx) = oneshot::channel();
@@ -78,6 +79,7 @@ async fn pending_delegate_limit_rejects_call_without_disconnecting() {
     let peer = Arc::new(HostPeer::new(
         outgoing_tx,
         /*terminal_ready_supported*/ false,
+        MAX_PENDING_DELEGATE_CALLS,
     ));
     let permits = Arc::clone(&peer.delegate_permits)
         .acquire_many_owned(MAX_PENDING_DELEGATE_CALLS as u32)

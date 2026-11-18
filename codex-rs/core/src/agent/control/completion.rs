@@ -292,7 +292,7 @@ impl LocalAgentControl {
             message,
             trigger_turn,
         );
-        communication.id = Some(codex_protocol::ResponseItemId::new("msg"));
+        communication.id = Some((self.runtime.item_id_generator)("msg"));
         let delivery = self
             .deliver_polling_completion(parent_thread_id, outcome.thread_id, communication)
             .await;

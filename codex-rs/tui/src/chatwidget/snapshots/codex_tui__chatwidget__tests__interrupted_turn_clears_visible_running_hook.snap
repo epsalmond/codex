@@ -10,9 +10,11 @@ before interrupt:
 "› Ask Codex to do anything                                                      "
 "                                                                                "
 "  sol · /tmp/project                                                            "
+"  ? for shortcuts                                                               "
 after interrupt:
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
 "  sol · /tmp/project                                                            "
+"  ? for shortcuts                                                               "

@@ -497,7 +497,10 @@ impl AsyncCompletions {
                     "async completion capacity exhausted; continue the owner turn before launching another command",
                 );
             }
-            let id = ResponseItemId::new("msg");
+            let id = self.owner.get().and_then(Weak::upgrade).map_or_else(
+                || (Session::new_item_id_generator())("msg"),
+                |owner| (owner.item_id_generator)("msg"),
+            );
             let mut record = Record {
                 lifecycle: None,
                 work_kind: lifecycle.map_or(WorkKind::Task, OwnedWorkRegistration::kind),

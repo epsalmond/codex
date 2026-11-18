@@ -1,8 +1,11 @@
+use codex_core::TurnInput;
+use codex_core::TurnInputRequest;
 use codex_core::context::ContextualUserFragment;
 use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
 use codex_prompts::without_update_plan_instructions;
-use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AdditionalContextKind;
 use codex_protocol::protocol::ThreadGoal;
 use codex_utils_template::Template;
 use std::sync::LazyLock;
@@ -52,14 +55,23 @@ pub(crate) fn objective_updated_steering_fragment(
     goal_context_fragment(objective_updated_prompt(goal))
 }
 
-pub(crate) fn continuation_steering_item(
+pub(crate) const GOAL_OBJECTIVE_CONTEXT: &str = "goal_objective";
+
+pub(crate) fn continuation_request(
     goal: &ThreadGoal,
     update_plan_enabled: bool,
-) -> ResponseItem {
-    ContextualUserFragment::into(goal_context_fragment(continuation_prompt(
+) -> TurnInputRequest {
+    let steering = ContextualUserFragment::into(goal_context_fragment(continuation_prompt(
         goal,
         update_plan_enabled,
-    )))
+    )));
+    TurnInputRequest::new(TurnInput::ResponseItem(steering)).with_additional_context(
+        [(
+            GOAL_OBJECTIVE_CONTEXT.to_owned(),
+            AdditionalContextEntry::new(goal.objective.clone(), AdditionalContextKind::Untrusted),
+        )]
+        .into(),
+    )
 }
 
 fn goal_context_fragment(prompt: String) -> InternalModelContextFragment {
@@ -67,7 +79,6 @@ fn goal_context_fragment(prompt: String) -> InternalModelContextFragment {
 }
 
 fn continuation_prompt(goal: &ThreadGoal, update_plan_enabled: bool) -> String {
-    let objective = escape_xml_text(&goal.objective);
     let tokens_used = goal.tokens_used.to_string();
     let token_budget = goal
         .token_budget
@@ -85,7 +96,6 @@ fn continuation_prompt(goal: &ThreadGoal, update_plan_enabled: bool) -> String {
     };
     template
         .render([
-            ("objective", objective.as_str()),
             ("tokens_used", tokens_used.as_str()),
             ("token_budget", token_budget.as_str()),
             ("remaining_tokens", remaining_tokens.as_str()),

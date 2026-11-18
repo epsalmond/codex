@@ -36,6 +36,7 @@ fn request(input: Vec<ResponseItem>) -> ResponsesApiRequest {
         include: vec!["reasoning.encrypted_content".to_string()],
         service_tier: None,
         prompt_cache_key: Some("thread".to_string()),
+        prompt_cache_options: None,
         text: None,
         client_metadata: None,
         access_programs: None,

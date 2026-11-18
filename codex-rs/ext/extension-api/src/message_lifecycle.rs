@@ -5,6 +5,7 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 
 /// State shared by all deliveries of a publication, including recipients resolved later.
+/// Local native publications retain the item ID across queuing, eviction, and consumption.
 pub struct MessageLifecycleInput {
     pub message_id: ResponseItemId,
     pub sender: ThreadId,

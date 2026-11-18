@@ -459,10 +459,11 @@ async fn cold_resume_restores_terminal_child_without_starting_queued_mail(
     let mut store_config = core_test_support::load_default_config_for_test(&home).await;
     configure(&mut store_config);
     let store: Arc<dyn ThreadStore> = Arc::new(HistoryModeStore {
-        inner: codex_core::thread_store_from_config(
+        inner: codex_core::ThreadStoreBuilder::from_config(
             &store_config,
             codex_core::init_state_db(&store_config).await,
-        ),
+        )
+        .build(),
         mode: history_mode,
     });
     let initial = test_codex()

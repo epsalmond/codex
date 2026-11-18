@@ -24,6 +24,8 @@ use codex_code_mode_protocol::host::HostHello;
 use codex_code_mode_protocol::host::HostRequest;
 use codex_code_mode_protocol::host::HostResponse;
 use codex_code_mode_protocol::host::HostToClient;
+use codex_code_mode_protocol::host::LARGE_DELEGATE_CAPACITY_CAPABILITY;
+use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_code_mode_protocol::host::ProtocolVersion;
 use codex_code_mode_protocol::host::RequestId;
 use codex_code_mode_protocol::host::SESSION_RESOURCE_LIMITS_CAPABILITY;
@@ -284,6 +286,7 @@ async fn supported_capabilities_are_negotiated_when_optional_or_required() {
     for capability in [
         SESSION_RESOURCE_LIMITS_CAPABILITY,
         BOUNDED_OUTPUT_CAPABILITY,
+        LARGE_DELEGATE_CAPACITY_CAPABILITY,
     ] {
         let capability = Capability::new(capability).expect("supported capability");
         let host_capabilities =
@@ -663,6 +666,7 @@ async fn request_task_panic_disconnects_host() {
     let peer = Arc::new(HostPeer::new(
         outgoing_tx,
         /*terminal_ready_supported*/ false,
+        MAX_PENDING_DELEGATE_CALLS,
     ));
     let state = HostState {
         sessions: Mutex::new(HashMap::new()),
@@ -694,6 +698,7 @@ async fn execute_request_id_remains_active_until_initial_response() {
     let peer = Arc::new(HostPeer::new(
         outgoing_tx,
         /*terminal_ready_supported*/ false,
+        MAX_PENDING_DELEGATE_CALLS,
     ));
     let state = Arc::new(HostState {
         sessions: Mutex::new(HashMap::new()),
@@ -758,6 +763,7 @@ async fn active_cell_limit_rejects_execute_without_disconnecting() {
     let peer = Arc::new(HostPeer::new(
         outgoing_tx,
         /*terminal_ready_supported*/ false,
+        MAX_PENDING_DELEGATE_CALLS,
     ));
     let state = HostState {
         sessions: Mutex::new(HashMap::new()),
@@ -809,6 +815,7 @@ async fn cell_forwarding_panic_disconnects_host() {
     let peer = Arc::new(HostPeer::new(
         outgoing_tx,
         /*terminal_ready_supported*/ false,
+        MAX_PENDING_DELEGATE_CALLS,
     ));
     peer.spawn_critical("cell forwarding", async {
         panic!("cell forwarding panic probe");

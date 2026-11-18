@@ -6,14 +6,14 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=73902749a00246d8):
-        - namespace/functions; hash=f0730ecc03b7c826
+00:additional_tools/developer (2; hash=80ecead8467f03f4):
+        - namespace/functions; hash=e29c82179a39a0b3
           - custom/exec
-          - function/exec_terminate
+          - function/wait
           - function/request_user_input
           - function/request_user_input_async
           - function/close_agents
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=630765df4da76392
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -40,14 +40,14 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 2 (after request 1: input diverged at item 06)
 -- request 2 (turn) --
-00:additional_tools/developer (2; hash=73902749a00246d8):
-        - namespace/functions; hash=f0730ecc03b7c826
+00:additional_tools/developer (2; hash=80ecead8467f03f4):
+        - namespace/functions; hash=e29c82179a39a0b3
           - custom/exec
-          - function/exec_terminate
+          - function/wait
           - function/request_user_input
           - function/request_user_input_async
           - function/close_agents
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=630765df4da76392
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

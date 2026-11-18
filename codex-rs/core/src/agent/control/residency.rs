@@ -5,6 +5,7 @@ use super::LocalAgentRuntime;
 use super::coordinator::AgentWakeCoordinator;
 use super::runtime::AgentTreeMembership;
 use crate::agent::AgentStatus;
+use crate::agent::host::AgentRuntimeServices;
 use crate::agent::registry::EvictedEnvironments;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -53,20 +54,11 @@ impl ThreadManagerState {
         if !is_resident_candidate(&thread) || !is_unloadable(&thread).await {
             return Ok(ThreadEvictionOutcome::Busy);
         }
-        // The original config omits live settings; this context-only builder keeps them.
-        let config = thread
-            .session
-            .new_startup_prewarm_turn_with_sub_id(uuid::Uuid::now_v7().to_string())
-            .await
-            .config
-            .as_ref()
-            .clone();
+        // Capture the same effective settings as a fork before stopping the resident.
+        let (config, ..) = thread.session.fork_config().await;
         let wake_coordinator = &thread.session.services.local_agent_runtime.wake_coordinator;
         if let Some(assignment) = wake_coordinator.current_assignment(thread_id) {
-            wake_coordinator.store_reload_config(
-                &assignment,
-                thread.session.get_config().await.as_ref().clone(),
-            );
+            wake_coordinator.store_reload_config(&assignment, config.clone());
         }
         let manager = Arc::clone(self);
         let teardown = membership
@@ -96,6 +88,11 @@ impl ThreadManagerState {
             // Preserve configured bindings across eviction without retaining turn-only attachments.
             // Raw bindings keep the original pending owner configuration alive.
             let environments = EvictedEnvironments {
+                config: Arc::new(config.clone()),
+                has_independent_service_tier: matches!(
+                    &thread.session.agent_runtime,
+                    AgentRuntimeServices::Host(services) if services.service_tier.is_none()
+                ),
                 selections: thread.environment_selections().await,
                 bindings: thread
                     .session
@@ -214,8 +211,7 @@ impl LocalAgentRuntime {
     /// Pins and touches the registered runtime without waiting for unrelated eviction.
     pub(crate) async fn pin_v2_residency(
         &self,
-        state: &ThreadManagerState,
-        thread: &Arc<CodexThread>,
+        thread: &CodexThread,
     ) -> CodexResult<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
         if !is_resident_candidate(thread) {
             return Ok(None);
@@ -224,7 +220,8 @@ impl LocalAgentRuntime {
         let thread_id = thread.session.thread_id;
         // A close holding the gate marks the agent closed before releasing it.
         self.ensure_agent_not_closed(thread_id)?;
-        if !Arc::ptr_eq(thread, &state.get_thread(thread_id).await?) {
+        let registered = self.upgrade()?.get_thread(thread_id).await?;
+        if !std::ptr::eq(thread, registered.as_ref()) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
         self.residency.touch(thread_id);
