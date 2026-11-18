@@ -66,6 +66,17 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
     {
         Box::pin(async move {
             let step = &invocation.step_context;
+            let _native_search = if invocation.tool_name.namespace.as_deref() == Some("web")
+                && invocation.tool_name.name == "run"
+            {
+                crate::model_search::SearchOwner::reserve_native_fallback(
+                    &step.extension_data,
+                    &invocation.session.services.thread_extension_data,
+                )
+                .map_err(|err| codex_tools::FunctionCallError::RespondToModel(err.to_string()))?
+            } else {
+                None
+            };
             let selected: Vec<_> = match &invocation.environments {
                 ToolEnvironments::Arguments(environments) => {
                     environments.iter().map(|(_, env)| env.as_ref()).collect()
@@ -729,11 +740,16 @@ mod tests {
             for reason in ["restricted_reads", "restricted_reads", "remote_environment"] {
                 if reason == "remote_environment" {
                     let mut remote = environment.clone();
-                    remote.environment = Arc::new(
-                        codex_exec_server::Environment::create_for_tests(Some(
-                            "ws://127.0.0.1:8765".into(),
-                        ))
-                        .unwrap(),
+                    remote = crate::session::turn_context::TurnEnvironment::new(
+                        remote.selection.clone(),
+                        remote.config_origin.clone(),
+                        Arc::new(
+                            codex_exec_server::Environment::create_for_tests(Some(
+                                "ws://127.0.0.1:8765".into(),
+                            ))
+                            .unwrap(),
+                        ),
+                        remote.shell.clone(),
                     );
                     Arc::get_mut(&mut step).unwrap().environments.environments =
                         vec![TurnEnvironmentState::Ready(remote)];

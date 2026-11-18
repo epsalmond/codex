@@ -154,6 +154,7 @@ async fn stale_failure_finalizer_does_not_pause_newer_generation() {
         turn_id: context.sub_id.clone(),
         last_agent_message: None,
         error: Some(ErrorEvent {
+            rejected_audio_file_ids: Vec::new(),
             message: "old failure".to_owned(),
             codex_error_info: None,
             misalignment: None,
@@ -191,7 +192,10 @@ async fn stale_followup_report_does_not_record_recovery() {
         "stale followup".to_string(),
         true,
     );
-    communication.id = Some(codex_protocol::ResponseItemId::new("amsg_stale"));
+    communication.id = Some(codex_protocol::ResponseItemId::with_suffix(
+        "amsg_stale",
+        uuid::Uuid::now_v7(),
+    ));
     crate::session::handlers::inter_agent_communication(
         &session,
         "stale-followup".to_string(),

@@ -10,9 +10,11 @@ before completion:
 "› Ask Codex to do anything                                                      "
 "                                                                                "
 "  sol · /tmp/project                                                            "
+"  ? for shortcuts                                                               "
 after completion:
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
 "  sol · /tmp/project · ⏱ hh:mm XM                                               "
+"  ? for shortcuts                                                               "

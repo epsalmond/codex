@@ -5,6 +5,7 @@ use pretty_assertions::assert_eq;
 
 fn agent_message(text: &str, phase: Option<MessagePhase>) -> ThreadItem {
     ThreadItem::untimed(ThreadItemPayload::AgentMessage {
+        moderation: None,
         id: text.to_string(),
         text: text.to_string(),
         phase,

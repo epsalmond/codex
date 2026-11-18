@@ -16,10 +16,10 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=529c8c981e2cb6e9):
-        - namespace/functions; hash=45bd3dc0067f3225
+00:additional_tools/developer (2; hash=342233731cc46865):
+        - namespace/functions; hash=488c9516c12a35c6
           - custom/exec
-          - function/exec_terminate
+          - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -28,7 +28,7 @@ Settings:
           - custom/apply_patch
           - function/view_image
           - function/close_agents
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=630765df4da76392
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -79,10 +79,10 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 03)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=529c8c981e2cb6e9):
-        - namespace/functions; hash=45bd3dc0067f3225
+00:additional_tools/developer (2; hash=342233731cc46865):
+        - namespace/functions; hash=488c9516c12a35c6
           - custom/exec
-          - function/exec_terminate
+          - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -91,7 +91,7 @@ Settings: same as window 1
           - custom/apply_patch
           - function/view_image
           - function/close_agents
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e816ea34fd02bd77
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=630765df4da76392
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

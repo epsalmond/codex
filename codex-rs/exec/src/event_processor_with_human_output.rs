@@ -10,6 +10,7 @@ use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
+use codex_exec_server::BoundOutput;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
@@ -418,14 +419,23 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         CodexStatus::Running
     }
 
-    fn print_final_output(&mut self) -> std::io::Result<()> {
+    fn print_final_output(&mut self, output: Option<BoundOutput>) -> anyhow::Result<()> {
+        let print_to_stdout = should_print_final_message_to_stdout(
+            self.emit_final_message_on_shutdown
+                .then_some(self.final_message.as_deref())
+                .flatten(),
+            std::io::stdout().is_terminal(),
+            std::io::stderr().is_terminal(),
+        );
         let mut first_error = None;
-        if self.emit_final_message_on_shutdown
-            && let Some(path) = self.last_message_path.as_deref()
-            && let Err(error) = handle_last_message(self.final_message.as_deref(), path)
+        let output_result = if self.emit_final_message_on_shutdown
+            && let (Some(path), Some(file)) = (self.last_message_path.as_deref(), output)
+            && !(print_to_stdout && file.is_stdout())
         {
-            first_error = Some(error);
-        }
+            handle_last_message(self.final_message.as_deref(), path, file)
+        } else {
+            Ok(())
+        };
 
         if let Some(usage) = &self.last_total_token_usage
             && let Err(error) = writeln!(
@@ -470,8 +480,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         {
             first_error = Some(error);
         }
-
-        first_error.map_or(Ok(()), Err)
+        output_result.and(first_error.map_or(Ok(()), |error| Err(error.into())))
     }
 }
 

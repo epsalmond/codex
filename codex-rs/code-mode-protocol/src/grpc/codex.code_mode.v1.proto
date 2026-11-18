@@ -62,6 +62,11 @@ message OpenSessionRequest {
   bool terminal_ready_requested = 3;
   // Absent preserves the legacy client-side truncation behavior.
   optional OutputTruncation output_truncation = 2;
+  // Maximum pending tool callbacks the client can accept.
+  // Absent preserves the legacy 1,024 callback budget. Hosts may impose a lower
+  // shared limit, and older hosts ignore this field and retain their own limit.
+  // Field 3 is reserved by the fork's terminal-ready negotiation.
+  optional uint32 max_pending_delegate_calls = 4;
 }
 
 enum OutputTruncation {

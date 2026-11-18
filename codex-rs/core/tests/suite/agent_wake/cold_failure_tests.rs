@@ -183,6 +183,7 @@ async fn failed_root_waits_for_cold_wake_reload_cleanup() -> Result<()> {
         .submit(Op::FailTurn {
             turn_id,
             error: ErrorEvent {
+                rejected_audio_file_ids: Vec::new(),
                 message: "fail during cold wake resume".to_owned(),
                 codex_error_info: None,
                 misalignment: None,

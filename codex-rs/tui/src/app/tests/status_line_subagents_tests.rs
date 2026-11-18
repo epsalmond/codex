@@ -12,6 +12,7 @@ fn activity_notification(
     kind: SubAgentActivityKind,
 ) -> ServerNotification {
     ServerNotification::ItemCompleted(ItemCompletedNotification {
+        content_token_count: None,
         thread_id: parent.to_string(),
         turn_id: "parent-turn".to_string(),
         completed_at_ms: 0,

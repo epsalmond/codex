@@ -60,6 +60,7 @@ impl Session {
             self.send_event(
                 turn_context,
                 EventMsg::Error(ErrorEvent {
+                    rejected_audio_file_ids: Vec::new(),
                     misalignment: None,
                     message: "The execution scope is shutting down".to_string(),
                     codex_error_info: Some(CodexErrorInfo::Other),

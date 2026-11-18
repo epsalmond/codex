@@ -45,6 +45,7 @@ async fn emitted_error_and_completion_share_the_terminal_predicate(
 ) {
     let (session, context, receiver) = make_session_and_context_with_rx().await;
     let error = ErrorEvent {
+        rejected_audio_file_ids: Vec::new(),
         message: "error during task".to_owned(),
         codex_error_info: info,
         misalignment: None,
@@ -108,6 +109,7 @@ async fn host_failure_returns_accepted_mail_and_pauses_wakeups() {
         .fail_turn_if_active(
             &context.sub_id,
             ErrorEvent {
+                rejected_audio_file_ids: Vec::new(),
                 message: "host failure".to_owned(),
                 codex_error_info: None,
                 misalignment: None,

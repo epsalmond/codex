@@ -273,7 +273,10 @@ fn payload_text_bytes(output: &FunctionCallOutputPayload) -> usize {
                     ImageReference::Inline { image_url } => image_url.len(),
                     ImageReference::File { file_id } => file_id.len(),
                 },
-                FunctionCallOutputContentItem::InputAudio { audio_url } => audio_url.len(),
+                FunctionCallOutputContentItem::InputAudio { audio } => match audio {
+                    AudioReference::Inline { audio_url } => audio_url.len(),
+                    AudioReference::File { file_id } => file_id.len(),
+                },
                 FunctionCallOutputContentItem::EncryptedContent { encrypted_content } => {
                     encrypted_content.len()
                 }

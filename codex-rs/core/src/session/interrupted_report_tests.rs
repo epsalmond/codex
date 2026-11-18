@@ -160,6 +160,7 @@ async fn compaction_requeues_only_trigger_reports_omitted_from_replacement_histo
                 )],
                 /*reference_context_item*/ None,
                 /*world_state_baseline*/ None,
+                /*rejected_audio_file_ids*/ Default::default(),
                 CompactedHistoryMetadata {
                     input_goal_ids: Default::default(),
                     message: "test compaction".to_string(),

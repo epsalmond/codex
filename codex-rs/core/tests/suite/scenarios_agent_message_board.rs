@@ -1,4 +1,4 @@
-//! Exercises board tools through the runtime, including resume and active-only notices.
+//! Exercises board tools through the runtime, including resume and native mailbox notifications.
 
 use anyhow::Context;
 use codex_core::TurnInputRequest;
@@ -8,6 +8,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
@@ -32,6 +33,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
 use tokio::sync::oneshot;
+
+#[path = "scenarios_agent_message_board_http.rs"]
+mod http;
 
 #[path = "scenarios_agent_message_board_remote.rs"]
 mod remote;
@@ -251,7 +255,7 @@ async fn board_post_and_reads_reach_model_context_without_self_notices(
 #[test_case::test_case(false; "disk")]
 #[test_case::test_case(true; "in_memory")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn board_is_shared_with_children_and_skips_idle_notices(
+async fn board_is_shared_with_children_and_queues_idle_notices(
     in_memory: bool,
 ) -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
@@ -342,11 +346,7 @@ async fn board_is_shared_with_children_and_skips_idle_notices(
     )
     .await;
     root.submit_turn("Read the worker's decision.").await?;
-    assert!(
-        read.requests()
-            .iter()
-            .all(|request| !request.body_contains_text("Message Type: CHANNEL_POST"))
-    );
+    assert!(read.requests()[1].body_contains_text("Message Type: CHANNEL_POST"));
     let output = read.requests()[1]
         .function_call_output_text("root-read")
         .expect("read result");
@@ -581,7 +581,7 @@ async fn board_notifications_do_not_reopen_a_final_answer(
     let next_turn = requests.last().context("next root request")?["client_metadata"]["turn_id"]
         .as_str()
         .context("next root turn ID")?;
-    for (turn, notified) in [(target_turn.as_str(), false), (next_turn, !after_final)] {
+    for (turn, notified) in [(target_turn.as_str(), false), (next_turn, true)] {
         let requests = requests
             .iter()
             .filter(|request| request["client_metadata"]["turn_id"] == turn)
@@ -607,7 +607,9 @@ async fn board_notifications_do_not_reopen_a_final_answer(
             "recipient must not sample again after its final: turn {turn}, input markers {request_inputs:#?}"
         );
         assert_eq!(
-            requests[0]["input"].to_string().contains(&notification),
+            requests.last().context("root request")?["input"]
+                .to_string()
+                .contains(&notification),
             notified
         );
     }
@@ -1097,6 +1099,8 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
     let response = |body| vec![StreamingSseChunk { gate: None, body }];
     let (release, gate) = oneshot::channel();
+    let mut started = ev_message_item_added("watching", "");
+    started["item"]["phase"] = json!("commentary");
     let mut working = ev_assistant_message("watching", "Watching the policy board.");
     working["item"]["phase"] = json!("commentary");
     let (streaming, _) = start_streaming_sse_server(vec![
@@ -1126,11 +1130,15 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
         vec![
             StreamingSseChunk {
                 gate: None,
-                body: sse(vec![ev_response_created("watching"), working]),
+                body: sse(vec![ev_response_created("watching"), started]),
             },
             StreamingSseChunk {
                 gate: Some(gate),
-                body: tool("checkpoint", "get_channels", json!({})),
+                body: sse(vec![
+                    working,
+                    ev_function_call_with_namespace("checkpoint", "collaboration", "get_channels", "{}"),
+                    ev_completed("checkpoint"),
+                ]),
             },
         ],
         // Separate responses order the writes before snapshotting last_message_id.
@@ -1157,6 +1165,8 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
             }),
         )),
         response(done()),
+        // Queued board notices preempt the commentary before its planned checkpoint.
+        response(tool("checkpoint", "get_channels", json!({}))),
         response(done()),
     ])
     .await;
@@ -1197,7 +1207,10 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
     let guardian_board =
         LocalBoard::new(SqliteConfig::new_for_testing(alias.try_into()?), board_id);
     let mut extensions = ExtensionRegistryBuilder::new();
-    codex_core::install_agent_message_board(&mut extensions, Arc::downgrade(&test.thread_manager));
+    codex_agent_message_board_host::install_agent_message_board(
+        &mut extensions,
+        Arc::downgrade(&test.thread_manager),
+    );
     let extensions = Arc::new(extensions.build());
     let mut instances = Vec::new();
     for (index, (connection, source)) in [
@@ -1279,8 +1292,13 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
             text_elements: vec![],
         }]))
         .await?;
+    let guardian_turn = wait_for_event_match(guardian, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
     wait_for_event(guardian, |event| {
-        matches!(event, EventMsg::ItemCompleted(event)
+        matches!(event, EventMsg::ItemStarted(event)
         if matches!(&event.item, TurnItem::AgentMessage(message) if message.id == "watching"))
     })
     .await;
@@ -1291,6 +1309,16 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
         }]))
         .await?;
     wait_for_event(writer, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    // Acknowledgement is ordered after both notices in the recipient's submission queue.
+    guardian
+        .update_thread_settings(ThreadSettingsOverrides::default())
+        .await?;
+    assert_eq!(
+        guardian
+            .wait_for_input_activity(&guardian_turn, std::time::Duration::from_secs(/*secs*/ 10))
+            .await,
+        codex_core::InputWaitOutcome::MailboxActivity,
+    );
     release
         .send(())
         .expect("release Guardian after notification delivery");
@@ -1300,6 +1328,20 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
         requests
             .iter()
             .any(|body| String::from_utf8_lossy(body).contains("Message Type: CHANNEL_POST"))
+    );
+    let resumed: Value = serde_json::from_slice(&requests[16])?;
+    assert!(
+        resumed["input"]
+            .to_string()
+            .contains("Message Type: CHANNEL_POST")
+    );
+    assert!(
+        !resumed["input"]
+            .as_array()
+            .context("resumed input")?
+            .iter()
+            .any(|item| item["call_id"] == "checkpoint"),
+        "queued board mail must be read before the planned checkpoint runs",
     );
     let last: Value = serde_json::from_slice(requests.last().unwrap())?;
     let checkpoint = last["input"]
@@ -1316,7 +1358,7 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
         .iter()
         .map(|body| serde_json::from_slice::<Value>(body))
         .collect::<serde_json::Result<Vec<_>>>()?;
-    assert_eq!(bodies.len(), 17);
+    assert_eq!(bodies.len(), 18);
     for body in &mut bodies {
         for item in body["input"].as_array_mut().context("request input")? {
             if let Some(Value::String(output)) = item.get_mut("output") {

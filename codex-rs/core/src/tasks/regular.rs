@@ -1,9 +1,15 @@
+use crate::McpRefreshReason;
 use std::sync::Arc;
 
 use codex_async_utils::OrCancelExt;
 use codex_extension_api::TurnStartPhase;
+use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
+use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
+use crate::client::ModelClientSession;
 use crate::session::TurnInput;
 use crate::session::async_completion::CompletionDrain;
 use crate::session::session::Session;
@@ -19,6 +25,13 @@ use tracing::trace_span;
 
 use super::SessionTask;
 use super::SessionTaskResult;
+
+/// The last answer and the MCP requirements needed if a steer reopens sampling.
+pub(crate) struct RegularTaskOutput {
+    pub(super) last_agent_message: Option<String>,
+    pub(super) mcp_startup_requirements: McpStartupRequirements,
+    pub(super) completion_drain: CompletionDrain,
+}
 
 #[derive(Default)]
 pub(crate) struct RegularTask;
@@ -50,15 +63,14 @@ impl SessionTask for RegularTask {
             .config
             .features
             .enabled(codex_features::Feature::CriticalPathTiming)
-            && !ctx.session_source.is_non_root_agent()
+            && !matches!(
+                ctx.session_source,
+                SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
+                    | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
+            )
         {
             ctx.turn_timing_state.enable_critical_path();
         }
-        let run_turn_span = trace_span!(
-            "run_turn",
-            conversation.id = %sess.thread_id,
-            turn.id = %ctx.sub_id,
-        );
         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
         // not wait on startup prewarm resolution.
         let prewarmed_client_session = async {
@@ -74,17 +86,25 @@ impl SessionTask for RegularTask {
                         == TurnStartPhase::RegularTaskStart
                         && contributor.requires_mcp_runtime(&sess.services.thread_extension_data)
                 });
-            let preparation = sess
-                .emit_turn_start_lifecycle(
+            let preparation = async {
+                sess.emit_turn_start_lifecycle(
                     &ctx,
                     /*token_usage_at_turn_start*/ None,
                     TurnStartPhase::RegularTaskStart,
                 )
-                .or_cancel(&cancellation_token)
                 .await;
+                if prepares_mcp {
+                    // Resource discovery can overlap the fetch. Wait before reprojection.
+                    sess.wait_for_apps_tool_refresh().await;
+                }
+            }
+            .or_cancel(&cancellation_token)
+            .await;
             // Even cancelled discovery may have cleared the previous account's catalog.
             if prepares_mcp {
-                sess.request_mcp_runtime_reprojection();
+                sess.request_mcp_runtime_reprojection(
+                    McpRefreshReason::TurnStartContributorPreparedMcp,
+                );
             }
             if preparation.is_err() {
                 return SessionStartupPrewarmResolution::Cancelled;
@@ -111,30 +131,61 @@ impl SessionTask for RegularTask {
                 Some(*prewarmed_client_session)
             }
         };
-        let mut next_input = input;
-        let mut prewarmed_client_session = prewarmed_client_session;
-        let mut mcp_startup_requirements = McpStartupRequirements::default();
-        loop {
-            let last_agent_message = run_turn(
-                Arc::clone(&sess),
-                Arc::clone(&ctx),
-                next_input,
-                completion_drain,
-                &mut mcp_startup_requirements,
-                prewarmed_client_session.take(),
-                cancellation_token.child_token(),
-            )
-            .instrument(run_turn_span.clone())
-            .await?;
-            // Terminal errors are already reported. Let task completion preserve pending
-            // input instead of restarting the failed turn for that same input.
-            if ctx.terminal_error.lock().await.is_some() {
-                return Ok(last_agent_message);
+        Self::run_turns(
+            sess,
+            ctx,
+            input,
+            McpStartupRequirements::default(),
+            completion_drain,
+            prewarmed_client_session,
+            cancellation_token,
+        )
+        .await
+    }
+}
+
+impl RegularTask {
+    /// Runs model requests for a regular turn, retaining explicit MCP requirements across steers.
+    pub(super) fn run_turns(
+        sess: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        mut next_input: Vec<TurnInput>,
+        mut mcp_startup_requirements: McpStartupRequirements,
+        completion_drain: CompletionDrain,
+        mut prewarmed_client_session: Option<ModelClientSession>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult> {
+        Box::pin(async move {
+            let run_turn_span = trace_span!(
+                "run_turn",
+                conversation.id = %sess.thread_id,
+                turn.id = %ctx.sub_id,
+            );
+            loop {
+                let last_agent_message = run_turn(
+                    Arc::clone(&sess),
+                    Arc::clone(&ctx),
+                    next_input,
+                    completion_drain,
+                    &mut mcp_startup_requirements,
+                    prewarmed_client_session.take(),
+                    cancellation_token.child_token(),
+                )
+                .instrument(run_turn_span.clone())
+                .await?;
+                // Terminal errors are already reported. Let task completion preserve pending
+                // input instead of restarting the failed turn for that same input.
+                if ctx.terminal_error.lock().await.is_some()
+                    || !sess.input_queue.has_pending_input(&sess.active_turn).await
+                {
+                    return Ok(Some(RegularTaskOutput {
+                        last_agent_message,
+                        mcp_startup_requirements,
+                        completion_drain,
+                    }));
+                }
+                next_input = Vec::new();
             }
-            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
-                return Ok(last_agent_message);
-            }
-            next_input = Vec::new();
-        }
+        })
     }
 }

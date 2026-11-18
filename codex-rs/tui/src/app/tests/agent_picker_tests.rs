@@ -41,6 +41,7 @@ async fn child_notifications_cache_last_context_and_final_response_while_hidden(
     };
     completed.turn.items = vec![
         ThreadItem::untimed(ThreadItemPayload::AgentMessage {
+            moderation: None,
             id: "answer".to_string(),
             text: "  review\n complete  ".to_string(),
             phase: Some(MessagePhase::FinalAnswer),
@@ -49,6 +50,7 @@ async fn child_notifications_cache_last_context_and_final_response_while_hidden(
             questions: None,
         }),
         ThreadItem::untimed(ThreadItemPayload::AgentMessage {
+            moderation: None,
             id: "commentary".to_string(),
             text: "still working".to_string(),
             phase: Some(MessagePhase::Commentary),
@@ -864,6 +866,7 @@ fn listed_subagent(
     spawn_edge_status: Option<codex_app_server_protocol::ThreadSpawnEdgeStatus>,
 ) -> codex_app_server_protocol::Thread {
     codex_app_server_protocol::Thread {
+        attached_to_thread_id: None,
         originator: None,
         environments: None,
         id: thread_id.to_string(),

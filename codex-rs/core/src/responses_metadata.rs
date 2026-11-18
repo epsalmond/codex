@@ -10,6 +10,7 @@ use codex_analytics::CompactionStrategy;
 use codex_analytics::CompactionTrigger;
 use codex_git_utils::SanitizedGitUrl;
 use codex_history::ShakeHistoryState;
+use codex_protocol::ContextWindowId;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::McpAttribution;
 use codex_protocol::openai_models::InputModality;
@@ -22,7 +23,6 @@ use http::HeaderMap as ApiHeaderMap;
 use http::HeaderValue;
 use serde::Serialize;
 use serde_json::Value;
-use uuid::Uuid;
 
 use crate::client::X_CODEX_INSTALLATION_ID_HEADER;
 use crate::client::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -271,7 +271,7 @@ pub struct CodexResponsesMetadata {
     pub(crate) routing_hint: Option<HeaderValue>,
     pub(crate) window_id: String,
     pub(crate) window_number: Option<u64>,
-    pub(crate) context_window_id: Option<Uuid>,
+    pub(crate) context_window_id: Option<ContextWindowId>,
     pub(crate) history_initialization: Option<HistoryInitialization>,
     pub(crate) request_kind: Option<CodexResponsesRequestKind>,
     pub(crate) forked_from_thread_id: Option<ThreadId>,
@@ -465,7 +465,7 @@ impl CodexResponsesMetadata {
             window_id: has_request_identity.then_some(self.window_id.as_str()),
             window_number: has_request_identity.then_some(self.window_number).flatten(),
             context_window_id: has_request_identity
-                .then_some(self.context_window_id)
+                .then_some(self.context_window_id.as_ref())
                 .flatten(),
             request_kind: request_kind_value,
             history_initialization: self.history_initialization,
@@ -598,7 +598,7 @@ struct CodexTurnMetadataPayload<'a> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window_number: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    context_window_id: Option<Uuid>,
+    context_window_id: Option<&'a ContextWindowId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     request_kind: Option<&'static str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

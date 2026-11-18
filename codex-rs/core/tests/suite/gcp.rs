@@ -94,6 +94,8 @@ async fn vertex_credential_file_is_retained_when_refreshing_after_401() -> Resul
     Ok(())
 }
 
+#[test_case("gpt-6.2-astra", false; "astra_62")]
+#[test_case("gpt-6.2-sol", false; "sol_62")]
 #[test_case("gpt-6.1-sol", false; "sol")]
 #[test_case("gpt-6.1-terra", false; "terra")]
 #[test_case("gpt-6.1-sol", true; "sol_incremental")]
