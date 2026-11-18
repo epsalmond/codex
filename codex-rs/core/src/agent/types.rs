@@ -24,6 +24,14 @@ pub enum SpawnAgentForkMode {
     FullHistory,
 }
 
+/// Whether a spawn program was chosen for the child or copied from its parent turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpawnProgramSource {
+    #[default]
+    Explicit,
+    ParentTurn,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SpawnAgentOptions {
     pub fork_parent_spawn_call_id: Option<String>,
@@ -43,6 +51,8 @@ pub struct SpawnAgentOptions {
     pub lifetime: Option<codex_config::config_toml::AgentLifetime>,
     /// Subdirectory the child runs in; inherited environments at the parent's cwd move there.
     pub child_directory: Option<crate::agent::child_directory::ChildDirectory>,
+    /// Parent selections apply to the first turn and may need adapting to the child's model.
+    pub cyber_access_program_source: SpawnProgramSource,
 }
 
 /// Identity and status observed from a loaded agent, without a handle to its runtime.

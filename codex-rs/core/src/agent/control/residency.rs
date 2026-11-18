@@ -393,7 +393,7 @@ async fn is_unloadable(thread: &CodexThread) -> bool {
             | AgentStatus::Completed(_)
             | AgentStatus::Errored(_)
             | AgentStatus::Interrupted
-    ) && thread.session.active_turn.lock().await.is_none()
+    ) && !thread.has_active_turn().await
         && !thread.session.services.async_completions.has_owned_work()
         && !thread.session.has_outstanding_durable_sleep()
         // Count trigger mail even while wakeups are paused: unloading keeps the mail but drops

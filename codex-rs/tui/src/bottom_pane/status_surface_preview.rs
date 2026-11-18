@@ -275,7 +275,7 @@ impl StatusSurfacePreviewData {
             self.live_value_for(StatusSurfacePreviewItem::PullRequestNumber)
                 .and(self.pull_request_url.as_deref()),
         )
-        .map(FooterContent::HyperlinkLine)
+        .map(FooterContent::from)
     }
 }
 

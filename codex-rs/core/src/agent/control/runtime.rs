@@ -20,7 +20,6 @@ use crate::agent::registry::AgentRegistry;
 use crate::config::RolloutBudgetConfig;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::session::Session;
-use crate::state::ContextWindowIdGenerator;
 use crate::thread_manager::AgentTreeShutdownFailure;
 use crate::thread_manager::AgentTreeShutdownFailureReason;
 use crate::thread_manager::AgentTreeShutdownReport;
@@ -211,8 +210,8 @@ pub(crate) struct LocalAgentRuntime {
     pub(super) manager: Weak<ThreadManagerState>,
     /// Captured at construction so delegates retain their manager's allocation policy.
     pub(super) thread_id_generator: ThreadIdGenerator,
+    /// IDs for tree mail, including delivery while the recipient is unloaded.
     pub(crate) item_id_generator: ItemIdGenerator,
-    pub(crate) context_window_id_generator: ContextWindowIdGenerator,
     pub(super) agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     pub(super) rollout_budget: Arc<RolloutBudget>,
@@ -264,7 +263,6 @@ impl LocalAgentRuntime {
             manager,
             thread_id_generator,
             item_id_generator: Session::new_item_id_generator(),
-            context_window_id_generator: Arc::new(codex_protocol::ContextWindowId::new_uuid_v7),
             registry: Arc::default(),
             residency: Arc::new(V2Residency::new(Arc::clone(&wake_coordinator))),
             wake_coordinator,

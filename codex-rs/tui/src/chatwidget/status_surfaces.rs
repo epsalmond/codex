@@ -732,7 +732,10 @@ impl ChatWidget {
                         .to_string()
                 })
             }
-            StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
+            StatusLineItem::ModelWithReasoning => {
+                let service_tier = self.processing_tier_display_name().map(str::to_lowercase);
+                Some(self.model_with_reasoning_display_name(service_tier.as_deref()))
+            }
             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
             StatusLineItem::Profile => {
                 let layer = self.config.config_layer_stack.get_active_user_layer()?;
@@ -1020,7 +1023,7 @@ impl ChatWidget {
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::ModelWithReasoning => Some(Self::truncate_terminal_title_part(
-                self.model_with_reasoning_display_name(),
+                self.model_with_reasoning_display_name(self.processing_tier_display_name()),
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::Reasoning => Some(Self::truncate_terminal_title_part(
@@ -1036,10 +1039,9 @@ impl ChatWidget {
         Self::status_line_reasoning_effort_label(effort.as_ref())
     }
 
-    fn model_with_reasoning_display_name(&self) -> String {
+    fn model_with_reasoning_display_name(&self, service_tier: Option<&str>) -> String {
         let label = self.reasoning_display_name();
-        let service_tier_label = self
-            .processing_tier_display_name()
+        let service_tier_label = service_tier
             .map(|tier| format!(" {tier}"))
             .unwrap_or_default();
         format!("{} {label}{service_tier_label}", self.model_display_name())
