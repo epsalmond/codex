@@ -7,7 +7,8 @@ use super::sidebar;
 use super::sidebar::PaneFocus;
 use super::sidebar::SidebarContent;
 use super::sidebar::SidebarLayout;
-use crate::bottom_pane::render_unfocused_status;
+use crate::bottom_pane::FooterLayout;
+use crate::bottom_pane::StatusLineFocus;
 use crate::custom_terminal::Frame;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
@@ -95,7 +96,7 @@ pub(super) struct SidePaneLayout {
 pub(super) fn layout(app: &App, tui: &Tui, area: Rect) -> Option<SidePaneLayout> {
     match visible_split(app, tui, area)? {
         SidebarLayout::Chat(panes) => Some(panes),
-        SidebarLayout::Chooser { .. } => None,
+        SidebarLayout::Panel { .. } => None,
     }
 }
 
@@ -117,7 +118,7 @@ pub(super) fn split_layout(app: &App, tui: &Tui, area: Rect) -> Option<SidebarLa
     sidebar::content_layout(
         app,
         content,
-        app.chooser_focus().unwrap_or(PaneFocus::Main),
+        app.panel_focus().unwrap_or(PaneFocus::Main),
         sidebar_areas(app, tui, area, /*fraction*/ 1.0)?,
     )
 }
@@ -136,10 +137,18 @@ pub(super) fn pair_layout(
         return None;
     }
     let active = app.current_displayed_thread_id()?;
-    let side = app.side_threads.get(&child)?;
+    let owner = app
+        .side_threads
+        .get(&child)
+        .map(|side| side.parent_thread_id)
+        .or_else(|| {
+            app.docked_agent()
+                .filter(|(_, agent)| *agent == child)
+                .map(|(parent, _)| parent)
+        })?;
     let [tab_strip, sidebar] = tab_and_body(sidebar);
     let (focused, passive, passive_thread) = if active == child {
-        (sidebar, parent, side.parent_thread_id)
+        (sidebar, parent, owner)
     } else {
         (parent, sidebar, child)
     };
@@ -166,7 +175,7 @@ pub(super) fn sidebar_areas(app: &App, tui: &Tui, area: Rect, fraction: f64) -> 
         .filter(|drag| {
             !drag.guide_only && drag.matches(area, app) && app.conversation_focus_available(tui)
         })
-        .and_then(|drag| drag.percent());
+        .map(|drag| drag.width);
     let saved = app.local_settings.tui.sidebar_width_percent;
     let keyboard_width = app
         .pane_resize
@@ -174,12 +183,13 @@ pub(super) fn sidebar_areas(app: &App, tui: &Tui, area: Rect, fraction: f64) -> 
         .and_then(|mode| mode.preview_width);
     let child_width = match (keyboard_width, preview, app.exact_sidebar_width) {
         (Some(width), _, _) => sidebar_width(i32::from(width), area.width),
-        (_, None, Some((total, width)))
+        (None, Some(width), _) => width,
+        (None, None, Some((total, width)))
             if total == area.width && saved == Some(width_percent(width, total)) =>
         {
             width
         }
-        _ => preferred_width(area.width, preview.or(saved)),
+        _ => preferred_width(area.width, saved),
     };
     // A newly focused composer needs a cell even on the first opening frame.
     let open = target.is_some();
@@ -409,15 +419,22 @@ impl App {
                 let Some(mut drag) = self.divider_drag.take() else {
                     return Ok(false);
                 };
-                let screen = tui.prepare_draw_size()?.into();
+                let screen = tui.terminal.last_known_screen_size.into();
                 if drag.matches(screen, self) && visible_split(self, tui, screen).is_some() {
                     let width = i32::from(drag.initial_width) + i32::from(drag.press)
                         - i32::from(mouse.column);
-                    drag.width = sidebar_width(width, screen.width);
+                    let width = sidebar_width(width, screen.width);
+                    let changed = drag.width != width;
+                    drag.width = width;
                     if mouse.kind == Drag(Left) {
                         self.divider_drag = Some(drag);
-                    } else if let Some(percent) = drag.percent() {
-                        self.save_sidebar_width(percent).await;
+                        if !changed {
+                            return Ok(true);
+                        }
+                    } else if let Some(percent) = drag.percent()
+                        && self.save_sidebar_width(percent).await
+                    {
+                        self.exact_sidebar_width = Some((screen.width, width));
                     }
                 }
             }
@@ -428,6 +445,13 @@ impl App {
     }
 }
 
+/// Allow up to two-thirds of the pane, or eight rows on short panes when they fit.
+pub(super) fn composer_height_limit(pane_height: u16) -> u16 {
+    ((u32::from(pane_height) * 2 / 3) as u16)
+        .max(8)
+        .min(pane_height)
+}
+
 impl SidePaneLayout {
     /// Paint the divider, retained transcript and draft without claiming the terminal cursor.
     pub(super) fn paint_companion(
@@ -436,15 +460,33 @@ impl SidePaneLayout {
         frame: &mut Frame<'_>,
         collapse_turn_details: bool,
         frames: &FrameRequester,
+        watch_only: bool,
     ) {
         companion.flush_answer();
         let area = self.passive;
         // Keep the live composer's bottom hint row blank on the inactive side.
-        let available = area.height.saturating_sub(1);
-        let composer_height = available.min(3);
-        let status_height =
-            u16::from(companion.display.status.is_some() && available > composer_height);
-        let above = available - composer_height - status_height;
+        let hint_rows = 1;
+        let composer_height = if watch_only {
+            0
+        } else {
+            area.height.saturating_sub(hint_rows).min(3)
+        };
+        let available = area.height - composer_height;
+        let footer = FooterLayout::new(
+            Some(composer_height_limit(area.height)),
+            hint_rows,
+            /*priority_hint_rows*/ hint_rows,
+        );
+        let status = companion
+            .display
+            .status_line
+            .as_ref()
+            .filter(|_| !watch_only);
+        let wanted_status = status.map_or(0, |status| {
+            status.height(footer.status_bounds(area.width, available))
+        });
+        let footer = footer.allocate(available, wanted_status);
+        let above = available - footer.height();
         let mut transcript = Rect {
             height: above.saturating_sub(1),
             ..area
@@ -459,14 +501,16 @@ impl SidePaneLayout {
                 frames.schedule_frame_in(Duration::from_secs(1));
             }
         }
-        companion.view.render_parked(
-            transcript,
-            frame.buffer,
-            &companion.cells,
-            companion.display.active.as_deref(),
-            &companion.display.auxiliary,
-            collapse_turn_details,
-        );
+        crate::markdown_render::preferences::with_visible_local_paths(|| {
+            companion.view.render_parked(
+                transcript,
+                frame.buffer,
+                &companion.cells,
+                companion.display.active.as_deref(),
+                &companion.display.auxiliary,
+                collapse_turn_details,
+            );
+        });
         frame
             .image_placements
             .extend(companion.view.image_placements());
@@ -495,15 +539,11 @@ impl SidePaneLayout {
                 &mut Default::default(),
             );
         }
-        if let Some(status) = &companion.display.status {
-            render_unfocused_status(
-                status.clone(),
-                Rect {
-                    y: composer.bottom(),
-                    height: status_height,
-                    ..area
-                },
+        if let Some(status) = status {
+            status.render(
+                footer.status_area(area),
                 frame.buffer,
+                StatusLineFocus::Unfocused,
             );
         }
     }
@@ -517,13 +557,9 @@ pub(super) fn paint_divider(
 ) {
     // Draw after both panes registered their images. Clearing a guide to the left
     // of retained pixels can erase the rest of that terminal row.
-    let guide = drag.filter(|drag| drag.guide_only).map_or(divider, |drag| {
-        drag.screen.right()
-            - drag.percent().map_or(drag.initial_width, |p| {
-                preferred_width(drag.screen.width, Some(p))
-            })
-            - GAP
-    });
+    let guide = drag
+        .filter(|drag| drag.guide_only)
+        .map_or(divider, |drag| drag.screen.right() - drag.width - GAP);
     let style = if highlight_divider || drag.is_some() {
         crate::style::accent_style()
     } else {

@@ -699,6 +699,67 @@ async fn packaged_async_process_completion_default_respects_config_precedence() 
 }
 
 #[tokio::test]
+async fn project_diagnostic_uses_the_current_file_and_ignores_its_provider() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join(CONFIG_TOML_FILE);
+    let layer = ConfigLayerEntry::new(
+        ConfigLayerSource::Project {
+            dot_codex_folder: AbsolutePathBuf::from_absolute_path(dir.path())?,
+        },
+        TomlValue::Table(Default::default()),
+    );
+    std::fs::write(
+        &path,
+        "[tui]\nstatus_line_provider = 42\nvim_mode_default = 43\n",
+    )?;
+    let error = first_layer_config_error_from_entries(&[layer])
+        .await
+        .expect("invalid vim setting");
+    assert_eq!((error.path, error.range.start.line), (path, 3));
+    assert!(error.message.contains("43"), "{}", error.message);
+    Ok(())
+}
+
+#[tokio::test]
+async fn packaged_status_line_provider_is_ignored_but_strictly_validated() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let path = AbsolutePathBuf::resolve_path_against_base("defaults.toml", dir.path());
+    std::fs::write(&path, "[tui]\nstatus_line_provider = 42\n")?;
+    let load = |strict_config| {
+        load_config_layers_state(
+            &TestFileSystem,
+            dir.path(),
+            /*cwd*/ None,
+            &[],
+            ConfigLoadOptions {
+                loader_overrides: LoaderOverrides {
+                    packaged_defaults_path: Some(path.clone()),
+                    ..LoaderOverrides::without_managed_config_for_tests()
+                },
+                strict_config,
+                ..Default::default()
+            },
+            &crate::NoopThreadConfigLoader,
+        )
+    };
+    let stack = load(/*strict_config*/ false).await?;
+    assert_eq!(stack.effective_config().get("tui"), None);
+    let error = load(/*strict_config*/ true)
+        .await
+        .expect_err("malformed packaged provider");
+    let diagnostic = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<crate::ConfigLoadError>())
+        .expect("packaged config diagnostic")
+        .config_error();
+    assert_eq!(
+        (diagnostic.path.as_path(), diagnostic.range.start.line),
+        (path.as_path(), 2)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn packaged_defaults_have_lower_precedence_than_existing_config_layers() {
     let tmp = tempdir().expect("tempdir");
     let packaged_defaults_path =
@@ -1406,4 +1467,36 @@ fn project_config_cannot_change_system_proxy_routing_or_credential_masking() {
             );
         }
     }
+}
+
+#[test]
+fn otel_headers_helpers_cannot_come_from_repository_config() {
+    let mut config: TomlValue = toml::from_str(
+        "[otel]\nheaders_helper = 'untrusted-command'\nheaders_helper_refresh_interval_ms = 1",
+    )
+    .unwrap();
+    let ignored =
+        sanitize_project_config(&mut config, CredentialBrokerProjectState::Unconfigured, &[]);
+    assert_eq!(ignored, ["otel"]);
+    assert!(config.get("otel").is_none());
+}
+
+#[test]
+fn otel_headers_helper_interval_must_be_positive() {
+    assert!(
+        toml::from_str::<ConfigToml>(
+            "[otel]\nheaders_helper = 'helper'\nheaders_helper_refresh_interval_ms = 0"
+        )
+        .is_err()
+    );
+    let config: ConfigToml = toml::from_str(
+        "[otel]\nheaders_helper = 'helper'\nheaders_helper_refresh_interval_ms = 900000",
+    )
+    .unwrap();
+    let otel = config.otel.unwrap();
+    assert_eq!(otel.headers_helper.as_deref(), Some("helper"));
+    assert_eq!(
+        otel.headers_helper_refresh_interval_ms.unwrap().get(),
+        900000
+    );
 }

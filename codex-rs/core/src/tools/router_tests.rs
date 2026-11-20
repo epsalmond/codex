@@ -1,3 +1,4 @@
+use codex_mcp::McpServerKey;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -581,7 +582,7 @@ fn mcp_tool_info(
     tool_name: &str,
 ) -> codex_mcp::ToolInfo {
     codex_mcp::ToolInfo {
-        server_name: server_name.to_string(),
+        server_key: McpServerKey::unscoped(server_name),
         supports_parallel_tool_calls,
         server_origin: None,
         callable_name: tool_name.to_string(),
@@ -691,7 +692,7 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         )
         .await?;
 
-    let response = result.into_response().item;
+    let response = result.into_response(/*file_backed_tool_audio*/ false).item;
     match response {
         ResponseItem::FunctionCallOutput {
             call_id, output, ..

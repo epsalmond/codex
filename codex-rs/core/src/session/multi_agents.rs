@@ -230,6 +230,7 @@ pub(crate) fn resolve_usage_hints_with_polling_modes(
             omit_update_plan_instructions,
             max_concurrency: config.max_concurrent_threads_per_session,
             agent_polling_enabled,
+            wait_agent_enabled: config.wait_agent_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
             is_root,
             subagent_context_token_cap,

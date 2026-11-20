@@ -7,6 +7,7 @@ mod dynamic_tools;
 #[path = "code_mode_host_recovery_tests.rs"]
 mod host_recovery;
 
+use super::image_rollout::RecordingFileAttachmentStore;
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
@@ -7140,13 +7141,19 @@ text("after");
     );
 
     let server = responses::start_mock_server().await;
+    let store = Arc::new(RecordingFileAttachmentStore::default());
     let mut builder = test_codex()
         .keep_polling_tools()
+        .with_image_store(store.clone())
         .with_model_info_override("gpt-5.4", |model| {
             model.input_modalities.push(InputModality::Audio);
         })
         .with_config(|config| {
             let _ = config.features.enable(Feature::CodeMode);
+            config
+                .features
+                .disable(Feature::FileBackedToolAudio)
+                .unwrap();
         });
     let test = builder.build_with_auto_env(&server).await?;
     responses::mount_sse_once(
@@ -7170,6 +7177,7 @@ text("after");
     test.submit_turn("use exec to return short and valid audio with text")
         .await?;
 
+    assert!(store.uploads.lock().unwrap().is_empty());
     let req = second_mock.single_request();
     let items = custom_tool_output_items(&req, "call-1");
     let (_, success) = custom_tool_output_body_and_success(&req, "call-1");

@@ -106,6 +106,7 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
         omit_update_plan_instructions: false,
         max_concurrency: 2,
         agent_polling_enabled: false,
+        wait_agent_enabled: true,
         expose_model_overrides: false,
         is_root: true,
         subagent_context_token_cap: None,

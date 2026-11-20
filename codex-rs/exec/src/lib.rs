@@ -11,18 +11,20 @@ mod event_processor;
 mod event_processor_with_human_output;
 pub(crate) mod event_processor_with_jsonl_output;
 pub(crate) mod exec_events;
+mod remote;
 mod work_lifecycle;
 mod worktree;
 
 pub use cli::Cli;
 pub use cli::Command;
 pub use cli::ReviewArgs;
+use codex_app_server_client::AppServerClient;
+use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::EnvironmentManager;
 use codex_app_server_client::ExecServerRuntimeOptions;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
-use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
@@ -275,6 +277,12 @@ fn exec_stderr_env_filter() -> EnvFilter {
 }
 
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
+    if let Some(endpoint) = codex_app_server_client::resolve_remote_endpoint(
+        cli.remote.clone(),
+        cli.remote_auth_token_env.clone(),
+    )? {
+        return remote::run(cli, endpoint).await;
+    }
     if cli.trust && cli.ignore_user_config {
         anyhow::bail!(
             "--trust cannot be combined with --ignore-user-config: saved project trust decisions must be checked"
@@ -286,6 +294,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     let Cli {
         mut command,
+        remote: _,
+        remote_auth_token_env: _,
         strict_config,
         shared,
         thread_source,
@@ -961,7 +971,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         true => Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone())),
         _ => Box::new(EventProcessorWithHumanOutput::create_with_ansi(
             stderr_with_ansi,
-            &config,
+            Some(&config),
             last_message_file.clone(),
         )),
     };
@@ -1098,11 +1108,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         .transpose()?;
 
     let mut request_ids = RequestIdSequencer::new();
-    let mut client = InProcessAppServerClient::start(in_process_start_args)
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
-        })?;
+    let client = AppServerClient::InProcess(
+        InProcessAppServerClient::start(in_process_start_args)
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
+            })?,
+    );
 
     let mut daybreak_enabled = config.daybreak_enabled;
     // Resolve resume and fork through existing app-server thread lifecycle APIs.
@@ -1282,7 +1294,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
     info!("Codex initialized with event: {session_configured:?}");
 
-    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
+    let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel::<()>();
     // A drained run needs a second Ctrl-C to stop waiting on children; a single-turn run
     // forwards only the first.
     let repeat_interrupts = work_lifecycle.is_some();
@@ -1426,13 +1438,54 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     // - the first Ctrl-C interrupts the active root turn (which then ends the drain), and a Ctrl-C
     //   between root turns, or a second Ctrl-C, stops draining at once; both exit 1.
     //
+    finish_turn(
+        client,
+        request_ids,
+        ExecTurn {
+            thread_id: primary_thread_id.to_string(),
+            turn_id: task_id,
+            ephemeral: config.ephemeral,
+            history_mode,
+            work_lifecycle,
+        },
+        event_processor,
+        bound_output,
+        interrupt_rx,
+    )
+    .await
+}
+
+struct ExecTurn {
+    work_lifecycle: Option<WorkLifecycle>,
+    thread_id: String,
+    turn_id: String,
+    ephemeral: bool,
+    history_mode: ThreadHistoryMode,
+}
+
+async fn finish_turn(
+    mut client: AppServerClient,
+    mut request_ids: RequestIdSequencer,
+    turn: ExecTurn,
+    mut event_processor: Box<dyn EventProcessor>,
+    mut bound_output: Option<codex_exec_server::BoundOutput>,
+    mut interrupt_rx: mpsc::UnboundedReceiver<()>,
+) -> anyhow::Result<()> {
+    let ExecTurn {
+        thread_id,
+        turn_id: mut task_id,
+        mut work_lifecycle,
+        ephemeral: thread_ephemeral,
+        history_mode,
+    } = turn;
+    // Run the loop until the task is complete.
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
     let mut drain_interrupts = DrainInterrupts::default();
     let mut interrupt_channel_open = true;
     let mut final_output_attempted_before_teardown = false;
-    let primary_thread_id_for_requests = primary_thread_id.to_string();
+    let primary_thread_id_for_requests = thread_id;
     loop {
         let server_event = tokio::select! {
             maybe_interrupt = interrupt_rx.recv(), if interrupt_channel_open => {
@@ -1470,14 +1523,17 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         };
 
         let Some(server_event) = server_event else {
+            if matches!(client, AppServerClient::Remote(_)) {
+                anyhow::bail!("app-server disconnected before turn completion");
+            }
             break;
         };
 
         match server_event {
-            InProcessServerEvent::ServerRequest(request) => {
+            AppServerEvent::ServerRequest(request) => {
                 handle_server_request(&client, *request, &mut error_seen).await;
             }
-            InProcessServerEvent::ServerNotification(notification) => {
+            AppServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
                 // Set only for the root turn exec is following, under the drain.
                 let mut root_turn_completed = false;
@@ -1550,7 +1606,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     &task_id,
                 ) {
                     maybe_backfill_turn_completed_items(
-                        config.ephemeral,
+                        thread_ephemeral,
                         history_mode,
                         &client,
                         &mut request_ids,
@@ -1593,7 +1649,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     break;
                 }
             }
-            InProcessServerEvent::Lagged { skipped } => {
+            AppServerEvent::Disconnected { message } => {
+                anyhow::bail!("app-server disconnected: {message}")
+            }
+            AppServerEvent::ThreadStreamDisconnected(error) => {
+                anyhow::bail!("app-server stream disconnected: {}", error.error.message)
+            }
+            AppServerEvent::ThreadStreamReconnected(_) => {}
+            AppServerEvent::Lagged { skipped } => {
                 let message = lagged_event_warning_message(skipped);
                 warn!("{message}");
                 event_processor.process_warning(message);
@@ -1622,7 +1685,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 }
 
 async fn start_thread(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request_ids: &mut RequestIdSequencer,
     config: &Config,
     thread_source: &ThreadSource,
@@ -1749,7 +1812,7 @@ fn sandbox_mode_from_permission_profile(
 }
 
 async fn send_request_with_response<T>(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request: ClientRequest,
     method: &str,
 ) -> Result<T, String>
@@ -1949,7 +2012,7 @@ fn should_process_notification(
 async fn maybe_backfill_turn_completed_items(
     thread_ephemeral: bool,
     history_mode: ThreadHistoryMode,
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request_ids: &mut RequestIdSequencer,
     notification: &mut ServerNotification,
 ) {
@@ -2124,7 +2187,7 @@ fn cwds_match(current_cwd: &Path, session_cwd: &Path) -> bool {
 }
 
 async fn resolve_resume_thread_id(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     config: &Config,
     state_db: Option<&StateDbHandle>,
     args: &crate::cli::ResumeArgs,
@@ -2142,6 +2205,7 @@ async fn resolve_resume_thread_id(
                     params: ThreadListParams {
                         include_attached_threads: false,
                         current_account_only: true,
+                        included_thread_ids: None,
                         excluded_thread_ids: None,
                         attached_to_thread_id: None,
                         originators: None,
@@ -2232,6 +2296,7 @@ async fn resolve_resume_thread_id(
                 params: ThreadListParams {
                     include_attached_threads: false,
                     current_account_only: false,
+                    included_thread_ids: None,
                     excluded_thread_ids: None,
                     attached_to_thread_id: None,
                     originators: None,
@@ -2300,7 +2365,7 @@ fn canceled_mcp_server_elicitation_response(
 }
 
 async fn request_shutdown(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request_ids: &mut RequestIdSequencer,
     thread_id: &str,
 ) -> Result<(), String> {
@@ -2316,7 +2381,7 @@ async fn request_shutdown(
 }
 
 async fn resolve_server_request(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request_id: RequestId,
     value: serde_json::Value,
     method: &str,
@@ -2328,7 +2393,7 @@ async fn resolve_server_request(
 }
 
 async fn reject_server_request(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request_id: RequestId,
     method: &str,
     reason: String,
@@ -2359,7 +2424,7 @@ fn server_request_method_name(request: &ServerRequest) -> String {
 }
 
 async fn handle_server_request(
-    client: &InProcessAppServerClient,
+    client: &AppServerClient,
     request: ServerRequest,
     error_seen: &mut bool,
 ) {
@@ -2445,15 +2510,6 @@ async fn handle_server_request(
                 request_id,
                 &method,
                 "attestation generation is not supported in exec mode".to_string(),
-            )
-            .await
-        }
-        ServerRequest::CurrentTimeRead { request_id, .. } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                "external current time is not supported in exec mode".to_string(),
             )
             .await
         }
@@ -2592,10 +2648,8 @@ fn decode_utf16(
         return Err(PromptDecodeError::InvalidUtf16 { encoding });
     }
 
-    let units: Vec<u16> = input
-        .chunks_exact(2)
-        .map(|chunk| decode_unit([chunk[0], chunk[1]]))
-        .collect();
+    let (units, _) = input.as_chunks();
+    let units: Vec<_> = units.iter().copied().map(decode_unit).collect();
 
     String::from_utf16(&units).map_err(|_| PromptDecodeError::InvalidUtf16 { encoding })
 }

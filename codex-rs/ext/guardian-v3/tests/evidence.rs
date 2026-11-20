@@ -130,6 +130,7 @@ Approved action: {"action":{"command":"write /workspace/report.txt"},"outcome":"
         acceptance_order: Some(2),
     });
     let delivered = RolloutItem::RetainedContext(RetainedContextEvent::DeliveredAssistantMessage {
+        retained_source: None,
         message: RetainedUserMessage {
             turn_id: "turn-1".into(),
             message_id: Some("delivered-1".into()),
@@ -184,6 +185,7 @@ Approved action: {"action":{"command":"write /workspace/report.txt"},"outcome":"
     )
     .await?;
     assert!(!store.live_rollout_path(owner).await?.exists());
+    assert!(fresh.capture(&store).await.is_err());
     // A resume must establish its tail even if the rollout is missing.
     assert!(
         EvidenceCursor::at_thread_ready(

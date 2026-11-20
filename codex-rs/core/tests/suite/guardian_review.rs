@@ -8,7 +8,6 @@ use chrono::Utc;
 use codex_config::types::McpServerConfig;
 use codex_config::types::OtelExporterKind;
 use codex_core::SleepFuture;
-use codex_core::TimeFuture;
 use codex_core::TimeProvider;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
@@ -128,15 +127,14 @@ impl ToolLifecycleContributor for RecordingToolLifecycleContributor {
 }
 
 impl TimeProvider for RecordingTimeProvider {
-    fn current_time(&self, thread_id: ThreadId) -> TimeFuture<'_> {
+    fn current_time(&self, thread_id: ThreadId) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
         self.thread_ids
             .lock()
             .expect("time-provider thread ids lock should not be poisoned")
             .push(thread_id);
-        Box::pin(async {
-            Ok(DateTime::<Utc>::from_timestamp(CURRENT_TIME_AT, 0)
-                .expect("test timestamp should be valid"))
-        })
+
+        Ok(DateTime::<Utc>::from_timestamp(CURRENT_TIME_AT, 0)
+            .expect("test timestamp should be valid"))
     }
 
     fn sleep(&self, _thread_id: ThreadId, _duration: Duration) -> SleepFuture<'_> {
@@ -1616,7 +1614,11 @@ async fn guardian_refreshes_missing_default_reviewer_once(
     } else if scenario == "cancel_prewarm" {
         let parent = Arc::clone(&test.codex);
         let prewarm = tokio::spawn(async move {
-            codex_core::guardian_review::prepare_review_prewarm(&parent).await
+            codex_core::guardian_review::prepare_review_prewarm(
+                &parent,
+                codex_core::guardian_review::ReviewRetrieval::ConversationHistory,
+            )
+            .await
         });
         refresh_started.notified().await;
         prewarm.abort();
@@ -2282,9 +2284,23 @@ async fn interrupted_guardian_review_across_model_change_does_not_execute_the_co
             config.features.enable(Feature::StepModelSwitching).unwrap();
             config.permissions.approval_policy = Constrained::allow_any(approval_policy);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            config.workspace_roots_explicit = false;
+            let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                config.cwd.as_path(),
+            );
             config
-                .set_legacy_sandbox_policy(sandbox_policy)
-                .expect("set sandbox policy");
+                .permissions
+                .can_set_permission_profile(&permission_profile)
+                .expect("set permission profile");
+            config
+                .permissions
+                .set_workspace_roots(vec![config.cwd.clone()]);
+            config
+                .permissions
+                .set_permission_profile(permission_profile)
+                .expect("set permission profile");
+            config.workspace_roots = config.permissions.workspace_roots().to_vec();
         })
         .build_with_auto_env(&server)
         .await?;
@@ -2470,9 +2486,23 @@ async fn guardian_denial_rejects_tool_call_with_rationale(
                 tls: None,
             };
             config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.workspace_roots_explicit = false;
+            let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy_for_config,
+                config.cwd.as_path(),
+            );
             config
-                .set_legacy_sandbox_policy(sandbox_policy_for_config)
-                .expect("set sandbox policy");
+                .permissions
+                .can_set_permission_profile(&permission_profile)
+                .expect("set permission profile");
+            config
+                .permissions
+                .set_workspace_roots(vec![config.cwd.clone()]);
+            config
+                .permissions
+                .set_permission_profile(permission_profile)
+                .expect("set permission profile");
+            config.workspace_roots = config.permissions.workspace_roots().to_vec();
         });
     let test = builder.build_with_auto_env(&server).await?;
 
@@ -2888,9 +2918,23 @@ async fn cyber_model_guardian_denial_interrupts_turn_immediately(
         })
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.workspace_roots_explicit = false;
+            let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy_for_config,
+                config.cwd.as_path(),
+            );
             config
-                .set_legacy_sandbox_policy(sandbox_policy_for_config)
-                .expect("set sandbox policy");
+                .permissions
+                .can_set_permission_profile(&permission_profile)
+                .expect("set permission profile");
+            config
+                .permissions
+                .set_workspace_roots(vec![config.cwd.clone()]);
+            config
+                .permissions
+                .set_permission_profile(permission_profile)
+                .expect("set permission profile");
+            config.workspace_roots = config.permissions.workspace_roots().to_vec();
         });
     let cached_calls = Arc::new(std::sync::atomic::AtomicUsize::new(/*v*/ 0));
     if matches!(approval_path, ApprovalPath::CachedContributor) {
@@ -3046,9 +3090,23 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
     let mut builder = test_codex().with_config(move |config| {
         config.notify = Some(vec![notify_script_str]);
         config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+        config.workspace_roots_explicit = false;
+        let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+            &sandbox_policy_for_config,
+            config.cwd.as_path(),
+        );
         config
-            .set_legacy_sandbox_policy(sandbox_policy_for_config)
-            .expect("set sandbox policy");
+            .permissions
+            .can_set_permission_profile(&permission_profile)
+            .expect("set permission profile");
+        config
+            .permissions
+            .set_workspace_roots(vec![config.cwd.clone()]);
+        config
+            .permissions
+            .set_permission_profile(permission_profile)
+            .expect("set permission profile");
+        config.workspace_roots = config.permissions.workspace_roots().to_vec();
     });
     let test = builder.build(&server).await?;
 

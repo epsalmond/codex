@@ -39,7 +39,7 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::metadata_metrics;
 use crate::tools::router::ToolCall;
-use crate::utils::json::serialized_json_bytes;
+use codex_utils_string::serialized_json_bytes;
 
 mod seen_ids;
 
@@ -283,6 +283,36 @@ impl ExecutedToolCalls {
         self.mcp_attribution.mark_persisted(revision);
     }
 
+    /// Consult the inventory attached to this exact exec output during actor sampling.
+    /// Pending cells can still produce other outputs and have no per-output inventory yet.
+    pub(crate) fn exec_output_matches(
+        &self,
+        output: &ResponseItem,
+        nested_tool_names: &[String],
+    ) -> bool {
+        let ResponseItem::CustomToolCallOutput { call_id, .. } = output else {
+            return false;
+        };
+        let state = self.lock_state();
+        state
+            .as_ref()
+            .and_then(|state| {
+                state
+                    .retained_calls
+                    .get(&(std::mem::discriminant(output), call_id.clone()))
+            })
+            .is_some_and(|record| {
+                record.complete
+                    && record.cell_id.as_deref() == Some(call_id.as_str())
+                    && record.calls.iter().any(|call| {
+                        nested_tool_names.contains(&call.name)
+                            || nested_tool_names.contains(
+                                &codex_code_mode::normalize_code_mode_identifier(&call.name),
+                            )
+                    })
+            })
+    }
+
     fn lock_state(&self) -> MutexGuard<'_, Option<ExecutedToolCallRecorderState>> {
         self.state
             .lock()
@@ -368,7 +398,7 @@ impl ExecutedToolCalls {
     fn reserve_direct_call(&self) -> Option<DirectCallPermit> {
         let recording = Arc::downgrade(&self.lock_state().as_ref()?.recording);
         self.pending_direct_calls
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
                 (pending < MAX_PENDING_EXECUTED_TOOL_CALLS).then_some(pending + 1)
             })
             .ok()?;
@@ -737,7 +767,7 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
     (ExecutedToolCall::new(name, arguments), original_bytes)
 }
 
-fn input_call_id(item: &ResponseItem) -> Option<&str> {
+pub(crate) fn input_call_id(item: &ResponseItem) -> Option<&str> {
     match item {
         ResponseItem::FunctionCall { call_id, .. }
         | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
@@ -747,11 +777,31 @@ fn input_call_id(item: &ResponseItem) -> Option<&str> {
     }
 }
 
-fn output_call_id(item: &ResponseItem) -> Option<&str> {
+pub(crate) fn output_call_id(item: &ResponseItem) -> Option<&str> {
     match item {
         ResponseItem::FunctionCallOutput { call_id, .. }
         | ResponseItem::ToolSearchOutput { call_id, .. } => call_id.as_deref(),
         ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id),
         _ => None,
     }
+}
+
+pub(crate) fn is_matching_tool_output(call: &ResponseItem, output: &ResponseItem) -> bool {
+    let Some(call_id) = input_call_id(call) else {
+        return false;
+    };
+    output_call_id(output) == Some(call_id)
+        && matches!(
+            (call, output),
+            (
+                ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. },
+                ResponseItem::FunctionCallOutput { .. }
+            ) | (
+                ResponseItem::CustomToolCall { .. },
+                ResponseItem::CustomToolCallOutput { .. }
+            ) | (
+                ResponseItem::ToolSearchCall { .. },
+                ResponseItem::ToolSearchOutput { .. }
+            )
+        )
 }

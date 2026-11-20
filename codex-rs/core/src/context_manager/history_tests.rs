@@ -203,6 +203,7 @@ fn delivered_assistant_context_invalidates_reviews_without_changing_authorizatio
     let before_delivery = history.conversation_history_snapshot();
     let authorization = before_delivery.user_message_revision();
     let event = RetainedContextEvent::DeliveredAssistantMessage {
+        retained_source: None,
         message: codex_history::RetainedUserMessage {
             origin: codex_history::UserInputOrigin::User,
             turn_id: "turn".to_owned(),
@@ -2276,6 +2277,9 @@ async fn drop_last_n_user_turns_trims_context_updates_above_rolled_back_turn() {
         developer_msg(&format!(
             "{APPS_INSTRUCTIONS_OPEN_TAG}\nROLLED_BACK_APPS_INSTRUCTIONS"
         )),
+        developer_msg(
+            "<catalog_apps_instructions>Retired Apps guidance</catalog_apps_instructions>",
+        ),
         developer_msg(&format!(
             "{PLUGINS_INSTRUCTIONS_OPEN_TAG}\nROLLED_BACK_PLUGIN_INSTRUCTIONS"
         )),

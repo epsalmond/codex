@@ -34,6 +34,7 @@ pub enum MultiAgentRoleInstructions {
         omit_update_plan_instructions: bool,
         max_concurrency: usize,
         agent_polling_enabled: bool,
+        wait_agent_enabled: bool,
         expose_model_overrides: bool,
         /// True for the root's role text, false for a subagent's.
         is_root: bool,
@@ -77,6 +78,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 omit_update_plan_instructions,
                 max_concurrency,
                 agent_polling_enabled,
+                wait_agent_enabled,
                 expose_model_overrides,
                 is_root,
                 subagent_context_token_cap,
@@ -88,9 +90,12 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 } else {
                     base.clone()
                 };
-                let wait_agent_guidance =
-                    format!("{DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT}\n\n");
-                let shared = if *agent_polling_enabled {
+                let wait_agent_guidance = if *wait_agent_enabled {
+                    format!("{DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT}\n\n")
+                } else {
+                    String::new()
+                };
+                let shared = if *agent_polling_enabled && *wait_agent_enabled {
                     DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.to_string()
                 } else {
                     DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT.replace("`wait_agent`, ", "")

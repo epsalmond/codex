@@ -32,6 +32,7 @@ use super::analytics::wait_for_matching_analytics_event;
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 const CURRENT_TIME_AT: i64 = 1_781_717_655;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,22 +334,6 @@ async fn wait_for_sleep_started(
             timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("item/started")).await??;
         if matches!(&started.item.payload, ThreadItemPayload::Sleep(item) if item.id == call_id) {
             return Ok(started);
-        }
-    }
-}
-
-async fn wait_for_sleep_completed(
-    mcp: &mut TestAppServer,
-    call_id: &str,
-) -> Result<ItemCompletedNotification> {
-    loop {
-        let completed: ItemCompletedNotification = timeout(
-            DEFAULT_READ_TIMEOUT,
-            mcp.read_notification("item/completed"),
-        )
-        .await??;
-        if matches!(&completed.item.payload, ThreadItemPayload::Sleep(item) if item.id == call_id) {
-            return Ok(completed);
         }
     }
 }

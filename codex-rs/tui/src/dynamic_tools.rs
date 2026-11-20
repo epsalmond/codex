@@ -22,7 +22,6 @@ use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
-use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadArchiveParams;
@@ -60,6 +59,7 @@ use codex_features::Feature;
 use codex_features::Features;
 use codex_protocol::ThreadId;
 use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::PermissionProfile;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -81,6 +81,7 @@ const DEFAULT_LIST_LIMIT: u32 = 10;
 const MAX_LIST_LIMIT: u32 = 50;
 const DEFAULT_READ_TURN_LIMIT: u32 = 1;
 const MAX_READ_TURN_LIMIT: u32 = 10;
+const READ_ITEMS_PER_TURN: u32 = 20;
 const DEFAULT_OUTPUT_CHARS: usize = 2_000;
 const MAX_OUTPUT_CHARS: usize = 20_000;
 const MAX_ERROR_CHARS: usize = 248;
@@ -353,6 +354,7 @@ async fn execute_inner(
                     params: ThreadListParams {
                         include_attached_threads: false,
                         current_account_only: true,
+                        included_thread_ids: None,
                         excluded_thread_ids: None,
                         attached_to_thread_id: None,
                         originators: None,
@@ -403,6 +405,7 @@ async fn execute_inner(
                 ));
             }
             let thread = read_thread(&handle, &arguments.thread_id).await?;
+            let paginated = thread.history_mode == ThreadHistoryMode::Paginated;
             let page: Result<ThreadTurnsListResponse, TypedRequestError> = handle
                 .request_typed(ClientRequest::ThreadTurnsList {
                     request_id: RequestId::String(format!("tui-dynamic-{}", Uuid::new_v4())),
@@ -411,11 +414,46 @@ async fn execute_inner(
                         cursor: arguments.cursor.clone(),
                         limit: Some(turn_limit),
                         sort_direction: Some(SortDirection::Desc),
-                        items_view: Some(TurnItemsView::Full),
+                        items_view: Some(if paginated {
+                            TurnItemsView::NotLoaded
+                        } else {
+                            TurnItemsView::Full
+                        }),
                     },
                 })
                 .await;
             let (turns, next_cursor) = match page {
+                Ok(page) if paginated => {
+                    let turns =
+                        futures::future::try_join_all(page.data.into_iter().map(|mut turn| {
+                            let handle = &handle;
+                            let thread_id = &arguments.thread_id;
+                            async move {
+                                let items: ThreadItemsListResponse =
+                                    request(handle, |request_id| ClientRequest::ThreadItemsList {
+                                        request_id,
+                                        params: ThreadItemsListParams {
+                                            thread_id: thread_id.clone(),
+                                            turn_id: Some(turn.id.clone()),
+                                            cursor: None,
+                                            limit: Some(READ_ITEMS_PER_TURN),
+                                            sort_direction: Some(SortDirection::Desc),
+                                            defer_output: None,
+                                        },
+                                    })
+                                    .await?;
+                                turn.items = items
+                                    .data
+                                    .into_iter()
+                                    .rev()
+                                    .map(|entry| entry.item)
+                                    .collect();
+                                Ok::<_, String>(turn)
+                            }
+                        }))
+                        .await?;
+                    (turns, page.next_cursor)
+                }
                 Ok(page) => (page.data, page.next_cursor),
                 Err(TypedRequestError::Server { source, .. })
                     if crate::app_server_session::is_history_pagination_unsupported(&source) =>
@@ -535,25 +573,38 @@ async fn execute_inner(
             thread_start_params.runtime_workspace_roots = Some(source.runtime_workspace_roots);
             thread_start_params.approval_policy = Some(source.approval_policy);
             thread_start_params.approvals_reviewer = Some(source.approvals_reviewer);
-            let sandbox_policy = if let Some(profile) = source.active_permission_profile {
-                thread_start_params.permissions = Some(profile.id);
-                thread_start_params.sandbox = None;
-                None
-            } else {
-                thread_start_params.permissions = None;
-                thread_start_params.sandbox = Some(match &source.sandbox {
-                    SandboxPolicy::DangerFullAccess => SandboxMode::DangerFullAccess,
-                    SandboxPolicy::ReadOnly { .. } => SandboxMode::ReadOnly,
-                    SandboxPolicy::WorkspaceWrite { .. } => SandboxMode::WorkspaceWrite,
-                    SandboxPolicy::ExternalSandbox { .. } => {
-                        return Err(
-                            "Cannot inherit an external sandbox without a permission profile"
-                                .to_string(),
-                        );
-                    }
-                });
-                Some(source.sandbox)
-            };
+            let source_permissions =
+                PermissionProfile::from_legacy_sandbox_policy_template(&source.sandbox.to_core());
+            let permission_profile_override =
+                if let Some(profile) = source.active_permission_profile {
+                    thread_start_params.permissions = Some(profile.id);
+                    thread_start_params.sandbox = None;
+                    None
+                } else {
+                    thread_start_params.permissions = None;
+                    thread_start_params.sandbox = Some(match &source_permissions {
+                        PermissionProfile::Disabled => SandboxMode::DangerFullAccess,
+                        PermissionProfile::Managed { .. } => {
+                            if source_permissions
+                                .file_system_sandbox_policy()
+                                .entries
+                                .iter()
+                                .any(|entry| entry.access.can_write())
+                            {
+                                SandboxMode::WorkspaceWrite
+                            } else {
+                                SandboxMode::ReadOnly
+                            }
+                        }
+                        PermissionProfile::External { .. } => {
+                            return Err(
+                                "Cannot inherit an external sandbox without a permission profile"
+                                    .to_string(),
+                            );
+                        }
+                    });
+                    Some(source_permissions)
+                };
             if let Some(model) = arguments.model {
                 thread_start_params.model = Some(model);
             }
@@ -597,7 +648,7 @@ async fn execute_inner(
                 "create_thread",
                 prompt,
                 /*model*/ None,
-                sandbox_policy,
+                permission_profile_override,
                 cyber_access_program,
             )
             .await?;
@@ -735,7 +786,7 @@ async fn execute_inner(
                 "send_message_to_thread",
                 prompt,
                 arguments.model,
-                /*sandbox_policy*/ None,
+                /*permission_profile_override*/ None,
                 cyber_access_program,
             )
             .await?;
@@ -1243,9 +1294,13 @@ async fn start_turn(
     tool: &str,
     prompt: String,
     model: Option<String>,
-    sandbox_policy: Option<SandboxPolicy>,
+    permission_profile_override: Option<PermissionProfile>,
     cyber_access_program: Option<codex_app_server_protocol::CyberAccessProgram>,
 ) -> Result<TurnStartResponse, String> {
+    let sandbox_policy = permission_profile_override
+        .map(|profile| profile.to_legacy_sandbox_policy_template().map(Into::into))
+        .transpose()
+        .map_err(|error| error.to_string())?;
     request(handle, |request_id| ClientRequest::TurnStart {
         request_id,
         params: TurnStartParams {
@@ -1254,7 +1309,7 @@ async fn start_turn(
             // Older app-server/TUI versions are intentionally unsupported:
             // preserving tool authority takes precedence over legacy fallback.
             tool_output: Some(Box::new(TurnToolOutput {
-                retain: false,
+                retain: true,
                 name: tool.to_string(),
                 namespace: Some(NAMESPACE.to_string()),
                 output: FunctionCallOutputBody::Text(prompt),
@@ -1581,7 +1636,7 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                 "type": "contextCompaction", "id": id
             }),
         })
-        .take(20)
+        .take(READ_ITEMS_PER_TURN as usize)
         .collect();
     items.reverse();
     json!({

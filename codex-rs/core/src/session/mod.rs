@@ -51,7 +51,6 @@ use crate::exec_policy::default_policy_path;
 use crate::image_preparation::ImagePreparationMode;
 use crate::image_preparation::ImageResizeNoticeMode;
 use crate::image_preparation::prepare_response_items as prepare_image_response_items;
-use crate::image_preparation::unified_image_budget_enabled;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::realtime_history::RealtimeEventOrder;
@@ -101,6 +100,7 @@ use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::McpRuntimeInput;
+use codex_mcp::McpToolStartup;
 use codex_models_manager::manager::ModelsManager;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
@@ -185,6 +185,7 @@ use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rollout::should_persist_response_item;
 use codex_rollout::state_db;
+use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_sandboxing::SandboxType;
@@ -198,7 +199,6 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
-use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreResumePreparation;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
@@ -230,8 +230,6 @@ use uuid::Uuid;
 use crate::client::ModelClient;
 use crate::codex_thread::CodexThreadSettingsOverrides;
 use crate::codex_thread::ThreadConfigSnapshot;
-#[cfg(test)]
-use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::ConstraintResult;
 use crate::config::PermissionProfileSnapshot;
@@ -263,6 +261,7 @@ mod context_reduction_telemetry;
 mod request_admission;
 pub(crate) use request_admission::InsufficientContext;
 pub(crate) use request_admission::ReductionAttempt;
+mod compaction_replacement;
 mod config_refresh;
 pub(crate) mod context_settings;
 pub(crate) mod context_window;
@@ -277,9 +276,11 @@ mod guardian_checkpoint;
 mod handlers;
 pub(crate) mod inject;
 mod reasoning_effort;
-mod submission;
+pub(crate) mod submission;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 pub(crate) use submission::Submission;
+use submission::SubmissionOp;
+mod cloud_plugins;
 mod input_queue;
 mod mcp;
 mod mcp_prewarm;
@@ -287,6 +288,7 @@ mod mcp_refresh;
 mod mcp_runtime;
 mod mid_turn_reduction;
 mod model_catalog_settings;
+mod model_ids;
 pub(crate) mod multi_agents;
 #[cfg(test)]
 #[path = "owned_completion_wake_tests.rs"]
@@ -299,6 +301,8 @@ mod retained_context;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;
+mod sampling_interrupt;
+pub(crate) use sampling_interrupt::SamplingInterrupt;
 #[allow(clippy::module_inception)]
 pub(crate) mod session;
 pub(crate) mod startup_prewarm;
@@ -319,6 +323,8 @@ mod wakeups;
 mod work_lifecycle;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
+use self::compaction_replacement::CompactedHistoryReplacement;
+pub(crate) use self::compaction_replacement::PrefixCompactionInstallation;
 pub(crate) use self::environment::ThreadEnvironmentDefaults;
 #[cfg(test)]
 use self::handlers::submission_dispatch_span;
@@ -335,6 +341,7 @@ use self::session::SessionSettingsCommit;
 pub(crate) use self::session::SessionSettingsUpdate;
 #[cfg(test)]
 use self::turn::AssistantMessageStreamParsers;
+use self::turn::PreparedToolRecommendations;
 use self::turn::RealtimeEventText;
 use self::turn::agent_message_text;
 #[cfg(test)]
@@ -374,7 +381,9 @@ use crate::tools::network_approval::build_blocked_request_observer;
 use crate::tools::network_approval::build_network_policy_decider;
 #[cfg(test)]
 use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::sandboxing::ApprovalStore;
+use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -383,7 +392,6 @@ use crate::windows_sandbox::local_binding_policy_for_sandbox;
 use crate::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginsManager;
-use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
 use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
@@ -408,8 +416,6 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
-use codex_protocol::models::LocalImagePreparation;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
@@ -419,6 +425,7 @@ use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ModelRerouteEvent;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
@@ -447,6 +454,8 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
 use codex_tools::ToolName;
+use codex_user_input::LocalImagePreparation;
+use codex_user_input::ResolvedUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -476,7 +485,10 @@ pub(crate) enum NetworkApprovalTurn {
 /// completion future observes that shutdown.
 #[derive(Clone)]
 pub(crate) struct SessionIo {
-    pub(crate) tx_sub: Sender<Submission>,
+    // The bounded channel reserves all its slots at session startup.
+    // Boxing reserves only a pointer for the payload in each slot and
+    // allocates the full submission when there is one to send.
+    pub(crate) tx_sub: Sender<Box<Submission>>,
     pub(crate) rx_event: Receiver<Event>,
     // Last known status of the agent.
     pub(crate) agent_status: watch::Receiver<AgentStatus>,
@@ -513,23 +525,16 @@ pub(crate) struct CompactionPrefix {
 }
 
 pub(crate) enum CompactedHistoryInstallation<'a> {
-    Complete(CompactedHistoryMetadata),
-    Prefix {
-        prefix: CompactionPrefix,
-        prefix_context: Vec<ResponseItem>,
-        initial_context: Vec<ResponseItemEnvelope>,
-        reset_world_state_sections: Vec<&'static str>,
-        model_info: &'a ModelInfo,
-        compaction_response_id: String,
-        reviewer_compaction_hash: Option<String>,
-        turn_context: &'a TurnContext,
-        started_item: Option<&'a TurnItem>,
-    },
+    Complete(
+        CompactedHistoryMetadata,
+        Option<(&'a CompactionTraceContext, &'a ContextManager)>,
+    ),
+    Prefix(PrefixCompactionInstallation<'a>),
 }
 
 impl From<CompactedHistoryMetadata> for CompactedHistoryInstallation<'_> {
     fn from(metadata: CompactedHistoryMetadata) -> Self {
-        Self::Complete(metadata)
+        Self::Complete(metadata, None)
     }
 }
 
@@ -537,6 +542,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) attached_thread: bool,
     pub(crate) startup: Option<Arc<startup::SessionStartup>>,
     pub(crate) config: Config,
+    pub(crate) request_country: codex_protocol::RequestCountry,
     pub(crate) prompt_cache_key: PromptCacheKey,
     pub(crate) allow_provider_model_fallback: bool,
     pub(crate) instructions: SessionInstructions,
@@ -625,6 +631,22 @@ pub(crate) fn assign_missing_item_id(
 }
 
 impl Session {
+    fn compaction_resume_metadata(&self, state: &SessionState) -> CompactionResumeMetadata {
+        CompactionResumeMetadata {
+            next_item_ordinal: None,
+            rejected_audio_file_ids: state.history.rejected_audio_file_ids(),
+            dynamic_tools: Some(Box::new(DynamicToolsSnapshot {
+                thread_id: self.thread_id(),
+                tools: state.persisted_dynamic_tools.to_vec(),
+            })),
+            observation_clock_floor_ms: None,
+            multi_agent_version: self.multi_agent_version(),
+            last_started_turn_id: state.last_started_turn_id.clone(),
+            turn_attribution: state.turn_attribution.clone(),
+            previous_turn_settings: state.previous_turn_settings(),
+        }
+    }
+
     pub(crate) async fn resolve_startup_model(
         models_manager: &dyn ModelsManager,
         config: &Config,
@@ -698,7 +720,15 @@ impl Session {
         })
     }
 
-    async fn spawn_internal(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
+    // Construct the startup future outside the caller's poll frame.
+    #[inline(never)]
+    fn spawn_internal(
+        args: SessionSpawnArgs,
+    ) -> BoxFuture<'static, CodexResult<(Arc<Self>, SessionIo)>> {
+        Box::pin(Self::initialize(args))
+    }
+
+    async fn initialize(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
         args.config
             .config_layer_stack
             .ensure_config_server_applied()?;
@@ -707,6 +737,7 @@ impl Session {
             attached_thread,
             startup,
             config,
+            request_country,
             prompt_cache_key,
             allow_provider_model_fallback,
             instructions,
@@ -1082,6 +1113,7 @@ impl Session {
             context_settings,
             provider: provider_auth.model_provider(config.model_provider.clone()),
             step_settings: Arc::new(StepSettings {
+                request_country,
                 collaboration_mode,
                 reasoning_summary: config.model_reasoning_summary,
                 service_tier: config.service_tier.clone(),
@@ -1261,7 +1293,7 @@ impl SessionIo {
         } = op.into();
         let sub = Submission {
             id: id.clone(),
-            op,
+            op: op.into(),
             turn_extension_init,
             trace,
             parent_turn_id,
@@ -1269,12 +1301,12 @@ impl SessionIo {
             residency_guard,
             message_delivery,
         };
-        self.submit_with_id(sub).await?;
+        self.submit_with_id(Box::new(sub)).await?;
         Ok(id)
     }
 
     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
-    pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
+    pub(crate) async fn submit_with_id(&self, mut sub: Box<Submission>) -> CodexResult<()> {
         if sub.trace.is_none() {
             sub.trace = current_span_w3c_trace_context();
         }
@@ -1291,7 +1323,7 @@ impl SessionIo {
     /// session loop exits before replying, the caller gets `InternalAgentDied`.
     pub(crate) async fn submit_turn_input(
         &self,
-        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest<ResolvedUserInput>>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
         let id = new_submission_id();
@@ -1301,9 +1333,9 @@ impl SessionIo {
             turn_extension_init,
         } = request.into();
         let trace = request.trace.take();
-        self.submit_with_id(Submission {
+        self.submit_with_id(Box::new(Submission {
             id,
-            op: Op::TurnInput {
+            op: SubmissionOp::TurnInput {
                 request: Box::new(request),
                 mode,
                 reply: reply_tx,
@@ -1314,7 +1346,7 @@ impl SessionIo {
             root_turn_id: None,
             residency_guard: None,
             message_delivery: None,
-        })
+        }))
         .await?;
         reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
     }
@@ -1328,20 +1360,21 @@ impl SessionIo {
         turn_extension_init: Option<ExtensionDataInit>,
     ) -> CodexResult<TurnInputSubmission> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.submit_with_id(Submission {
+        self.submit_with_id(Box::new(Submission {
             id: turn_id,
             op: Op::RecoverTurn {
                 thread_settings,
                 start_options,
                 reply: reply_tx,
-            },
+            }
+            .into(),
             trace,
             turn_extension_init,
             parent_turn_id: None,
             root_turn_id: None,
             residency_guard: None,
             message_delivery: None,
-        })
+        }))
         .await?;
         reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
     }
@@ -2101,6 +2134,13 @@ impl Session {
         turn_context: &Arc<TurnContext>,
         rollout_items: &[RolloutItem],
     ) -> Option<PreviousTurnSettings> {
+        if let Some(history) = &self.realtime_history {
+            history
+                .lock()
+                .await
+                .observation_clock
+                .restore(rollout_items);
+        }
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
             shake_history_state,
@@ -2137,38 +2177,22 @@ impl Session {
                 .and_then(|context| context.direct_only_tool_namespaces.clone())
                 .map(|namespaces| (turn.turn_id.clone(), namespaces))
         });
-        // Keep the recorded rollout unchanged. Prepare its reconstructed history before
-        // installing it, so legacy media is processed once for this resume or fork and
-        // will be processed again if the rollout is reconstructed in a future session.
-        // Replay disables image-resize notices, so media preparation remains one-to-one. Keep
-        // the prior batch behavior and carry history-only metadata in a positional sidecar.
-        let (mut prepared_history, metadata): (Vec<_>, Vec<_>) = history
-            .into_iter()
-            .map(|envelope| (envelope.item, envelope.metadata))
-            .unzip();
-        // Replay must not upload or migrate recorded history. The inline store returns prepared
-        // inline bytes, while existing file references bypass preparation and remain unchanged.
+        // Prepare inline images in memory on resume or fork. Keep file references as they are.
+        // The inline store avoids uploads, and replay leaves the saved history untouched.
+        // Skip resize notices here so replay doesn't add messages to the conversation.
         // Bound replay future size now that image preparation can await storage.
         let _ = Box::pin(prepare_image_response_items(
             &self.thread_id.to_string(),
             turn_context.config.ephemeral,
-            &mut prepared_history,
-            ImagePreparationMode::DetailBased,
+            &mut history,
+            ImagePreparationMode::for_replay(&turn_context.config.features),
             ImageResizeNoticeMode::Disabled,
             &InlineAttachmentStore,
         ))
         .await;
-        prepare_audio_response_items(&mut prepared_history);
-        assert_eq!(
-            prepared_history.len(),
-            metadata.len(),
-            "replay media preparation must remain one-to-one when resize notices are disabled"
-        );
-        history = prepared_history
-            .into_iter()
-            .zip(metadata)
-            .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
-            .collect();
+        for envelope in &mut history {
+            prepare_audio_response_items(std::slice::from_mut(&mut envelope.item));
+        }
         file_audio::resolve(self, file_audio::file_ids(&history).cloned().collect()).await;
         // Rollout reconstruction validated this seal against the serialized checkpoint before
         // image/audio preparation. If that deterministic replay normalization changed the prefix,
@@ -2365,7 +2389,7 @@ impl Session {
             commit,
             previous_config,
             new_config,
-            permission_profile_changed,
+            refresh_network_proxy,
             mcp_inputs_changed,
             credential_masking_warning,
         ) = {
@@ -2401,10 +2425,11 @@ impl Session {
                 });
             let previous_config = notify_config_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));
-            let previous_permission_profile = state.session_configuration.permission_profile();
-            let updated_permission_profile = updated.permission_profile();
-            let permission_profile_changed =
-                previous_permission_profile != updated_permission_profile;
+            let current = &state.session_configuration;
+            let refresh_network_proxy = current.permission_profile()
+                != updated.permission_profile()
+                || current.original_config_do_not_use.permissions.network
+                    != updated.original_config_do_not_use.permissions.network;
             let root_service_tier_changed = updated.parent_thread_id.is_none()
                 && state.session_configuration.step_settings.service_tier
                     != updated.step_settings.service_tier;
@@ -2464,7 +2489,7 @@ impl Session {
                 commit,
                 previous_config,
                 new_config,
-                permission_profile_changed,
+                refresh_network_proxy,
                 mcp_inputs_changed,
                 credential_masking_warning,
             )
@@ -2477,7 +2502,7 @@ impl Session {
             );
         }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
-        if permission_profile_changed {
+        if refresh_network_proxy {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
         }
@@ -3048,7 +3073,7 @@ impl Session {
         let reporter = self
             .outcome_reporting
             .as_ref()
-            .map(|reporting| &reporting.reporter);
+            .and_then(|reporting| reporting.reporter.as_ref());
         if !notify_native_parent && reporter.is_none() {
             return;
         }
@@ -3221,8 +3246,7 @@ impl Session {
     }
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
-        self.send_event_raw_with_persistence(event, /*persist*/ true, None)
-            .await;
+        Box::pin(self.send_event_raw_with_persistence(event, /*persist*/ true, None)).await;
     }
 
     /// Delivers an event without creating a local rollout for a thread that has not materialized.
@@ -4210,21 +4234,16 @@ impl Session {
         item.set_create_time_if_missing(Self::response_item_create_time());
     }
 
-    /// Prepares media using the originating model and preserves existing item identity.
+    /// Prepares media for the model that received these items and keeps their existing IDs.
+    /// Each saved original stays with the item that contains the prepared image.
     pub(crate) async fn prepare_conversation_items_for_history(
         &self,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
-        items: &[ResponseItem],
-    ) -> (Vec<ResponseItem>, Vec<ImagePreparationMetadata>) {
-        let mut items = items.to_vec();
-        let image_preparation_mode =
-            if unified_image_budget_enabled(&turn_context.config.features, model_info) {
-                ImagePreparationMode::UnifiedBudget
-            } else {
-                ImagePreparationMode::DetailBased
-            };
-        let image_resize_notice_mode = if turn_context
+        mut items: Vec<ResponseItemEnvelope>,
+    ) -> (Vec<ResponseItemEnvelope>, Vec<ImagePreparationMetadata>) {
+        let image_mode = ImagePreparationMode::for_model(&turn_context.config.features, model_info);
+        let resize_notices = if turn_context
             .config
             .features
             .enabled(Feature::ImageResizeNotice)
@@ -4238,14 +4257,31 @@ impl Session {
             &self.thread_id.to_string(),
             turn_context.config.ephemeral,
             &mut items,
-            image_preparation_mode,
-            image_resize_notice_mode,
+            image_mode,
+            resize_notices,
             self.services.image_store.as_ref(),
         ))
         .await;
-        prepare_audio_response_items(&mut items);
-        // Most response items get their passthrough turn ID at the durable history boundary.
-        for item in &mut items {
+        let file_backed = turn_context
+            .config
+            .features
+            .enabled(Feature::FileBackedToolAudio);
+        if file_backed {
+            Box::pin(file_audio::prepare_new_items(
+                &mut items,
+                self.services.image_store.as_ref(),
+                &self.thread_id.to_string(),
+                turn_context.config.ephemeral,
+                with_serialization_allowance(model_info.truncation_policy.into()).token_budget(),
+            ))
+            .await;
+        }
+        for envelope in &mut items {
+            let item = &mut envelope.item;
+            if !file_backed {
+                prepare_audio_response_items(std::slice::from_mut(item));
+            }
+            // Most response items get their passthrough turn ID at the durable history boundary.
             Self::stamp_response_item_for_history(item, &turn_context.sub_id);
             self.assign_missing_response_item_id(item);
         }
@@ -4256,20 +4292,21 @@ impl Session {
         assign_missing_item_id(item, &self.item_id_generator);
     }
 
-    pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {
-        self.response_item_from_user_input_with_image_positions(input, &mut HashMap::new())
+    pub(crate) fn response_item_from_user_input(
+        &self,
+        input: &[ResolvedUserInput],
+    ) -> ResponseItem {
+        self.response_item_from_user_input_with_image_positions(input)
+            .0
     }
 
     fn response_item_from_user_input_with_image_positions(
         &self,
-        input: Vec<UserInput>,
-        user_image_content_indices: &mut HashMap<usize, usize>,
-    ) -> ResponseItem {
-        let mut item = ResponseItem::from(ResponseInputItem::from_user_input(
-            input,
-            LocalImagePreparation::Defer,
-            user_image_content_indices,
-        ));
+        input: &[ResolvedUserInput],
+    ) -> (ResponseItem, HashMap<usize, usize>) {
+        let (message, image_positions) =
+            ResolvedUserInput::into_message(input, LocalImagePreparation::Defer);
+        let mut item = ResponseItem::from(message);
         if let ResponseItem::Message {
             content,
             internal_chat_message_metadata_passthrough,
@@ -4298,27 +4335,25 @@ impl Session {
                     ..Default::default()
                 });
         }
-        item
+        (item, image_positions)
     }
 
     /// Appends to history, persists the prepared items, then notifies raw-item observers.
     /// Execution callers supply their captured model; standalone callers need no tool runtime.
-    #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
     pub(crate) async fn record_conversation_items(
         &self,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
         items: &[ResponseItem],
     ) {
-        let (items, image_preparations) = self
-            .prepare_conversation_items_for_history(turn_context, model_info, items)
-            .await;
-        let items = items.into_iter().map(ResponseItemEnvelope::new).collect();
-        self.record_prepared_conversation_items(
+        self.record_annotated_conversation_items(
             turn_context,
             model_info,
-            items,
-            image_preparations,
+            items
+                .iter()
+                .cloned()
+                .map(ResponseItemEnvelope::new)
+                .collect(),
         )
         .await;
     }
@@ -4602,7 +4637,7 @@ impl Session {
 
     #[expect(
         clippy::await_holding_invalid_type,
-        reason = "step settings and both environment snapshots must be captured under active_turn then state"
+        reason = "step settings and environments require active_turn then state; cloud snapshots require the catalog publication lock"
     )]
     #[tracing::instrument(name = "step_context.capture", level = "info", skip_all)]
     async fn capture_step_context_inner(
@@ -4775,6 +4810,7 @@ impl Session {
             {
                 required_servers.push(codex_mcp::CODEX_APPS_MCP_SERVER_NAME.to_owned());
             }
+            let catalogs = self.lock_cloud_catalogs().await;
             let (mcp, prepared_recommendations) = tokio::join!(
                 // MCP refresh can be large; keep it off the sampling request's stack.
                 Box::pin(self.mcp_runtime_for_step(
@@ -4783,7 +4819,13 @@ impl Session {
                     &required_servers,
                     required_plugins,
                 )),
-                turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
+                async {
+                    if tool_suggest_enabled(&turn_context) {
+                        Some(PreparedToolRecommendations::load(self, &turn_context).await)
+                    } else {
+                        None
+                    }
+                },
             );
             let search = crate::model_search::resolve(
                 turn_context.as_ref(),
@@ -4889,6 +4931,7 @@ impl Session {
                     .or_cancel(cancellation_token)
                     .await?;
             }
+            drop(catalogs);
             extension_data.insert(selected_plugins);
             let tool_router = turn::built_tools(
                 self.as_ref(),
@@ -4914,6 +4957,7 @@ impl Session {
         Ok(Arc::new(StepContext {
             sampled_through_sequence: None,
             serving_assessment: None,
+            turn_cancellation: cancellation_token.clone(),
             preempt: turn_context
                 .config
                 .features
@@ -4934,7 +4978,38 @@ impl Session {
         }))
     }
 
-    #[cfg(test)]
+    /// Builds the same history item whether the recipient is live or has been evicted.
+    pub(crate) fn inter_agent_history_item(
+        communication: &InterAgentCommunication,
+        config: &Config,
+    ) -> ResponseItem {
+        let mut response_item = communication.to_model_input_item();
+        if let ResponseItem::AgentMessage {
+            content,
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &mut response_item
+        {
+            internal_chat_message_metadata_passthrough
+                .get_or_insert_default()
+                .content_item_metadata
+                .get_or_insert_with(|| {
+                    vec![
+                        ContentItemMetadata::tool(Some(
+                            config
+                                .multi_agent_v2
+                                .tool_namespace
+                                .clone()
+                                .map(ContentItemNamespace::from)
+                                .unwrap_or(ContentItemNamespace::Functions),
+                        ));
+                        content.len()
+                    ]
+                });
+        }
+        response_item
+    }
+
     pub(crate) async fn record_inter_agent_communication(
         &self,
         turn_context: &TurnContext,
@@ -4950,7 +5025,6 @@ impl Session {
         .await;
     }
 
-    /// Commit queued mail and remove its recovery copy at the same history boundary.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "history insertion and recovery copy removal must be atomic"
@@ -4963,7 +5037,6 @@ impl Session {
         pending_turn_state: Option<&Mutex<TurnState>>,
     ) {
         self.grant_answer_credit(turn_context, &communication);
-        // Agent-message dependencies are not captured by direct-tool timing.
         if turn_context
             .config
             .features
@@ -4971,41 +5044,17 @@ impl Session {
         {
             turn_context.turn_timing_state.invalidate_critical_path();
         }
-        let mut response_item = communication.to_model_input_item();
-        if let ResponseItem::AgentMessage {
-            content,
-            internal_chat_message_metadata_passthrough,
-            ..
-        } = &mut response_item
-        {
-            internal_chat_message_metadata_passthrough
-                .get_or_insert_default()
-                .content_item_metadata
-                .get_or_insert_with(|| {
-                    vec![
-                        ContentItemMetadata::tool(Some(
-                            turn_context
-                                .config
-                                .multi_agent_v2
-                                .tool_namespace
-                                .clone()
-                                .map(ContentItemNamespace::from)
-                                .unwrap_or(ContentItemNamespace::Functions),
-                        ));
-                        content.len()
-                    ]
-                });
-        }
-        let (items, _) = self
+        let response_item = Self::inter_agent_history_item(&communication, &turn_context.config);
+        let (mut prepared, _) = self
             .prepare_conversation_items_for_history(
                 turn_context,
                 model_info,
-                std::slice::from_ref(&response_item),
+                vec![ResponseItemEnvelope::new(response_item)],
             )
             .await;
-        let items: &[ResponseItem] = items.as_ref();
-        let response_item_id = items[0].id().cloned();
-        let mut response_item = ResponseItemEnvelope::new(items[0].clone());
+        let mut response_item = prepared.remove(0);
+        let items = [response_item.item.clone()];
+        let response_item_id = response_item.item.id().cloned();
         // A send confirmed after the pending snapshot must not reach the rollout
         // before this boundary; older readers assign deliveries by physical order.
         let boundary = self
@@ -5046,6 +5095,8 @@ impl Session {
         for mut recording in pending {
             let _ = recording.changed().await;
         }
+        let mut delivery = communication.delivery.as_ref();
+        let mut result_write = None;
         {
             // Keep the recovery copy until all recording awaits have completed. Holding both
             // locks makes history insertion and copy consumption one cancellation boundary.
@@ -5067,22 +5118,29 @@ impl Session {
             }) {
                 return;
             }
-            state.current_time_reminder.note_recorded_items(items);
+            state.current_time_reminder.note_recorded_items(&items);
             state.history.record_annotated_items(
                 std::slice::from_mut(&mut response_item),
                 model_info.truncation_policy.into(),
             );
         }
-        if let Some(delivery) = &communication.delivery {
-            delivery.consumed(self.thread_id);
+        if let Some(delivery) = delivery.take() {
+            result_write = delivery.consumed(self.thread_id);
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
+        let saved = self
+            .persist_rollout_items(&[
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: communication.trigger_turn,
+                },
+                RolloutItem::ResponseItem(response_item),
+            ])
+            .await;
+        if saved
+            && self.live_thread().is_some()
+            && let Some(write) = result_write
+        {
+            write.confirm();
+        }
         drop(boundary);
         self.send_raw_response_items(turn_context, &items).await;
     }
@@ -5161,15 +5219,19 @@ impl Session {
     pub(crate) async fn replace_compacted_history<'a>(
         &self,
         mut items: Vec<ResponseItemEnvelope>,
-        reference_context_item: Option<TurnContextItem>,
-        mut world_state_baseline: Option<WorldStateSnapshot>,
+        reference_context_item: impl Into<Option<TurnContextItem>>,
+        world_state_baseline: impl Into<Option<WorldStateSnapshot>>,
         rejected_audio_file_ids: std::collections::BTreeSet<String>,
         installation: impl Into<CompactedHistoryInstallation<'a>>,
     ) -> bool {
         let installation = installation.into();
-        let compaction_model_hash = match &installation {
-            CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
-            CompactedHistoryInstallation::Prefix { model_info, .. } => &model_info.comp_hash,
+        let reference_context_item = reference_context_item.into();
+        let world_state_baseline = world_state_baseline.into();
+        let (compaction_model_hash, trace) = match &installation {
+            CompactedHistoryInstallation::Complete(metadata, trace) => {
+                (&metadata.compaction_model_hash, *trace)
+            }
+            CompactedHistoryInstallation::Prefix(prefix) => (&prefix.model_info.comp_hash, None),
         };
         crate::model_search::SearchOwner::checkpoint(
             &self.services.thread_extension_data,
@@ -5199,77 +5261,49 @@ impl Session {
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
-        let (compacted_item, started_item) = {
+        let observation_clock_floor_ms = match &self.realtime_history {
+            Some(history) => history.lock().await.observation_clock.floor_ms(),
+            None => None,
+        };
+        let (compacted_item, world_state_baseline, started_item) = {
             let mut state = self.state.lock().await;
             let complete_replacement =
-                matches!(&installation, CompactedHistoryInstallation::Complete(_));
-            let (mut metadata, started_item) = match installation {
-                CompactedHistoryInstallation::Complete(metadata) => (metadata, None),
-                CompactedHistoryInstallation::Prefix {
-                    prefix,
-                    prefix_context,
-                    initial_context,
-                    reset_world_state_sections,
-                    model_info,
-                    compaction_response_id,
-                    reviewer_compaction_hash,
-                    turn_context,
-                    started_item,
-                } => {
-                    // Validate immediately before slicing and replacing the captured prefix.
-                    if state.history.history_version() != prefix.generation
-                        || state.history.annotated_items().len() < prefix.len
-                        || self.services.model_client.auth_owner() != prefix.auth_owner
-                    {
-                        return false;
-                    }
-                    let current = state.history.annotated_items();
-                    let suffix = &current[prefix.len..];
-                    if suffix.iter().any(|envelope| {
-                        crate::compact_retained_tool_outputs::is_retained_tool_output(envelope)
-                            || compact::is_real_user_or_agent_message(&envelope.item)
-                    }) {
-                        items.extend(initial_context);
-                    } else {
+                matches!(&installation, CompactedHistoryInstallation::Complete(..));
+            let replacement = match installation {
+                CompactedHistoryInstallation::Complete(metadata, _) => {
+                    let context = state
+                        .additional_context
+                        .restore_compacted_items(state.history.annotated_items(), &mut items);
+                    if !context.is_empty() {
                         items = compact::insert_initial_context_before_last_real_user_or_summary(
-                            items,
-                            initial_context,
+                            items, context,
                         );
                     }
-                    items.splice(
-                        0..0,
-                        prefix_context.into_iter().map(ResponseItemEnvelope::new),
-                    );
-                    items.extend_from_slice(suffix);
-                    // The unchanged suffix already contains updates through this baseline.
-                    if let Some(checkpoint) = state.history.world_state_checkpoint() {
-                        world_state_baseline = Some(WorldStateSnapshot::from(&checkpoint.state));
+                    CompactedHistoryReplacement {
+                        items,
+                        world_state_baseline,
+                        metadata,
+                        started_item: None,
                     }
-                    // Volatile sections must refresh in the new window even if their
-                    // previous messages and comparison state survived in the suffix.
-                    for section_id in reset_world_state_sections {
-                        if let Some(baseline) = world_state_baseline.as_mut() {
-                            baseline.remove_section(section_id);
-                        }
-                    }
-                    // Prefix replacement already retains all edits in the live suffix.
-                    let input_goal_ids = Default::default();
-                    let (window_number, window_ids) = state.advance_auto_compact_window();
-                    (
-                        CompactedHistoryMetadata {
-                            input_goal_ids,
-                            message: String::new(),
-                            window_number,
-                            window_ids,
-                            compaction_response_id: Some(compaction_response_id),
-                            compaction_model_hash: model_info.comp_hash.clone(),
-                            shake_watermark_index: None,
-                            reviewer_compaction_hash,
-                        },
-                        started_item.map(|item| (turn_context, item)),
-                    )
+                }
+                CompactedHistoryInstallation::Prefix(prefix) => {
+                    let Some(replacement) = prefix.assemble_replacement(
+                        &mut state,
+                        items,
+                        world_state_baseline,
+                        self.services.model_client.auth_owner(),
+                    ) else {
+                        return false;
+                    };
+                    replacement
                 }
             };
+            let CompactedHistoryReplacement {
+                mut items,
+                world_state_baseline,
+                mut metadata,
+                started_item,
+            } = replacement;
             for envelope in &mut items {
                 self.assign_missing_response_item_id(&mut envelope.item);
             }
@@ -5322,6 +5356,10 @@ impl Session {
                     .history
                     .set_world_state_baseline(world_state_baseline.clone());
             }
+            let resume_metadata = CompactionResumeMetadata {
+                observation_clock_floor_ms,
+                ..self.compaction_resume_metadata(&state)
+            };
             let compacted_item = CompactedItem {
                 message: metadata.message,
                 replacement_history: Some(replacement_history),
@@ -5335,20 +5373,21 @@ impl Session {
                 compaction_response_id: metadata.compaction_response_id,
                 latest_token_usage_record: state.latest_token_usage_record.clone(),
                 shake_history_state: Some(state.history.shake_history_state().clone()),
-                resume_metadata: Some(CompactionResumeMetadata {
-                    rejected_audio_file_ids: state.history.rejected_audio_file_ids(),
-                    dynamic_tools: Some(Box::new(DynamicToolsSnapshot {
-                        thread_id: self.thread_id(),
-                        tools: state.persisted_dynamic_tools.to_vec(),
-                    })),
-                    multi_agent_version: self.multi_agent_version(),
-                    last_started_turn_id: state.last_started_turn_id.clone(),
-                    turn_attribution: state.turn_attribution.clone(),
-                    previous_turn_settings: state.previous_turn_settings(),
-                }),
+                resume_metadata: Some(resume_metadata),
             };
-            (compacted_item, started_item)
+            (compacted_item, world_state_baseline, started_item)
         };
+
+        // Use the replacement captured under the state lock, including goal edits retained
+        // by the installer. A later edit or token recomputation cannot change this checkpoint.
+        if let Some((trace, input)) = trace
+            && let Some(replacement) = &compacted_item.replacement_history
+        {
+            trace.record_local_install(
+                input.raw_items(),
+                replacement.iter().map(|entry| &entry.item),
+            );
+        }
 
         if let Some((turn_context, item)) = started_item {
             // The prefix is now known to be valid; announce the install before checkpoint I/O.
@@ -5524,7 +5563,7 @@ impl Session {
         let turn_context = step_context.turn.as_ref();
         let mut developer_sections = Vec::<RenderedFragment>::with_capacity(8);
         let mut contextual_user_sections = Vec::<RenderedFragment>::with_capacity(2);
-        let mut separate_developer_messages = Vec::<ResponseItem>::new();
+        let mut standalone_items = Vec::<ResponseItem>::new();
         let mut context_window_hints = Vec::new();
         let (session_source, auto_compact_window_ids) = {
             let state = self.state.lock().await;
@@ -5544,32 +5583,25 @@ impl Session {
             developer_sections
                 .push(DeveloperInstructions::new(developer_instructions).render_fragment());
         }
-        let loaded_plugins = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await
-            .without_plugins(&turn_context.disabled_plugin_ids);
-        let recommended_plugin_candidates = if turn_context
-            .config
-            .features
-            .plugin_recommendations_enabled()
+        let step_candidates = step_context.extension_data.get::<ToolSuggestCandidates>();
+        // Prompt-only recommendations have no install handler to capture candidates for the step.
+        let prompt_only_candidates = if !tool_suggest_enabled(turn_context)
+            && turn_context
+                .config
+                .features
+                .plugin_recommendations_enabled()
         {
-            let auth = self.services.auth_manager.auth().await;
-            let plugins_config = turn_context.config.plugins_config_input();
-            self.services
-                .plugins_manager
-                .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                    plugins_config: &plugins_config,
-                    loaded_plugins: &loaded_plugins,
-                    auth: auth.as_ref(),
-                    disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                    app_server_client_name: turn_context.app_server_client_name.as_deref(),
-                })
-                .await
+            match PreparedToolRecommendations::load(self, turn_context).await {
+                PreparedToolRecommendations::Endpoint(tools) => Some(tools),
+                PreparedToolRecommendations::Legacy(_) => None,
+            }
         } else {
             None
         };
+        let recommended_plugin_candidates = step_candidates
+            .as_deref()
+            .map(|candidates| candidates.tools.as_slice())
+            .or(prompt_only_candidates.as_deref());
         let context_contributors = self.services.extensions.context_contributors().to_vec();
         for contributor in &context_contributors {
             for fragment in contributor
@@ -5631,7 +5663,7 @@ impl Session {
                             "threadId": self.thread_id().to_string(),
                         })),
                         /*requested_timeout*/ None,
-                        /*wait_for_server*/ true,
+                        McpToolStartup::Wait,
                     )
                     .await
                     .ok()
@@ -5655,14 +5687,13 @@ impl Session {
                     ContentItemMetadata::tool(source_tool_namespace.map(Into::into)),
                 ));
             }
-            separate_developer_messages.push(
+            standalone_items.push(
                 crate::context::TokenBudgetContext::new(
                     session_source
                         .get_agent_path()
                         .unwrap_or_else(codex_protocol::AgentPath::root),
-                    auto_compact_window_ids.first_window_id,
-                    auto_compact_window_ids.previous_window_id,
-                    auto_compact_window_ids.window_id,
+                    auto_compact_window_ids,
+                    step_context.token_budget.as_ref(),
                 )
                 .render_with_hints(context_window_hints),
             );
@@ -5703,13 +5734,13 @@ impl Session {
                     "developer"
                         if fragment.markers().0 == MultiAgentRoleInstructions::type_markers().0 =>
                     {
-                        separate_developer_messages.push(fragment.render_fragment().into());
+                        standalone_items.push(fragment.render_fragment().into());
                     }
                     "developer"
                         if update.placement == Placement::Standalone
                             && fragment.markers().0.is_empty() =>
                     {
-                        separate_developer_messages.push(fragment.render_fragment().into());
+                        standalone_items.push(fragment.render_fragment().into());
                     }
                     "developer" => developer_sections.push(fragment.render_fragment()),
                     "user" => contextual_user_sections.push(fragment.render_fragment()),
@@ -5718,9 +5749,8 @@ impl Session {
             }
 
             if next_item.is_none()
-                && let Some(recommended_plugins) = recommended_plugin_candidates
-                    .as_deref()
-                    .and_then(|plugins| {
+                && let Some(recommended_plugins) =
+                    recommended_plugin_candidates.and_then(|plugins| {
                         RecommendedPluginsInstructions::from_plugins(
                             plugins,
                             &ResolvedModelMessages::from_model(&step_context.settings.model_info)
@@ -5736,7 +5766,7 @@ impl Session {
             ) {
                 items.push(developer_message);
             }
-            items.append(&mut separate_developer_messages);
+            items.append(&mut standalone_items);
             if let Some(initial_multi_agent_mode) = initial_multi_agent_mode
                 && let Some(message) =
                     crate::context_manager::updates::build_rendered_message(vec![
@@ -5801,6 +5831,21 @@ impl Session {
             && let Err(e) = live_thread.append_items(items).await
         {
             error!("failed to record rollout items: {e:#}");
+            if self
+                .services
+                .local_agent_runtime
+                .suspension_root()
+                .is_some()
+            {
+                self.services.local_agent_runtime.record_shutdown_failure(
+                    crate::thread_manager::AgentTreeShutdownFailure::operation_failed(
+                        "tree_suspension",
+                        "append_history",
+                        Some(self.thread_id),
+                        crate::thread_manager::thread_store_error_kind(&e),
+                    ),
+                );
+            }
             return false;
         }
         true
@@ -5869,28 +5914,21 @@ impl Session {
         &self,
         step_context: &StepContext,
         world_state: Arc<WorldState>,
+        trace: &CompactionTraceContext,
     ) {
         let turn_context = step_context.turn.as_ref();
         let history = self.clone_history().await;
         let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
-        let retained_client_items =
-            crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
-                history
-                    .annotated_items()
-                    .iter()
-                    .filter(|item| {
-                        (self.enabled(Feature::RetainClientToolOutputs)
-                            && crate::compact_retained_tool_outputs::is_retained_tool_output(item))
-                            || (self.enabled(Feature::RetainClientDeveloperMessages)
-                                && crate::compact_remote_v2::is_client_authored_developer_message(
-                                    item,
-                                ))
-                    })
-                    .cloned()
-                    .collect(),
-                crate::compact_remote_v2::RETAINED_MESSAGE_TOKEN_BUDGET,
-                &history.file_audio_durations,
-            );
+        let retained_client_items = crate::compact_remote_v2::retained_client_items(
+            history.annotated_items(),
+            &history.file_audio_durations,
+            |item| {
+                crate::compact_remote_v2::should_retain_client_item(
+                    item,
+                    &turn_context.config.features,
+                )
+            },
+        );
         // Resolve the roster before allocating a new context window.
         let rendered = world_state.render_full_with_host_roster().await;
         let (window_number, window_ids) = self.state.lock().await.start_new_context_window();
@@ -5900,7 +5938,7 @@ impl Session {
             crate::context_manager::updates::merge_world_state_updates(context_updates)
                 .into_iter()
                 .map(ResponseItemEnvelope::new)
-                .chain(retained_client_items)
+                .chain(retained_client_items.into_values())
                 .collect();
         let turn_context_item = step_context.to_turn_context_item();
         self.replace_compacted_history(
@@ -5908,16 +5946,19 @@ impl Session {
             Some(turn_context_item),
             Some(world_state_snapshot),
             /*rejected_audio_file_ids*/ Default::default(),
-            CompactedHistoryMetadata {
-                input_goal_ids,
-                message: String::new(),
-                window_number,
-                window_ids,
-                compaction_response_id: None,
-                compaction_model_hash: None,
-                shake_watermark_index: None,
-                reviewer_compaction_hash: None,
-            },
+            CompactedHistoryInstallation::Complete(
+                CompactedHistoryMetadata {
+                    input_goal_ids,
+                    message: String::new(),
+                    window_number,
+                    window_ids,
+                    compaction_response_id: None,
+                    compaction_model_hash: None,
+                    shake_watermark_index: None,
+                    reviewer_compaction_hash: None,
+                },
+                Some((trace, &history)),
+            ),
         )
         .await;
         self.recompute_token_usage(turn_context).await;
@@ -6048,6 +6089,7 @@ impl Session {
         turn_context: &TurnContext,
         settings: &ResolvedStepSettings,
         incomplete: &ResponseIncompleteError,
+        charge: crate::client_common::SamplingCharge,
     ) {
         if let Some(response_id) = &incomplete.response_id {
             self.record_response_token_usage(
@@ -6062,7 +6104,10 @@ impl Session {
             .record_token_usage_info(
                 turn_context,
                 settings,
-                incomplete.token_usage.as_ref(),
+                crate::client_common::SamplingUsage {
+                    provider: incomplete.token_usage.clone(),
+                    charge,
+                },
                 TokenUsageContext::SpendingOnly,
             )
             .await;
@@ -6071,14 +6116,14 @@ impl Session {
     pub(crate) async fn update_token_usage_info(
         &self,
         turn_context: &TurnContext,
-        token_usage: Option<&TokenUsage>,
+        usage: crate::client_common::SamplingUsage,
         includes_reasoning: bool,
     ) -> CodexResult<()> {
         let result = self
             .record_token_usage_info(
                 turn_context,
                 &turn_context.initial_settings,
-                token_usage,
+                usage,
                 TokenUsageContext::Sampling {
                     includes_reasoning,
                     input_item_count: 0,
@@ -6137,10 +6182,10 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         settings: &ResolvedStepSettings,
-        token_usage: Option<&TokenUsage>,
+        usage: crate::client_common::SamplingUsage,
         context: TokenUsageContext,
     ) -> CodexResult<()> {
-        if let Some(token_usage) = token_usage {
+        let token_info = if let Some(token_usage) = usage.provider.as_ref() {
             let token_info = {
                 let mut state = self.state.lock().await;
                 match context {
@@ -6193,24 +6238,26 @@ impl Session {
                     token_usage,
                 );
             }
-            let budget_result = self
-                .record_rollout_budget_usage(&turn_context.sub_id, token_usage)
-                .await;
-            if let Some(token_info) = token_info.as_ref() {
-                for contributor in self.services.extensions.token_usage_contributors() {
-                    contributor
-                        .on_token_usage(
-                            &self.services.session_extension_data,
-                            &self.services.thread_extension_data,
-                            turn_context.extension_data.as_ref(),
-                            token_info,
-                        )
-                        .await;
-                }
+            token_info
+        } else {
+            None
+        };
+        let budget_result = self
+            .record_rollout_budget_usage(&turn_context.sub_id, &usage)
+            .await;
+        if let Some(token_info) = token_info.as_ref() {
+            for contributor in self.services.extensions.token_usage_contributors() {
+                contributor
+                    .on_token_usage(
+                        &self.services.session_extension_data,
+                        &self.services.thread_extension_data,
+                        turn_context.extension_data.as_ref(),
+                        token_info,
+                    )
+                    .await;
             }
-            budget_result?;
         }
-        Ok(())
+        budget_result
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {
@@ -6336,19 +6383,20 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
-        input: &[UserInput],
+        input: &[ResolvedUserInput],
         client_id: Option<String>,
         metadata: UserInputMetadata,
         persist_context: PersistContext,
     ) {
-        // Persist the user message to history, but emit the turn item from `UserInput` so
-        // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
-        // those spans, and `record_response_item_and_emit_turn_item` would drop them.
-        let mut user_image_content_indices = HashMap::new();
-        let mut response_item = self.response_item_from_user_input_with_image_positions(
-            input.to_vec(),
-            &mut user_image_content_indices,
-        );
+        let display_input = input
+            .iter()
+            .map(ResolvedUserInput::to_user_input)
+            .collect::<Vec<_>>();
+        let mut user_message_item = UserMessageItem::new(&display_input);
+        // Emit full prompt telemetry only for inputs selected for recording.
+        turn_context.session_telemetry.user_prompt(&display_input);
+        let (mut response_item, user_image_content_indices) =
+            self.response_item_from_user_input_with_image_positions(input);
         if let Some(uuid) = metadata.response_item_uuid {
             response_item.set_id(Some(ResponseItemId::for_admitted_user_input(uuid)));
         }
@@ -6365,7 +6413,7 @@ impl Session {
             )]);
         }
         let (prepared_items, image_preparations) = self
-            .prepare_annotated_conversation_items_for_history(
+            .prepare_conversation_items_for_history(
                 turn_context,
                 model_info,
                 vec![ResponseItemEnvelope {
@@ -6377,7 +6425,6 @@ impl Session {
                 }],
             )
             .await;
-        let mut user_message_item = UserMessageItem::new(input);
         apply_prepared_image_file_ids(
             &mut user_message_item,
             &prepared_items,
@@ -6390,6 +6437,11 @@ impl Session {
             image_preparations,
         )
         .await;
+        if metadata.origin.is_user() {
+            self.services
+                .analytics_events_client
+                .track_accepted_user_input(&turn_context.sub_id, metadata.used_dictation);
+        }
         user_message_item.client_id = client_id;
         let turn_item = TurnItem::UserMessage(user_message_item);
         self.emit_turn_item_started(turn_context, &turn_item).await;
@@ -6433,42 +6485,8 @@ impl Session {
     }
 
     pub async fn interrupt_task(self: &Arc<Self>) {
-        info!("interrupt received: abort current task, if any");
-        // Pause before aborting so the post-abort restart sees held mail.
-        self.pause_wakeups_for_interrupt().await;
-        let had_active_task = self
-            .active_turn
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|active_turn| active_turn.task.is_some());
-        self.abort_all_tasks(TurnAbortReason::Interrupted).await;
-        if !had_active_task {
-            self.cancel_mcp_startup();
-            if self.services.local_agent_runtime.wake_mode_enabled() {
-                let turn_context = self.new_default_turn().await;
-                if let Some(assignment) = self
-                    .services
-                    .local_agent_runtime
-                    .interrupt_idle_wake_assignment(self.thread_id, &turn_context.sub_id)
-                {
-                    let _ = turn_context.agent_assignment.set(assignment);
-                    self.send_event(
-                        turn_context.as_ref(),
-                        EventMsg::TurnAborted(TurnAbortedEvent {
-                            root_turn_id: Some(turn_context.root_turn_id()),
-                            turn_id: Some(turn_context.sub_id.clone()),
-                            reason: TurnAbortReason::Interrupted,
-                            error: None,
-                            started_at: None,
-                            completed_at: None,
-                            duration_ms: None,
-                        }),
-                    )
-                    .await;
-                }
-            }
-        }
+        self.interrupt_task_with_admission(self.active_turn.lock().await)
+            .await;
     }
 
     pub(crate) fn hooks(&self) -> Arc<Hooks> {

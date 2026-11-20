@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::McpServerKey;
 use crate::auth::McpAuthProvider;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::runtime::McpRuntimeContext;
@@ -356,6 +357,29 @@ impl McpServerConnectionIdentity {
             && self.requires_read_only_mcp_tools == other.requires_read_only_mcp_tools
     }
 
+    /// Runtime auth, stored OAuth and dynamic headers may change independently of a registration.
+    pub(crate) fn has_fixed_status_credentials(&self) -> bool {
+        if self.runtime_auth.is_some()
+            || self.oauth_store.is_some()
+            || matches!(self.auth, McpServerAuth::EmaAuth)
+        {
+            return false;
+        }
+        match &self.transport {
+            McpServerTransportConfig::Stdio { env_vars, .. } => env_vars.is_empty(),
+            McpServerTransportConfig::StreamableHttp {
+                bearer_token_env_var,
+                env_http_headers,
+                http_headers_helper,
+                ..
+            } => {
+                bearer_token_env_var.is_none()
+                    && env_http_headers.as_ref().is_none_or(HashMap::is_empty)
+                    && http_headers_helper.is_none()
+            }
+        }
+    }
+
     pub(crate) fn oauth_credentials(&self) -> Result<Option<&StoredOAuthTokens>, &String> {
         self.oauth_credentials.as_ref().map(|credentials| {
             credentials
@@ -483,6 +507,7 @@ impl McpServerOrigin {
 /// Semantic metadata that must survive after the server is launched.
 #[derive(Debug, Clone)]
 pub(crate) struct McpServerMetadata {
+    pub(crate) server_key: McpServerKey,
     pub environment_id: String,
     pub pollutes_memory: bool,
     pub origin: Option<McpServerOrigin>,
@@ -499,12 +524,11 @@ impl McpServerMetadata {
             .or(self.default_tools_approval_mode)
             .unwrap_or_default()
     }
-}
 
-impl From<&EffectiveMcpServer> for McpServerMetadata {
-    fn from(server: &EffectiveMcpServer) -> Self {
+    pub(crate) fn new(server_key: McpServerKey, server: &EffectiveMcpServer) -> Self {
         let config = server.config();
         Self {
+            server_key,
             environment_id: config.environment_id.clone(),
             pollutes_memory: true,
             origin: McpServerOrigin::from_transport(&config.transport),

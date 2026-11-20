@@ -1,4 +1,5 @@
 use crate::session::tests::update_turn_settings_for_test;
+use codex_mcp::McpServerKey;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -399,7 +400,7 @@ fn duplicate_primary_environment(turn: &mut TurnContext) {
 
 fn mcp_tool(server: &str, namespace: &str, name: &str) -> ToolInfo {
     ToolInfo {
-        server_name: server.to_string(),
+        server_key: McpServerKey::unscoped(server),
         supports_parallel_tool_calls: false,
         server_origin: None,
         callable_name: name.to_string(),
@@ -3698,6 +3699,55 @@ async fn multi_agent_v2_bedrock_workers_only_delegate_when_model_supports_v2() {
         } else {
             plan.assert_visible_lacks(&["agents"]);
             plan.assert_registered_lacks(&[&spawn_agent_name, &followup_task_name]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn multi_agent_catalog_code_mode_follows_tool_mode_and_preserves_runtime_fallback() {
+    for (catalog, non_code_mode_only, follows_tool_mode) in [
+        (None, true, false),
+        (None, false, true),
+        (Some(true), true, true),
+        (Some(false), false, false),
+    ] {
+        for tool_mode in [ToolMode::Direct, ToolMode::CodeMode, ToolMode::CodeModeOnly] {
+            let plan = probe(|turn| {
+                set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+                update_config(turn, |config| {
+                    config.multi_agent_v2.non_code_mode_only = non_code_mode_only;
+                    config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+                });
+                update_turn_settings_for_test(turn, |settings| {
+                    let model = Arc::make_mut(&mut settings.model_info);
+                    model.tool_mode = Some(tool_mode);
+                    model.multi_agent_tools_in_code_mode = catalog;
+                });
+            })
+            .await;
+            for name in [
+                "spawn_agent",
+                "send_message",
+                "followup_task",
+                "wait_agent",
+                "interrupt_agent",
+                "list_agents",
+            ] {
+                assert_eq!(
+                    (
+                        plan.namespace_function_names("agents")
+                            .iter()
+                            .any(|tool| tool == name),
+                        plan.code_mode_tool_names
+                            .contains_key(&format!("agents__{name}")),
+                    ),
+                    (
+                        !follows_tool_mode || tool_mode != ToolMode::CodeModeOnly,
+                        follows_tool_mode && tool_mode != ToolMode::Direct,
+                    ),
+                    "{name}: catalog={catalog:?}, non_code_mode_only={non_code_mode_only}, mode={tool_mode:?}",
+                );
+            }
         }
     }
 }

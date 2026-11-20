@@ -49,7 +49,7 @@ fn enable_test_ambient_pet(chat: &mut ChatWidget) {
 
 fn take_workspace_headline_request_id(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-) -> u64 {
+) -> uuid::Uuid {
     match rx.try_recv() {
         Ok(AppEvent::RefreshStatusLineWorkspaceHeadline { request_id }) => request_id,
         event => panic!("expected workspace headline refresh, got {event:?}"),
@@ -388,6 +388,7 @@ async fn app_server_model_verification_renders_warning() {
 async fn context_indicator_shows_used_tokens_when_window_unknown() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model")).await;
 
+    chat.thread_id = Some(ThreadId::new());
     chat.config.model_context_window = None;
     let auto_compact_limit = 200_000;
     chat.config.model_auto_compact_token_limit = Some(auto_compact_limit);
@@ -399,17 +400,38 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
         ..TokenUsage::default()
     };
     let token_info = TokenUsageInfo {
-        total_token_usage: token_usage.clone(),
-        last_token_usage: token_usage,
+        total_token_usage: token_usage,
+        last_token_usage: TokenUsage {
+            total_tokens: 40_000,
+            ..TokenUsage::default()
+        },
         model_context_window: None,
     };
 
-    handle_token_count(&mut chat, Some(token_info));
+    handle_token_count(&mut chat, Some(token_info.clone()));
 
     assert_eq!(chat.bottom_pane.context_window_percent(), None);
     assert_eq!(
         chat.bottom_pane.context_window_used_tokens(),
         Some(total_tokens)
+    );
+    let state = serde_json::to_value(chat.statusline_state()).unwrap();
+    assert_eq!(
+        state["thread"]["usage"]["context"],
+        json!({"used_tokens": 40_000})
+    );
+
+    handle_token_count(
+        &mut chat,
+        Some(TokenUsageInfo {
+            model_context_window: Some(68_000),
+            ..token_info
+        }),
+    );
+    let state = serde_json::to_value(chat.statusline_state()).unwrap();
+    assert_eq!(
+        state["thread"]["usage"]["context"],
+        json!({"context_window_size": 68_000, "used_tokens": 40_000, "used_percentage": 50})
     );
 }
 
@@ -1374,11 +1396,17 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
         rate_limit_reached_type: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
+
+    let unknown = serde_json::from_value(serde_json::json!({"planType": "unknown"})).unwrap();
+    chat.on_rate_limit_snapshot(Some(unknown));
+    assert_eq!(chat.plan_type, Some(PlanType::Pro));
 }
 
 #[tokio::test]
 async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.thread_id = Some(ThreadId::new());
 
     chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
         limit_id: Some("codex".to_string()),
@@ -1389,7 +1417,11 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
             window_duration_mins: Some(300),
             resets_at: Some(100),
         }),
-        secondary: None,
+        secondary: Some(RateLimitWindow {
+            used_percent: 8,
+            window_duration_mins: Some(10_080),
+            resets_at: None,
+        }),
         credits: Some(CreditsSnapshot {
             has_credits: true,
             unlimited: false,
@@ -1418,6 +1450,15 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
         rate_limit_reached_type: None,
     }));
 
+    let state = serde_json::to_value(chat.statusline_state()).unwrap();
+    assert_eq!(
+        state["account"]["rate_limits"],
+        serde_json::json!([{
+            "limit_id": "codex", "limit_name": "codex",
+            "primary_limit": {"used_percent": 20.0, "window_minutes": 300, "resets_at": 100},
+            "secondary_limit": {"used_percent": 8.0, "window_minutes": 10_080, "resets_at": null}
+        }])
+    );
     let codex = chat
         .rate_limit_snapshots_by_limit_id
         .get("codex")
@@ -4022,6 +4063,11 @@ async fn status_line_workspace_headline_renders_cached_value() {
         status_line_text(&chat),
         Some("Workspace maintenance starts at 5pm".to_string())
     );
+    let state = serde_json::to_value(chat.statusline_state()).unwrap();
+    assert_eq!(
+        state["account"]["workspace"],
+        serde_json::json!({"headline": "Workspace maintenance starts at 5pm"})
+    );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "workspace-headline should be a valid status line item"
@@ -4051,7 +4097,7 @@ async fn workspace_headline_update_applies_feature_disabled_result() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.status_line = Some(vec!["workspace-headline".to_string()]);
     chat.status_line_workspace_headline = Some("Old headline".to_string());
-    let request_id = 3;
+    let request_id = uuid::Uuid::new_v4();
     chat.status_line_workspace_headline_pending_request_id = Some(request_id);
 
     assert!(chat.set_status_line_workspace_headline(
@@ -4067,7 +4113,7 @@ async fn workspace_headline_update_applies_feature_disabled_result() {
 async fn workspace_headline_update_applies_available_headline() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.status_line = Some(vec!["workspace-headline".to_string()]);
-    let request_id = 4;
+    let request_id = uuid::Uuid::new_v4();
     chat.status_line_workspace_headline_pending_request_id = Some(request_id);
 
     assert!(chat.set_status_line_workspace_headline(
@@ -4091,7 +4137,7 @@ async fn account_update_clears_workspace_headline_state() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.status_line = Some(vec!["workspace-headline".to_string()]);
     chat.status_line_workspace_headline = Some("Old workspace headline".to_string());
-    chat.status_line_workspace_headline_pending_request_id = Some(5);
+    chat.status_line_workspace_headline_pending_request_id = Some(uuid::Uuid::new_v4());
     chat.status_line_workspace_headline_last_requested_at = Some(Instant::now());
     chat.status_line_workspace_messages_disabled = true;
 
@@ -4126,6 +4172,25 @@ async fn workspace_headline_fetch_allows_backend_auth_without_chatgpt_account() 
         chat.status_line_workspace_headline_pending_request_id,
         Some(request_id)
     );
+}
+
+#[tokio::test]
+async fn replacement_widget_rejects_the_previous_widgets_workspace_headline() {
+    let request_headline = async || {
+        let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.local_settings.tui.status_line = Some(vec!["workspace-headline".into()]);
+        chat.has_codex_backend_auth = true;
+        chat.refresh_status_line();
+        (chat, take_workspace_headline_request_id(&mut rx))
+    };
+    let (_, stale) = request_headline().await;
+    let (mut replacement, current) = request_headline().await;
+
+    assert!(!replacement.set_status_line_workspace_headline(
+        stale,
+        Ok(crate::workspace_messages::WorkspaceHeadlineFetchResult::FeatureDisabled),
+    ));
+    assert!(replacement.is_pending_workspace_headline(current));
 }
 
 #[tokio::test]
@@ -4569,13 +4634,8 @@ async fn renamed_thread_footer_title_snapshot() {
 }
 
 #[tokio::test]
-async fn status_line_model_with_reasoning_fast_footer_snapshot() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
+async fn status_line_model_with_reasoning_speed_footer_snapshots() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    set_fast_mode_test_catalog(&mut chat);
-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
     chat.show_welcome_banner = false;
     chat.config.cwd = test_project_path().abs();
     chat.local_settings.tui.status_line = Some(vec![
@@ -4583,23 +4643,68 @@ async fn status_line_model_with_reasoning_fast_footer_snapshot() {
         "context-used".to_string(),
         "current-dir".to_string(),
     ]);
+    chat.local_settings.tui.terminal_title = Some(vec!["model-with-reasoning".to_string()]);
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
-    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
     set_chatgpt_auth(&mut chat);
     set_fast_mode_test_catalog(&mut chat);
-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
-    chat.refresh_status_line();
+    chat.set_feature_enabled(Feature::UltrafastMode, /*enabled*/ true);
 
-    let width = 80;
-    let height = chat.desired_height(width);
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
-    terminal
-        .draw(|f| chat.render(f.area(), f.buffer_mut()))
-        .expect("draw model-with-reasoning footer");
-    assert_chatwidget_snapshot!(
-        "status_line_model_with_reasoning_fast_footer",
-        normalized_backend_snapshot(terminal.backend())
-    );
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    let fast_tier = preset
+        .service_tiers
+        .iter_mut()
+        .find(|tier| tier.id == ServiceTier::Fast.request_value())
+        .expect("fast tier");
+    fast_tier.name = "Fast".to_string();
+    preset.service_tiers.extend([
+        codex_protocol::openai_models::ModelServiceTier {
+            id: "ultrafast".to_string(),
+            name: "Ultrafast".to_string(),
+            description: "Ultrafast processing".to_string(),
+        },
+        codex_protocol::openai_models::ModelServiceTier {
+            id: "low_latency".to_string(),
+            name: "Low Latency".to_string(),
+            description: String::new(),
+        },
+    ]);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+
+    for (tier_id, tier_name, snapshot) in [
+        (
+            ServiceTier::Fast.request_value(),
+            "Fast",
+            "status_line_model_with_reasoning_fast_footer",
+        ),
+        (
+            "ultrafast",
+            "Ultrafast",
+            "status_line_model_with_reasoning_ultrafast_footer",
+        ),
+    ] {
+        chat.set_service_tier(Some(tier_id.to_string()));
+        chat.refresh_status_line();
+        chat.refresh_terminal_title();
+        assert_eq!(
+            chat.last_terminal_title.as_deref(),
+            Some(format!("gpt-5.4 xhigh {tier_name}").as_str())
+        );
+
+        let width = 80;
+        let height = chat.desired_height(width);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+        terminal
+            .draw(|f| chat.render(f.area(), f.buffer_mut()))
+            .expect("draw model-with-reasoning footer");
+        assert_chatwidget_snapshot!(snapshot, normalized_backend_snapshot(terminal.backend()));
+    }
+
+    chat.local_settings.tui.status_line = Some(vec!["model-with-reasoning".to_string()]);
+    chat.set_service_tier(Some(ServiceTier::Flex.request_value().to_string()));
+    insta::assert_snapshot!(status_line_text(&chat).expect("status line"), @"gpt-5.4 xhigh flex");
+
+    chat.set_service_tier(Some("low_latency".to_string()));
+    insta::assert_snapshot!(status_line_text(&chat).expect("status line"), @"gpt-5.4 xhigh low latency");
 }
 
 #[tokio::test]
@@ -4742,6 +4847,9 @@ async fn session_configured_clears_goal_status_footer() {
 
     let rollout_file = NamedTempFile::new().unwrap();
     chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id: ThreadId::new(),

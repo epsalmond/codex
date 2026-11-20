@@ -945,6 +945,10 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
             )),
             rollout_response_item(input_response_message(
                 "developer",
+                "<catalog_apps_instructions>context only</catalog_apps_instructions>",
+            )),
+            rollout_response_item(input_response_message(
+                "developer",
                 "<permissions instructions>context only</permissions instructions>",
             )),
             rollout_response_item(input_response_message(
@@ -2674,6 +2678,7 @@ async fn migration_preserves_legacy_displayed_thread_names() {
         }
         let page = store
             .list_threads(ListThreadsParams {
+                included_thread_ids: None,
                 page_size: 10,
                 cursor: None,
                 sort_key: ThreadSortKey::CreatedAt,
