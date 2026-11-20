@@ -29,6 +29,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroU64;
 
 use codex_utils_redacted_string::RedactedString;
 use schemars::JsonSchema;
@@ -637,6 +638,11 @@ pub enum OtelExporterKind {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct OtelConfigToml {
+    /// Command that prints a JSON object of HTTP headers for explicit OTLP HTTP exporters.
+    /// Runs from CODEX_HOME. Repository-local configuration cannot set OTel options.
+    pub headers_helper: Option<String>,
+    /// Interval between helper executions in milliseconds. Defaults to 29 minutes.
+    pub headers_helper_refresh_interval_ms: Option<NonZeroU64>,
     /// Byte limit for tool-result log output; independent of model-visible output.
     pub tool_result: Option<codex_protocol::config_types::ToolResultLogConfig>,
     /// Log successful SSE events whose kind ends in `.delta`. Defaults to true.
@@ -674,6 +680,8 @@ pub struct OtelConfigToml {
 /// Effective OTEL settings after defaults are applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OtelConfig {
+    pub headers_helper: Option<String>,
+    pub headers_helper_refresh_interval_ms: Option<NonZeroU64>,
     pub tool_result: codex_protocol::config_types::ToolResultLogConfig,
     pub log_sse_deltas: bool,
     pub log_user_prompt: bool,
@@ -690,6 +698,8 @@ pub struct OtelConfig {
 impl Default for OtelConfig {
     fn default() -> Self {
         OtelConfig {
+            headers_helper: None,
+            headers_helper_refresh_interval_ms: None,
             tool_result: Default::default(),
             log_sse_deltas: true,
             log_user_prompt: false,
@@ -870,6 +880,28 @@ impl QuickDial {
     }
 }
 
+/// The configured MCP server and advertised tool name identify a status line provider.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StatusLineProviderId {
+    pub server: String,
+    pub tool: String,
+}
+
+/// An explicit default overrides an MCP provider from a lower configuration layer.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(untagged)]
+pub enum StatusLineSelection {
+    Builtin(BuiltinStatusLine),
+    Mcp(StatusLineProviderId),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BuiltinStatusLine {
+    Default,
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -986,6 +1018,9 @@ pub struct Tui {
     /// When unset, the TUI defaults to: `model-with-reasoning`, `current-dir`, and `thread-name`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Local status line selection. Set to "default" for built-in items or specify an MCP server and tool.
+    pub status_line_provider: Option<Box<StatusLineSelection>>,
 
     /// Color status line items with colors derived from the active syntax theme.
     /// Defaults to `true`.
@@ -1243,6 +1278,9 @@ where
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct MarketplaceConfig {
+    /// Check for updates to installed Git plugins from this marketplace when plugins are listed.
+    #[serde(default)]
+    pub auto_update: bool,
     /// Last time Codex successfully added or refreshed this marketplace.
     #[serde(default)]
     pub last_updated: Option<String>,

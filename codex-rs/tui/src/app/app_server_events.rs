@@ -16,6 +16,7 @@ use crate::app_info::app_info_from_api;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use codex_app_server_client::AppServerEvent;
+use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -83,18 +84,24 @@ impl App {
                     "app-server event consumer lagged; dropping ignored events"
                 );
                 self.chat_widget.finish_mcp_startup_after_lag();
-                if let Some(task) = self.agents_overview.refresh_task.take() {
-                    task.abort();
-                }
-                self.agents_overview.request_id = None;
-                self.agents_overview.refresh_show_more = false;
-                self.agents_overview.active_refresh_thread_ids.clear();
-                self.agents_overview.refresh_pending = false;
-                self.agents_overview.initialized = false;
-                self.agents_overview.refresh_notifications.clear();
-                self.agents_overview.activity.clear();
-                self.agents_overview.last_messages.clear();
-                self.agents_overview.usage.clear();
+                let owner = app_server_client.backend_id();
+                self.cancel_agents_overview_refresh(owner);
+                self.reset_agents_overview_discovery(owner);
+                let registry = &self.backend_registry;
+                let belongs_to_other =
+                    |id: &ThreadId| registry.owner(*id).is_some_and(|known| known != owner);
+                self.agents_overview
+                    .refresh_notifications
+                    .retain(|id, _| belongs_to_other(id));
+                self.agents_overview
+                    .activity
+                    .retain(|id, _| belongs_to_other(id));
+                self.agents_overview
+                    .last_messages
+                    .retain(|id, _| belongs_to_other(id));
+                self.agents_overview
+                    .usage
+                    .retain(|id, _| belongs_to_other(id));
                 self.agents_overview.pending_usage = None;
                 if let Some(root) = self.primary_thread_id
                     && !self.agent_navigation.queue_picker_refresh(root)
@@ -113,6 +120,14 @@ impl App {
                 }
             }
             AppServerEvent::ServerNotification(notification) => {
+                if let ServerNotificationThreadTarget::Thread(thread_id) =
+                    server_notification_thread_target(notification.as_ref())
+                    && !self
+                        .backend_registry
+                        .observe(app_server_client.backend_id(), thread_id)
+                {
+                    return;
+                }
                 let request_resolved = matches!(
                     notification.as_ref(),
                     ServerNotification::ServerRequestResolved(_)
@@ -130,7 +145,42 @@ impl App {
                     .await;
                 self.repaint_agents_overview();
             }
+            AppServerEvent::ThreadStreamReconnected(thread_id) => {
+                if let Ok(id) = ThreadId::from_string(&thread_id)
+                    && self.current_displayed_thread_id() == Some(id)
+                    && self.chat_widget.thread_id() == Some(id)
+                    && self.chat_widget.thread_stream_disconnected
+                    && let Some(channel) = self.thread_event_channels.get_mut(&id)
+                    && channel
+                        .backend_id
+                        .is_none_or(|owner| owner == app_server_client.backend_id())
+                {
+                    channel.history_may_be_incomplete = true;
+                    self.chat_widget.thread_stream_disconnected = false;
+                    if self.active_turn_id_for_thread(id).await.is_none() {
+                        self.chat_widget.maybe_send_next_queued_input();
+                    }
+                }
+            }
             AppServerEvent::ThreadStreamDisconnected(error) => {
+                if let Ok(id) = ThreadId::from_string(&error.thread_id)
+                    && self.current_displayed_thread_id() == Some(id)
+                    && self.chat_widget.thread_id() == Some(id)
+                    && self.thread_event_channels.get(&id).is_some_and(|channel| {
+                        channel
+                            .backend_id
+                            .is_none_or(|owner| owner == app_server_client.backend_id())
+                    })
+                    && let AppServerRequestHandle::Cloud(handle) =
+                        app_server_client.request_handle()
+                {
+                    self.chat_widget.thread_stream_disconnected = true;
+                    if !self.chat_widget.is_user_turn_pending_or_running()
+                        && handle.reconnect_idle_thread(&error.thread_id)
+                    {
+                        return;
+                    }
+                }
                 self.handle_server_notification_event(
                     app_server_client,
                     ServerNotification::Error(*error),
@@ -225,6 +275,7 @@ impl App {
             }
         }
 
+        self.observe_sidebar_agent_event(&notification);
         if let ServerNotification::ThreadStatusChanged(status) = &notification {
             let _ = self.dynamic_tool_status_updates.send(status.clone());
         }
@@ -241,7 +292,7 @@ impl App {
         // Hidden helper threads must not enter visible thread routing or overview refreshes.
         let target = server_notification_thread_target(&notification);
         if let ServerNotificationThreadTarget::Thread(thread_id) = target
-            && let Some(sender) = self.temporary_structured_requests.get(&thread_id)
+            && let Some((_, sender)) = self.temporary_structured_requests.get(&thread_id)
         {
             if matches!(
                 &notification,
@@ -272,17 +323,14 @@ impl App {
         }
         self.handle_agent_picker_visibility_notification(app_server_client, &notification);
         self.track_agents_overview_notification(&notification);
-        // Retained blank sessions stay subscribed after their event channels are cleared.
         if let ServerNotification::ThreadSettingsUpdated(settings) = &notification
             && let Ok(thread_id) = ThreadId::from_string(&settings.thread_id)
-            && self.agents_overview.blank_sessions.contains_key(&thread_id)
-            && !self.thread_event_channels.contains_key(&thread_id)
+            && self
+                .update_retained_blank_settings(thread_id, settings)
+                .await
+            && let Some(input) = self.agents_overview.input_states.get_mut(&thread_id)
         {
-            self.apply_thread_settings_to_cached_session(thread_id, &settings.thread_settings)
-                .await;
-            if let Some(input) = self.agents_overview.input_states.get_mut(&thread_id) {
-                input.pending_thread_settings = Some(settings.clone());
-            }
+            input.pending_thread_settings = Some(settings.clone());
         }
         if matches!(
             &notification,
@@ -339,13 +387,10 @@ impl App {
                     pending.completions.push(notification.clone());
                     return;
                 }
-                if notification.login_id.is_some() {
-                    if notification.login_id.as_ref()
-                        != self.active_mcp_login_ids.get(&notification.name)
-                    {
-                        return;
-                    }
-                    self.active_mcp_login_ids.remove(&notification.name);
+                if let Some(login_id) = &notification.login_id
+                    && self.active_mcp_login_ids.remove(login_id).is_none()
+                {
+                    return;
                 }
             }
 
@@ -373,6 +418,10 @@ impl App {
                 return;
             }
             ServerNotification::AccountUpdated(notification) => {
+                let owner = app_server_client.backend_id();
+                self.cancel_agents_overview_refresh(owner);
+                self.reset_agents_overview_discovery(owner);
+                self.refresh_changed_agents_overview_threads(app_server_client);
                 self.agents_overview.usage.clear();
                 self.agents_overview.pending_usage = None;
                 self.agents_overview.usage_disabled = false;
@@ -611,9 +660,16 @@ impl App {
     ) {
         let request = &buffered_request.request;
         let thread_id = server_request_thread_id(request);
-        if thread_id
-            .is_some_and(|thread_id| self.temporary_structured_requests.contains_key(&thread_id))
+        if let Some((kind, _)) =
+            thread_id.and_then(|id| self.temporary_structured_requests.get(&id))
         {
+            // Managed policy can allow a title turn to ask a question. Keep it on
+            // the hidden thread until the structured turn times out, as on desktop.
+            if *kind == crate::temporary_structured_request::TemporaryThreadKind::Title
+                && matches!(request, ServerRequest::ToolRequestUserInput { params, .. } if params.is_blocking)
+            {
+                return;
+            }
             self.reject_unsupported_app_server_request(
                 super::app_server_requests::UnsupportedAppServerRequest {
                     request_id: request.id().clone(),
@@ -641,19 +697,25 @@ impl App {
                     app_server_client.thread_tool_transport(),
                     crate::dynamic_tools_mcp::ThreadToolTransport::Mcp(_)
                 );
+            let archiving =
+                thread_id.is_some_and(|id| self.agents_overview.pending_archives.contains_key(&id));
             if !tui_tool
                 || requires_mcp
+                || archiving
                 || codex_protocol::ThreadId::from_string(&params.thread_id)
                     .is_ok_and(|thread_id| self.abandoned_side_threads.contains(&thread_id))
             {
                 let response = crate::dynamic_tools::failure_response(if requires_mcp {
                     "TUI task tools require the approval-gated MCP server"
+                } else if archiving {
+                    "Source task is being archived"
                 } else {
                     "TUI dynamic tools require an active task in the TUI namespace"
                 });
                 self.app_event_tx.send(AppEvent::DynamicToolCallCompleted {
                     request_id: request_id.clone(),
                     response,
+                    reply: Some(buffered_request.reply),
                 });
                 return;
             }
@@ -672,6 +734,7 @@ impl App {
                     .and_then(|thread_id| ThreadId::from_string(thread_id).ok())
                     .is_none_or(|thread_id| app_server_client.task_tools_available(thread_id));
             let params = params.clone();
+            let reply = buffered_request.reply;
             let mut thread_start_params =
                 crate::app_server_session::thread_start_params_from_config(
                     &self.config,
@@ -710,6 +773,7 @@ impl App {
                 app_event_tx.send(AppEvent::DynamicToolCallCompleted {
                     request_id,
                     response,
+                    reply: Some(reply),
                 });
             });
             self.dynamic_tool_tasks
@@ -756,7 +820,6 @@ impl App {
             &request,
             ServerRequest::DynamicToolCall { .. }
                 | ServerRequest::AttestationGenerate { .. }
-                | ServerRequest::CurrentTimeRead { .. }
                 | ServerRequest::ApplyPatchApproval { .. }
                 | ServerRequest::ExecCommandApproval { .. }
         );

@@ -37,6 +37,7 @@ use codex_code_mode_protocol::host::RequestId;
 use codex_code_mode_protocol::host::SESSION_RESOURCE_LIMITS_CAPABILITY;
 use codex_code_mode_protocol::host::SessionId;
 use codex_code_mode_protocol::host::SupportedProtocolVersions;
+use codex_code_mode_protocol::host::TOOL_CATALOG_CAPABILITY;
 use codex_code_mode_protocol::host::WireWaitOutcome;
 use codex_code_mode_protocol::host::YIELD_OBSERVATION_CAPABILITY;
 use codex_code_mode_runtime::InProcessCodeModeSession;
@@ -308,6 +309,7 @@ async fn negotiate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             CELL_TERMINAL_READY_CAPABILITY,
             BOUNDED_OUTPUT_CAPABILITY,
             LARGE_DELEGATE_CAPACITY_CAPABILITY,
+            TOOL_CATALOG_CAPABILITY,
         ]
         .into_iter()
         .map(Capability::new)
@@ -451,6 +453,7 @@ impl HostState {
                             output_truncation: output_truncation
                                 .map(CodeModeOutputTruncation::from)
                                 .unwrap_or_default(),
+                            ..Default::default()
                         },
                     )
                 })
@@ -465,6 +468,7 @@ impl HostState {
                     self.respond(request_id, Err("code-mode request cancelled".to_string()));
                     return;
                 }
+                let catalog_revision = request.catalog_revision;
                 let request = match request.try_into() {
                     Ok(request) => request,
                     Err(err) => {
@@ -493,7 +497,9 @@ impl HostState {
                     session_id.clone(),
                     Arc::clone(&self.peer),
                 ));
-                let result = session.execute(request, delegate, Some(yield_signal)).await;
+                let result = session
+                    .execute_with_catalog(request, catalog_revision, delegate, Some(yield_signal))
+                    .await;
                 match result {
                     Ok(started) => {
                         let cell_id = started.cell_id.clone();

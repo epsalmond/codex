@@ -14,15 +14,12 @@ use super::TextProps;
 use super::TextWeight;
 use super::UiTree;
 use super::theme::RenderTheme;
-use crate::terminal_hyperlinks::HyperlinkLine;
-use crate::terminal_hyperlinks::TerminalHyperlink;
 use crate::terminal_hyperlinks::mark_hyperlink_cells;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use ratatui::style::Modifier;
-use ratatui::text::Span;
-use std::ops::Range;
+use ratatui::style::Style;
 use syntect::highlighting::Theme;
 use vtparse::CollectingVTActor;
 use vtparse::VTAction;
@@ -41,18 +38,18 @@ impl UiTree {
 }
 
 impl PreparedUiTree {
-    pub(crate) fn measure_natural(&self) -> Size {
-        self.0.as_ref().map_or_else(Size::default, |node| {
-            let width = u16::try_from(node.widths.preferred).unwrap_or(u16::MAX);
-            Size::new(width, node.natural_height)
-        })
-    }
-
     pub(crate) fn measure(&self, bounds: Size) -> Size {
         layout(self.0.as_ref(), bounds, /*draw*/ None)
     }
 
-    pub(crate) fn render(&self, area: Rect, theme: &Theme, buf: &mut Buffer) {
+    /// A plain style paints the same layout with theme styling and hyperlinks suppressed.
+    pub(crate) fn render(
+        &self,
+        area: Rect,
+        theme: &Theme,
+        buf: &mut Buffer,
+        plain_style: Option<Style>,
+    ) {
         let area = area.intersection(buf.area);
         let mut theme = RenderTheme::new(theme);
         layout(
@@ -61,35 +58,19 @@ impl PreparedUiTree {
             Some(&mut |row, col, text, cells, paint| {
                 let x = area.x + col as u16;
                 let y = area.y + row as u16;
-                buf.set_string(x, y, text, paint.style(&mut theme));
-                if let Some(href) = &paint.href {
+                buf.set_string(
+                    x,
+                    y,
+                    text,
+                    plain_style.unwrap_or_else(|| paint.style(&mut theme)),
+                );
+                if plain_style.is_none()
+                    && let Some(href) = &paint.href
+                {
                     mark_hyperlink_cells(buf, Rect::new(x, y, cells as u16, 1), href);
                 }
             }),
         );
-    }
-
-    pub(crate) fn render_line(&self, width: u16, theme: &Theme) -> HyperlinkLine {
-        let natural = self.measure_natural();
-        if width == 1 && (natural.width > 1 || natural.height > 1) {
-            return ratatui::text::Line::from("…").into();
-        }
-        let mut line = HyperlinkLine::default();
-        let mut theme = RenderTheme::new(theme);
-        layout(
-            self.0.as_ref(),
-            Size::new(width, /*height*/ 1),
-            Some(&mut |_, col, text, cells, paint| {
-                line.line
-                    .push_span(Span::styled(text.to_owned(), paint.style(&mut theme)));
-                if cells > 0
-                    && let Some(href) = &paint.href
-                {
-                    push_link(&mut line, col..col + cells, href);
-                }
-            }),
-        );
-        line
     }
 }
 
@@ -293,7 +274,7 @@ fn layout_band<'a>(
     ends.len()
 }
 
-fn sanitize_leaf(mut raw: String) -> String {
+pub(crate) fn sanitize_leaf(mut raw: String) -> String {
     // Directly constructed trees can bypass the wire decoder's text limit.
     if raw.len() > MAX_TEXT_BYTES {
         raw.truncate(raw.floor_char_boundary(MAX_TEXT_BYTES));
@@ -315,18 +296,6 @@ fn sanitize_leaf(mut raw: String) -> String {
             _ => None,
         })
         .collect()
-}
-
-fn push_link(line: &mut HyperlinkLine, columns: Range<usize>, href: &str) {
-    if let Some(last) = line.hyperlinks.last_mut()
-        && last.columns.end == columns.start
-        && last.destination == href
-    {
-        last.columns.end = columns.end;
-    } else {
-        line.hyperlinks
-            .push(TerminalHyperlink::web(columns, href.to_owned()));
-    }
 }
 
 impl TextProps {

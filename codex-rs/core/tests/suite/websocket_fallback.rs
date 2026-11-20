@@ -30,16 +30,14 @@ use wiremock::http::Method;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
+#[path = "websocket_fallback_close.rs"]
+mod close_code;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    Mock::given(method("GET"))
-        .and(path_regex(".*/responses$"))
-        .respond_with(ResponseTemplate::new(426))
-        .mount(&server)
-        .await;
+    let server = responses::start_sse_server().await;
 
     let response_mock = mount_sse_once(
         &server,

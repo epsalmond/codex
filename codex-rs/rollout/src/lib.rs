@@ -36,7 +36,9 @@ pub use codex_history::RetainedContextEvent;
 pub use codex_history::RetainedInputSource;
 pub use codex_history::RolloutItem;
 pub use codex_history::RolloutLine;
+pub use codex_history::next_model_id_ordinals;
 pub use codex_history::resume_multi_agent_version;
+pub use codex_history::stamp_item_ordinals;
 pub(crate) use codex_protocol::protocol;
 
 /// Decodes a persisted rollout record without Serde's flattened-envelope buffering.
@@ -155,11 +157,15 @@ pub use policy::should_persist_response_item_for_memories;
 pub use recorder::RolloutRecorder;
 pub use recorder::RolloutRecorderParams;
 pub use recorder::append_rollout_item_to_path;
+pub use recorder::thread_item_from_state_metadata;
 pub use reverse_jsonl_scanner::ReverseJsonlScanner;
 pub use reverse_jsonl_scanner::ScanOutcome;
 pub use rollout_reference_index::RolloutReferenceIndex;
-pub use search::first_rollout_content_match_snippet;
+pub use search::RolloutSearchCandidate;
+pub use search::RolloutSearchMatches;
+pub use search::RolloutSnippetMatcher;
 pub use search::search_rollout_matches;
+pub use search::search_rollout_matches_with_progress;
 pub use search::search_rollout_paths;
 pub use session_index::append_thread_name;
 pub use session_index::find_thread_meta_by_name_str;

@@ -10,7 +10,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::turn_input::TurnStartOptions;
-use codex_protocol::user_input::UserInput;
+use codex_user_input::ResolvedUserInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -34,6 +34,8 @@ pub struct UserInputMetadata {
     /// Optional host-assigned UUID for this particular Responses user item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_item_uuid: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_dictation: Option<bool>,
     #[serde(
         default,
         skip_serializing_if = "codex_history::UserInputOrigin::is_user"
@@ -45,7 +47,7 @@ pub struct UserInputMetadata {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TurnInput {
     UserInput {
-        content: Vec<UserInput>,
+        content: Vec<ResolvedUserInput>,
         client_id: Option<String>,
         #[serde(flatten)]
         metadata: UserInputMetadata,
@@ -403,6 +405,46 @@ impl InputQueue {
         let mut pending = self.mailbox_pending_mails.lock().await;
         self.read_mailbox(&mut pending);
         pending.drain(..).collect()
+    }
+
+    pub(crate) async fn pending_wake_options(&self) -> Option<TurnStartOptions> {
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        self.read_mailbox(&mut mails);
+        let mut options = Self::trigger_turn_options(&mails)?;
+        if let Some(mail) = mails.iter().find(|mail| mail.communication.trigger_turn) {
+            options.initiating_agent_path = Some(mail.communication.author.clone());
+        }
+        Some(options)
+    }
+
+    fn trigger_turn_options(
+        pending_mails: &VecDeque<PendingMailboxCommunication>,
+    ) -> Option<TurnStartOptions> {
+        // A later follow-up supersedes the earlier choice, including an omitted choice.
+        let mut start_options = pending_mails
+            .iter()
+            .rev()
+            .find(|mail| mail.communication.trigger_turn)
+            .map(|mail| mail.start_options.clone())?;
+        start_options.parent_turn_id = pending_mails
+            .iter()
+            .filter(|mail| mail.communication.trigger_turn)
+            .map(|mail| mail.start_options.parent_turn_id.as_deref())
+            .reduce(|expected, candidate| expected.filter(|id| candidate == Some(*id)))
+            .and_then(|id| id.filter(|id| !id.trim().is_empty()).map(str::to_string));
+        start_options.root_turn_id = pending_mails
+            .iter()
+            .find(|mail| mail.communication.trigger_turn)
+            .and_then(|mail| {
+                mail.start_options
+                    .parent_turn_id
+                    .as_deref()
+                    .filter(|id| !id.trim().is_empty())
+                    .and(mail.start_options.root_turn_id.as_deref())
+                    .filter(|id| !id.trim().is_empty())
+            })
+            .map(str::to_string);
+        Some(start_options)
     }
 
     /// Drains deliverable mail. Paused wakeups leave trigger-turn mail queued.
@@ -990,7 +1032,7 @@ impl TurnInputQueue {
         }
     }
 
-    fn has_user_input(&self) -> bool {
+    pub(crate) fn has_user_input(&self) -> bool {
         self.items
             .iter()
             .any(|input| matches!(input, TurnInput::UserInput { .. }))
@@ -1030,7 +1072,7 @@ mod tests {
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
     use codex_protocol::protocol::InterAgentCommunication;
-    use codex_protocol::user_input::UserInput;
+    use codex_user_input::ResolvedUserInput;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -1213,10 +1255,7 @@ mod tests {
                 &turn_state,
                 vec![TurnInput::UserInput {
                     metadata: Default::default(),
-                    content: vec![UserInput::Text {
-                        text: "steer".to_string(),
-                        text_elements: Vec::new(),
-                    }],
+                    content: vec![ResolvedUserInput::text("steer".to_string())],
                     client_id: None,
                 }],
             )
@@ -1305,10 +1344,7 @@ mod tests {
                 &turn_state,
                 vec![TurnInput::UserInput {
                     metadata: Default::default(),
-                    content: vec![UserInput::Text {
-                        text: "already pending".to_string(),
-                        text_elements: Vec::new(),
-                    }],
+                    content: vec![ResolvedUserInput::text("already pending".to_string())],
                     client_id: None,
                 }],
             )

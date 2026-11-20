@@ -1,3 +1,13 @@
+mod display;
+
+pub use display::AgentMessageDisplay;
+pub use display::AgentMessageDisplayVersion;
+pub use display::AnswerAnnotation;
+pub use display::AnswerReplacement;
+pub use display::BlockReason;
+pub use display::HelplineSubject;
+pub use display::TrustedContacts;
+
 use crate::AgentPath;
 use crate::ItemIdGenerator;
 use crate::ThreadId;
@@ -151,25 +161,8 @@ pub struct AsyncUserInputQuestion {
     pub options: Option<Vec<String>>,
 }
 
-/// A presentation instruction for Chat to apply to this answer when recovering history.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct AgentMessageDisplay {
-    /// Unknown actions must be left for the producing client to handle.
-    pub action: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub block_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub cyber_trusted_access: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub check_trusted_contacts: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS, JsonSchema)]
+#[serde(from = "display::StoredModeration")]
 pub struct AgentMessageModeration {
     pub moderated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -488,6 +481,10 @@ pub enum McpAppDisplayMode {
 pub struct McpToolCallItem {
     pub id: String,
     pub server: String,
+    /// Registration scope, not necessarily the server's execution environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
     pub tool: String,
     pub arguments: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]

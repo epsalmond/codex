@@ -61,6 +61,7 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "ThreadSearchOccurrence",
     "ThreadSearchTextRange",
     "TurnSettingsUpdateStatus",
+    "UserVerificationBiometricType",
     "UserVerificationProof",
     "UserVerificationCancellationReason",
     "UserVerificationErrorDetails",
@@ -2230,13 +2231,6 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("missing MCP login completion fixture"))?,
         )?;
         assert!(mcp_login_completion_ts.contains("loginId?: string | null"));
-        let server_request_ts = std::str::from_utf8(
-            fixture_tree
-                .get(Path::new("ServerRequest.ts"))
-                .ok_or_else(|| anyhow::anyhow!("missing ServerRequest.ts fixture"))?,
-        )?;
-        assert_eq!(server_request_ts.contains("currentTime/read"), false);
-        assert_eq!(server_request_ts.contains("CurrentTimeReadParams"), false);
         let typescript_index = std::str::from_utf8(
             fixture_tree
                 .get(Path::new("index.ts"))
@@ -2255,14 +2249,6 @@ mod tests {
         );
         assert_eq!(
             fixture_tree.contains_key(Path::new("v2/MockExperimentalMethodResponse.ts")),
-            false
-        );
-        assert_eq!(
-            fixture_tree.contains_key(Path::new("v2/CurrentTimeReadParams.ts")),
-            false
-        );
-        assert_eq!(
-            fixture_tree.contains_key(Path::new("v2/CurrentTimeReadResponse.ts")),
             false
         );
         assert_eq!(
@@ -2438,6 +2424,8 @@ mod tests {
                         && matches!(field_prefix.trim(), "startedAtMs?" | "completedAtMs?"))
                     || (path == Path::new("v2/McpServerOauthLoginCompletedNotification.ts")
                         && field_prefix.trim() == "loginId?")
+                    || (path == Path::new("v2/McpServerStatus.ts")
+                        && field_prefix.trim() == "environmentId?")
                     || (path == Path::new("v2/ProcessExitedNotification.ts")
                         && field_prefix.trim() == "outputDrainTimedOut?")
                     || (path == Path::new("v2/MisalignmentErrorDetails.ts")

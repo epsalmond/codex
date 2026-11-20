@@ -1,5 +1,6 @@
 //! Opens the internal Cloud preview with the selected ChatGPT credentials and local transport policy.
 
+use super::CloudTitleClient;
 use super::start_worker;
 use crate::AppServerClient;
 use crate::legacy_core::config::Config;
@@ -18,8 +19,8 @@ pub async fn connect(config: &Config) -> Result<AppServerClient> {
     let factory = config.http_client_factory();
     let policy = factory.network_policy().clone().for_current_account();
     let factory = factory.with_network_policy(policy);
-    let auth = config
-        .auth_config()
+    let storage = config.auth_config();
+    let auth = storage
         .load_auth(/*enable_codex_api_key_env*/ false)
         .await?
         .ok_or_else(|| eyre!("Sign in with ChatGPT and reopen Codex to use Cloud."))?;
@@ -35,11 +36,26 @@ pub async fn connect(config: &Config) -> Result<AppServerClient> {
     {
         bail!("Your ChatGPT credential expired. Reopen Codex to reconnect.");
     }
-    factory.network_policy().acquire(&ORIGIN.parse()?)?;
+    let origin = ORIGIN.parse()?;
+    let permit = factory.network_policy().acquire(&origin)?;
     let credentials = cloud::Credentials::new(&token, &account_id)?;
     let client = cloud::Client::new(&factory, ORIGIN, credentials)?;
+    let title_client = CloudTitleClient::new(
+        factory,
+        &auth,
+        account_id.clone(),
+        config.chatgpt_backend_url(),
+    )
+    .ok();
     Ok(start_worker(
         client,
+        super::idle::Login {
+            storage,
+            mode: auth.api_auth_mode(),
+            token,
+            account: account_id,
+            permit,
+        },
         protocol::GetAccountResponse {
             user_id: auth.get_chatgpt_user_id(),
             account: Some(protocol::Account::Chatgpt {
@@ -50,5 +66,6 @@ pub async fn connect(config: &Config) -> Result<AppServerClient> {
             requires_openai_auth: true,
             workspace_routing: None,
         },
+        title_client,
     ))
 }
