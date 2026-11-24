@@ -73,6 +73,7 @@ codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-thread-store = { workspace = true }
 codex-tools = { workspace = true }
+codex-user-input = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-audio = { workspace = true }
 codex-utils-cache = { workspace = true }
@@ -131,7 +132,6 @@ tracing = { workspace = true, features = ["log"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4", "v5", "v7"] }
 which = { workspace = true }
-whoami = { workspace = true }
 
 # Build OpenSSL from source for musl builds.
 [target.x86_64-unknown-linux-musl.dependencies]
@@ -185,6 +185,7 @@ tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = ["no-env-filter"] }
 walkdir = { workspace = true }
+whoami = { workspace = true }
 wiremock = { workspace = true }
 zstd = { workspace = true }
 
@@ -193,4 +194,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 
 [package.metadata.cargo-shear]
 ignored = ["openssl-sys"]
-ignored-paths = ["tests/remote_env_windows/*.rs"]
+ignored-paths = [
+    "tests/remote_env_windows/*.rs",
+]

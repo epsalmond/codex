@@ -25,6 +25,7 @@ use crate::tools::sandboxing::with_cached_approval;
 use codex_analytics::GuardianApprovalRequestSource;
 use codex_config::types::AppToolApproval;
 use codex_hooks::PermissionRequestDecision;
+use codex_mcp::McpServerKey;
 use codex_otel::ToolDecisionSource;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::approvals::ExecApprovalKind;
@@ -161,6 +162,8 @@ pub(crate) enum ApprovalAction {
         id: String,
         environment_id: String,
         server: String,
+        #[serde(skip_serializing)]
+        server_key: McpServerKey,
         tool_name: String,
         arguments: Option<serde_json::Value>,
         connector_id: Option<String>,
@@ -586,22 +589,22 @@ impl Session {
         Some(idle_code_mode_refusal_message(subject))
     }
 
-    /// The idle refusal for an MCP elicitation from `server_name`.
+    /// The idle refusal for an MCP elicitation from `server_key`.
     ///
     /// Server-initiated elicitations arrive on the MCP client's task, so besides this
     /// task's marker they also count as Code Mode work when a nested call to the same
     /// server is still in flight.
     pub(crate) async fn idle_code_mode_elicitation_refusal(
         &self,
-        server_name: &str,
+        server_key: &McpServerKey,
     ) -> Option<String> {
         if self.active_turn.lock().await.is_some()
-            || !(in_code_mode_nested_call() || self.code_mode_mcp_tool_call_in_flight(server_name))
+            || !(in_code_mode_nested_call() || self.code_mode_mcp_tool_call_in_flight(server_key))
         {
             return None;
         }
         Some(idle_code_mode_refusal_message(&format!(
-            "MCP elicitation from `{server_name}`"
+            "MCP elicitation from `{server_key}`"
         )))
     }
 

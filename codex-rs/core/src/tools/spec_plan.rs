@@ -248,13 +248,13 @@ fn apply_mcp_tool_exposure_policy(
         if !registered_mcp_tools.contains(&tool_name) {
             continue;
         }
-        let Some(server) = mcp.config().mcp_server_catalog.server(&tool.server_name) else {
+        let Some(server) = mcp.config().mcp_server_catalog.server(tool.server_key()) else {
             continue;
         };
         omitted_exposures_by_tool
             .entry(tool_name)
             .or_insert_with(|| {
-                let connector_omissions = (tool.server_name == CODEX_APPS_MCP_SERVER_NAME)
+                let connector_omissions = (tool.server_name() == CODEX_APPS_MCP_SERVER_NAME)
                     .then_some(tool.connector_id.as_deref())
                     .flatten()
                     .and_then(|id| apps_config.as_ref()?.apps.get(id))
@@ -830,6 +830,7 @@ fn required_child_management_tool_names(
         .map(|name| ToolName::new(namespace.map(str::to_owned), (*name).to_owned()))
         .collect::<Vec<_>>();
     if multi_agent_v2_enabled(turn_context)
+        && turn_context.config.multi_agent_v2.wait_agent_enabled
         && child_report_mode(turn_context) == ChildReportMode::WaitAgent
     {
         tools.push(ToolName::new(namespace.map(str::to_owned), "wait_agent"));
@@ -1358,6 +1359,12 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         exec_permission_approvals_enabled,
         include_environment_id,
         include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
+        has_powershell: context.environments.turn_environments().any(|environment| {
+            environment
+                .shell
+                .as_ref()
+                .is_some_and(|shell| shell.shell_type == crate::shell::ShellType::PowerShell)
+        }),
     };
     if features.enabled(Feature::UnifiedExec) {
         registry.add(ExecCommandHandler::new(options));
@@ -1378,14 +1385,19 @@ fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         || effective_tool_mode(context.turn_context, context.model_info) == ToolMode::CodeModeOnly
     {
         let messages = ResolvedModelMessages::from_model(context.model_info).mcp_resources();
+        let include_environment_id = context.mcp.config().mcp_server_catalog.exposure()
+            == codex_mcp::McpServerExposure::EnvironmentQualified;
         registry.add(ListMcpResourcesHandler::new(
             messages.and_then(|messages| messages.list_mcp_resources.as_ref()),
+            include_environment_id,
         ));
         registry.add(ListMcpResourceTemplatesHandler::new(
             messages.and_then(|messages| messages.list_mcp_resource_templates.as_ref()),
+            include_environment_id,
         ));
         registry.add(ReadMcpResourceHandler::new(
             messages.and_then(|messages| messages.read_mcp_resource.as_ref()),
+            include_environment_id,
         ));
     }
 }
@@ -1560,10 +1572,14 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             let model_messages = ResolvedModelMessages::from_model(context.model_info);
             let spawn_agent_description =
                 model_messages.multi_agent_tool_description_override("spawn_agent");
-            let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
-                ToolExposure::DirectModelOnly
-            } else {
+            let tools_in_code_mode = context
+                .model_info
+                .multi_agent_tools_in_code_mode
+                .unwrap_or(!turn_context.config.multi_agent_v2.non_code_mode_only);
+            let exposure = if tools_in_code_mode {
                 ToolExposure::Direct
+            } else {
+                ToolExposure::DirectModelOnly
             };
             let tool_namespace = turn_context.config.multi_agent_v2.tool_namespace.as_deref();
             let native_review = if turn_context
@@ -1655,7 +1671,9 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 // configure in the reserved `collaboration` namespace.
                 registry.register_trusted_with_exposure(Arc::new(ReportHandlerV2), exposure);
             }
-            if child_report_mode == ChildReportMode::WaitAgent {
+            if turn_context.config.multi_agent_v2.wait_agent_enabled
+                && child_report_mode == ChildReportMode::WaitAgent
+            {
                 registry.register_trusted_with_exposure(
                     multi_agent_v2_handler(
                         WaitAgentHandlerV2::new(context.wait_agent_timeouts),

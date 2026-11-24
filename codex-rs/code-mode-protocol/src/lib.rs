@@ -6,6 +6,7 @@ mod process_metrics;
 mod response;
 mod runtime;
 mod session;
+mod shared_catalog;
 
 pub use description::AUTOMATIC_DELIVERY_EXEC_GUIDANCE;
 pub use description::CODE_MODE_PRAGMA_PREFIX;

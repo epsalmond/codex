@@ -3,7 +3,7 @@ use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
 #[cfg(unix)]
 use codex_exec_server::CODEX_ARG0_EXEC_HELPER_ARG1;
 use codex_exec_server::CODEX_FS_HELPER_ARG1;
-use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use codex_sandboxing::linux::CODEX_LINUX_SANDBOX_ARG0;
 use codex_test_binary_support::TestBinaryDispatchGuard;
 use codex_test_binary_support::TestBinaryDispatchMode;
 use codex_test_binary_support::configure_test_binary_dispatch;
@@ -114,6 +114,7 @@ mod guardian_authorization_refresh;
 mod guardian_cached_score;
 #[path = "guardian_checkpoint_migration_tests.rs"]
 mod guardian_checkpoint_migration;
+mod reasoning_replay_metrics;
 // Uses the same command-approval harness as guardian_review below.
 mod builtin_model_catalog;
 mod canonical_plugin_connectors;

@@ -64,6 +64,11 @@ impl Session {
         }
         self.cancel_running_task(&mut task, &TaskCancellation::Failed)
             .await;
+        self.reject_realtime_handoffs_for_turn(&context.sub_id)
+            .await;
+        task.task
+            .abort(Arc::clone(self), Arc::clone(&context))
+            .await;
         // Accepted agent mail survives a host failure, held like a failed turn's until an explicit
         // follow-up or user turn. Other pending input is dropped.
         let mut pending = self

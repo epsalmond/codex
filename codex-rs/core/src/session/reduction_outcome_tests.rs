@@ -265,6 +265,7 @@ async fn inline_token_budget_compaction_forwards_hook_trigger(trigger: Compactio
         },
         session.thread_id,
         Arc::new(CoreHookMcpExecutor {
+            session: Default::default(),
             runtime: Arc::clone(&session.services.mcp_runtime),
             thread_id: session.thread_id,
         }),

@@ -25,7 +25,7 @@ use codex_code_mode::CodeModeSessionProvider;
 use codex_code_mode::CodeModeSessionProviderFuture;
 use codex_code_mode::CodeModeSessionResultFuture;
 use codex_code_mode::GrpcCodeModeSessionProvider;
-use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
+use codex_code_mode::TerminalReadySupport;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 use codex_utils_process::background_command;
 use hyper_util::rt::TokioIo;
@@ -45,6 +45,8 @@ use tonic::transport::Endpoint;
 use tower::ServiceExt;
 use tower::service_fn;
 
+const MAX_DISPLAYED_HOST_PROGRAM_BYTES: usize = 512;
+
 /// Only wraps Core's built-in providers; injected providers own their session settings.
 pub(crate) struct LocalServerOutputProvider {
     pub(crate) inner: Arc<dyn CodeModeSessionProvider>,
@@ -53,6 +55,10 @@ pub(crate) struct LocalServerOutputProvider {
 impl CodeModeSessionProvider for LocalServerOutputProvider {
     fn availability(&self) -> Result<(), String> {
         self.inner.availability()
+    }
+
+    fn terminal_ready_capability(&self) -> TerminalReadySupport {
+        self.inner.terminal_ready_capability()
     }
 
     fn sample_process_metrics(
@@ -65,6 +71,13 @@ impl CodeModeSessionProvider for LocalServerOutputProvider {
         self.create_session_with_limits(CodeModeSessionCellExecutionLimits::default())
     }
 
+    fn default_session_options(&self) -> CodeModeSessionOptions {
+        CodeModeSessionOptions {
+            output_truncation: CodeModeOutputTruncation::Server,
+            ..CodeModeSessionOptions::default()
+        }
+    }
+
     fn create_session_with_limits<'a>(
         &'a self,
         limits: CodeModeSessionCellExecutionLimits,
@@ -72,7 +85,7 @@ impl CodeModeSessionProvider for LocalServerOutputProvider {
         self.inner
             .create_session_with_options(CodeModeSessionOptions {
                 cell_execution_limits: limits,
-                output_truncation: CodeModeOutputTruncation::Server,
+                ..self.default_session_options()
             })
     }
 
@@ -102,8 +115,25 @@ impl ProcessOwnedGrpcCodeModeSessionProvider {
 
 impl CodeModeSessionProvider for ProcessOwnedGrpcCodeModeSessionProvider {
     fn availability(&self) -> Result<(), String> {
-        ProcessOwnedCodeModeSessionProvider::with_host_program(self.host_program.clone())
-            .availability()
+        if self.host_program.is_file() {
+            return Ok(());
+        }
+        // Spawn errors reach tool output. Keep the executable-bearing suffix of long paths.
+        let path = self.host_program.to_string_lossy();
+        let path = if path.len() > MAX_DISPLAYED_HOST_PROGRAM_BYTES {
+            let suffix_bytes = MAX_DISPLAYED_HOST_PROGRAM_BYTES - "...".len();
+            let start = path.ceil_char_boundary(path.len() - suffix_bytes);
+            format!("...{}", &path[start..])
+        } else {
+            path.into_owned()
+        };
+        Err(format!(
+            "failed to spawn code-mode host {path}: host executable was not found"
+        ))
+    }
+
+    fn terminal_ready_capability(&self) -> TerminalReadySupport {
+        TerminalReadySupport::Supported
     }
 
     fn sample_process_metrics(

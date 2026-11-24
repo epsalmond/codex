@@ -862,12 +862,7 @@ async fn one_shot_service_is_rejected_before_command_side_effects() {
         },
     )
     .await;
-    let handler = ExecCommandHandler::one_shot(ExecCommandHandlerOptions {
-        allow_tty: false,
-        exec_permission_approvals_enabled: false,
-        include_environment_id: false,
-        include_windows_shell_guidance: false,
-    });
+    let handler = ExecCommandHandler::one_shot(ExecCommandHandlerOptions::default());
     let error = match handler.handle(invocation).await {
         Ok(_) => panic!("one-shot service must be rejected"),
         Err(error) => error,

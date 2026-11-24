@@ -1,7 +1,7 @@
 //! Delivers terminal child results and completion activity to the agent tree.
 //!
 //! Sessions capture terminal state; the controller owns routing and queue-only delivery.
-//! Delivery remains best effort; metrics distinguish queue acceptance from delivery failure.
+//! Unconsumed results remain available to the source writer through graceful suspension.
 
 use super::LocalAgentControl;
 use super::LocalAgentRuntime;
@@ -14,6 +14,7 @@ use crate::session_prefix::format_inter_agent_blocked_message;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_inter_agent_interruption_message;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -292,7 +293,7 @@ impl LocalAgentControl {
             message,
             trigger_turn,
         );
-        communication.id = Some((self.runtime.item_id_generator)("msg"));
+        communication.id = Some(ResponseItemId::with_suffix("msg", uuid::Uuid::now_v7()));
         let delivery = self
             .deliver_polling_completion(parent_thread_id, outcome.thread_id, communication)
             .await;

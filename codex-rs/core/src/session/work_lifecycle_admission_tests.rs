@@ -8,7 +8,7 @@ use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputSubmission;
-use codex_protocol::user_input::UserInput;
+use codex_user_input::ResolvedUserInput;
 use pretty_assertions::assert_eq;
 /// Opts the root into observation, as an Exec root with the drain enabled does at startup.
 fn observe_root(session: &Session) -> crate::WorkObservation {
@@ -152,10 +152,9 @@ async fn closed_root_rejects_regular_turn_before_task_spawn() {
 
     let submission = crate::session::turn_input::handle(
         &session,
-        codex_protocol::turn_input::TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "must not start after close".to_string(),
-            text_elements: Vec::new(),
-        }]),
+        codex_protocol::turn_input::TurnInputRequest::user_input(vec![ResolvedUserInput::text(
+            "must not start after close".to_string(),
+        )]),
         TurnInputMode::StartOrSteer,
         "closed-turn".to_string(),
     )
@@ -185,10 +184,9 @@ async fn root_turn_capacity_is_reported_as_capacity_not_draining() {
 
     let submission = crate::session::turn_input::handle(
         &session,
-        codex_protocol::turn_input::TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "no room for another root turn".to_string(),
-            text_elements: Vec::new(),
-        }]),
+        codex_protocol::turn_input::TurnInputRequest::user_input(vec![ResolvedUserInput::text(
+            "no room for another root turn".to_string(),
+        )]),
         TurnInputMode::StartOrSteer,
         "over-capacity".to_string(),
     )
@@ -257,10 +255,9 @@ async fn rejected_task_start_releases_its_reservation_and_requeues_its_mail() {
         std::time::Duration::from_secs(2),
         crate::session::turn_input::handle(
             &session,
-            codex_protocol::turn_input::TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "next input".to_string(),
-                text_elements: Vec::new(),
-            }]),
+            codex_protocol::turn_input::TurnInputRequest::user_input(vec![
+                ResolvedUserInput::text("next input".to_string()),
+            ]),
             TurnInputMode::StartOrSteer,
             "next-turn".to_string(),
         ),

@@ -1,6 +1,7 @@
 use super::session_lifecycle_requests::recorded_params;
 use super::session_lifecycle_requests::start_recording_app_server;
 use super::*;
+use crate::app::session_lifecycle::FreshSessionStart;
 use app_test_support::create_fake_parented_rollout_with_source;
 use codex_state::SqliteConfig;
 use futures::SinkExt;
@@ -32,7 +33,7 @@ async fn visible_picker_retries_an_empty_preview_after_a_new_completion() -> Res
     app.start_fresh_session(
         &mut tui,
         &mut app_server,
-        /*session_start_source*/ None,
+        FreshSessionStart::PreserveCurrentView(None),
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
     )
@@ -41,7 +42,7 @@ async fn visible_picker_retries_an_empty_preview_after_a_new_completion() -> Res
     app.start_fresh_session(
         &mut tui,
         &mut app_server,
-        /*session_start_source*/ None,
+        FreshSessionStart::PreserveCurrentView(None),
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
     )
@@ -308,7 +309,7 @@ async fn close_idle_archives_only_idle_subtrees() -> Result<()> {
     app.start_fresh_session(
         &mut tui,
         &mut app_server,
-        /*session_start_source*/ None,
+        FreshSessionStart::PreserveCurrentView(None),
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
     )
@@ -392,7 +393,7 @@ async fn close_agent_archives_child_returns_main_and_preserves_failures() -> Res
     app.start_fresh_session(
         &mut tui,
         &mut app_server,
-        /*session_start_source*/ None,
+        FreshSessionStart::PreserveCurrentView(None),
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
     )

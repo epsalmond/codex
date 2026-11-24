@@ -241,7 +241,9 @@ impl Session {
             || update.summary.is_some()
             || update.service_tier.is_some();
         let requires_model_switching = updates_model_settings
-            || (update.approvals_reviewer.is_none() && update.environments.is_none());
+            || (update.approvals_reviewer.is_none()
+                && update.environments.is_none()
+                && update.request_country.is_none());
         if requires_model_switching && !self.features.enabled(Feature::StepModelSwitching) {
             return TurnSettingsUpdateOutcome::Rejected {
                 reason: "turn settings updates require the step_model_switching feature"
@@ -269,7 +271,22 @@ impl Session {
         let Some((turn_context, task_done, current)) = target else {
             return TurnSettingsUpdateOutcome::TargetUnavailable;
         };
+        if update
+            .model
+            .as_ref()
+            .is_some_and(|model| *model != current.model_info.slug)
+            && turn_context
+                .extension_data
+                .get::<crate::agent::helper_daybreak::SavedIntent>()
+                .is_some()
+        {
+            return TurnSettingsUpdateOutcome::Rejected {
+                reason: "Change the model on the next turn when using a saved Daybreak choice"
+                    .to_string(),
+            };
+        }
         let TurnSettingsUpdate {
+            request_country,
             approvals_reviewer,
             environments: environment_requests,
             model,
@@ -285,8 +302,10 @@ impl Session {
                 })
                 .collect::<Vec<_>>()
         });
-        let updates_step_settings = updates_model_settings || approvals_reviewer.is_some();
+        let updates_step_settings =
+            updates_model_settings || approvals_reviewer.is_some() || request_country.is_some();
         let update = StepSettingsUpdate {
+            request_country,
             approvals_reviewer,
             model,
             effort,
@@ -441,6 +460,21 @@ impl Session {
             );
             next.model_info = Arc::new(model);
             next.context_settings = Some(Arc::new(view));
+        }
+        // Changes to the selected model or reviewer must also satisfy the
+        // policy that continues to apply to this turn's MCP actions.
+        if update.approvals_reviewer.is_some() || update.model.is_some() {
+            let requirements = turn_context.config.config_layer_stack.requirements();
+            requirements
+                .approvals_reviewer
+                .can_set(&next.approvals_reviewer())
+                .and_then(|()| {
+                    next.selected().validate(&StepSettingsConstraints {
+                        requirements,
+                        ..constraints
+                    })
+                })
+                .map_err(|error| error.to_string())?;
         }
         Ok(next)
     }

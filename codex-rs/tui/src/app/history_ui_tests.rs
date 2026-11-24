@@ -8,6 +8,22 @@ use crate::history_cell::PlainHistoryCell;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn open_url_in_browser_routes_thread_link_in_the_tui() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+
+    app.open_url_in_browser_with(format!("codex://threads/{thread_id}"), |_| {
+        panic!("thread links should be handled in the TUI");
+    });
+
+    match rx.try_recv() {
+        Ok(AppEvent::OpenThreadLink { thread_id: opened }) => assert_eq!(opened, thread_id),
+        other => panic!("expected OpenThreadLink event, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn open_url_in_browser_success_shows_full_url_in_history() {
     let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
     let url = "https://example.com/review/123?tab=files&line=42#discussion";

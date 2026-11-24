@@ -25,7 +25,7 @@ impl App {
             return pending.guide(&self.keymap.chords, |_| true);
         }
         let side = self.sidebar_has_focus();
-        let can_switch = self.chooser_focus().is_some() || self.switchable_side_child().is_some();
+        let can_switch = self.panel_focus().is_some() || self.switchable_side_child().is_some();
         let can_size = super::side_pane::split_layout(self, tui, area).is_some();
         let can_resize = can_size && side && self.zoomed_thread.is_none();
         let mut groups = [
@@ -63,9 +63,11 @@ impl App {
                     (1, "Pane right")
                 }
                 "hide_pane" | "focus_pane_left" | "focus_pane_right" => continue,
+                "choose_cloud_environment" => (2, "Choose environment"),
                 "open_presets" => (2, "Presets ›"),
                 "find_transcript" => (2, "Find text"),
                 "select_transcript" => (2, "Select transcript"),
+                "mark_markdown" => (2, "Mark table cell"),
                 "focus_conversation_composer" => (2, "Composer"),
                 other => (2, other),
             };

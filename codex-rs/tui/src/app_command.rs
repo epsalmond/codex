@@ -20,34 +20,35 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_utils_path_uri::PathUri;
 use serde::Serialize;
 use serde::Serializer;
 use serde_json::Value;
 
 /// Keeps ICE credentials out of command diagnostics and session recordings.
-/// Convert back to a string only when sending the offer to app-server signaling.
+/// Convert back to a string only at the media signaling boundary.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct RealtimeOfferSdp(String);
+pub(crate) struct RealtimeSdp(String);
 
-impl From<String> for RealtimeOfferSdp {
+impl From<String> for RealtimeSdp {
     fn from(value: String) -> Self {
         Self(value)
     }
 }
 
-impl From<RealtimeOfferSdp> for String {
-    fn from(value: RealtimeOfferSdp) -> Self {
+impl From<RealtimeSdp> for String {
+    fn from(value: RealtimeSdp) -> Self {
         value.0
     }
 }
 
-impl fmt::Debug for RealtimeOfferSdp {
+impl fmt::Debug for RealtimeSdp {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("<redacted>")
     }
 }
 
-impl Serialize for RealtimeOfferSdp {
+impl Serialize for RealtimeSdp {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -113,7 +114,8 @@ pub(crate) enum AppCommand {
     CleanBackgroundTerminals,
     RealtimeConversationStart {
         thread_id: ThreadId,
-        offer_sdp: RealtimeOfferSdp,
+        attempt_id: u64,
+        offer_sdp: RealtimeSdp,
     },
     RealtimeConversationStop {
         thread_id: ThreadId,
@@ -187,7 +189,7 @@ pub(crate) enum AppCommand {
     },
     ReloadUserConfig,
     ListSkills {
-        cwds: Vec<PathBuf>,
+        cwd: PathUri,
         force_reload: bool,
     },
     Compact,
@@ -363,8 +365,8 @@ impl AppCommand {
         Self::ReloadUserConfig
     }
 
-    pub(crate) fn list_skills(cwds: Vec<PathBuf>, force_reload: bool) -> Self {
-        Self::ListSkills { cwds, force_reload }
+    pub(crate) fn list_skills(cwd: PathUri, force_reload: bool) -> Self {
+        Self::ListSkills { cwd, force_reload }
     }
 
     pub(crate) fn compact() -> Self {

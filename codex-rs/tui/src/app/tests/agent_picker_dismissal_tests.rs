@@ -2,6 +2,7 @@ use super::*;
 use crate::bottom_pane::StatusLineItem;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use crate::multi_agents::SubagentCounts;
+use crate::temporary_structured_request::TemporaryThreadKind;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadStatus;
@@ -965,7 +966,8 @@ async fn rejected_parent_router_arrivals_cannot_create_or_restore_receivers() ->
         .set_pending_jobs(dismissed, Some(Vec::new()));
     press_q(&mut app, &mut rx);
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-    app.temporary_structured_requests.insert(structured, sender);
+    app.temporary_structured_requests
+        .insert(structured, (TemporaryThreadKind::Recap, sender));
     for id in [structured, abandoned] {
         app.ensure_thread_channel(id);
     }

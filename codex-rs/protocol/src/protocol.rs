@@ -61,10 +61,9 @@ use crate::plan_tool::UpdatePlanArgs;
 use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
+use crate::response_item_id::OptionalWireItemId;
 use crate::turn_input::CyberAccessProgram;
 use crate::turn_input::SuspendTurnOutcome;
-use crate::turn_input::TurnInputMode;
-use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
 use crate::turn_input::TurnStartOptions;
 use codex_extension_items::image_generation::GeneratedImageRef;
@@ -133,6 +132,8 @@ pub const ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG: &str = "<environments_instructions
 pub const ENVIRONMENTS_INSTRUCTIONS_CLOSE_TAG: &str = "</environments_instructions>";
 pub const APPS_INSTRUCTIONS_OPEN_TAG: &str = "<apps_instructions>";
 pub const APPS_INSTRUCTIONS_CLOSE_TAG: &str = "</apps_instructions>";
+pub const CATALOG_APPS_INSTRUCTIONS_OPEN_TAG: &str = "<catalog_apps_instructions>";
+pub const CATALOG_APPS_INSTRUCTIONS_CLOSE_TAG: &str = "</catalog_apps_instructions>";
 pub const SKILLS_INSTRUCTIONS_OPEN_TAG: &str = "<skills_instructions>";
 pub const SKILLS_INSTRUCTIONS_CLOSE_TAG: &str = "</skills_instructions>";
 pub const PLUGINS_INSTRUCTIONS_OPEN_TAG: &str = "<plugins_instructions>";
@@ -221,10 +222,23 @@ pub struct ConversationStartParams {
     pub transport: Option<ConversationStartTransport>,
     /// Overrides the configured realtime protocol version for this session only.
     pub version: Option<RealtimeConversationVersion>,
-    pub voice: Option<RealtimeVoice>,
+    /// None inherits the thread setting; Some(None) selects the provider default.
+    pub voice: Option<Option<RealtimeVoice>>,
 }
 
-/// Controls when an in-process realtime attachment may establish a connection.
+/// Authentication selected by the embedding host for an existing call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RealtimeExistingCallAuth {
+    /// Use the model provider's authentication and runtime destination checks.
+    #[default]
+    ModelProvider,
+    /// Use the selected auth manager's external headers and the host's transport.
+    /// The trusted host must authorize the destination, call owner, and calling
+    /// workload before selecting this mode. Never derive it from a client URL.
+    ExternalHeaders,
+}
+
+/// Controls connection admission and authentication for an in-process attachment.
 #[derive(Debug, Clone, Default)]
 pub struct RealtimeAttachmentOptions {
     /// Set the watch to `true` to cancel a pending connection.
@@ -232,6 +246,8 @@ pub struct RealtimeAttachmentOptions {
     pub cancel: Option<watch::Receiver<bool>>,
     /// Optional caller deadline for publishing the connection. Cleanup can finish later.
     pub start_before: Option<SystemTime>,
+    /// Applies only to existing calls; external headers require an explicit host-selected URL.
+    pub existing_call_auth: RealtimeExistingCallAuth,
 }
 
 /// A caller-owned realtime sideband. Dropping either direction seals input and ends
@@ -410,6 +426,7 @@ impl RealtimeVoicesList {
                 RealtimeVoice::Arbor,
                 RealtimeVoice::Sol,
                 RealtimeVoice::Cove,
+                RealtimeVoice::Marin,
                 RealtimeVoice::Aube,
                 RealtimeVoice::Bubbie,
                 RealtimeVoice::Haetsal,
@@ -555,6 +572,8 @@ pub struct ConversationSpeechParams {
 /// task kind. Child sessions and consumers of frozen initial settings are unchanged.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TurnSettingsUpdate {
+    /// Trusted host country. `None` preserves the current setting. Published for the named live turn's subsequent steps.
+    pub request_country: Option<crate::RequestCountry>,
     /// Changes the reviewer for subsequent approval requests, not pending reviews.
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     /// Replaces the selection for subsequent steps, without changing future turns.
@@ -597,6 +616,8 @@ pub enum TurnSettingsUpdateOutcome {
 )]
 pub struct ThreadSettingsOverrides {
     pub context_settings: Option<crate::context_settings::ContextSettingsUpdate>,
+    /// Trusted host country. `None` preserves the current setting. Inherited by future turns on acceptance.
+    pub request_country: Option<crate::RequestCountry>,
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
     pub environments: Option<TurnEnvironmentRequests>,
 
@@ -722,6 +743,8 @@ pub enum Op {
 
     /// Fail only the named active turn, emitting an error and failed completion.
     FailTurn { turn_id: String, error: ErrorEvent },
+    /// Interrupt a spawned agent, respecting its configured sampling boundary.
+    InterruptAgent,
 
     /// Interrupt the named turn only if no input is queued for it.
     /// The decision is acknowledged before cancellation finishes.
@@ -769,7 +792,13 @@ pub enum Op {
     /// Close the running realtime conversation stream.
     RealtimeConversationClose,
 
-    /// Close only the matching session after earlier start operations finish.
+    /// End the identified logical call, including after its transport owner is lost.
+    RealtimeConversationEnd {
+        realtime_session_id: String,
+        reply: oneshot::Sender<CodexResult<()>>,
+    },
+
+    /// Disconnect only the matching transport after earlier start operations finish.
     RealtimeConversationDetach {
         realtime_session_id: String,
         reply: oneshot::Sender<CodexResult<()>>,
@@ -777,14 +806,6 @@ pub enum Op {
 
     /// Request the list of voices supported by realtime conversation streams.
     RealtimeConversationListVoices,
-
-    /// Submit turn input using the requested routing behavior.
-    #[debug("TurnInput {{ requested_settings: {:?} }}", request.thread_settings)]
-    TurnInput {
-        request: Box<TurnInputRequest>,
-        mode: TurnInputMode,
-        reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
-    },
 
     /// Resume an interrupted regular turn.
     #[debug("RecoverTurn {{ requested_settings: {thread_settings:?} }}")]
@@ -1041,7 +1062,8 @@ impl FromStr for ThreadHistoryMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct InterAgentCommunication {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(with = "OptionalWireItemId")]
+    #[ts(optional, as = "Option<ResponseItemId>")]
     pub id: Option<ResponseItemId>,
     pub author: AgentPath,
     pub recipient: AgentPath,
@@ -1172,6 +1194,7 @@ impl Op {
         match self {
             Self::Interrupt => "interrupt",
             Self::FailTurn { .. } => "fail_turn",
+            Self::InterruptAgent => "interrupt_agent",
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
@@ -1181,9 +1204,9 @@ impl Op {
             Self::RealtimeConversationText(_) => "realtime_conversation_text",
             Self::RealtimeConversationSpeech(_) => "realtime_conversation_speech",
             Self::RealtimeConversationClose => "realtime_conversation_close",
+            Self::RealtimeConversationEnd { .. } => "realtime_conversation_end",
             Self::RealtimeConversationDetach { .. } => "realtime_conversation_detach",
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
-            Self::TurnInput { .. } => "turn_input",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
             Self::ThreadSettings { .. } => "thread_settings",
@@ -1396,11 +1419,7 @@ impl WritableRoot {
             }
         }
 
-        if self.path_contains_protected_metadata_name(path) {
-            return false;
-        }
-
-        true
+        !self.path_contains_protected_metadata_name(path)
     }
 
     fn path_contains_protected_metadata_name(&self, path: &Path) -> bool {
@@ -2154,6 +2173,9 @@ pub enum CodexErrorInfo {
     ContextWindowExceeded,
     SessionBudgetExceeded,
     UsageLimitExceeded,
+    ApiKeySpendLimitExceeded,
+    ProjectSpendLimitExceeded,
+    OrganizationSpendLimitExceeded,
     RateLimitExceeded,
     FlexUnavailable,
     ServerOverloaded,
@@ -2197,6 +2219,16 @@ pub enum CodexErrorInfo {
 }
 
 impl CodexErrorInfo {
+    pub fn is_usage_limit(&self) -> bool {
+        matches!(
+            self,
+            Self::UsageLimitExceeded
+                | Self::ApiKeySpendLimitExceeded
+                | Self::ProjectSpendLimitExceeded
+                | Self::OrganizationSpendLimitExceeded
+        )
+    }
+
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
@@ -2204,6 +2236,9 @@ impl CodexErrorInfo {
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
+            | Self::ApiKeySpendLimitExceeded
+            | Self::ProjectSpendLimitExceeded
+            | Self::OrganizationSpendLimitExceeded
             | Self::RateLimitExceeded
             | Self::FlexUnavailable
             | Self::ServerOverloaded
@@ -2246,6 +2281,9 @@ impl CodexErrorInfo {
             | Self::SessionBudgetExceeded
             | Self::InferenceHookDenied
             | Self::UsageLimitExceeded
+            | Self::ApiKeySpendLimitExceeded
+            | Self::ProjectSpendLimitExceeded
+            | Self::OrganizationSpendLimitExceeded
             | Self::CyberPolicy
             | Self::BioPolicy
             | Self::MisalignmentPolicyViolation
@@ -2502,12 +2540,30 @@ pub struct ModelVerificationEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+#[serde(from = "StoredTargetedModeration")]
 pub struct TargetedAnswerModeration {
     pub item_id: String,
     pub moderated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub display: Option<crate::items::AgentMessageDisplay>,
+}
+
+#[derive(Deserialize)]
+struct StoredTargetedModeration {
+    item_id: String,
+    #[serde(flatten)]
+    decision: crate::items::AgentMessageModeration,
+}
+
+impl From<StoredTargetedModeration> for TargetedAnswerModeration {
+    fn from(value: StoredTargetedModeration) -> Self {
+        Self {
+            item_id: value.item_id,
+            moderated: value.decision.moderated,
+            display: value.decision.display,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -2786,7 +2842,7 @@ impl FromStr for RateLimitReachedType {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
 pub struct RateLimitWindow {
-    /// Percentage (0-100) of the window that has been consumed.
+    /// Percentage of the allowance consumed during the window. Can exceed 100.
     pub used_percent: f64,
     /// Rolling window duration, in minutes.
     #[ts(type = "number | null")]
@@ -3105,6 +3161,10 @@ pub struct AgentReasoningSectionBreakEvent {
 pub struct McpInvocation {
     /// Name of the MCP server as defined in the config.
     pub server: String,
+    /// Registration scope, not necessarily the server's execution environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
     /// Name of the tool as given by the MCP server.
     pub tool: String,
     /// Arguments to the tool call.
@@ -3543,7 +3603,7 @@ pub enum MultiAgentVersion {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 pub struct SessionContextWindow {
-    /// UUIDv7 identity of this context window.
+    /// Persisted model-facing window identity.
     pub window_id: crate::ContextWindowId,
 }
 
@@ -4270,6 +4330,10 @@ pub struct TurnDiffEvent {
 pub struct McpStartupUpdateEvent {
     /// Server name being started.
     pub server: String,
+    /// Registration scope, not necessarily the server's execution environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
     /// Current startup status.
     pub status: McpStartupStatus,
 }
@@ -5937,6 +6001,7 @@ mod tests {
             item: TurnItem::McpToolCall(McpToolCallItem {
                 id: "mcp-1".into(),
                 server: "server".into(),
+                environment_id: None,
                 tool: "tool".into(),
                 arguments: json!({"arg": "value"}),
                 connector_id: Some("connector".into()),
@@ -6067,6 +6132,7 @@ mod tests {
             item: TurnItem::McpToolCall(McpToolCallItem {
                 id: "mcp-1".into(),
                 server: "server".into(),
+                environment_id: None,
                 tool: "tool".into(),
                 arguments: json!({"arg": "value"}),
                 connector_id: Some("connector".into()),
@@ -6946,6 +7012,7 @@ mod tests {
             id: "init".to_string(),
             msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
                 server: "srv".to_string(),
+                environment_id: None,
                 status: McpStartupStatus::Failed {
                     error: "boom".to_string(),
                     reason: Some(McpStartupFailureReason::ReauthenticationRequired),

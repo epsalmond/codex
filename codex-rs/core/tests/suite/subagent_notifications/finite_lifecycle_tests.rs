@@ -2,6 +2,7 @@
 
 use super::*;
 use codex_code_mode::*;
+use codex_core::ProcessOwnedGrpcCodeModeSessionProvider;
 use codex_protocol::protocol::MultiAgentVersion;
 use core_test_support::code_mode_host::CodeModeHostRecorder;
 use core_test_support::process::process_is_alive;
@@ -167,7 +168,7 @@ struct CompatCallbacks {
 /// The real process/stdio provider, exposing the older visible-wait capability. Only readiness
 /// negotiation/callbacks change; execution, observation, cancellation and close remain native.
 struct CompatProvider {
-    inner: ProcessOwnedCodeModeSessionProvider,
+    inner: ProcessOwnedGrpcCodeModeSessionProvider,
     callbacks: watch::Sender<CompatCallbacks>,
     close_gate: Arc<tokio::sync::Mutex<Option<oneshot::Receiver<()>>>>,
 }
@@ -307,7 +308,7 @@ async fn compatibility_cell_child_stays_waiting_until_explicit_wait_terminates_i
     let (callbacks, mut callback_updates) = watch::channel(CompatCallbacks::default());
     let (close_tx, close_rx) = oneshot::channel();
     let provider = Arc::new(CompatProvider {
-        inner: ProcessOwnedCodeModeSessionProvider::with_host_program(recorder.program()),
+        inner: ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(recorder.program()),
         callbacks,
         close_gate: Arc::new(tokio::sync::Mutex::new(Some(close_rx))),
     });
@@ -537,7 +538,7 @@ struct NativeCellCallbacks {
 /// Forward every operation to the process-owned host. An optional gate holds the first actual
 /// nested dispatch at the delegate boundary, so it reaches the native handler after turn cleanup.
 struct NativeCellProvider {
-    inner: ProcessOwnedCodeModeSessionProvider,
+    inner: ProcessOwnedGrpcCodeModeSessionProvider,
     callbacks: watch::Sender<NativeCellCallbacks>,
     dispatch_gate: Arc<tokio::sync::Mutex<Option<oneshot::Receiver<()>>>>,
 }
@@ -781,7 +782,7 @@ fn native_cell_provider(
     let (callbacks, updates) = watch::channel(NativeCellCallbacks::default());
     (
         Arc::new(NativeCellProvider {
-            inner: ProcessOwnedCodeModeSessionProvider::with_host_program(recorder.program()),
+            inner: ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(recorder.program()),
             callbacks,
             dispatch_gate: Arc::new(tokio::sync::Mutex::new(dispatch_gate)),
         }),

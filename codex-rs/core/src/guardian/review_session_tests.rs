@@ -2,7 +2,9 @@ use super::*;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::context::ContextualUserFragment;
 use crate::context_manager::ContextManager;
+use crate::guardian_review::ReviewRetrieval;
 use crate::session::Submission;
+use crate::session::submission::SubmissionOp;
 use codex_guardian_reviewer::GuardianReviewResponse;
 use codex_guardian_reviewer::ReviewerRequest;
 use codex_guardian_reviewer::guardian_output_contract_prompt;
@@ -41,9 +43,10 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
         /*live_network_config*/ None,
         &params.review_model.model,
         params.review_model.reasoning_effort.clone(),
-        params.reasoning_summary,
-        params.personality,
+        params.parent_context.reasoning_summary,
+        params.parent_context.personality,
         ResolvedModelMessages::bundled(),
+        ReviewRetrieval::ConversationHistory,
     )
     .unwrap();
     params.parent_session = Arc::clone(&parent);
@@ -138,7 +141,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             Some(http::HeaderValue::from_static("__oailb=original-parent"))
         );
         let id = submission.id;
-        let Op::TurnInput { request, reply, .. } = submission.op else {
+        let SubmissionOp::TurnInput { request, reply, .. } = submission.op else {
             panic!("expected reviewer prompt");
         };
         let codex_protocol::turn_input::TurnInput::UserInput { content, .. } = request.input else {
@@ -182,7 +185,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
 async fn test_review_session() -> (
     GuardianReviewSession,
     async_channel::Sender<Event>,
-    async_channel::Receiver<Submission>,
+    async_channel::Receiver<Box<Submission>>,
 ) {
     let (session, _turn, _rx) = crate::session::tests::make_session_and_context_with_rx().await;
     let (tx_sub, rx_sub) = async_channel::bounded(4);
@@ -272,6 +275,7 @@ async fn test_review_params() -> GuardianReviewSessionParams {
         reasoning_summary,
         personality,
         ResolvedModelMessages::bundled(),
+        ReviewRetrieval::ConversationHistory,
     )
     .expect("guardian config");
 
@@ -304,8 +308,6 @@ async fn test_review_params() -> GuardianReviewSessionParams {
             model_overridden: false,
             model_override: None,
         },
-        reasoning_summary,
-        personality,
         external_cancel: None,
         deadline: codex_guardian_reviewer::ReviewDeadline::At(
             tokio::time::Instant::now() + Duration::from_secs(30),
@@ -389,6 +391,7 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
         ReasoningSummaryConfig::default(),
         /*personality*/ None,
         ResolvedModelMessages::bundled(),
+        ReviewRetrieval::ConversationHistory,
     )
     .expect("cached guardian config");
     let cached_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -410,6 +413,7 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
         ReasoningSummaryConfig::default(),
         /*personality*/ None,
         ResolvedModelMessages::bundled(),
+        ReviewRetrieval::ConversationHistory,
     )
     .expect("next guardian config");
     let next_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -563,6 +567,7 @@ async fn guardian_review_session_compact_scope_change_invalidates_cached_session
         ReasoningSummaryConfig::default(),
         /*personality*/ None,
         ResolvedModelMessages::bundled(),
+        ReviewRetrieval::ConversationHistory,
     )
     .expect("cached guardian config");
     let cached_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -584,6 +589,7 @@ async fn guardian_review_session_compact_scope_change_invalidates_cached_session
         ReasoningSummaryConfig::default(),
         /*personality*/ None,
         ResolvedModelMessages::bundled(),
+        ReviewRetrieval::ConversationHistory,
     )
     .expect("next guardian config");
     let next_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -664,6 +670,7 @@ async fn guardian_review_session_config_resolves_policy_and_template(
         ReasoningSummaryConfig::default(),
         /*personality*/ None,
         ResolvedModelMessages::from_model(&model),
+        ReviewRetrieval::ConversationHistory,
     )
     .expect("guardian config");
 
@@ -712,7 +719,7 @@ async fn run_review_on_reused_session_waits_for_submitted_turn() {
     });
     let submission = rx_sub.recv().await.expect("guardian submission");
     let id = submission.id;
-    let Op::TurnInput { reply, .. } = submission.op else {
+    let SubmissionOp::TurnInput { reply, .. } = submission.op else {
         panic!("expected turn-input submission");
     };
     reply
@@ -780,7 +787,7 @@ async fn run_review_removes_trunk_when_event_stream_is_broken() {
         tokio::spawn(async move { run_guardian_review_session(manager_for_review, params).await });
     let submission = rx_sub.recv().await.expect("guardian submission");
     let id = submission.id;
-    let Op::TurnInput { reply, .. } = submission.op else {
+    let SubmissionOp::TurnInput { reply, .. } = submission.op else {
         panic!("expected turn-input submission");
     };
     reply
@@ -901,6 +908,49 @@ async fn wait_for_guardian_review_preserves_structured_session_error() {
     assert!(turn_completed);
 }
 
+#[test_case::test_case(CodexErrorInfo::ContextWindowExceeded, Some(ExhaustedReviewBudget::Detected), true; "local exhaustion asks the user")]
+#[test_case::test_case(CodexErrorInfo::ContextWindowExceeded, None, false; "backend context limit denies")]
+#[test_case::test_case(CodexErrorInfo::ContextWindowExceeded, Some(ExhaustedReviewBudget::Compacting), false; "compaction failure denies")]
+#[test_case::test_case(CodexErrorInfo::ServerOverloaded, Some(ExhaustedReviewBudget::Detected), false; "unrelated server failure denies")]
+fn optional_sync_verdict_falls_back_only_for_local_input_exhaustion(
+    error_info: CodexErrorInfo,
+    budget: Option<ExhaustedReviewBudget>,
+    expect_user_approval: bool,
+) {
+    let turn = ReviewTurnResult {
+        outcome: GuardianReviewSessionOutcome::SessionFailed {
+            error: anyhow::anyhow!("review failed"),
+            error_info: Some(error_info),
+            retry_at: None,
+        },
+        disposition: SessionDisposition::Reusable,
+        turn_completed: true,
+    };
+    let turn = finish_budgeted_verdict(turn, budget.as_ref());
+    let completion = codex_guardian_reviewer::complete_review(
+        turn.outcome.into(),
+        &model_info_from_slug("active-model"),
+        /*require_guardian*/ false,
+        /*event*/ None,
+        GuardianReviewAnalyticsResult::without_session(),
+    );
+    match completion.decision {
+        None => assert!(expect_user_approval),
+        Some(codex_protocol::protocol::ReviewDecision::Denied { .. }) => {
+            assert!(!expect_user_approval)
+        }
+        other => panic!("unexpected review decision: {other:?}"),
+    }
+    assert_eq!(
+        turn.disposition,
+        if budget.is_some() {
+            SessionDisposition::Discard
+        } else {
+            SessionDisposition::Reusable
+        }
+    );
+}
+
 #[tokio::test]
 async fn wait_for_guardian_review_ignores_prior_turn_aborts() {
     let (review_session, tx_event, _rx_sub) = test_review_session().await;
@@ -951,7 +1001,7 @@ async fn wait_for_guardian_review_timeout_drains_expected_turn_after_stale_termi
     let tx_interrupt_event = tx_event.clone();
     let interrupt_response = tokio::spawn(async move {
         let submission = rx_sub.recv().await.expect("interrupt submission");
-        assert!(matches!(submission.op, Op::Interrupt));
+        assert!(matches!(submission.op.as_protocol(), Some(Op::Interrupt)));
         tx_interrupt_event
             .send(turn_aborted_event("current-turn"))
             .await
@@ -992,7 +1042,7 @@ async fn wait_for_guardian_review_cancel_drains_expected_turn_after_stale_termin
     let tx_interrupt_event = tx_event.clone();
     let interrupt_response = tokio::spawn(async move {
         let submission = rx_sub.recv().await.expect("interrupt submission");
-        assert!(matches!(submission.op, Op::Interrupt));
+        assert!(matches!(submission.op.as_protocol(), Some(Op::Interrupt)));
         tx_interrupt_event
             .send(turn_aborted_event("current-turn"))
             .await
@@ -1074,6 +1124,7 @@ async fn prewarm_test_session(
     let context = setup::prepare_prewarm(
         Arc::clone(&params.parent_session),
         Arc::clone(params.parent_context.turn()),
+        ReviewRetrieval::ConversationHistory,
     )
     .await
     .unwrap();
@@ -1133,6 +1184,8 @@ async fn compaction_and_review_submissions_share_execution_observer() {
     let (review_session, events, submissions) = test_review_session().await;
     let child_session = Arc::clone(&review_session.session);
     let mut params = test_review_params().await;
+    let expected_country = codex_protocol::RequestCountry::UNKNOWN;
+    params.parent_context.request_country = expected_country.clone();
     params
         .spawn_config
         .features
@@ -1164,9 +1217,13 @@ async fn compaction_and_review_submissions_share_execution_observer() {
             .expect("child submission deadline")
             .expect("child submission");
         if index == 0 {
-            assert!(matches!(submission.op, Op::Compact));
+            assert!(matches!(submission.op.as_protocol(), Some(Op::Compact)));
+            assert_eq!(
+                child_session.thread_config_snapshot().await.request_country,
+                expected_country
+            );
         } else {
-            let Op::TurnInput { reply, .. } = submission.op else {
+            let SubmissionOp::TurnInput { reply, .. } = submission.op else {
                 panic!("expected review input after compaction");
             };
             reply

@@ -33,7 +33,7 @@ impl Session {
     }
 
     /// Pauses automatic wakeups for this wake-mode assignment when interrupted.
-    pub(super) async fn pause_wakeups_for_interrupt(&self) {
+    pub(crate) async fn pause_wakeups_for_interrupt(&self) {
         if self.child_report_mode().await == Some(ChildReportMode::WakeOnReport)
             || self.services.async_completions.has_owned_work()
         {

@@ -45,7 +45,9 @@ use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -85,14 +87,18 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
 use codex_config::ThreadConfigLoader;
+use codex_core::ThreadManager;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
 use codex_core::resolve_installation_id;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
+use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::SessionSource;
 pub use codex_rollout::StateDbHandle;
 pub use codex_state::log_db::LogDbLayer;
+use codex_utils_path_uri::PathUri;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -196,9 +202,9 @@ pub enum InProcessServerEvent {
 
 /// Internal message sent from [`InProcessClientHandle`] methods to the runtime task.
 ///
-/// Requests carry a oneshot sender for the response; notifications and server-request
-/// replies are fire-and-forget from the caller's perspective (transport errors are
-/// caught by `try_send` on the outer channel).
+/// Requests carry a oneshot sender for the response. Startup notifications can
+/// acknowledge processing; ordinary notifications and server-request replies are
+/// fire-and-forget (transport errors are caught by `try_send` on the outer channel).
 enum InProcessClientMessage {
     Request {
         request: Box<ClientRequest>,
@@ -207,6 +213,7 @@ enum InProcessClientMessage {
     },
     Notification {
         notification: ClientNotification,
+        processed_tx: Option<oneshot::Sender<()>>,
     },
     ServerRequestResponse {
         request_id: RequestId,
@@ -223,7 +230,59 @@ enum InProcessClientMessage {
 
 enum ProcessorCommand {
     Request(Box<ClientRequest>, tokio_util::sync::CancellationToken),
-    Notification(ClientNotification),
+    Notification {
+        notification: ClientNotification,
+        processed_tx: Option<oneshot::Sender<()>>,
+    },
+}
+
+/// Effective permissions and workspace roots reported by a loaded embedded thread.
+pub struct ThreadPermissions {
+    pub profile: PermissionProfile,
+    pub workspace_roots: Vec<PathUri>,
+}
+
+/// Read access to effective permissions in a single embedded app-server runtime.
+#[derive(Clone, Default)]
+pub struct ThreadPermissionsReader {
+    thread_manager: Arc<OnceLock<Weak<ThreadManager>>>,
+}
+
+impl ThreadPermissionsReader {
+    pub async fn read(&self, thread_id: ThreadId) -> IoResult<ThreadPermissions> {
+        let thread_manager = self
+            .thread_manager
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server runtime is closed",
+                )
+            })?;
+        let thread = thread_manager
+            .get_thread(thread_id)
+            .await
+            .map_err(|err| IoError::new(ErrorKind::NotFound, err))?;
+        let snapshot = thread.config_snapshot().await;
+        let mut seen = HashSet::new();
+        let workspace_roots = snapshot
+            .workspace_roots
+            .iter()
+            .map(PathUri::from_abs_path)
+            .chain(
+                snapshot
+                    .profile_workspace_roots
+                    .iter()
+                    .map(|root| root.as_uri().clone()),
+            )
+            .filter(|root| seen.insert(root.to_string()))
+            .collect();
+        Ok(ThreadPermissions {
+            profile: snapshot.permission_profile,
+            workspace_roots,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -250,7 +309,10 @@ impl InProcessClientSender {
     }
 
     pub fn notify(&self, notification: ClientNotification) -> IoResult<()> {
-        self.try_send_client_message(InProcessClientMessage::Notification { notification })
+        self.try_send_client_message(InProcessClientMessage::Notification {
+            notification,
+            processed_tx: None,
+        })
     }
 
     pub fn respond_to_server_request(&self, request_id: RequestId, result: Result) -> IoResult<()> {
@@ -293,6 +355,7 @@ impl InProcessClientSender {
 /// request/response helpers, and surface-specific startup policy.
 pub struct InProcessClientHandle {
     client: InProcessClientSender,
+    thread_permissions_reader: ThreadPermissionsReader,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
     #[cfg(test)]
@@ -300,6 +363,10 @@ pub struct InProcessClientHandle {
 }
 
 impl InProcessClientHandle {
+    pub fn thread_permissions_reader(&self) -> ThreadPermissionsReader {
+        self.thread_permissions_reader.clone()
+    }
+
     /// Sends a typed client request into the in-process runtime.
     ///
     /// The returned value is a transport-level `IoResult` containing either a
@@ -383,9 +450,10 @@ impl InProcessClientHandle {
 
 /// Starts an in-process app-server runtime and performs initialize handshake.
 ///
-/// This function sends `initialize` followed by `initialized` before returning
-/// the handle, so callers receive a ready-to-use runtime. If initialize fails,
-/// the runtime is shut down and an `InvalidData` error is returned.
+/// This function waits for `initialize` and `initialized` to be processed before
+/// returning the handle, so callers receive a ready-to-use runtime. Rejected
+/// initialization shuts down the runtime and returns an `InvalidData` error.
+/// Transport failures while processing `initialized` also shut down the runtime.
 pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
     if let Ok(Some(err)) = check_execpolicy_for_warnings(&args.config.config_layer_stack).await {
         let (path, range) = crate::exec_policy_warning_location(&err);
@@ -413,7 +481,26 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
             format!("in-process initialize failed: {}", error.message),
         ));
     }
-    client.notify(ClientNotification::Initialized)?;
+    let (processed_tx, processed_rx) = oneshot::channel();
+    let initialized_result = async {
+        client
+            .client
+            .try_send_client_message(InProcessClientMessage::Notification {
+                notification: ClientNotification::Initialized,
+                processed_tx: Some(processed_tx),
+            })?;
+        processed_rx.await.map_err(|err| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                format!("in-process initialized acknowledgment channel closed: {err}"),
+            )
+        })
+    }
+    .await;
+    if let Err(error) = initialized_result {
+        let _ = client.shutdown().await;
+        return Err(error);
+    }
 
     Ok(client)
 }
@@ -461,6 +548,8 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    let thread_permissions_reader = ThreadPermissionsReader::default();
+    let thread_manager = Arc::clone(&thread_permissions_reader.thread_manager);
 
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
@@ -547,6 +636,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 remote_control_handle: None,
                 plugin_startup_tasks: Some(PluginStartupConfig::Current),
             }));
+            thread_manager.get_or_init(|| processor.thread_manager());
             let mut thread_created_rx = processor.thread_created_receiver();
             let session = Arc::new(ConnectionSessionState::new(
                 crate::transport::ConnectionOrigin::InProcess,
@@ -589,8 +679,11 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                                     processor.send_initialize_notifications().await;
                                 }
                             }
-                            Some(ProcessorCommand::Notification(notification)) => {
+                            Some(ProcessorCommand::Notification { notification, processed_tx }) => {
                                 processor.process_client_notification(notification).await;
+                                if let Some(processed_tx) = processed_tx {
+                                    let _ = processed_tx.send(());
+                                }
                             }
                             None => {
                                 break;
@@ -682,8 +775,8 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                                 }
                             }
                         }
-                        Some(InProcessClientMessage::Notification { notification }) => {
-                            match processor_tx.try_send(ProcessorCommand::Notification(notification)) {
+                        Some(InProcessClientMessage::Notification { notification, processed_tx }) => {
+                            match processor_tx.try_send(ProcessorCommand::Notification { notification, processed_tx }) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {
                                     warn!("dropping in-process client notification (queue full)");
@@ -863,6 +956,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
 
     Ok(InProcessClientHandle {
         client: InProcessClientSender { client_tx },
+        thread_permissions_reader,
         event_rx,
         runtime_handle,
         #[cfg(test)]
@@ -1080,29 +1174,24 @@ mod tests {
     #[path = "in_process_work_lifecycle_tests.rs"]
     mod work_lifecycle_tests;
 
+    #[test_case::test_case(0; "zero_capacity_is_clamped")]
+    #[test_case::test_case(1; "one_slot_capacity")]
     #[tokio::test]
-    async fn in_process_start_clamps_zero_channel_capacity() {
+    async fn in_process_start_accepts_immediate_request(channel_capacity: usize) {
         let client = start_test_client_with_options(
             SessionSource::Cli,
-            /*channel_capacity*/ 0,
+            channel_capacity,
             /*capabilities*/ None,
         )
         .await;
-        let response = loop {
-            match client
-                .request(ClientRequest::ConfigRequirementsRead {
-                    request_id: RequestId::Integer(4),
-                    params: None,
-                })
-                .await
-            {
-                Ok(response) => break response.expect("request should succeed"),
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    tokio::task::yield_now().await;
-                }
-                Err(err) => panic!("request transport should work: {err}"),
-            }
-        };
+        let response = client
+            .request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(4),
+                params: None,
+            })
+            .await
+            .expect("the first request should not compete with the initialize handshake")
+            .expect("request should succeed");
         let _parsed: ConfigRequirementsReadResponse =
             serde_json::from_value(response).expect("response should match v2 schema");
         client
@@ -1152,6 +1241,7 @@ mod tests {
         });
         let client = InProcessClientHandle {
             client: InProcessClientSender { client_tx },
+            thread_permissions_reader: ThreadPermissionsReader::default(),
             event_rx,
             runtime_handle,
             _test_codex_home: None,

@@ -7,9 +7,7 @@ use codex_message_board::PostMetadata;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
-use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -46,16 +44,17 @@ enum BoardClock {
 }
 
 impl codex_core::TimeProvider for BoardClock {
-    fn current_time(&self, _thread_id: codex_protocol::ThreadId) -> codex_core::TimeFuture<'_> {
-        Box::pin(async move {
-            match self {
-                Self::Available => Ok(chrono::DateTime::parse_from_rfc3339(
-                    "2026-09-18T12:00:00Z",
-                )?
-                .with_timezone(&chrono::Utc)),
-                Self::Unavailable => Err(anyhow::anyhow!("board clock unavailable")),
-            }
-        })
+    fn current_time(
+        &self,
+        _thread_id: codex_protocol::ThreadId,
+    ) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+        match self {
+            Self::Available => Ok(
+                chrono::DateTime::parse_from_rfc3339("2026-09-18T12:00:00Z")?
+                    .with_timezone(&chrono::Utc),
+            ),
+            Self::Unavailable => Err(anyhow::anyhow!("board clock unavailable")),
+        }
     }
 
     fn sleep(
@@ -1053,24 +1052,18 @@ async fn queue_only_report_arriving_after_user_op_does_not_block_the_session_loo
         .context("child runtime")?;
     let child = root.thread_manager.get_thread(child_id).await?;
 
-    // Queue the user op first, then let the child publish its queue-only terminal report.
-    // Waiting for report insertion inside this handler would block the report op behind it.
-    let (reply_tx, reply_rx) = oneshot::channel();
-    root.codex
-        .submit(Op::TurnInput {
-            request: Box::new(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "Continue while the child finishes.".into(),
-                text_elements: vec![],
-            }])),
-            mode: TurnInputMode::StartOrSteer,
-            reply: reply_tx,
-        })
-        .await?;
-    release_child.send(()).expect("release child response");
-    let submission = tokio::time::timeout(Duration::from_secs(5), reply_rx)
-        .await
-        .context("user turn handler waited behind its own report delivery")?
-        .context("user turn submission reply")??;
+    // Begin the user submission before letting the child publish its queue-only report.
+    let request = TurnInputRequest::user_input(vec![UserInput::Text {
+        text: "Continue while the child finishes.".into(),
+        text_elements: vec![],
+    }]);
+    let (submission, ()) = tokio::join!(
+        biased;
+        tokio::time::timeout(Duration::from_secs(5), root.codex.start_or_steer_turn(request)),
+        async { release_child.send(()).expect("release child response") },
+    );
+    let submission =
+        submission.context("user turn handler waited behind its own report delivery")??;
     assert!(matches!(
         submission,
         codex_protocol::turn_input::TurnInputSubmission::Started { .. }

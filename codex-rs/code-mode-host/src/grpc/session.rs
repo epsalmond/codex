@@ -18,6 +18,7 @@ use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::grpc as proto;
 use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_code_mode_runtime::InProcessCodeModeSession;
+use codex_code_mode_runtime::ToolPreload;
 use serde_json::Value as JsonValue;
 use tokio::sync::Notify;
 use tokio::sync::OwnedSemaphorePermit;
@@ -46,11 +47,18 @@ pub(super) struct GrpcHostState {
     control_permits: Arc<Semaphore>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum TerminalReadyWire {
+    Disabled,
+    Legacy,
+    Current,
+}
+
 pub(super) struct GrpcSession {
     pub(super) id: Uuid,
     pub(super) runtime: Arc<InProcessCodeModeSession>,
     pub(super) closed: CancellationToken,
-    pub(super) terminal_ready_supported: bool,
+    pub(super) terminal_ready: TerminalReadyWire,
     pub(super) state: Mutex<SessionState>,
     events: EventSender,
     cells_changed: Notify,
@@ -113,8 +121,9 @@ impl GrpcHostState {
     pub(super) fn open_session(
         self: &Arc<Self>,
         options: CodeModeSessionOptions,
-        terminal_ready_requested: bool,
+        terminal_ready: TerminalReadyWire,
         max_pending_delegate_calls: usize,
+        tool_preloads: &'static [ToolPreload],
     ) -> Result<GrpcStream<proto::SessionEvent>, Status> {
         let id = Uuid::new_v4();
         let (events, receiver) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
@@ -126,14 +135,16 @@ impl GrpcHostState {
             closed,
             Arc::clone(&self.delegate_permits),
             options,
-            terminal_ready_requested,
+            terminal_ready,
             max_pending_delegate_calls,
+            tool_preloads,
         );
         events
             .try_send(Ok(proto::SessionEvent {
                 event: Some(proto::session_event::Event::Opened(proto::SessionOpened {
                     session_id: id.to_string(),
-                    terminal_ready_supported: terminal_ready_requested,
+                    terminal_ready_supported: matches!(terminal_ready, TerminalReadyWire::Current),
+                    supports_catalog_revision: true,
                     output_truncation: match session.runtime.output_truncation() {
                         CodeModeOutputTruncation::Server => {
                             Some(proto::OutputTruncation::Server.into())
@@ -229,8 +240,9 @@ impl GrpcSession {
         closed: CancellationToken,
         delegate_permits: Arc<Semaphore>,
         options: CodeModeSessionOptions,
-        terminal_ready_supported: bool,
+        terminal_ready: TerminalReadyWire,
         max_pending_delegate_calls: usize,
+        tool_preloads: &'static [ToolPreload],
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let failure_session = weak.clone();
@@ -242,10 +254,11 @@ impl GrpcSession {
             });
             Self {
                 id,
-                terminal_ready_supported,
-                runtime: Arc::new(InProcessCodeModeSession::with_options(
+                terminal_ready,
+                runtime: Arc::new(InProcessCodeModeSession::with_options_and_tool_preloads(
                     options,
                     Some(failure_handler),
+                    tool_preloads,
                 )),
                 closed,
                 state: Mutex::new(SessionState::default()),

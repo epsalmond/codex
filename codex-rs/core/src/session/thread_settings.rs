@@ -115,6 +115,7 @@ pub(super) fn prepare_update(
     } = overrides.into();
     let ThreadSettingsOverrides {
         context_settings,
+        request_country,
         environments: environment_requests,
         runtime_workspace_roots,
         profile_workspace_roots,
@@ -136,6 +137,7 @@ pub(super) fn prepare_update(
         context_settings,
         turn_extension_init,
         step_settings: StepSettingsUpdate {
+            request_country,
             model,
             effort,
             collaboration_mode,

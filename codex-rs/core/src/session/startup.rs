@@ -115,21 +115,13 @@ impl SessionStartup {
 pub(crate) struct GenerationStartup {
     pub(crate) startup: Arc<SessionStartup>,
     operation: Option<Arc<crate::agent::control::GenerationOperation>>,
-    threads: Arc<
-        tokio::sync::RwLock<
-            std::collections::HashMap<codex_protocol::ThreadId, Arc<crate::CodexThread>>,
-        >,
-    >,
+    threads: Arc<crate::thread_manager::ThreadRegistry>,
 }
 
 impl GenerationStartup {
     pub(crate) fn new(
         operation: Arc<crate::agent::control::GenerationOperation>,
-        threads: Arc<
-            tokio::sync::RwLock<
-                std::collections::HashMap<codex_protocol::ThreadId, Arc<crate::CodexThread>>,
-            >,
-        >,
+        threads: Arc<crate::thread_manager::ThreadRegistry>,
         startup: Arc<SessionStartup>,
     ) -> Self {
         Self {
