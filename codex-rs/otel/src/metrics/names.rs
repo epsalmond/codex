@@ -2,6 +2,11 @@ use std::sync::LazyLock;
 
 pub const TOOL_CALL_COUNT_METRIC: &str = "codex.tool.call";
 pub const TOOL_CALL_DURATION_METRIC: &str = "codex.tool.call.duration_ms";
+/// Paired Statsig-exported counters for exec-command handler latency, including
+/// shell startup through exit or the first yield. Divide total milliseconds by
+/// calls to compute a mean without averaging histogram export batches.
+pub const EXEC_COMMAND_DURATION_TOTAL_METRIC: &str = "codex.exec_command.duration_total_ms";
+pub const EXEC_COMMAND_COUNT_METRIC: &str = "codex.exec_command.calls";
 pub const TOOL_CALL_UNIFIED_EXEC_METRIC: &str = "codex.tool.unified_exec";
 pub const MULTI_AGENT_SPAWN_FAILURE_METRIC: &str = "codex.multi_agent.spawn.failure";
 pub const MULTI_AGENT_SPAWN_PHASE_DURATION_METRIC: &str =
@@ -34,6 +39,9 @@ pub const RESPONSES_API_ENGINE_IAPI_TBT_DURATION_METRIC: &str =
     "codex.responses_api_engine_iapi_tbt.duration_ms";
 pub const RESPONSES_API_ENGINE_SERVICE_TBT_DURATION_METRIC: &str =
     "codex.responses_api_engine_service_tbt.duration_ms";
+pub const REASONING_REPLAY_COUNT_METRIC: &str = "codex.responses.reasoning_replay";
+/// Histogram of reported removals per sampling response and reason, including zeros.
+pub const REASONING_ITEMS_REMOVED_METRIC: &str = "codex.responses.reasoning_items_removed";
 pub const TURN_E2E_DURATION_METRIC: &str = "codex.turn.e2e_duration_ms";
 pub const TURN_TTFT_DURATION_METRIC: &str = "codex.turn.ttft.duration_ms";
 pub const TURN_TTFM_DURATION_METRIC: &str = "codex.turn.ttfm.duration_ms";

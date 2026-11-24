@@ -17,6 +17,7 @@ use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::pager_overlay::TranscriptOverlay;
 use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
+use crate::status::remote_connection::remote_connection_status_value;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::token_usage::TokenUsage;
@@ -69,6 +70,7 @@ fn stale_monthly_limit_marks_fresh_rolling_snapshot_stale() {
         captured_at: now,
         primary: Some(RateLimitWindowDisplay {
             used_percent: 20.0,
+            resets_at_unix: None,
             resets_at: Some("soon".to_string()),
             reset_at: None,
             window_minutes: Some(300),
@@ -284,6 +286,7 @@ async fn status_snapshot_includes_reasoning_details() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
+        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 150,
         total_tokens: 2_250,
@@ -984,6 +987,7 @@ async fn status_snapshot_includes_forked_from() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1038,6 +1042,7 @@ async fn status_snapshot_includes_monthly_limit() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1104,6 +1109,7 @@ async fn status_snapshot_includes_enterprise_monthly_credit_limit() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1182,6 +1188,7 @@ async fn status_snapshot_uses_generic_limit_labels_for_unsupported_windows() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1471,6 +1478,7 @@ async fn status_card_token_usage_excludes_cached_tokens() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
+        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 0,
         total_tokens: 2_100,
@@ -1574,6 +1582,7 @@ async fn status_snapshot_wraps_in_narrow_terminal() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
+        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 150,
         total_tokens: 2_250,
@@ -1681,6 +1690,7 @@ async fn status_snapshot_shows_missing_limits_message() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1729,6 +1739,7 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1738,22 +1749,46 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
         .with_ymd_and_hms(2024, 2, 3, 4, 5, 6)
         .single()
         .expect("timestamp");
-    for (is_local_daemon, snapshot) in [
+    let connections = [
         (
             None,
             "status_snapshot_uses_default_reasoning_when_config_empty",
         ),
         (Some(false), "status_snapshot_remote_server"),
         (Some(true), "status_snapshot_local_background_server"),
-    ] {
+    ]
+    .map(|(is_local_daemon, snapshot)| {
         let remote_connection = is_local_daemon.map(|is_local_daemon| RemoteConnectionStatus {
             address: "unix:///tmp/codex-home/app-server-control/app-server-control.sock"
                 .to_string(),
-            version: "v0.133.0".to_string(),
+            version: Some("v0.133.0".to_string()),
             is_local_daemon,
             is_managed_daemon: is_local_daemon,
         });
-
+        (remote_connection, snapshot)
+    });
+    for (remote_connection, snapshot) in connections.into_iter().chain([
+        (
+            remote_connection_status_value(
+                &crate::AppServerTarget::Cloud,
+                /*server_version*/ None,
+            ),
+            "status_snapshot_cloud_server",
+        ),
+        (
+            remote_connection_status_value(&crate::AppServerTarget::Cloud, Some("0.133.0")),
+            "status_snapshot_cloud_server_with_version",
+        ),
+        (
+            remote_connection_status_value(
+                &crate::AppServerTarget::Remote {
+                    endpoint: crate::resolve_remote_addr("ws://devbox.example.com:4500").unwrap(),
+                },
+                /*server_version*/ None,
+            ),
+            "status_snapshot_remote_server_without_version",
+        ),
+    ]) {
         let model_slug = get_model_offline_for_tests(config.model.as_deref());
         let token_info = token_info_for(&model_slug, &config, &usage);
         let (composite, _) = new_status_output_with_rate_limits_handle(
@@ -1798,6 +1833,7 @@ async fn status_snapshot_shows_refreshing_limits_notice() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1906,12 +1942,14 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
             captured_at: now,
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 45.0,
+                resets_at_unix: None,
                 resets_at: Some("soon".to_string()),
                 window_minutes: Some(300),
                 reset_at: None,
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 30.0,
+                resets_at_unix: None,
                 resets_at: Some("later".to_string()),
                 window_minutes: Some(10_080),
                 reset_at: None,
@@ -1959,6 +1997,7 @@ async fn status_snapshot_includes_credits_and_limits() {
     let usage = TokenUsage {
         input_tokens: 1_500,
         cached_input_tokens: 100,
+        cache_write_input_tokens: 0,
         output_tokens: 600,
         reasoning_output_tokens: 0,
         total_tokens: 2_200,
@@ -2032,6 +2071,7 @@ async fn status_snapshot_shows_unavailable_limits_message() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -2092,6 +2132,7 @@ async fn status_snapshot_treats_refreshing_empty_limits_as_unavailable() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -2154,6 +2195,7 @@ async fn status_snapshot_shows_stale_limits_message() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
+        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 150,
         total_tokens: 2_250,
@@ -2224,6 +2266,7 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
     let usage = TokenUsage {
         input_tokens: 900,
         cached_input_tokens: 200,
+        cache_write_input_tokens: 0,
         output_tokens: 350,
         reasoning_output_tokens: 0,
         total_tokens: 1_450,
@@ -2297,6 +2340,7 @@ async fn status_context_window_uses_last_usage() {
     let total_usage = TokenUsage {
         input_tokens: 12_800,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 879,
         reasoning_output_tokens: 0,
         total_tokens: 102_000,
@@ -2304,6 +2348,7 @@ async fn status_context_window_uses_last_usage() {
     let last_usage = TokenUsage {
         input_tokens: 12_800,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 879,
         reasoning_output_tokens: 0,
         total_tokens: 13_679,

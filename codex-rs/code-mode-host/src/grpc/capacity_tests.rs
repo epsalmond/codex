@@ -27,6 +27,8 @@ async fn client_callback_capacity_is_isolated_and_reusable() {
 
     let mut lease = host
         .open_session(Request::new(proto::OpenSessionRequest {
+            legacy_fork_max_pending_delegate_calls: None,
+            fork_max_pending_delegate_calls: None,
             max_pending_delegate_calls: Some(2),
             ..Default::default()
         }))
@@ -67,6 +69,8 @@ async fn zero_callback_capacity_is_rejected_before_opening_a_session() {
     let host = GrpcCodeModeHost::new();
     let result = host
         .open_session(Request::new(proto::OpenSessionRequest {
+            legacy_fork_max_pending_delegate_calls: None,
+            fork_max_pending_delegate_calls: None,
             max_pending_delegate_calls: Some(0),
             ..Default::default()
         }))

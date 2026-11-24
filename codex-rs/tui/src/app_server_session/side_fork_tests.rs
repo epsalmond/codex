@@ -83,6 +83,7 @@ async fn side_fork_overrides_disable_agents_and_survive_pagination_retry() -> Re
                         .fork_side_thread(
                             &local_settings,
                             config.clone(),
+                            /*workspace_roots*/ None,
                             thread_id,
                             /*selected_profile*/ None,
                             storage,

@@ -10,7 +10,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::turn_input::TurnStartOptions;
-use codex_protocol::user_input::UserInput;
+use codex_user_input::ResolvedUserInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -34,6 +34,11 @@ pub struct UserInputMetadata {
     /// Optional host-assigned UUID for this particular Responses user item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_item_uuid: Option<uuid::Uuid>,
+    /// Core-assigned handoff identity carried through the input queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_handoff_id: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_dictation: Option<bool>,
     #[serde(
         default,
         skip_serializing_if = "codex_history::UserInputOrigin::is_user"
@@ -45,7 +50,7 @@ pub struct UserInputMetadata {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TurnInput {
     UserInput {
-        content: Vec<UserInput>,
+        content: Vec<ResolvedUserInput>,
         client_id: Option<String>,
         #[serde(flatten)]
         metadata: UserInputMetadata,
@@ -312,30 +317,28 @@ impl InputQueue {
         })
     }
 
-    /// Native mailbox backlog qualifies regardless of turn ID or delivery phase.
-    /// Injected mail qualifies only while its matching turn still accepts mail.
+    /// Native and injected mail qualify only while the matching turn still accepts mail.
     pub(crate) async fn should_preempt_sampling_for_mail(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
         sub_id: &str,
     ) -> bool {
-        if self.has_pending_mailbox_items().await {
-            return true;
-        }
+        let native_mail_pending = self.has_pending_mailbox_items().await;
         let Some(turn_state) = self.turn_state_for_sub_id(active_turn, sub_id).await else {
             return false;
         };
         let turn_state = turn_state.lock().await;
         turn_state.accepts_mailbox_delivery_for_current_turn()
-            && turn_state.pending_input.items.iter().any(|input| {
-                matches!(
-                    input,
-                    TurnInput::ResponseItem(ResponseItemEnvelope {
-                        item: ResponseItem::AgentMessage { .. },
-                        ..
-                    })
-                )
-            })
+            && (native_mail_pending
+                || turn_state.pending_input.items.iter().any(|input| {
+                    matches!(
+                        input,
+                        TurnInput::ResponseItem(ResponseItemEnvelope {
+                            item: ResponseItem::AgentMessage { .. },
+                            ..
+                        })
+                    )
+                }))
     }
 
     /// Returns whether pending mail should start a turn. Paused wakeups hold it.
@@ -405,6 +408,34 @@ impl InputQueue {
         pending.drain(..).collect()
     }
 
+    fn trigger_turn_options(
+        pending_mails: &VecDeque<PendingMailboxCommunication>,
+    ) -> Option<TurnStartOptions> {
+        // A later follow-up supersedes the earlier choice, including an omitted choice.
+        let trigger_mail = || {
+            pending_mails
+                .iter()
+                .filter(|mail| mail.communication.trigger_turn)
+        };
+        let mut start_options = trigger_mail().next_back()?.start_options.clone();
+        let first = trigger_mail().next()?;
+        start_options.parent_turn_id = trigger_mail()
+            .map(|mail| mail.start_options.parent_turn_id.as_deref())
+            .reduce(|expected, candidate| expected.filter(|id| candidate == Some(*id)))
+            .and_then(|id| id.filter(|id| !id.trim().is_empty()).map(str::to_string));
+        // Causal attribution comes from the first trigger, even when later mail updates settings.
+        start_options.initiating_agent_path = Some(first.communication.author.clone());
+        start_options.root_turn_id = first
+            .start_options
+            .parent_turn_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .and(first.start_options.root_turn_id.as_deref())
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string);
+        Some(start_options)
+    }
+
     /// Drains deliverable mail. Paused wakeups leave trigger-turn mail queued.
     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
         let (items, options, _) = self
@@ -413,7 +444,7 @@ impl InputQueue {
         (items, options)
     }
 
-    async fn drain_mailbox_input_items_with_wakeup_generation(
+    pub(crate) async fn drain_mailbox_input_items_with_wakeup_generation(
         &self,
     ) -> (Vec<TurnInput>, TurnStartOptions, WakeupGeneration) {
         let (pending_mails, generation) = {
@@ -427,31 +458,7 @@ impl InputQueue {
             *mails = held;
             (deliverable, generation)
         };
-        // A later follow-up supersedes the earlier choice, including an omitted choice.
-        let mut start_options = pending_mails
-            .iter()
-            .rev()
-            .find(|mail| mail.communication.trigger_turn)
-            .map(|mail| mail.start_options.clone())
-            .unwrap_or_default();
-        start_options.parent_turn_id = pending_mails
-            .iter()
-            .filter(|mail| mail.communication.trigger_turn)
-            .map(|mail| mail.start_options.parent_turn_id.as_deref())
-            .reduce(|expected, candidate| expected.filter(|id| candidate == Some(*id)))
-            .and_then(|id| id.filter(|id| !id.trim().is_empty()).map(str::to_string));
-        start_options.root_turn_id = pending_mails
-            .iter()
-            .find(|mail| mail.communication.trigger_turn)
-            .and_then(|mail| {
-                mail.start_options
-                    .parent_turn_id
-                    .as_deref()
-                    .filter(|id| !id.trim().is_empty())
-                    .and(mail.start_options.root_turn_id.as_deref())
-                    .filter(|id| !id.trim().is_empty())
-            })
-            .map(str::to_string);
+        let start_options = Self::trigger_turn_options(&pending_mails).unwrap_or_default();
         let items = pending_mails
             .into_iter()
             .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
@@ -990,7 +997,7 @@ impl TurnInputQueue {
         }
     }
 
-    fn has_user_input(&self) -> bool {
+    pub(crate) fn has_user_input(&self) -> bool {
         self.items
             .iter()
             .any(|input| matches!(input, TurnInput::UserInput { .. }))
@@ -1030,7 +1037,7 @@ mod tests {
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
     use codex_protocol::protocol::InterAgentCommunication;
-    use codex_protocol::user_input::UserInput;
+    use codex_user_input::ResolvedUserInput;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -1213,10 +1220,7 @@ mod tests {
                 &turn_state,
                 vec![TurnInput::UserInput {
                     metadata: Default::default(),
-                    content: vec![UserInput::Text {
-                        text: "steer".to_string(),
-                        text_elements: Vec::new(),
-                    }],
+                    content: vec![ResolvedUserInput::text("steer".to_string())],
                     client_id: None,
                 }],
             )
@@ -1305,10 +1309,7 @@ mod tests {
                 &turn_state,
                 vec![TurnInput::UserInput {
                     metadata: Default::default(),
-                    content: vec![UserInput::Text {
-                        text: "already pending".to_string(),
-                        text_elements: Vec::new(),
-                    }],
+                    content: vec![ResolvedUserInput::text("already pending".to_string())],
                     client_id: None,
                 }],
             )
@@ -1508,10 +1509,7 @@ mod tests {
             mail("later", /*trigger_turn*/ true),
         );
         let steer = TurnInput::UserInput {
-            content: vec![UserInput::Text {
-                text: "steer".to_string(),
-                text_elements: Vec::new(),
-            }],
+            content: vec![ResolvedUserInput::text("steer".to_string())],
             client_id: None,
             metadata: Default::default(),
         };
@@ -1689,10 +1687,7 @@ mod tests {
         let followup = mail("followup", /*trigger_turn*/ true);
         let progress = mail("progress", /*trigger_turn*/ false);
         let steer = TurnInput::UserInput {
-            content: vec![UserInput::Text {
-                text: "steer".to_string(),
-                text_elements: Vec::new(),
-            }],
+            content: vec![ResolvedUserInput::text("steer".to_string())],
             client_id: None,
             metadata: Default::default(),
         };
@@ -1755,10 +1750,7 @@ mod tests {
             .into(),
         );
         let steer = TurnInput::UserInput {
-            content: vec![UserInput::Text {
-                text: "steer".to_string(),
-                text_elements: Vec::new(),
-            }],
+            content: vec![ResolvedUserInput::text("steer".to_string())],
             client_id: None,
             metadata: Default::default(),
         };
@@ -1802,10 +1794,7 @@ mod tests {
 
     fn steer_input(text: &str) -> TurnInput {
         TurnInput::UserInput {
-            content: vec![UserInput::Text {
-                text: text.to_string(),
-                text_elements: Vec::new(),
-            }],
+            content: vec![ResolvedUserInput::text(text.to_string())],
             client_id: None,
             metadata: Default::default(),
         }
@@ -2433,10 +2422,7 @@ mod tests {
             mail("later", /*trigger_turn*/ true),
         );
         let steer = TurnInput::UserInput {
-            content: vec![UserInput::Text {
-                text: "steer".to_string(),
-                text_elements: Vec::new(),
-            }],
+            content: vec![ResolvedUserInput::text("steer".to_string())],
             client_id: None,
             metadata: Default::default(),
         };

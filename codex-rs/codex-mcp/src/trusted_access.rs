@@ -47,9 +47,7 @@ impl McpConnectionSet {
                         entitlement.as_str() == Some(CYBER_TRUSTED_ACCESS_ENTITLEMENT)
                     })
             })
-            && self
-                .plugin_id_for_mcp_server_name(&tool.server_name)
-                .is_some()
+            && self.plugin_id_for_server(tool.server_key()).is_some()
             && arguments.is_none_or(|arguments| arguments.as_object().is_some_and(Map::is_empty))
             && server.environment_id == codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
             && matches!(server.origin, Some(McpServerOrigin::Stdio))
@@ -131,14 +129,14 @@ impl TrustedAccessContext {
         let mut context = Self::new(
             auth.clone(),
             input.auth_manager.clone()?,
-            input.config.chatgpt_base_url.clone(),
+            input.config.client.chatgpt_base_url.clone(),
             input.runtime_context.local_http_client(),
         );
         context.runtime_auth = input
             .runtime_auth
             .as_ref()
             .filter(|_| {
-                codex_http_client::classify_openai_api_url(&input.config.chatgpt_base_url)
+                codex_http_client::classify_openai_api_url(&input.config.client.chatgpt_base_url)
                     != codex_http_client::OpenAiDestination::Other
             })
             .map(|runtime| {

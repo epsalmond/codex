@@ -4,6 +4,7 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_code_mode::*;
 use codex_core::GuardedShutdownOutcome;
+use codex_core::ProcessOwnedGrpcCodeModeSessionProvider;
 use codex_core::WorkObservation;
 use codex_core::WorkObservationSnapshot;
 use codex_features::Feature;
@@ -139,7 +140,7 @@ struct CellCallbacks {
 }
 
 struct RecordingProvider {
-    inner: ProcessOwnedCodeModeSessionProvider,
+    inner: ProcessOwnedGrpcCodeModeSessionProvider,
     callbacks: watch::Sender<CellCallbacks>,
 }
 
@@ -277,7 +278,7 @@ async fn fixture(
     let recorder = CodeModeHostRecorder::new()?;
     let (callbacks, receiver) = watch::channel(CellCallbacks::default());
     let provider = Arc::new(RecordingProvider {
-        inner: ProcessOwnedCodeModeSessionProvider::with_host_program(recorder.program()),
+        inner: ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(recorder.program()),
         callbacks,
     });
     // Local execution is intentional: the TCP gate and the real host are on this machine.

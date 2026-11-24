@@ -2,6 +2,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_code_mode::*;
+use codex_core::ProcessOwnedGrpcCodeModeSessionProvider;
 use codex_core::config::Config;
 use codex_features::Feature;
 use codex_protocol::openai_models::ToolMode;
@@ -327,7 +328,7 @@ async fn active_cell_completion(case: Case) -> Result<()> {
     );
     let inner = if hosted {
         Some(
-            ProcessOwnedCodeModeSessionProvider::with_host_program(
+            ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
                 core_test_support::code_mode_host_bin(),
             )
             .create_session()
@@ -1117,7 +1118,7 @@ async fn cell_polling_another_cells_process_delivers_its_completion() -> Result<
         })
         .with_thread_manager(move |manager| {
             manager.with_code_mode_session_provider(Arc::new(
-                ProcessOwnedCodeModeSessionProvider::with_host_program(
+                ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
                     core_test_support::code_mode_host_bin(),
                 ),
             ))

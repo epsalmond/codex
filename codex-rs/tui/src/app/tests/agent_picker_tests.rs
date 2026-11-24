@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::session_lifecycle::FreshSessionStart;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use crate::multi_agents::AgentPickerContextUsage;
 use crate::multi_agents::AgentPickerThreadEntry;
@@ -531,7 +532,7 @@ async fn agent_word_motion_shortcuts_switch_empty_drafts_with_any_keyboard_proto
         app.start_fresh_session(
             &mut tui,
             &mut server,
-            /*session_start_source*/ None,
+            FreshSessionStart::PreserveCurrentView(None),
             /*initial_user_message*/ None,
             /*new_thread_name*/ None,
         )
@@ -880,6 +881,7 @@ fn listed_subagent(
         section_entered_at: None,
         project_id: None,
         daybreak_enabled: None,
+        daybreak_program_propagation_enrolled: None,
         history_mode: Default::default(),
         model_provider: "mock".to_string(),
         model: None,
@@ -889,7 +891,7 @@ fn listed_subagent(
         recency_at: None,
         status,
         path: None,
-        cwd: test_path_buf("/tmp/subagent").abs(),
+        cwd: test_path_buf("/tmp/subagent").abs().into(),
         cli_version: "0.0.0".to_string(),
         source: codex_app_server_protocol::SessionSource::Unknown,
         can_accept_direct_input: None,

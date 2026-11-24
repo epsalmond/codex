@@ -30,9 +30,11 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::Transport(_)
         | ApiError::Api { .. }
         | ApiError::Stream(_)
+        | ApiError::WebsocketMessageTooLarge
         | ApiError::ContentFilter
         | ApiError::ResponseIncomplete(_)
         | ApiError::ContextWindowExceeded
+        | ApiError::SpendLimitExceeded(_)
         | ApiError::QuotaExceeded
         | ApiError::UsageNotIncluded
         | ApiError::SessionBudgetExceeded
@@ -59,6 +61,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
 fn map_api_error_details(err: ApiError) -> CodexErr {
     match err {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
+        ApiError::SpendLimitExceeded(scope) => {
+            CodexErrorDetails::APISpendLimitExceeded(scope).into()
+        }
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
         ApiError::SessionBudgetExceeded => CodexErr::SessionBudgetExceeded,
@@ -67,6 +72,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             CodexErr::new(CodexErrorDetails::RateLimitExceeded(message))
         }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
+        ApiError::WebsocketMessageTooLarge => {
+            CodexErr::new(CodexErrorDetails::WebsocketMessageTooLarge)
+        }
         ApiError::ContentFilter => CodexErr::new(CodexErrorDetails::ContentFilter),
         ApiError::ResponseIncomplete(incomplete) => {
             CodexErr::new(CodexErrorDetails::ResponseIncomplete(incomplete))
@@ -259,8 +267,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                                 Some(
                                     "insufficient_quota"
                                         | "credit_balance_exhausted"
-                                        | "organization_spend_limit_exceeded"
-                                        | "project_spend_limit_exceeded"
                                         | "organization_usage_limit_exceeded"
                                 )
                             )

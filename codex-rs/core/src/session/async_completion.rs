@@ -21,7 +21,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::user_input::UserInput;
+use codex_user_input::ResolvedUserInput;
 
 const MAX_RESERVATIONS: usize = 64;
 /// Bounds each rendered completion message by its encoded UTF-8 bytes, including IDs, metadata
@@ -49,7 +49,7 @@ impl CompletionDrain {
             } => {
                 metadata.origin == UserInputOrigin::User
                     && content.iter().any(|item| match item {
-                        UserInput::Text { text, .. } => !text.trim().is_empty(),
+                        ResolvedUserInput::Text { text, .. } => !text.trim().is_empty(),
                         _ => true,
                     })
             }

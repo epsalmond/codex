@@ -131,6 +131,49 @@ async fn file_system_get_metadata_reports_files_and_directories(
     );
     assert!(directory_metadata.modified_at_ms > 0);
 
+    let nested = directory_path.join("note.txt");
+    std::fs::write(&nested, "nested")?;
+    let paths = [
+        PathUri::from_host_native_path(&nested)?,
+        PathUri::from_host_native_path(tmp.path().join("missing"))?,
+        PathUri::from_host_native_path(&directory_path)?,
+    ];
+    let batch = file_system
+        .get_metadata_batch(&paths, Default::default(), /*sandbox*/ None)
+        .await;
+    if matches!(implementation, FileSystemImplementation::Local) {
+        assert_eq!(
+            batch
+                .expect_err("unrestricted local metadata keeps the original short-circuit path")
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        return Ok(());
+    }
+    let results = batch?;
+    assert_eq!(results.len(), paths.len());
+    assert!(results[0].as_ref().expect("file metadata").is_file);
+    assert_eq!(
+        results[1].as_ref().expect_err("missing metadata").kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(
+        results[2]
+            .as_ref()
+            .expect("directory metadata")
+            .is_directory
+    );
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&nested)?;
+        std::os::unix::fs::symlink("note.txt", &nested)?;
+        let results = file_system
+            .get_metadata_batch(&paths, Default::default(), /*sandbox*/ None)
+            .await?;
+        assert!(results[0].is_err(), "individual path errors are preserved");
+        assert!(results[2].as_ref().expect("later result").is_directory);
+    }
+
     Ok(())
 }
 
@@ -1197,7 +1240,7 @@ async fn file_system_restricted_reads_require_sandbox() -> Result<()> {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sandboxed_file_operations_cannot_read_helper_siblings() -> Result<()> {
+async fn sandboxed_file_operations_cannot_read_or_write_helper_siblings() -> Result<()> {
     let helper_paths = crate::common::exec_server::test_codex_helper_paths()?;
     let root = TempDir::new()?;
     let runtime_dir = root.path().join("runtime");
@@ -1225,13 +1268,18 @@ async fn sandboxed_file_operations_cannot_read_helper_siblings() -> Result<()> {
     std::os::unix::fs::symlink(&sibling, &escaping_link)?;
     let sandbox = workspace_write_sandbox(workspace.clone());
     let allowed_file = workspace.join("allowed.txt");
-    std::fs::write(&allowed_file, b"allowed")?;
-    let allowed_contents = file_system
-        .read_file(
-            &PathUri::from_host_native_path(&allowed_file)?,
+    let allowed_uri = PathUri::from_host_native_path(&allowed_file)?;
+    file_system
+        .write_file(
+            &allowed_uri,
+            b"allowed".to_vec(),
             Default::default(),
             Some(&sandbox),
         )
+        .await?;
+    assert_eq!(std::fs::read(&allowed_file)?, b"allowed");
+    let allowed_contents = file_system
+        .read_file(&allowed_uri, Default::default(), Some(&sandbox))
         .await?;
     assert_eq!(allowed_contents, b"allowed");
 
@@ -1249,6 +1297,22 @@ async fn sandboxed_file_operations_cannot_read_helper_siblings() -> Result<()> {
 
     let sibling_uri = PathUri::from_host_native_path(&sibling)?;
     let destination = PathUri::from_host_native_path(workspace.join("copied.json"))?;
+
+    // Bubblewrap may create a file at this path in its private tmpfs. Check the host file,
+    // whether the sandbox rejected the write or isolated it.
+    let write_result = file_system
+        .write_file(
+            &sibling_uri,
+            b"replacement".to_vec(),
+            Default::default(),
+            Some(&sandbox),
+        )
+        .await;
+    assert_eq!(
+        std::fs::read(&sibling)?,
+        b"secret",
+        "sandboxed write changed host file {sibling_uri} (write returned {write_result:?})"
+    );
 
     for path in [sibling, escaping_link] {
         let path = PathUri::from_host_native_path(path)?;

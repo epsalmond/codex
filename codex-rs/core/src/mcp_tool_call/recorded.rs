@@ -31,7 +31,11 @@ pub(crate) async fn prepare_approval_action(
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format!("{err:#}")))?;
     let mcp_invocation = McpInvocation {
-        server: advertised_tool.server_name.clone(),
+        server: advertised_tool.server_name().to_owned(),
+        environment_id: advertised_tool
+            .server_key()
+            .scoped_environment_id()
+            .map(str::to_owned),
         tool: advertised_tool.tool.name.to_string(),
         arguments,
     };
@@ -44,6 +48,10 @@ pub(crate) async fn prepare_approval_action(
     let policy = mcp_tool_approval_policy(&call, &metadata).ok_or_else(|| {
         FunctionCallError::RespondToModel("MCP tool call blocked by app configuration".into())
     })?;
+    let requested_reviewer = invocation
+        .session
+        .mcp_requested_reviewer(&invocation.step_context.settings)
+        .await;
     match prepare_mcp_tool_approval(
         &invocation.session,
         &invocation.step_context,
@@ -54,7 +62,9 @@ pub(crate) async fn prepare_approval_action(
         call.config(),
         call.permission_source(),
         call.server_environment_id(),
+        call.server_key(),
         policy,
+        requested_reviewer,
     )
     .await
     {

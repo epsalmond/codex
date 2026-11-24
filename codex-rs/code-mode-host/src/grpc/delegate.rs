@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::session::GrpcSession;
+use super::session::TerminalReadyWire;
 
 pub(super) struct GrpcDelegate {
     session: Weak<GrpcSession>,
@@ -124,26 +125,30 @@ impl CodeModeSessionDelegate for GrpcDelegate {
     }
 
     fn cell_terminal_ready(&self, ready: CellTerminalReady) {
-        if let Some(session) = self.session.upgrade()
-            && session.terminal_ready_supported
-        {
-            let _ = session.send_event_now(
-                proto::session_event::Event::CellTerminalReady(proto::CellTerminalReady {
-                    session_id: session.id.to_string(),
-                    execution_id: self.execution_id.clone(),
-                    cell_id: ready.cell_id.to_string(),
-                    status: match ready.status {
-                        CellTerminalStatus::Completed => proto::CellTerminalStatus::Completed,
-                        CellTerminalStatus::Error => proto::CellTerminalStatus::Error,
-                    } as i32,
-                    output_kind: match ready.output_kind {
-                        CellOutputKind::Text => proto::CellOutputKind::Text,
-                        CellOutputKind::Media => proto::CellOutputKind::Media,
-                    } as i32,
-                }),
-                /*cell_permit*/ None,
-            );
-        }
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let wire_event = match session.terminal_ready {
+            TerminalReadyWire::Disabled => return,
+            TerminalReadyWire::Legacy => proto::session_event::Event::Heartbeat,
+            TerminalReadyWire::Current => proto::session_event::Event::CellTerminalReady,
+        };
+        let _ = session.send_event_now(
+            wire_event(proto::CellTerminalReady {
+                session_id: session.id.to_string(),
+                execution_id: self.execution_id.clone(),
+                cell_id: ready.cell_id.to_string(),
+                status: match ready.status {
+                    CellTerminalStatus::Completed => proto::CellTerminalStatus::Completed,
+                    CellTerminalStatus::Error => proto::CellTerminalStatus::Error,
+                } as i32,
+                output_kind: match ready.output_kind {
+                    CellOutputKind::Text => proto::CellOutputKind::Text,
+                    CellOutputKind::Media => proto::CellOutputKind::Media,
+                } as i32,
+            }),
+            /*cell_permit*/ None,
+        );
     }
 }
 

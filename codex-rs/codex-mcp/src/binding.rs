@@ -15,7 +15,9 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use codex_config::AppToolApproval;
+use codex_config::McpServerAuth;
 use codex_exec_server::FileSystemSandboxContext;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -29,7 +31,7 @@ use rmcp::model::ResourceTemplate;
 use serde_json::Value as JsonValue;
 
 use crate::McpConfig;
-use crate::McpServerPermissions;
+use crate::McpServerKey;
 use crate::binding_clients::McpBindingClients;
 use crate::binding_clients::McpResourceListing;
 use crate::client_tool_catalog::ToolCatalogSnapshot;
@@ -45,7 +47,7 @@ pub struct McpBinding {
     config: Arc<McpConfig>,
     plugins_available: bool,
     tools: Arc<[ToolInfo]>,
-    calls: HashMap<(String, String), PreparedMcpCall>,
+    calls: HashMap<(McpServerKey, String), PreparedMcpCall>,
 }
 
 impl McpBinding {
@@ -67,7 +69,7 @@ impl McpBinding {
         config: Arc<McpConfig>,
         plugins_available: bool,
         tools: impl Into<Arc<[ToolInfo]>>,
-        calls: HashMap<(String, String), PreparedMcpCall>,
+        calls: HashMap<(McpServerKey, String), PreparedMcpCall>,
     ) -> Self {
         Self {
             connections,
@@ -93,16 +95,16 @@ impl McpBinding {
     }
 
     /// Returns permitted tool metadata, including app-only tools.
-    pub fn tool_info(&self, server: &str, tool: &str) -> Option<&ToolInfo> {
+    pub fn tool_info(&self, server: &McpServerKey, tool: &str) -> Option<&ToolInfo> {
         self.calls
-            .get(&(server.to_string(), tool.to_string()))
+            .get(&(server.clone(), tool.to_string()))
             .map(PreparedMcpCall::tool_info)
     }
 
     /// Binds a model-visible call to the exact client and metadata in this binding.
-    pub fn prepare_call(&self, server: &str, tool: &str) -> Option<PreparedMcpCall> {
+    pub fn prepare_call(&self, server: &McpServerKey, tool: &str) -> Option<PreparedMcpCall> {
         self.calls
-            .get(&(server.to_string(), tool.to_string()))
+            .get(&(server.clone(), tool.to_string()))
             .filter(|call| crate::tool_is_model_visible(call.tool_info()))
             .cloned()
     }
@@ -112,13 +114,13 @@ impl McpBinding {
     }
 
     /// The environment owning this server in the step's connection set, even if it exposes no tools.
-    pub fn server_environment_id(&self, server: &str) -> Option<&str> {
+    pub fn server_environment_id(&self, server: &McpServerKey) -> Option<&str> {
         self.connections.server_environment_id(server)
     }
 
     pub async fn list_resources(
         &self,
-        server: &str,
+        server: &McpServerKey,
         params: Option<PaginatedRequestParams>,
     ) -> Result<ListResourcesResult> {
         if self.clients.client(server).is_some() {
@@ -128,16 +130,17 @@ impl McpBinding {
         }
     }
 
+    /// Lists ready servers' resources by exact key in this binding's catalog.
     pub async fn list_all_resources(
         &self,
-        include_server: impl Fn(&str) -> bool,
+        include_server: impl Fn(&McpServerKey) -> bool,
     ) -> McpResourceListing<Resource> {
         self.clients.list_all_resources(include_server).await
     }
 
     pub async fn list_resource_templates(
         &self,
-        server: &str,
+        server: &McpServerKey,
         params: Option<PaginatedRequestParams>,
     ) -> Result<ListResourceTemplatesResult> {
         if self.connections.skips_resource_template_listing(server) {
@@ -152,9 +155,10 @@ impl McpBinding {
         }
     }
 
+    /// Lists ready servers' templates by exact key in this binding's catalog.
     pub async fn list_all_resource_templates(
         &self,
-        include_server: impl Fn(&str) -> bool,
+        include_server: impl Fn(&McpServerKey) -> bool,
     ) -> McpResourceListing<ResourceTemplate> {
         self.clients
             .list_all_resource_templates(|server| {
@@ -165,7 +169,7 @@ impl McpBinding {
 
     pub async fn read_resource(
         &self,
-        server: &str,
+        server: &McpServerKey,
         params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult> {
         if self.clients.client(server).is_some() {
@@ -194,13 +198,12 @@ pub struct PreparedMcpCall {
     config: Arc<McpConfig>,
     catalog_snapshot: Arc<ToolCatalogSnapshot>,
     tool_info: PreparedToolInfo,
-    server_name: String,
     server_metadata: McpServerMetadata,
     plugin_id: Option<String>,
     selected_plugin_server: bool,
 }
 
-/// The rules for a prepared call and the folders used to interpret them.
+/// The rules for an MCP server or prepared call and the folders used to interpret them.
 pub enum McpPermissionSource<'a> {
     Environment {
         environment_id: &'a str,
@@ -266,15 +269,13 @@ impl PreparedMcpCall {
         selected_plugin_server: bool,
     ) -> Option<Self> {
         let tool_info = tool_info.into();
-        let server_name = tool_info.get().server_name.clone();
-        config.permission_profile_for_server(&server_name)?;
+        config.permission_source_for_server(tool_info.get().server_key())?;
         Some(Self {
             connections,
             client,
             config,
             catalog_snapshot,
             tool_info,
-            server_name,
             server_metadata,
             plugin_id,
             selected_plugin_server,
@@ -288,7 +289,12 @@ impl PreparedMcpCall {
     /// Whether the server connection that issued the step's tools still owns this call.
     pub fn uses_connection_from(&self, binding: &McpBinding) -> bool {
         self.connections
-            .shares_server_connection(&binding.connections, &self.server_name)
+            .shares_server_connection(&binding.connections, self.server_key())
+    }
+
+    /// Identifies the exact server and environment captured for this call.
+    pub fn server_key(&self) -> &McpServerKey {
+        self.tool_info().server_key()
     }
 
     /// Returns the configuration and approval authority captured with this client.
@@ -298,17 +304,10 @@ impl PreparedMcpCall {
 
     /// A hosted app can run through the local server but use thread rules, not local environment rules.
     pub fn permission_source(&self) -> McpPermissionSource<'_> {
-        // The constructor only prepares calls with an entry in this immutable config.
-        match &self.config.server_permissions[&self.server_name] {
-            McpServerPermissions::Environment(sandbox) => McpPermissionSource::Environment {
-                environment_id: self.server_environment_id(),
-                sandbox,
-            },
-            McpServerPermissions::Thread => McpPermissionSource::Thread {
-                profile: &self.config.permission_profile,
-                host_cwd: &self.config.host_cwd,
-            },
-        }
+        let Some(source) = self.config.permission_source_for_server(self.server_key()) else {
+            unreachable!("prepared calls have a permission source");
+        };
+        source
     }
 
     /// Returns the owner permissions validated when this immutable call was prepared.
@@ -334,47 +333,61 @@ impl PreparedMcpCall {
     /// loopback) or remote executor does not establish a shared filesystem.
     /// Capability probes are cached process-wide by absolute executable path.
     pub async fn sandbox_codex_executable(&self) -> Option<AbsolutePathBuf> {
-        let server = self
-            .config
-            .mcp_server_catalog
-            .server(&self.server_name)?
-            .config();
-        if self.server_environment_id() != codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
-            || !server.is_local_environment()
-            || !matches!(
-                server.transport,
-                codex_config::McpServerTransportConfig::Stdio { .. }
-            )
-        {
-            return None;
-        }
-
-        // Require a literal absolute path before the constructor can expand `~`.
-        let executable = self
-            .config
-            .codex_self_exe
-            .as_deref()
-            .filter(|path| path.is_absolute() && path.to_str().is_some())?;
-        let executable = AbsolutePathBuf::from_absolute_path_checked(executable).ok()?;
-        crate::sandbox_executable::supports_sandbox_state(&executable)
-            .await
-            .then_some(executable)
+        crate::sandbox_metadata::sandbox_codex_executable(
+            &self.config,
+            self.server_key(),
+            self.server_environment_id(),
+        )
+        .await
     }
 
     pub fn server_name(&self) -> &str {
-        &self.server_name
+        self.tool_info().server_name()
     }
 
     /// Returns whether this call is bound to the host-owned Codex Apps server.
     pub fn is_host_owned_apps(&self) -> bool {
         self.config
             .mcp_server_catalog
-            .server(&self.server_name)
+            .server(self.server_key())
             .is_some_and(|registration| {
                 registration
                     .source()
-                    .is_host_owned_apps(&self.server_name, registration.config())
+                    .is_host_owned_apps(self.server_name(), registration.config())
             })
+    }
+
+    /// Whether this completed Apps call can supply its result body to the session.
+    pub fn permits_result_body(&self, session_auth: AuthMode) -> bool {
+        let Some(server) = self.config.mcp_server_catalog.server(self.server_key()) else {
+            return false;
+        };
+        let config = server.config();
+        let codex_config::McpServerTransportConfig::StreamableHttp {
+            url,
+            http_headers,
+            env_http_headers,
+            bearer_token_env_var: None,
+            http_headers_helper: None,
+        } = &config.transport
+        else {
+            return false;
+        };
+        matches!(
+            session_auth,
+            AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens
+        ) && config.auth == McpServerAuth::ChatGpt
+            && http_headers
+                .iter()
+                .flat_map(HashMap::keys)
+                .chain(env_http_headers.iter().flat_map(HashMap::keys))
+                .all(|name| is_apps_attribution_header(name))
+            && self.client.client.matches_result_body_source(
+                /*require_runtime_auth*/ true,
+                url,
+                http_headers.as_ref(),
+                env_http_headers.as_ref(),
+            )
     }
 
     pub fn server_origin(&self) -> Option<&str> {
@@ -401,7 +414,7 @@ impl PreparedMcpCall {
     pub fn output_token_limit(&self) -> Option<usize> {
         self.config
             .mcp_server_catalog
-            .server(&self.server_name)?
+            .server(self.server_key())?
             .config()
             .tools
             .get(self.tool_info().tool.name.as_ref())?
@@ -443,12 +456,29 @@ impl PreparedMcpCall {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(Option<JsonValue>, Option<JsonValue>)>>,
     {
+        self.call_with_admission(requested_timeout, || Ok(()), prepare)
+            .await
+    }
+
+    /// Checks admission on the negotiated session immediately before handing a tool request
+    /// to the peer. An in-flight request can complete even if new work is stopped.
+    pub async fn call_with_admission<F, Fut>(
+        &self,
+        requested_timeout: Option<Duration>,
+        admit: impl Fn() -> Result<()> + Send + Sync,
+        prepare: F,
+    ) -> Result<CallToolResult>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(Option<JsonValue>, Option<JsonValue>)>>,
+    {
         let effective_timeout = match (self.client.tool_timeout, requested_timeout) {
             (Some(server_timeout), Some(requested_timeout)) => {
                 Some(server_timeout.min(requested_timeout))
             }
             (server_timeout, requested_timeout) => server_timeout.or(requested_timeout),
         };
+        let server_name = self.server_name();
         let tool_name = self.tool_info().tool.name.to_string();
         let operation =
             self.client
@@ -487,32 +517,40 @@ impl PreparedMcpCall {
                         }
                         None => None,
                     };
+                    let policy_meta = self.connections.network_policy_meta_for_call(
+                        &self.client,
+                        Some(self.permission_profile()),
+                        self.server_environment_id(),
+                        meta,
+                    );
                     self.client
                         .call_tool(
                             tool_name.clone(),
                             arguments,
-                            self.connections.network_policy_meta_for_call(
-                                &self.client,
-                                Some(self.permission_profile()),
-                                self.server_environment_id(),
-                                meta,
-                            ),
+                            |capabilities| {
+                                let meta = policy_meta(capabilities)?;
+                                admit()?;
+                                Ok(meta)
+                            },
                             remaining_timeout,
                         )
                         .await
                         .with_context(|| {
-                            format!("tool call failed for `{}/{tool_name}`", self.server_name)
+                            format!("tool call failed for `{server_name}/{tool_name}`")
                         })
                 });
         self.client
             .with_active_shared_lease(operation)
             .await?
             .ok_or_else(|| anyhow::anyhow!(
-                "tool call rejected because the catalog changed after `{}/{tool_name}` was prepared",
-                self.server_name
+                "tool call rejected because the catalog changed after `{server_name}/{tool_name}` was prepared"
             ))?
             .map(call_tool_result_from_rmcp)
     }
+}
+
+fn is_apps_attribution_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("x-openai-product-sku") || name.eq_ignore_ascii_case("originator")
 }
 
 pub(crate) fn call_tool_result_from_rmcp(result: rmcp::model::CallToolResult) -> CallToolResult {

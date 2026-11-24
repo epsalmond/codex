@@ -21,6 +21,8 @@ mod goals;
 #[path = "goals_tests.rs"]
 mod goals_tests;
 mod guardian;
+mod guardian_policy;
+pub use guardian_policy::GuardianPolicySnapshot;
 mod hook_config;
 mod host_name;
 mod in_app_browser_requirements;
@@ -143,6 +145,7 @@ pub use config_requirements::NetworkRequirementsToml;
 pub use config_requirements::NetworkUnixSocketPermissionToml;
 pub use config_requirements::NetworkUnixSocketPermissionsToml;
 pub use config_requirements::NewThreadModelDefaultsToml;
+pub use config_requirements::OtelHeadersHelperTargets;
 pub use config_requirements::OtelRequirementsToml;
 pub use config_requirements::RemoteSandboxConfigToml;
 pub use config_requirements::RequirementSource;

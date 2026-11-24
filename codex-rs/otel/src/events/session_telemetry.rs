@@ -5,6 +5,8 @@ use crate::events::shared::log_event;
 use crate::events::shared::trace_event;
 use crate::metrics::API_CALL_COUNT_METRIC;
 use crate::metrics::API_CALL_DURATION_METRIC;
+use crate::metrics::EXEC_COMMAND_COUNT_METRIC;
+use crate::metrics::EXEC_COMMAND_DURATION_TOTAL_METRIC;
 use crate::metrics::MULTI_AGENT_SPAWN_FAILURE_METRIC;
 use crate::metrics::MULTI_AGENT_SPAWN_PHASE_DURATION_METRIC;
 use crate::metrics::MetricsClient;
@@ -12,6 +14,8 @@ use crate::metrics::MetricsConfig;
 use crate::metrics::MetricsError;
 use crate::metrics::PLUGIN_INSTALL_ELICITATION_SENT_METRIC;
 use crate::metrics::PLUGIN_INSTALL_SUGGESTION_METRIC;
+use crate::metrics::REASONING_ITEMS_REMOVED_METRIC;
+use crate::metrics::REASONING_REPLAY_COUNT_METRIC;
 use crate::metrics::RESPONSES_API_ENGINE_IAPI_TBT_DURATION_METRIC;
 use crate::metrics::RESPONSES_API_ENGINE_IAPI_TTFT_DURATION_METRIC;
 use crate::metrics::RESPONSES_API_ENGINE_SERVICE_TBT_DURATION_METRIC;
@@ -40,6 +44,7 @@ use crate::sanitize_metric_tag_value;
 use crate::tool_result::ToolResultEvent;
 use crate::tool_result::emit_tool_result;
 use codex_api::AgentIdentityTelemetry;
+use codex_api::ReasoningRemovalReason;
 use codex_api::ResponseEvent;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -646,6 +651,37 @@ impl SessionTelemetry {
 
     pub fn record_responses(&self, handle_responses_span: &Span, event: &ResponseEvent) {
         handle_responses_span.record("otel.name", SessionTelemetry::responses_type(event));
+
+        if let ResponseEvent::Completed {
+            reasoning_removals, ..
+        } = event
+        {
+            let report = match reasoning_removals {
+                None => "unavailable",
+                Some(counts) if counts.is_empty() => "no_removals_reported",
+                Some(counts) if counts.contains_key(&ReasoningRemovalReason::PrefixMismatch) => {
+                    "prefix_mismatch_reported"
+                }
+                Some(_) => "removals_reported",
+            };
+            let mut tags = vec![("report", report)];
+            if let Some(product_sku) = self.metadata.product_sku {
+                tags.push(("product_sku", product_sku));
+            }
+            self.counter(REASONING_REPLAY_COUNT_METRIC, /*inc*/ 1, &tags);
+            if let Some(counts) = reasoning_removals {
+                for reason in ReasoningRemovalReason::ALL {
+                    let count = counts.get(&reason).copied().unwrap_or_default();
+                    tags[0] = ("reason", reason.as_str());
+                    self.histogram_with_boundaries(
+                        REASONING_ITEMS_REMOVED_METRIC,
+                        count,
+                        &[0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
+                        &tags,
+                    );
+                }
+            }
+        }
 
         match event {
             ResponseEvent::OutputItemDone(item) => {
@@ -1299,6 +1335,20 @@ impl SessionTelemetry {
             Ok(result) => log_output(result),
             Err(error) => (error.to_string(), false),
         };
+
+        if tool_name.is_default_namespace() && tool_name.name == "exec_command" {
+            // Use the full handler interval: shell setup/startup and command work until
+            // exit or the first yield. Direct tool_result_with_tags calls also report
+            // pre-handler rejections, which must not become zero-latency samples here.
+            let mut tags = extra_tags.to_vec();
+            tags.push(("success", if success { "true" } else { "false" }));
+            if let Some(product_sku) = self.metadata.product_sku {
+                tags.push(("product_sku", product_sku));
+            }
+            let duration_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+            self.counter(EXEC_COMMAND_DURATION_TOTAL_METRIC, duration_ms, &tags);
+            self.counter(EXEC_COMMAND_COUNT_METRIC, /*inc*/ 1, &tags);
+        }
 
         self.tool_result_with_tags(
             tool_name,

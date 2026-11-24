@@ -13,12 +13,12 @@ use codex_code_mode::CodeModeSessionProviderFuture;
 use codex_code_mode::CodeModeSessionResultFuture;
 use codex_code_mode::ExecuteRequest;
 use codex_code_mode::NotificationFuture;
-use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_code_mode::StartedCell;
 use codex_code_mode::ToolInvocationFuture;
 use codex_code_mode::WaitOutcome;
 use codex_code_mode::WaitRequest;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_core::ProcessOwnedGrpcCodeModeSessionProvider;
 use core_test_support::ThreadIdle;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -195,7 +195,7 @@ async fn hosted_callback_settles_after_original_owner_becomes_idle(
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let inner = ProcessOwnedCodeModeSessionProvider::with_host_program(
+    let inner = ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
         core_test_support::code_mode_host_bin(),
     )
     .create_session()

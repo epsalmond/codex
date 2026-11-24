@@ -179,7 +179,7 @@ async fn shake_preview_withholds_unknown_billing_and_body_budget() {
     chat.has_codex_backend_auth = false;
     chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
         address: "wss://remote.example.com".to_string(),
-        version: "v1.0.0".to_string(),
+        version: Some("v1.0.0".to_string()),
         is_local_daemon: false,
         is_managed_daemon: false,
     });

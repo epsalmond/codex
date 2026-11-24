@@ -2,6 +2,7 @@ use super::*;
 use codex_protocol::AgentPath;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::ThreadHistoryMode;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
 
@@ -408,6 +409,7 @@ async fn register_root_thread_again_preserves_retained_root_state() {
     registry.save_evicted_settings(
         root_thread_id,
         EvictedEnvironments {
+            history_mode: ThreadHistoryMode::Paginated,
             config: Arc::new(config.clone()),
             has_independent_service_tier: false,
             selections: Vec::new(),
@@ -423,10 +425,11 @@ async fn register_root_thread_again_preserves_retained_root_state() {
         registry
             .evicted_environments(root_thread_id)
             .map(|environments| (
+                environments.history_mode,
                 environments.selections,
                 environments.bindings.all_selections()
             )),
-        Some((Vec::new(), Vec::new()))
+        Some((ThreadHistoryMode::Paginated, Vec::new(), Vec::new()))
     );
     assert_eq!(registry.evicted_config(root_thread_id), Some(config));
     assert!(registry.completion_delivery_closed(root_thread_id));

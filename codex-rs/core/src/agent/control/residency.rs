@@ -55,7 +55,7 @@ impl ThreadManagerState {
             return Ok(ThreadEvictionOutcome::Busy);
         }
         // Capture the same effective settings as a fork before stopping the resident.
-        let (config, ..) = thread.session.fork_config().await;
+        let (config, snapshot, ..) = thread.session.fork_config().await;
         let wake_coordinator = &thread.session.services.local_agent_runtime.wake_coordinator;
         if let Some(assignment) = wake_coordinator.current_assignment(thread_id) {
             wake_coordinator.store_reload_config(&assignment, config.clone());
@@ -73,8 +73,8 @@ impl ThreadManagerState {
                 teardown.complete();
                 return Err(err);
             }
-            // Dispatch has stopped and the residency guard excludes senders. A tree
-            // shutdown deliberately discards its mailbox instead of retaining it.
+            // Dispatch has stopped. Put previously received mail ahead of results
+            // published directly to the mailbox while eviction owned the residency guard.
             let mail = thread
                 .session
                 .input_queue
@@ -88,6 +88,7 @@ impl ThreadManagerState {
             // Preserve configured bindings across eviction without retaining turn-only attachments.
             // Raw bindings keep the original pending owner configuration alive.
             let environments = EvictedEnvironments {
+                history_mode: snapshot.history_mode,
                 config: Arc::new(config.clone()),
                 has_independent_service_tier: matches!(
                     &thread.session.agent_runtime,
@@ -209,6 +210,12 @@ impl LocalAgentRuntime {
     }
 
     /// Pins and touches the registered runtime without waiting for unrelated eviction.
+    pub(super) fn touch_v2_recipient(&self, thread: &CodexThread) {
+        if is_resident_candidate(thread) {
+            self.residency.touch(thread.session.thread_id);
+        }
+    }
+
     pub(crate) async fn pin_v2_residency(
         &self,
         thread: &CodexThread,
@@ -224,7 +231,7 @@ impl LocalAgentRuntime {
         if !std::ptr::eq(thread, registered.as_ref()) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
-        self.residency.touch(thread_id);
+        self.touch_v2_recipient(thread);
         // Touching changes eviction order, so a waiting wake may now find capacity.
         self.wake_coordinator.notify_residency_available();
         Ok(Some(guard))
@@ -393,7 +400,7 @@ async fn is_unloadable(thread: &CodexThread) -> bool {
             | AgentStatus::Completed(_)
             | AgentStatus::Errored(_)
             | AgentStatus::Interrupted
-    ) && thread.session.active_turn.lock().await.is_none()
+    ) && !thread.has_active_turn().await
         && !thread.session.services.async_completions.has_owned_work()
         && !thread.session.has_outstanding_durable_sleep()
         // Count trigger mail even while wakeups are paused: unloading keeps the mail but drops

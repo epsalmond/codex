@@ -313,10 +313,7 @@ async fn explicit_root_recovery_uses_the_same_owner_policy_for_claim_and_accepta
         client_id: None,
         metadata: UserInputMetadata::default(),
     };
-    let explicit = vec![user(vec![UserInput::Text {
-        text: "recover".to_owned(),
-        text_elements: Vec::new(),
-    }])];
+    let explicit = vec![user(vec![ResolvedUserInput::text("recover".to_owned())])];
     let mail = TurnInput::InterAgentCommunication(
         InterAgentCommunication::new(
             AgentPath::try_from("/root/worker").unwrap(),
@@ -339,10 +336,7 @@ async fn explicit_root_recovery_uses_the_same_owner_policy_for_claim_and_accepta
         metadata.origin = UserInputOrigin::Heartbeat;
     }
     let empty = vec![user(vec![])];
-    let blank = vec![user(vec![UserInput::Text {
-        text: " \n".to_owned(),
-        text_elements: Vec::new(),
-    }])];
+    let blank = vec![user(vec![ResolvedUserInput::text(" \n".to_owned())])];
     for (source, input) in [
         (SessionSource::Cli, vec![]),
         (SessionSource::Cli, empty),

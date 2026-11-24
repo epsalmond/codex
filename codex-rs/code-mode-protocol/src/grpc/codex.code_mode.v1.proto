@@ -58,15 +58,23 @@ message GetProcessMetricsResponse {
 
 message OpenSessionRequest {
   optional SessionCellExecutionLimits cell_execution_limits = 1;
-  // Opt-in only. Older hosts omit support and retain compatibility retrieval.
-  bool terminal_ready_requested = 3;
   // Absent preserves the legacy client-side truncation behavior.
   optional OutputTruncation output_truncation = 2;
   // Maximum pending tool callbacks the client can accept.
   // Absent preserves the legacy 1,024 callback budget. Hosts may impose a lower
   // shared limit, and older hosts ignore this field and retain their own limit.
-  // Field 3 is reserved by the fork's terminal-ready negotiation.
-  optional uint32 max_pending_delegate_calls = 4;
+  optional uint32 max_pending_delegate_calls = 3;
+  // The 0.169.1 fork put callback capacity here and requested readiness at 3.
+  // Values at most 1 also fit the older upstream heartbeat opt-in and are ignored.
+  optional uint32 legacy_fork_max_pending_delegate_calls = 4;
+  // Seconds of stream inactivity before a heartbeat. Zero disables heartbeats.
+  uint32 heartbeat_interval_s = 5;
+  // Older hosts ignore fork readiness and retain compatibility retrieval.
+  bool terminal_ready_requested = 16;
+  // Fork clients advertise their capacity here and leave field 3 unset because
+  // legacy fork hosts interpret field 3 as a readiness request. Hosts without
+  // this extension, including upstream 0.172, use their 1,024 callback default.
+  optional uint32 fork_max_pending_delegate_calls = 17;
 }
 
 enum OutputTruncation {
@@ -87,7 +95,10 @@ message SessionEvent {
     Notification notification = 3;
     NotificationCancelled notification_cancelled = 4;
     CellClosed cell_closed = 5;
-    CellTerminalReady cell_terminal_ready = 6;
+    // An empty payload is an upstream heartbeat. The 0.169.1 fork used this
+    // tag for readiness; only sessions negotiated with that client get a payload.
+    CellTerminalReady heartbeat = 6;
+    CellTerminalReady cell_terminal_ready = 16;
   }
 }
 
@@ -95,7 +106,9 @@ message SessionOpened {
   string session_id = 1;
   // Absent (including from an older host) means the client owns truncation.
   optional OutputTruncation output_truncation = 2;
-  bool terminal_ready_supported = 3;
+  // Clients may send ExecuteRequest.catalog_revision when advertised.
+  bool supports_catalog_revision = 3;
+  bool terminal_ready_supported = 16;
 }
 
 // Emitted once after completion/callback settlement only if output is buffered.
@@ -131,7 +144,12 @@ message CloseSessionResponse {}
 message SubscribeToToolCallsRequest {
   string session_id = 1;
   repeated ToolName tool_names = 2;
+  reserved 3; // Boolean heartbeat opt-in used by earlier preview builds.
+  // Seconds of stream inactivity before a heartbeat. Zero disables heartbeats.
+  uint32 heartbeat_interval_s = 4;
 }
+
+message StreamHeartbeat {}
 
 message ToolCall {
   string session_id = 1;
@@ -152,6 +170,9 @@ message ToolCall {
   // gRPC metadata is fixed when the subscription stream opens, so each call
   // carries its own context in the message.
   optional string traceparent = 10;
+
+  // A heartbeat carries only the session ID and must not be handled as a tool call.
+  optional StreamHeartbeat heartbeat = 11;
 }
 
 message CompleteToolCallRequest {
@@ -219,6 +240,8 @@ message ExecuteRequest {
   repeated ToolDefinition enabled_tools = 5;
   optional uint64 yield_time_ms = 6;
   optional uint64 max_output_tokens = 7;
+  // Nonempty enabled_tools installs a session-local revision. Empty references it.
+  optional uint64 catalog_revision = 8;
 }
 
 message ExecuteEvent {

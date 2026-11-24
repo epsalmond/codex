@@ -5,7 +5,7 @@ use crate::event_processor::EventProcessor;
 use crate::event_processor::print_final_output_before_cleanup;
 use crate::request_shutdown;
 use crate::send_request_with_response;
-use codex_app_server_client::InProcessAppServerClient;
+use codex_app_server_client::AppServerClient;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ThreadWorkShutdownIfQuiescentParams;
 use codex_app_server_protocol::ThreadWorkShutdownIfQuiescentResponse;
@@ -40,7 +40,7 @@ pub(crate) struct DrainExit {
 
 impl WorkLifecycle {
     pub(crate) async fn subscribe(
-        client: &InProcessAppServerClient,
+        client: &AppServerClient,
         request_ids: &mut RequestIdSequencer,
         thread_id: &str,
     ) -> Result<Option<Self>, String> {
@@ -104,7 +104,7 @@ impl WorkLifecycle {
     /// Returns `None` while exec must keep waiting.
     pub(crate) async fn finish_if_drained(
         &mut self,
-        client: &InProcessAppServerClient,
+        client: &AppServerClient,
         request_ids: &mut RequestIdSequencer,
         event_processor: &mut dyn EventProcessor,
         output: &mut Option<codex_exec_server::BoundOutput>,
@@ -151,7 +151,7 @@ impl WorkLifecycle {
 
     async fn close_if_quiescent(
         &mut self,
-        client: &InProcessAppServerClient,
+        client: &AppServerClient,
         request_ids: &mut RequestIdSequencer,
     ) -> Result<CloseOutcome, String> {
         if !self.ready_to_close() {

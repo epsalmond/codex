@@ -626,11 +626,13 @@ default_tools_approval_mode = "approve"
     assert_eq!(
         crate::connectors::mcp_approvals_reviewer_from_layers(
             &child.config_layer_stack,
+            child.config_layer_stack.requirements(),
             codex_protocol::config_types::ApprovalsReviewer::User,
             /*model*/ None,
             codex_mcp::CODEX_APPS_MCP_SERVER_NAME,
             Some("calendar"),
             /*link_id*/ None,
+            /*tool*/ None,
         ),
         codex_protocol::config_types::ApprovalsReviewer::User
     );
