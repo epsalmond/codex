@@ -34,6 +34,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::map::Map as JsonMap;
 use std::future::Future;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -45,6 +46,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::Fragment;
@@ -721,9 +723,29 @@ fn websocket_config() -> WebSocketConfig {
 }
 
 fn map_ws_stream_error(error: WsError) -> ApiError {
-    match codex_websocket_client::network_policy_denial(&error) {
-        Some(denied) => ApiError::Transport(TransportError::Policy(denied)),
-        None => ApiError::Stream(error.to_string()),
+    if let Some(denied) = codex_websocket_client::network_policy_denial(&error) {
+        return ApiError::Transport(TransportError::Policy(denied));
+    }
+    match error {
+        WsError::ConnectionClosed
+        | WsError::AlreadyClosed
+        | WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+            ApiError::ResponseStreamDisconnected(error.to_string())
+        }
+        WsError::Io(ref source)
+            if matches!(
+                source.kind(),
+                ErrorKind::ConnectionAborted
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::NotConnected
+                    | ErrorKind::TimedOut
+                    | ErrorKind::UnexpectedEof
+            ) =>
+        {
+            ApiError::ResponseStreamDisconnected(error.to_string())
+        }
+        _ => ApiError::Stream(error.to_string()),
     }
 }
 
@@ -895,7 +917,7 @@ async fn run_websocket_response_stream(
         let poll_start = Instant::now();
         let response = tokio::select! {
             response = tokio::time::timeout(idle_timeout, ws_stream.next()) => {
-                response.map_err(|_| ApiError::Stream("idle timeout waiting for websocket".into()))
+                response.map_err(|_| ApiError::ResponseStreamDisconnected("idle timeout waiting for websocket".into()))
             }
             request = &mut interrupt_request, if response_id.is_some() => {
                 interruption = Some(request);
@@ -930,7 +952,7 @@ async fn run_websocket_response_stream(
                 return Err(map_ws_stream_error(err));
             }
             Ok(None) => {
-                return Err(ApiError::Stream(
+                return Err(ApiError::ResponseStreamDisconnected(
                     "stream closed before response.completed".into(),
                 ));
             }
@@ -1082,8 +1104,23 @@ async fn run_websocket_response_stream(
             Message::Close(Some(frame)) if frame.code == CloseCode::Size && !received_text => {
                 return Err(ApiError::WebsocketMessageTooLarge);
             }
-            Message::Close(_) => {
+            Message::Close(Some(frame))
+                if !matches!(
+                    frame.code,
+                    CloseCode::Normal
+                        | CloseCode::Away
+                        | CloseCode::Abnormal
+                        | CloseCode::Error
+                        | CloseCode::Restart
+                        | CloseCode::Again
+                ) =>
+            {
                 return Err(ApiError::Stream(
+                    "websocket closed by server before response.completed".into(),
+                ));
+            }
+            Message::Close(_) => {
+                return Err(ApiError::ResponseStreamDisconnected(
                     "websocket closed by server before response.completed".into(),
                 ));
             }

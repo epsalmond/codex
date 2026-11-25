@@ -30,6 +30,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::Transport(_)
         | ApiError::Api { .. }
         | ApiError::Stream(_)
+        | ApiError::ResponseStreamDisconnected(_)
         | ApiError::WebsocketMessageTooLarge
         | ApiError::ContentFilter
         | ApiError::ResponseIncomplete(_)
@@ -72,6 +73,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             CodexErr::new(CodexErrorDetails::RateLimitExceeded(message))
         }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
+        ApiError::ResponseStreamDisconnected(msg) => CodexErr::ResponseStreamDisconnected(msg),
         ApiError::WebsocketMessageTooLarge => {
             CodexErr::new(CodexErrorDetails::WebsocketMessageTooLarge)
         }

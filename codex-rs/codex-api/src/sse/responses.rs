@@ -632,19 +632,28 @@ async fn process_sse_with_treatment(
                     eventsource_stream::EventStreamError::Transport(
                         error @ codex_client::TransportError::Policy(_),
                     ) => ApiError::Transport(error),
+                    ref error @ eventsource_stream::EventStreamError::Transport(
+                        codex_client::TransportError::Connection(_)
+                        | codex_client::TransportError::Network(_)
+                        | codex_client::TransportError::Timeout,
+                    ) => ApiError::ResponseStreamDisconnected(error.to_string()),
                     error => ApiError::Stream(error.to_string()),
                 };
                 let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Ok(None) => {
-                let error = ApiError::Stream("stream closed before response.completed".into());
+                let error = ApiError::ResponseStreamDisconnected(
+                    "stream closed before response.completed".into(),
+                );
                 let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Err(_) => {
                 let _ = tx_event
-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
+                    .send(Err(ApiError::ResponseStreamDisconnected(
+                        "idle timeout waiting for SSE".into(),
+                    )))
                     .await;
                 return;
             }
@@ -977,7 +986,7 @@ mod tests {
         assert_matches!(events[0], Ok(ResponseEvent::OutputItemDone(_)));
 
         match &events[1] {
-            Err(ApiError::Stream(msg)) => {
+            Err(ApiError::ResponseStreamDisconnected(msg)) => {
                 assert_eq!(msg, "stream closed before response.completed")
             }
             other => panic!("unexpected second event: {other:?}"),

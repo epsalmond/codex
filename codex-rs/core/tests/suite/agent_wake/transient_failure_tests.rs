@@ -1,4 +1,4 @@
-//! A wake-triggered root turn that fails with a transient model error (capacity or rate limit) must
+//! A wake-triggered root turn that fails with a transient model or transport error must
 //! leave its children running. Their reports wait for the root's next turn.
 
 use super::*;
@@ -33,6 +33,8 @@ fn failure_chunks(kind: &str, gate: oneshot::Receiver<()>) -> Vec<StreamingSseCh
             "Selected model is at capacity. Please try a different model.",
         ),
         "rate_limited" => error("rate_limit_exceeded", "Rate limit reached."),
+        // End the SSE body without sending a terminal Responses event.
+        "disconnect" => vec![],
         other => panic!("unknown failure kind {other}"),
     };
     vec![
@@ -43,6 +45,11 @@ fn failure_chunks(kind: &str, gate: oneshot::Receiver<()>) -> Vec<StreamingSseCh
 
 #[test_case("overloaded", CodexErrorInfo::ServerOverloaded; "server_overloaded")]
 #[test_case("rate_limited", CodexErrorInfo::RateLimitExceeded; "rate_limited")]
+#[test_case(
+    "disconnect",
+    CodexErrorInfo::ResponseStreamDisconnected { http_status_code: None };
+    "stream_disconnect_after_retry"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transient_wake_turn_failure_keeps_children_and_their_reports(
     kind: &str,
@@ -51,6 +58,7 @@ async fn transient_wake_turn_failure_keeps_children_and_their_reports(
     let (release_racer, racer_gate) = oneshot::channel();
     let (release_worker, worker_gate) = oneshot::channel();
     let (release_failure, failure_gate) = oneshot::channel();
+    let disconnect = kind == "disconnect";
     let spawn_calls = CHILDREN
         .iter()
         .map(|task| {
@@ -67,15 +75,18 @@ async fn transient_wake_turn_failure_keeps_children_and_their_reports(
             ))
         })
         .collect::<Vec<_>>();
-    let root_route = vec![
+    let mut root_route = vec![
         std::iter::once(chunk(ev_response_created("root-spawn")))
             .chain(spawn_calls)
             .chain(std::iter::once(chunk(ev_completed("root-spawn"))))
             .collect(),
         final_answer_chunks("root-delegated", "delegated"),
         failure_chunks(kind, failure_gate),
-        final_answer_chunks("root-followup", "summary"),
     ];
+    if disconnect {
+        root_route.push(vec![chunk(ev_response_created("root-wake-retry"))]);
+    }
+    root_route.push(final_answer_chunks("root-followup", "summary"));
     let routed_children = Arc::new(Mutex::new(HashMap::<&'static str, String>::new()));
     let routed_for_matcher = Arc::clone(&routed_children);
     let (server, _) = start_routed_streaming_sse_server(
@@ -120,7 +131,12 @@ async fn transient_wake_turn_failure_keeps_children_and_their_reports(
     let test = test_codex()
         .with_model("gpt-5.4")
         .with_session_source(SessionSource::Cli)
-        .with_config(|config| configure_multi_agent(config, /*agent_polling*/ None))
+        .with_config(move |config| {
+            configure_multi_agent(config, /*agent_polling*/ None);
+            if disconnect {
+                config.model_provider.stream_max_retries = Some(1);
+            }
+        })
         .build_with_streaming_server(&server)
         .await?;
     let root = test.session_configured.thread_id.to_string();
@@ -179,6 +195,11 @@ async fn transient_wake_turn_failure_keeps_children_and_their_reports(
         failed.error.and_then(|error| error.codex_error_info),
         Some(expected_error)
     );
+    assert_eq!(
+        root_bodies().await.len(),
+        if disconnect { 4 } else { 3 },
+        "only the configured stream retry should issue another request"
+    );
     assert!(
         worker.wait_until_terminated().now_or_never().is_none(),
         "a transient root failure must not stop a working child"
@@ -206,7 +227,7 @@ async fn transient_wake_turn_failure_keeps_children_and_their_reports(
     };
     assert_eq!(followup.error, None);
     let bodies = root_bodies().await;
-    assert_eq!(bodies.len(), 4);
+    assert_eq!(bodies.len(), if disconnect { 5 } else { 4 });
     assert_eq!(
         (
             deliveries(&bodies, "quick result"),
