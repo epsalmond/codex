@@ -40,6 +40,14 @@ RUST_LOG = (
     b"error: could not compile `codex-core` due to 7 previous errors\n"
     b"##[error]Process completed with exit code 101.\n"
 )
+RELEASE_CHECK_STEP = "Check release-only code paths"
+# Excerpts from the failed release checks for PRs #301 and #302, respectively.
+RELEASE_CHECK_LOGS = (
+    b"2026-11-18T10:42:33.1811281Z error[E0277]: can't compare `McpServerKey` with `str`\n"
+    b"2026-11-18T10:42:33.1811848Z     --> core/src/mcp_tool_call.rs:1397:59\n",
+    b"2026-11-20T00:34:59.1129928Z error[E0432]: unresolved import `crate::utils::json`\n"
+    b"2026-11-20T00:34:59.1130793Z   --> core/src/context_manager/history.rs:37:19\n",
+)
 
 
 def step(name, conclusion="success"):
@@ -134,6 +142,21 @@ class FakeAPI:
 
 
 class FeedbackTests(unittest.TestCase):
+    def test_release_only_compiler_failures_reach_recovery(self):
+        for log in RELEASE_CHECK_LOGS:
+            with self.subTest(log=log):
+                api = FakeAPI()
+                api.validation["steps"][-1] = step(RELEASE_CHECK_STEP, "failure")
+                api.logs = log
+                _, payload, _ = MOD.handoff(api, IDENTITY)
+                self.assertEqual(payload["failed_step"], RELEASE_CHECK_STEP)
+                self.assertEqual(payload["validation_result"], "source_failure")
+                self.assertEqual(payload["failure_reason"], "rustc_diagnostics")
+                self.assertIn(
+                    log.partition(b"-->")[2].decode().strip(),
+                    payload["failure_context"],
+                )
+
     def test_observed_rust_errors_and_exact_deployment(self):
         api = FakeAPI()
         deployment, payload, reused = MOD.handoff(api, IDENTITY)
@@ -280,14 +303,28 @@ class FeedbackTests(unittest.TestCase):
         )
 
     def test_setup_identity_cancel_and_timeout_are_infrastructure(self):
-        for kind in ("identity", "prepare", "setup", "cancelled", "timed_out"):
+        for kind in (
+            "identity",
+            "prepare",
+            "setup",
+            "cancelled",
+            "timed_out",
+            "step_cancelled",
+            "step_not_completed",
+        ):
             api = FakeAPI()
+            api.validation["steps"][-1] = step(RELEASE_CHECK_STEP, "failure")
+            api.logs = RELEASE_CHECK_LOGS[0]
             if kind == "identity":
                 api.validation["steps"][0]["conclusion"] = "skipped"
             elif kind == "prepare":
                 api.prepare["conclusion"] = "failure"
             elif kind == "setup":
                 api.validation["steps"][-1]["name"] = "Install uv"
+            elif kind == "step_cancelled":
+                api.validation["steps"][-1]["conclusion"] = "cancelled"
+            elif kind == "step_not_completed":
+                api.validation["steps"][-1]["status"] = "in_progress"
             else:
                 api.validation["conclusion"] = kind
                 api.validation["steps"][-1]["conclusion"] = kind
@@ -323,6 +360,22 @@ class FeedbackTests(unittest.TestCase):
 class LogTests(unittest.TestCase):
     def collect(self, log, step="Test scoped release behavior"):
         return MOD.collect_log([log], step)
+
+    def test_release_only_check_ignores_test_output_and_prioritizes_infrastructure(
+        self,
+    ):
+        for log, reason in (
+            (b"test suite::approval ... FAILED", "unclassified"),
+            (b"unknown failure", "unclassified"),
+            (
+                RELEASE_CHECK_LOGS[0] + b"No space left on device\n",
+                "infrastructure_diagnostics",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                result = self.collect(log, RELEASE_CHECK_STEP)
+                self.assertEqual(result["validation_result"], "infrastructure_failure")
+                self.assertEqual(result["failure_reason"], reason)
 
     def test_conservative_source_whitelist_and_infra_precedence(self):
         for log in (

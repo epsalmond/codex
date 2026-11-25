@@ -30,7 +30,9 @@ MAX_STORAGE = 128 * 1024
 MAX_CONTEXT = 12 * 1024
 MAX_LINE = 2048
 MAX_CONTEXT_LINES = 160
-SOURCE_STEPS = {"Check formatting", "Test scoped release behavior"}
+RELEASE_CHECK_STEP = "Check release-only code paths"
+SCOPED_TEST_STEP = "Test scoped release behavior"
+SOURCE_STEPS = {"Check formatting", RELEASE_CHECK_STEP, SCOPED_TEST_STEP}
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 TAG = re.compile(r"rust-v[0-9]+\.[0-9]+\.[0-9]+\Z")
 INFRA = re.compile(
@@ -138,11 +140,10 @@ def utf8_prefix(value, limit):
 def diagnostic(line, step):
     if step == "Check formatting" and FORMAT.search(line):
         return "formatter_diff"
-    if step == "Test scoped release behavior":
-        if RUSTC.search(line):
-            return "rustc_diagnostics"
-        if TEST.search(line):
-            return "test_failure"
+    if step in (RELEASE_CHECK_STEP, SCOPED_TEST_STEP) and RUSTC.search(line):
+        return "rustc_diagnostics"
+    if step == SCOPED_TEST_STEP and TEST.search(line):
+        return "test_failure"
     return None
 
 
@@ -601,7 +602,14 @@ def verify(api, identity):
     if tag.get("type") != "commit" or tag.get("sha") != identity.upstream_sha:
         raise HandoffError("upstream tag moved before validation handoff")
     classification = collect_log(api.log_chunks(job_id), failed_step)
-    if not ready or not exact or validation.get("conclusion") != "failure":
+    if (
+        not ready
+        or not exact
+        or validation.get("conclusion") != "failure"
+        or not failed
+        or failed[0].get("conclusion") != "failure"
+        or failed[0].get("status") != "completed"
+    ):
         classification.update(
             validation_result="infrastructure_failure",
             failure_reason="setup_or_identity_failure",
