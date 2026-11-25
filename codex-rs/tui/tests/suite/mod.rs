@@ -22,4 +22,6 @@ mod unix_daemon;
 mod vt100_history;
 mod vt100_live_commit;
 #[cfg(unix)]
+mod wake_compaction;
+#[cfg(unix)]
 mod worktree_stack;
