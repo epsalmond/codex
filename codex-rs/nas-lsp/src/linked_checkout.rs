@@ -138,7 +138,7 @@ fn invalid() -> io::Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
@@ -158,12 +158,9 @@ mod tests {
         assert!(result.status.success(), "{:?}", result);
     }
 
-    #[test]
-    fn linked_checkout_requires_a_bidirectional_link_to_the_enrolled_repository() {
-        let directory = tempfile::tempdir().unwrap();
-        let repository = directory.path().join("repository");
-        let linked = directory.path().join("elsewhere");
-        let fake = directory.path().join("unregistered");
+    pub(crate) fn make_linked_checkout(directory: &Path) -> (PathBuf, PathBuf) {
+        let repository = directory.join("repository");
+        let linked = directory.join("elsewhere");
         fs::create_dir(&repository).unwrap();
         git(&repository, &[OsStr::new("init")]);
         git(
@@ -188,6 +185,14 @@ mod tests {
                 linked.as_os_str(),
             ],
         );
+        (repository, linked)
+    }
+
+    #[test]
+    fn linked_checkout_requires_a_bidirectional_link_to_the_enrolled_repository() {
+        let directory = tempfile::tempdir().unwrap();
+        let (repository, linked) = make_linked_checkout(directory.path());
+        let fake = directory.path().join("unregistered");
         let anchor = CheckoutAnchor::new(&repository).unwrap();
         let subdir = linked.join("apps/studio");
         fs::create_dir_all(&subdir).unwrap();

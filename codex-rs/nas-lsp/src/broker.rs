@@ -33,6 +33,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
@@ -62,6 +63,8 @@ fn status(s: Status, reason: &str) -> NavigationResponse {
     NavigationResponse::status(s, reason)
 }
 
+type WorkspaceLabel<'a> = (&'a str, &'a str);
+
 impl Broker {
     pub fn new(config: BrokerConfig) -> Result<Self, BrokerError> {
         config.validate().map_err(|e| BrokerError(e.to_string()))?;
@@ -84,11 +87,17 @@ impl Broker {
                 workspace
                     .prepared
                     .as_ref()
-                    .map(|_| CheckoutAnchor::new(&workspace.checkout))
+                    .map(|_| {
+                        CheckoutAnchor::new(&workspace.checkout).map_err(|error| {
+                            BrokerError(format!(
+                                "prepared workspace {} needs a canonical primary Git checkout owned by the service: {error}",
+                                workspace.id,
+                            ))
+                        })
+                    })
                     .transpose()
             })
-            .collect::<io::Result<Vec<_>>>()
-            .map_err(|error| BrokerError(error.to_string()))?;
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             inner: Arc::new(Inner {
                 queries: Arc::new(Semaphore::new(config.limits.max_queries)),
@@ -162,6 +171,15 @@ impl Broker {
         request: NavigationRequest,
         cancel: CancellationToken,
     ) -> NavigationResponse {
+        self.query_with_workspace(request, cancel, None).await
+    }
+
+    async fn query_with_workspace<'a>(
+        &'a self,
+        request: NavigationRequest,
+        cancel: CancellationToken,
+        workspace_label: Option<&OnceLock<WorkspaceLabel<'a>>>,
+    ) -> NavigationResponse {
         let timeout_ms = if request.timeout_ms == 0 {
             DEFAULT_TIMEOUT_MS
         } else {
@@ -171,7 +189,7 @@ impl Broker {
         let budget = request.max_response_bytes.min(MAX_RESPONSE_BYTES);
         let max_results = request.max_results.min(MAX_RESULTS);
         let mut result = self
-            .query_inner(request, deadline, cancel.child_token())
+            .query_inner(request, deadline, cancel.child_token(), workspace_label)
             .await;
         if result.locations.len() > max_results {
             result.locations.truncate(max_results);
@@ -190,6 +208,12 @@ impl Broker {
             .any(Option::is_some)
             .then(|| linked_checkout::nearest_checkout(&request.cwd))
             .flatten();
+        let has_live_workspace = self
+            .inner
+            .config
+            .workspaces
+            .iter()
+            .any(|workspace| request.cwd.starts_with(&workspace.root));
         self.inner
             .config
             .indexed_workspaces
@@ -199,6 +223,9 @@ impl Broker {
                 let anchor = self.inner.checkout_anchors[position].as_ref();
                 let (checkout, identity) = if let Some(anchor) = anchor {
                     let checkout = nearest_checkout?;
+                    if checkout != workspace.checkout && has_live_workspace {
+                        return None;
+                    }
                     (checkout, anchor.resolve(checkout).ok()?)
                 } else {
                     (
@@ -226,6 +253,7 @@ impl Broker {
                     from_cwd?
                 };
                 Some(IndexRoute {
+                    position,
                     workspace,
                     checkout,
                     identity,
@@ -246,11 +274,12 @@ impl Broker {
             })
     }
 
-    async fn query_inner(
-        &self,
+    async fn query_inner<'a>(
+        &'a self,
         request: NavigationRequest,
         deadline: Instant,
         cancel: CancellationToken,
+        workspace_label: Option<&OnceLock<WorkspaceLabel<'a>>>,
     ) -> NavigationResponse {
         if cancel.is_cancelled() {
             return status(Status::Cancelled, "cancelled");
@@ -269,6 +298,10 @@ impl Broker {
             return status(Status::InvalidRequest, "invalid_cwd");
         }
         if let Some(route) = self.indexed_workspace(&request) {
+            if let Some(label) = workspace_label {
+                let workspace = &self.inner.config.indexed_workspaces[route.position];
+                let _ = label.set((&workspace.id, &workspace.language));
+            }
             if !fs::canonicalize(&request.cwd).is_ok_and(|cwd| cwd == request.cwd && cwd.is_dir()) {
                 return status(Status::InvalidRequest, "invalid_cwd");
             }
@@ -291,10 +324,12 @@ impl Broker {
                 permit,
             )
             .await;
-            if route.anchor.is_some_and(|anchor| {
-                linked_checkout::nearest_checkout(&request.cwd) != Some(route.checkout)
-                    || anchor.resolve(route.checkout).ok().as_ref() != Some(&route.identity)
-            }) {
+            if response.status == Status::Ok
+                && route.anchor.is_some_and(|anchor| {
+                    linked_checkout::nearest_checkout(&request.cwd) != Some(route.checkout)
+                        || anchor.resolve(route.checkout).ok().as_ref() != Some(&route.identity)
+                })
+            {
                 return status(Status::Stale, "index_checkout_changed");
             }
             return response;
@@ -309,6 +344,9 @@ impl Broker {
         else {
             return status(Status::Unavailable, "unregistered_workspace");
         };
+        if let Some(label) = workspace_label {
+            let _ = label.set((&workspace.id, &workspace.language));
+        }
         if RootIdentity::read(&workspace.root).ok().as_ref() != Some(&self.inner.identities[index])
         {
             self.inner
@@ -456,57 +494,51 @@ impl Broker {
             }
         };
         let budget = request.max_response_bytes.min(MAX_RESPONSE_BYTES);
+        let workspace_label = OnceLock::new();
         let measurement = self.metrics.as_ref().map(|metrics| {
-            let workspace = self
-                .indexed_workspace(&request)
-                .map(|route| {
-                    (
-                        route.workspace.id.as_str(),
-                        route.workspace.language.as_str(),
-                    )
-                })
-                .or_else(|| {
-                    self.inner.config.workspaces.iter().find_map(|workspace| {
-                        request
-                            .cwd
-                            .starts_with(&workspace.root)
-                            .then_some((workspace.id.as_str(), workspace.language.as_str()))
-                    })
-                });
-            (
-                metrics,
-                metrics.lookup_key(workspace, request.operation),
-                Instant::now(),
-            )
+            let operation = request.operation;
+            let start = Instant::now();
+            let live_workspace = self.inner.config.workspaces.iter().find_map(|workspace| {
+                request
+                    .cwd
+                    .starts_with(&workspace.root)
+                    .then_some((workspace.id.as_str(), workspace.language.as_str()))
+            });
+            let workspace_label = &workspace_label;
+            move |status, reason: Option<&str>| {
+                let workspace = workspace_label.get().copied().or(live_workspace);
+                let key = metrics.lookup_key(workspace, operation);
+                metrics.record(key, status, reason, start.elapsed());
+            }
         });
         let (mut reader, mut writer) = stream.into_split();
         let request_cancel = cancel.child_token();
-        let operation = self.query(request, request_cancel.clone());
+        let operation = self.query_with_workspace(
+            request,
+            request_cancel.clone(),
+            measurement.as_ref().map(|_| &workspace_label),
+        );
         tokio::pin!(operation);
         let mut extra = [0u8; 1];
         let response = tokio::select! {
             response = &mut operation=>response,
             _ = reader.read(&mut extra) => {
                 request_cancel.cancel();
-                if let Some((metrics, key, start)) = measurement {
-                    metrics.record(key, Status::Cancelled, Some("client_disconnected"), start.elapsed());
+                if let Some(record) = measurement {
+                    record(Status::Cancelled, Some("client_disconnected"));
                 }
                 return;
             }
         };
-        if let Some((metrics, key, start)) = measurement {
-            metrics.record(
-                key,
-                response.status,
-                response.reason.as_deref(),
-                start.elapsed(),
-            );
+        if let Some(record) = measurement {
+            record(response.status, response.reason.as_deref());
         }
         send_response(&mut writer, response, budget).await;
     }
 }
 
 struct IndexRoute<'a> {
+    position: usize,
     workspace: &'a index::IndexConfig,
     checkout: &'a Path,
     identity: RootIdentity,
@@ -727,6 +759,66 @@ mod tests {
             Some("apps/project/src/removed.py".into())
         );
     }
+
+    #[test]
+    fn prepared_linked_checkout_preserves_explicit_registrations() {
+        let (_ordinary, mut config) = fixture();
+        let temp = tempfile::tempdir().expect("Git fixture");
+        let (repository, linked) = linked_checkout::tests::make_linked_checkout(temp.path());
+        let catalog = temp.path().join("catalog");
+        fs::create_dir(&catalog).expect("catalog");
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).expect("catalog mode");
+        let prepared = index::IndexConfig {
+            id: "prepared".into(),
+            checkout: repository.clone(),
+            project: PathBuf::new(),
+            language: "python".into(),
+            database: None,
+            prepared: Some(index::PreparedIndex {
+                catalog: catalog.clone(),
+                publisher_checkout: temp.path().join("publisher"),
+            }),
+            inputs: vec![PathBuf::new()],
+            generated_dirs: Vec::new(),
+        };
+        config.indexed_workspaces.push(prepared.clone());
+        let mut request = request(&config);
+        let broker = Broker::new(config.clone()).expect("broker with prepared workspace");
+        request.cwd = linked.clone();
+        assert_eq!(
+            broker
+                .indexed_workspace(&request)
+                .map(|route| route.checkout),
+            Some(linked.as_path())
+        );
+
+        Arc::make_mut(&mut config.workspaces[0]).root = linked.clone();
+        let broker = Broker::new(config.clone()).expect("broker with explicit language server");
+        assert!(broker.indexed_workspace(&request).is_none());
+        request.cwd = repository;
+        assert!(broker.indexed_workspace(&request).is_some());
+
+        config.workspaces.clear();
+        config.indexed_workspaces.insert(
+            0,
+            index::IndexConfig {
+                id: "explicit".into(),
+                checkout: linked.clone(),
+                database: Some(catalog.join("explicit.sqlite3")),
+                prepared: None,
+                ..prepared
+            },
+        );
+        request.cwd = linked;
+        let broker = Broker::new(config).expect("broker with explicit database");
+        assert_eq!(
+            broker
+                .indexed_workspace(&request)
+                .map(|route| route.workspace.id.as_str()),
+            Some("explicit"),
+        );
+    }
+
     fn request(config: &BrokerConfig) -> NavigationRequest {
         NavigationRequest {
             version: 1,

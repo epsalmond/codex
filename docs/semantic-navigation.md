@@ -227,6 +227,8 @@ whose Git administration directory and reverse link match its `.git`.
 Checkout and Git metadata must belong to the service user. The operator's
 service group may share write access. A separate clone needs its own explicit
 registration even if its remote or commit matches.
+An explicit live language-server registration retains precedence over automatic
+attachment for a linked worktree.
 
 The publisher records its authoritative source commit and publishes a private
 schema-version-1 `ready_for_broker` receipt at
@@ -238,6 +240,8 @@ receipt includes the workspace, publisher checkout and Git common directory,
 source and manifest-tool commits, manifest fingerprint, artifact paths,
 producer, manifest-tool and database SHA-256 values, database size and verified
 document count. A matching `candidate.json` can also serve during migration.
+The publisher verifies the database digest before publication. The broker checks
+the artifact's private read-only mode, size, and SQLite generation row.
 
 The broker compares the immutable source manifest against the request
 checkout's saved inputs and validates the SQLite generation against that
