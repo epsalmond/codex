@@ -639,6 +639,99 @@ default_tools_approval_mode = "approve"
 }
 
 #[tokio::test]
+async fn nested_project_mcp_refresh_keeps_parent_servers() {
+    let fixture = Fixture::new(
+        "",
+        r#"
+[mcp_servers.child]
+command = "child-mcp"
+default_tools_approval_mode = "approve"
+"#,
+        true,
+    );
+    let expert = fixture.root.join(EXPERT);
+    write(expert.join(".git/HEAD").as_path(), "ref: refs/heads/main\n");
+    let parent_config_path = fixture.root.join(".codex/config.toml");
+    write(
+        parent_config_path.as_path(),
+        "[mcp_servers.parent]\ncommand = \"parent-mcp\"\n[mcp_servers.user]\ncommand = \"user-mcp\"\nenabled = false\n",
+    );
+    let user_config_path = fixture.codex_home.join("config.toml");
+    let user_config = format!(
+        "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+        project_trust_key(expert.as_path()),
+    );
+    let parent_config = fs::read_to_string(&user_config_path).expect("user config");
+    write(
+        &user_config_path,
+        &format!("{parent_config}\n{user_config}"),
+    );
+    let parent = fixture.parent_config().await;
+    let (mut child, _) = fixture.child_config(&parent).await;
+    assert!(child.mcp_servers.get().contains_key("parent"));
+    assert_eq!(
+        child.mcp_servers.get()["child"].default_tools_approval_mode,
+        Some(AppToolApproval::Auto)
+    );
+
+    for (trust, has_parent) in [("trusted", true), ("untrusted", false)] {
+        write(
+            &user_config_path,
+            &format!(
+                "{user_config}\n[projects.{:?}]\ntrust_level = \"{trust}\"\n\n[mcp_servers.user]\ncommand = \"user-mcp\"\n",
+                project_trust_key(fixture.root.as_path()),
+            ),
+        );
+        let refreshed = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(fixture.codex_home.clone())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(child.cwd.to_path_buf()),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("fresh host layers");
+        let rebuild = || {
+            Config::rebuild_with_session_layers(
+                &child.config_layer_stack,
+                child.cwd.to_path_buf(),
+                &refreshed.config_layer_stack,
+                AbsolutePathBuf::from_absolute_path(&fixture.codex_home).expect("codex home"),
+            )
+        };
+        let incoming = Box::pin(rebuild())
+            .await
+            .expect("app-server refresh rebuild");
+        if has_parent {
+            assert!(!incoming.mcp_servers.get()["user"].enabled);
+            let saved = fs::read_to_string(&parent_config_path).expect("parent project config");
+            write(parent_config_path.as_path(), "[mcp_servers.user");
+            let error = Box::pin(rebuild())
+                .await
+                .expect_err("reject malformed ancestor");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            write(parent_config_path.as_path(), &saved);
+        }
+        child = child
+            .resolve_runtime_refresh(&incoming, crate::config::RuntimeConfigRefresh::Mcp)
+            .expect("publish MCP refresh");
+
+        assert_eq!(child.mcp_servers.get().contains_key("parent"), has_parent);
+        assert_eq!(
+            child.config_layer_stack.effective_config()["mcp_servers"]
+                .get("parent")
+                .is_some(),
+            has_parent
+        );
+        assert_eq!(child.mcp_servers.get()["user"].enabled, !has_parent);
+        assert_eq!(
+            child.mcp_servers.get()["child"].default_tools_approval_mode,
+            Some(AppToolApproval::Auto)
+        );
+    }
+}
+
+#[tokio::test]
 async fn mcp_refresh_keeps_the_child_directory_cap() {
     let fixture = Fixture::new(
         "",

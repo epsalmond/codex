@@ -2320,8 +2320,15 @@ impl Config {
     ) -> std::io::Result<Self> {
         let config_layer_stack =
             Self::layer_stack_preserving_session(session_layers, refreshed_layers)?;
+        let config_layer_stack = crate::agent::child_directory::rebuild_child_directory_layers(
+            session_layers,
+            refreshed_layers,
+            config_layer_stack,
+            &codex_home,
+        )
+        .await?;
         let cfg = config_toml_from_layers(&config_layer_stack).await?;
-        Self::load_config_with_layer_stack(
+        Box::pin(Self::load_config_with_layer_stack(
             LOCAL_FS.as_ref(),
             cfg,
             ConfigOverrides {
@@ -2330,7 +2337,7 @@ impl Config {
             },
             codex_home,
             config_layer_stack,
-        )
+        ))
         .await
     }
 

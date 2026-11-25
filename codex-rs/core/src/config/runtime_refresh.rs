@@ -52,11 +52,20 @@ impl Config {
             )?
             .with_user_layer_from(&self.config_layer_stack),
         };
-        // A child agent's directory layers stay capped and the parent's project layers stay.
-        let mut layers = crate::agent::child_directory::keep_child_directory_layers(
-            &self.config_layer_stack,
-            layers,
-        )?;
+        // Use the host's freshly discovered layers only when it rebuilt the child's
+        // inherited project contexts. Other runtime refreshes retain the session layers.
+        let directory_layers = if matches!(scope, RuntimeConfigRefresh::Mcp)
+            && !incoming
+                .config_layer_stack
+                .child_directory_parents()
+                .is_empty()
+        {
+            &incoming.config_layer_stack
+        } else {
+            &self.config_layer_stack
+        };
+        let mut layers =
+            crate::agent::child_directory::keep_child_directory_layers(directory_layers, layers)?;
         if matches!(scope, RuntimeConfigRefresh::Mcp) {
             let session_override = |key: &str| {
                 incoming
@@ -164,7 +173,7 @@ impl Config {
             .refresh_mcp_features(&features)
             .map_err(std::io::Error::other)?;
         crate::agent::child_directory::cap_child_directory_mcp_servers(
-            &self.config_layer_stack,
+            directory_layers,
             &mut servers,
         );
         if matches!(scope, RuntimeConfigRefresh::UserFiles) {

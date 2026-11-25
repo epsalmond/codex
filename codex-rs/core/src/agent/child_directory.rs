@@ -17,6 +17,7 @@
 
 use crate::config::Config;
 use crate::config::PermissionProfileSnapshot;
+use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::loader::load_project_layers_for_cwd;
@@ -242,7 +243,7 @@ impl ChildDirectoryConfig {
             .cloned()
             .collect::<Vec<_>>();
         let mut directory_toml = TomlValue::Table(Default::default());
-        let mut directory_folders = Vec::new();
+        let mut directory_folders = base.config_layer_stack.child_directory_folders().to_vec();
         let mut warnings = discovered.startup_warnings;
         for layer in discovered.layers {
             if project_layers
@@ -271,7 +272,10 @@ impl ChildDirectoryConfig {
             .config_layer_stack
             .with_project_layers(project_layers)
             .map_err(|err| format!("cwd `{shown}` config is invalid: {err}"))?;
-        let config_layer_stack = uncapped_stack.with_child_directory_folders(directory_folders);
+        let mut parents = base.config_layer_stack.child_directory_parents().to_vec();
+        parents.push(directory.parent_cwd.clone());
+        let config_layer_stack =
+            uncapped_stack.with_child_directory_layers(parents, directory_folders);
         let materialized = base
             .load_for_cwd_and_layer_stack(&directory.cwd, config_layer_stack.clone())
             .await
@@ -427,16 +431,14 @@ impl ChildDirectoryConfig {
     }
 }
 
-/// Keeps a child directory's capped project layers through a runtime refresh.
-///
-/// The host reloads project config from the child's cwd, which would bring back the directory's
-/// uncapped layers and drop the parent's; the session's own project layers are kept instead.
+/// Keeps the supplied directory-child project layers and their caps through publication.
 pub(crate) fn keep_child_directory_layers(
     session: &ConfigLayerStack,
     refreshed: ConfigLayerStack,
 ) -> std::io::Result<ConfigLayerStack> {
     let folders = session.child_directory_folders();
-    if folders.is_empty() {
+    let parents = session.child_directory_parents();
+    if parents.is_empty() {
         return Ok(refreshed);
     }
     let project_layers = session
@@ -446,7 +448,74 @@ pub(crate) fn keep_child_directory_layers(
         .collect();
     Ok(refreshed
         .with_project_layers(project_layers)?
-        .with_child_directory_folders(folders.to_vec()))
+        .with_child_directory_layers(parents.to_vec(), folders.to_vec()))
+}
+
+/// Rebuilds directory-child project inputs before materializing the refreshed MCP servers.
+/// Discover each parent's current trusted layers in spawn order. A nested repository's own
+/// discovery stops at its project root and therefore cannot supply those inherited layers.
+pub(crate) async fn rebuild_child_directory_layers(
+    session: &ConfigLayerStack,
+    refreshed: &ConfigLayerStack,
+    layers: ConfigLayerStack,
+    codex_home: &AbsolutePathBuf,
+) -> std::io::Result<ConfigLayerStack> {
+    let parents = session.child_directory_parents();
+    if parents.is_empty() {
+        return Ok(layers);
+    }
+    if refreshed.ignore_project_config() {
+        return Ok(layers.with_child_directory_layers(
+            parents.to_vec(),
+            session.child_directory_folders().to_vec(),
+        ));
+    }
+    let inherited_uncapped = session
+        .layers_low_to_high()
+        .filter_map(|layer| match &layer.name {
+            ConfigLayerSource::Project { dot_codex_folder }
+                if !session.child_directory_folders().contains(dot_codex_folder) =>
+            {
+                Some(dot_codex_folder)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut project_layers: Vec<ConfigLayerEntry> = Vec::new();
+    let mut folders = Vec::new();
+    let mut append = |layer: ConfigLayerEntry| {
+        let ConfigLayerSource::Project { dot_codex_folder } = &layer.name else {
+            return;
+        };
+        if project_layers
+            .iter()
+            .any(|existing| existing.name == layer.name)
+        {
+            return;
+        }
+        if !inherited_uncapped.contains(&dot_codex_folder) {
+            folders.push(dot_codex_folder.clone());
+        }
+        project_layers.push(layer);
+    };
+    for cwd in parents {
+        // An unreadable ancestor may restrict a user's MCP server. Propagate the
+        // error so the host retains the previous config and disables enterprise MCP.
+        let discovered =
+            load_project_layers_for_cwd(LOCAL_FS.as_ref(), codex_home.as_path(), &layers, cwd)
+                .await?;
+        for layer in discovered.layers {
+            append(layer);
+        }
+    }
+    for layer in refreshed.all_layers_low_to_high() {
+        if matches!(layer.name, ConfigLayerSource::Project { .. }) {
+            append(layer.clone());
+        }
+    }
+    Ok(layers
+        .with_project_layers(project_layers)?
+        .with_child_directory_layers(parents.to_vec(), folders))
 }
 
 /// Caps tool approval for refreshed MCP servers that a child directory's layers define.
