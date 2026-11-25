@@ -165,16 +165,24 @@ updater run, which is still delivering the feedback. It also rechecks current
 The processor independently verifies API provenance and logs; payload context is
 untrusted diagnostic data, never permission to change acceptance or budgets.
 
-Only `Check formatting` with an actual formatter diff, or `Test scoped release
-behavior` with rustc error codes or named test failures, can classify as
-`source_failure`. Setup/identity failures, cancellation/timeouts, toolchain,
+`Check formatting` can classify an actual formatter diff as `source_failure`.
+`Check release-only code paths` and `Test scoped release behavior` can classify
+coded Rust compiler diagnostics as source failures. Only `Test scoped release
+behavior` can classify named test failures as source failures.
+Setup/identity failures, cancellation/timeouts, toolchain,
 network/disk/resource diagnostics, and unknown output classify as
 `infrastructure_failure`. Infrastructure diagnostics anywhere in the bounded
 log take precedence over incidental source text. Failed helper tests remain
 unclassified infrastructure outcomes. A source classification additionally
-requires successful prepare and candidate identity steps. A killed workflow may
-prevent any feedback job; Actions failure and the existing stalled-handoff
-check remain the available evidence in that case.
+requires successful prepare and candidate identity steps and a completed step
+reported as failed. A run cancelled, timed out, or ended without a completed
+failed validation step reports `validation_cancelled_or_incomplete` when
+prepare and identity succeeded. Setup and identity failures report
+`setup_or_identity_failure`. Crate metadata or target failures (E0460, E0461,
+E0464, E0514, E0786), and missing toolchain crates such as `std` (E0463), are
+infrastructure diagnostics. A killed workflow may prevent the feedback job
+from running. Actions failure and the stalled-handoff check provide the
+available evidence in that case.
 
 Raw job logs use a 30-second request timeout and a 60-second streaming deadline,
 with a 16 MiB download ceiling, at most 128 KiB diagnostic/infrastructure/tail storage, 2 KiB lines,
