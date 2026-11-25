@@ -21,13 +21,31 @@ pub(super) async fn route(
             })
     });
     let Some((events, authority)) = events.zip(authority).filter(|_| plugin_service) else {
-        return Ok(ElicitationResponse {
-            action: ElicitationAction::Cancel,
-            content: None,
-            meta: Some(codex_rmcp_client::UserVerificationReason::ApprovalUnavailable.into_meta()),
-        });
+        return Ok(approval_unavailable());
     };
+    let ElicitationRequest::UserVerification { meta, .. } = &request else {
+        return Ok(approval_unavailable());
+    };
+    if let Some(reviewer) = &authority.reviewer
+        && let Some(reason) = reviewer
+            .idle_refusal(
+                &server_key,
+                elicitation_call_id(&server_key, meta.as_ref().and_then(Value::as_object)),
+            )
+            .await
+    {
+        tracing::debug!("{reason}");
+        return Ok(approval_unavailable());
+    }
     router
         .request_user_interaction(Some(events), &authority, server_key, request)
         .await
+}
+
+fn approval_unavailable() -> ElicitationResponse {
+    ElicitationResponse {
+        action: ElicitationAction::Cancel,
+        content: None,
+        meta: Some(codex_rmcp_client::UserVerificationReason::ApprovalUnavailable.into_meta()),
+    }
 }

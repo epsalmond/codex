@@ -85,12 +85,15 @@ impl ReadMcpResourceHandler {
 
         run_resource_operation(&session, &step_context, &call_id, invocation, async {
             let server_key = server_key?;
-            let result = mcp
-                .read_resource(server_key, ReadResourceRequestParams::new(uri.clone()))
-                .await
-                .map_err(|err| {
-                    FunctionCallError::RespondToModel(format!("resources/read failed: {err:#}"))
-                })?;
+            let _code_mode_call = session.register_code_mode_mcp_call(server_key, &call_id);
+            let mut params = ReadResourceRequestParams::new(uri.clone());
+            params.meta.get_or_insert_default().insert(
+                "callId".to_owned(),
+                serde_json::Value::String(call_id.clone()),
+            );
+            let result = mcp.read_resource(server_key, params).await.map_err(|err| {
+                FunctionCallError::RespondToModel(format!("resources/read failed: {err:#}"))
+            })?;
             Ok(ReadResourcePayload {
                 server: server_key.name().to_owned(),
                 environment_id: mcp

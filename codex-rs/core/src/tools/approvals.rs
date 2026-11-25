@@ -577,29 +577,43 @@ impl Session {
         &self,
         tool_name: &ToolName,
     ) -> Option<String> {
-        self.idle_code_mode_refusal(&format!("`{tool_name}`")).await
+        self.idle_code_mode_refusal(&format!("`{tool_name}`"), /*expected_turn_id*/ None)
+            .await
     }
 
-    /// The idle refusal for `subject` when this task runs a Code Mode nested call and no
-    /// turn is active.
-    async fn idle_code_mode_refusal(&self, subject: &str) -> Option<String> {
-        if !in_code_mode_nested_call() || self.active_turn.lock().await.is_some() {
+    /// After hooks, check that the turn used to construct this approval is still active.
+    /// Other nested calls need an active turn but need not supply its identity.
+    async fn idle_code_mode_refusal(
+        &self,
+        subject: &str,
+        expected_turn_id: Option<&str>,
+    ) -> Option<String> {
+        if !in_code_mode_nested_call() {
             return None;
         }
-        Some(idle_code_mode_refusal_message(subject))
+        let active = self.active_turn.lock().await;
+        let usable_turn = match expected_turn_id {
+            Some(expected) => active
+                .as_ref()
+                .and_then(|turn| turn.task.as_ref())
+                .is_some_and(|task| task.turn_context.sub_id == expected),
+            None => active.is_some(),
+        };
+        (!usable_turn).then(|| idle_code_mode_refusal_message(subject))
     }
 
     /// The idle refusal for an MCP elicitation from `server_key`.
     ///
-    /// Server-initiated elicitations arrive on the MCP client's task, so besides this
-    /// task's marker they also count as Code Mode work when a nested call to the same
-    /// server is still in flight.
+    /// MCP callbacks arrive on a different task. Prefer the exact invocation, with a
+    /// fallback for servers that omit the call ID and for locally generated elicitations.
     pub(crate) async fn idle_code_mode_elicitation_refusal(
         &self,
         server_key: &McpServerKey,
+        call_id: Option<&str>,
     ) -> Option<String> {
         if self.active_turn.lock().await.is_some()
-            || !(in_code_mode_nested_call() || self.code_mode_mcp_tool_call_in_flight(server_key))
+            || !(self.code_mode_mcp_call_in_flight(server_key, call_id)
+                || call_id.is_none() && in_code_mode_nested_call())
         {
             return None;
         }
@@ -640,6 +654,7 @@ impl Session {
         self.request_approval_with_user_prompt(
             &action,
             &ctx,
+            /*expected_turn_id*/ None,
             self.request_user_approval(&action, &ctx),
         )
         .await
@@ -649,6 +664,7 @@ impl Session {
         self: &Arc<Self>,
         action: &ApprovalAction,
         ctx: &ApprovalContext,
+        expected_turn_id: Option<&str>,
         user_prompt: impl Future<Output = ApprovalResolution>,
     ) -> ApprovalResult {
         if let Err(err) = self.check_approval_requirement(ctx).await {
@@ -707,7 +723,10 @@ impl Session {
             },
             Some(PermissionRequestDecision::Allow) | None => {
                 if let Some(reason) = self
-                    .idle_code_mode_refusal(&idle_refusal_subject(action, &ctx.tool_name))
+                    .idle_code_mode_refusal(
+                        &idle_refusal_subject(action, &ctx.tool_name),
+                        expected_turn_id,
+                    )
                     .await
                 {
                     return ApprovalResult {

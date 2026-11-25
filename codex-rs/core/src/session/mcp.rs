@@ -81,13 +81,18 @@ impl ElicitationReviewer for GuardianMcpElicitationReviewer {
         })
     }
 
-    fn idle_refusal(&self, server_key: &McpServerKey) -> BoxFuture<'static, Option<String>> {
+    fn idle_refusal(
+        &self,
+        server_key: &McpServerKey,
+        call_id: Option<&str>,
+    ) -> BoxFuture<'static, Option<String>> {
         let session = self.session.clone();
         let server_key = server_key.clone();
+        let call_id = call_id.map(str::to_owned);
         Box::pin(async move {
             session
                 .upgrade()?
-                .idle_code_mode_elicitation_refusal(&server_key)
+                .idle_code_mode_elicitation_refusal(&server_key, call_id.as_deref())
                 .await
         })
     }
@@ -853,7 +858,10 @@ impl Session {
         request: ElicitationRequest,
     ) -> Option<ElicitationResponse> {
         let server_name = server_key.name().to_owned();
-        if let Some(reason) = self.idle_code_mode_elicitation_refusal(&server_key).await {
+        if let Some(reason) = self
+            .idle_code_mode_elicitation_refusal(&server_key, /*call_id*/ None)
+            .await
+        {
             warn!("{reason}");
             return None;
         }

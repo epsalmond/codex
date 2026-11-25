@@ -6,6 +6,46 @@ use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn code_mode_approval_refuses_a_replaced_turn_after_hooks() {
+    let (session, original, _events) = make_session_and_context_with_rx().await;
+    let (replacement, _) = session
+        .new_turn_with_sub_id(
+            "replacement-turn".to_owned(),
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let replacement_id = replacement.sub_id.clone();
+    session
+        .spawn_task(
+            replacement,
+            Vec::new(),
+            crate::session::tests::NeverEndingTask {
+                kind: crate::state::TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+
+    scope_code_mode_nested_call(/*nested*/ true, async {
+        assert!(
+            session
+                .idle_code_mode_refusal("network access", Some(&original.sub_id))
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            session
+                .idle_code_mode_refusal("network access", Some(&replacement_id))
+                .await,
+            None
+        );
+    })
+    .await;
+}
+
 #[test]
 fn approval_resolution_rejects_denied_network_policy_amendment() {
     let resolution = ApprovalResolution {

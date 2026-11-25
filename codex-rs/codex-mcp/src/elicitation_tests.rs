@@ -13,6 +13,7 @@ use serde_json::Map;
 use serde_json::json;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 
 type ReviewerResponse = std::result::Result<Option<ElicitationResponse>, &'static str>;
 
@@ -1143,10 +1144,46 @@ impl ElicitationReviewer for IdleReviewer {
         async { Ok(None) }.boxed()
     }
 
-    fn idle_refusal(&self, server_key: &McpServerKey) -> BoxFuture<'static, Option<String>> {
+    fn idle_refusal(
+        &self,
+        server_key: &McpServerKey,
+        _call_id: Option<&str>,
+    ) -> BoxFuture<'static, Option<String>> {
         let reason = format!("MCP elicitation from `{server_key}` needs approval");
         async move { Some(reason) }.boxed()
     }
+}
+
+#[tokio::test]
+async fn idle_user_verification_returns_approval_unavailable_without_prompt() {
+    let reviewer = Arc::new(IdleReviewer {
+        reviews: AtomicUsize::default(),
+    });
+    let (_manager, events, sender) =
+        verification_fixture(AskForApproval::OnRequest, Some(reviewer.clone()));
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        sender(
+            RequestId::Number(8),
+            Elicitation::UserVerification {
+                meta: Some(json!({"_codex_apps": {"call_id": "nested-call"}})),
+                title: "Approve purchase".into(),
+                description: "Pay $200".into(),
+                challenge: "AQID".into(),
+            },
+        ),
+    )
+    .await
+    .expect("idle verification must not wait for a user")
+    .unwrap();
+    assert_eq!(response.action, ElicitationAction::Cancel);
+    assert_eq!(response.content, None);
+    assert_eq!(
+        response.meta,
+        Some(codex_rmcp_client::UserVerificationReason::ApprovalUnavailable.into_meta())
+    );
+    assert_eq!(reviewer.reviews.load(Relaxed), 0);
+    assert!(events.try_recv().is_err(), "no elicitation is surfaced");
 }
 
 #[tokio::test]

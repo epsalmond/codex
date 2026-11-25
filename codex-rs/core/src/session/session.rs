@@ -59,6 +59,7 @@ use tokio_util::task::TaskTracker;
 
 type McpToolApprovalMetadataMap =
     HashMap<(codex_mcp::McpServerKey, String), std::sync::Weak<McpToolApprovalContext>>;
+type CodeModeMcpCalls = HashMap<(codex_mcp::McpServerKey, String), std::sync::Weak<()>>;
 
 /// Joins terminal publishers before their session writer closes. Native child results
 /// and optional host reporters both use this barrier.
@@ -105,6 +106,7 @@ pub(crate) struct Session {
     pub(super) cloud_catalog_preparation: super::cloud_plugins::CloudCatalogPreparation,
     /// Non-owning lookup for approval data retained by running MCP invocations.
     pub(crate) mcp_tool_approval_metadata: std::sync::Mutex<McpToolApprovalMetadataMap>,
+    pub(crate) code_mode_mcp_calls: std::sync::Mutex<CodeModeMcpCalls>,
     pub(super) mcp_elicitation_reviewer_handle: OnceLock<codex_mcp::ElicitationReviewerHandle>,
     pub(super) mcp_elicitation_lifecycle_handle: OnceLock<codex_mcp::ElicitationLifecycle>,
     pub(super) mcp_prewarm_tx: async_channel::Sender<()>,
@@ -2100,6 +2102,7 @@ impl Session {
                 mcp_refresh: McpRefresh::new(),
                 cloud_catalog_preparation: Default::default(),
                 mcp_tool_approval_metadata: Default::default(),
+                code_mode_mcp_calls: Default::default(),
                 mcp_elicitation_reviewer_handle: OnceLock::new(),
                 mcp_elicitation_lifecycle_handle: OnceLock::new(),
                 mcp_prewarm_tx,
