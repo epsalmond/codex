@@ -153,20 +153,23 @@ async fn direct_child_wake_shows_mid_turn_compaction_in_the_tui() -> Result<()> 
     wait_for_screen(
         &mut terminal,
         "idle parent before child completion",
-        |screen| screen.contains(PARENT_IDLE) && !screen.contains("esc to interrupt"),
+        // The completion separator is inserted by turn/completed. The status row
+        // can disappear earlier while the final answer is still being committed.
+        |screen| screen.contains(PARENT_IDLE) && screen.contains("Worked for"),
     )?;
     release_child.send(()).expect("release direct child");
-    terminal.wait_for_screen(COMPACTING)?;
+    let first_frame = wait_for_screen(&mut terminal, "live compaction", |screen| {
+        status_elapsed(screen, COMPACTING).is_some()
+    })?;
+    let first_elapsed = status_elapsed(&first_frame, COMPACTING).unwrap();
     wait_for_screen(&mut terminal, "compaction timer advancing", |screen| {
-        screen
-            .lines()
-            .any(|line| line.contains("Compacting context (") && !line.contains("(0s"))
+        status_elapsed(screen, COMPACTING).is_some_and(|elapsed| elapsed != first_elapsed)
     })?;
     release_compact.send(()).expect("release compaction");
     wait_for_screen(&mut terminal, "working state restored", |screen| {
         screen.contains("Context compacted")
-            && screen.contains("Working")
-            && !screen.contains(COMPACTING)
+            && status_elapsed(screen, "Working").is_some()
+            && status_elapsed(screen, COMPACTING).is_none()
     })?;
     release_resume
         .send(())
@@ -178,6 +181,10 @@ async fn direct_child_wake_shows_mid_turn_compaction_in_the_tui() -> Result<()> 
         .iter()
         .map(|body| serde_json::from_slice(body))
         .collect::<serde_json::Result<_>>()?;
+    let initial = requests
+        .iter()
+        .find(|request| has_tool_output(request, "spawn-worker"))
+        .expect("parent followed up after spawning the child");
     let wake = requests
         .iter()
         .find(|request| {
@@ -198,15 +205,9 @@ async fn direct_child_wake_shows_mid_turn_compaction_in_the_tui() -> Result<()> 
             })
         })
         .expect("threshold starts remote compaction");
-    pretty_assertions::assert_eq!(
-        wake["client_metadata"]["turn_id"],
-        compact["client_metadata"]["turn_id"],
-    );
-    assert!(
-        compact["input"].as_array().unwrap().iter().any(|item| {
-            item["type"] == "function_call_output" && item["call_id"] == "wake-tool"
-        })
-    );
+    assert_ne!(turn_id(initial), turn_id(wake), "child woke an idle parent");
+    pretty_assertions::assert_eq!(turn_id(wake), turn_id(compact));
+    assert!(has_tool_output(compact, "wake-tool"));
     server.shutdown().await;
     Ok(())
 }
@@ -231,12 +232,13 @@ fn wait_for_screen(
     terminal: &mut PtyCodex,
     description: &str,
     ready: impl Fn(&str) -> bool,
-) -> Result<()> {
+) -> Result<String> {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         terminal.read_output(Duration::from_millis(50))?;
-        if ready(&terminal.screen_contents()) {
-            return Ok(());
+        let screen = terminal.screen_contents();
+        if ready(&screen) {
+            return Ok(screen);
         }
         terminal.ensure_running()?;
     }
@@ -244,4 +246,28 @@ fn wait_for_screen(
         "missing {description}; screen:\n{}",
         terminal.screen_contents()
     )
+}
+
+fn status_elapsed<'a>(screen: &'a str, header: &str) -> Option<&'a str> {
+    screen.lines().find_map(|line| {
+        let line = line.trim_start_matches([' ', '•', '◦']);
+        let status = line.strip_prefix(header)?.strip_prefix(" (")?;
+        let (elapsed, hint) = status.split_once(" • ")?;
+        hint.starts_with("esc to interrupt").then_some(elapsed)
+    })
+}
+
+fn has_tool_output(request: &Value, call_id: &str) -> bool {
+    request["input"].as_array().is_some_and(|input| {
+        input
+            .iter()
+            .any(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
+    })
+}
+
+fn turn_id(request: &Value) -> &str {
+    request["client_metadata"]["turn_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .expect("response request has a turn ID")
 }
