@@ -175,9 +175,14 @@ network/disk/resource diagnostics, and unknown output classify as
 log take precedence over incidental source text. Failed helper tests remain
 unclassified infrastructure outcomes. A source classification additionally
 requires successful prepare and candidate identity steps and a completed step
-reported as failed. A killed workflow may
-prevent any feedback job; Actions failure and the existing stalled-handoff
-check remain the available evidence in that case.
+reported as failed. A run cancelled, timed out, or ended without a completed
+failed validation step reports `validation_cancelled_or_incomplete` when
+prepare and identity succeeded. Setup and identity failures report
+`setup_or_identity_failure`. Crate metadata or target failures (E0460, E0461,
+E0464, E0514, E0786), and missing toolchain crates such as `std` (E0463), are
+infrastructure diagnostics. A killed workflow may prevent the feedback job
+from running. Actions failure and the stalled-handoff check provide the
+available evidence in that case.
 
 Raw job logs use a 30-second request timeout and a 60-second streaming deadline,
 with a 16 MiB download ceiling, at most 128 KiB diagnostic/infrastructure/tail storage, 2 KiB lines,

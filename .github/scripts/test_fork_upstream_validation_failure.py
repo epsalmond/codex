@@ -311,6 +311,7 @@ class FeedbackTests(unittest.TestCase):
             "timed_out",
             "step_cancelled",
             "step_not_completed",
+            "no_failed_step",
         ):
             api = FakeAPI()
             api.validation["steps"][-1] = step(RELEASE_CHECK_STEP, "failure")
@@ -325,6 +326,8 @@ class FeedbackTests(unittest.TestCase):
                 api.validation["steps"][-1]["conclusion"] = "cancelled"
             elif kind == "step_not_completed":
                 api.validation["steps"][-1]["status"] = "in_progress"
+            elif kind == "no_failed_step":
+                api.validation["steps"][-1]["conclusion"] = "success"
             else:
                 api.validation["conclusion"] = kind
                 api.validation["steps"][-1]["conclusion"] = kind
@@ -387,10 +390,14 @@ class LogTests(unittest.TestCase):
     def test_rustc_toolchain_and_cache_errors_dominate_source_diagnostics(self):
         for step in (RELEASE_CHECK_STEP, "Test scoped release behavior"):
             for error in (
+                b"error[E0460]: found possibly newer version of crate `std` which `kit` depends on",
                 b"error[E0461]: couldn't find crate `kit` with expected target triple",
+                b"error[E0464]: multiple candidates for `rlib` dependency `kit` found",
                 b"error[E0514]: found crate `kit` compiled by an incompatible version of rustc",
                 b"error[E0786]: found invalid metadata files for crate `kit`",
-                b"error[E0463]: can't find crate `std`",
+                b"error[E0463]: can't find crate for `std`\n"
+                b"  = note: the `aarch64-apple-darwin` target may not be installed\n",
+                b"error[E0463]: can't find crate for `proc_macro`",
             ):
                 with self.subTest(step=step, error=error):
                     result = self.collect(RELEASE_CHECK_LOGS[0] + error, step)
@@ -401,7 +408,7 @@ class LogTests(unittest.TestCase):
                         result["failure_reason"], "infrastructure_diagnostics"
                     )
             result = self.collect(
-                b"error[E0463]: can't find crate `app_dependency`", step
+                b"error[E0463]: can't find crate for `app_dependency`", step
             )
             self.assertEqual(result["validation_result"], "source_failure")
 

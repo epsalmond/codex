@@ -42,8 +42,8 @@ INFRA = re.compile(
     r"toolchain .* (?:not installed|is not available)|"
     r"error: (?:could not|failed to) (?:download|fetch)|"
     r"command not found|process didn't exit successfully.*(?:signal: 9|SIGKILL)|"
-    r"\berror\[E(?:0461|0514|0786)\]:|"
-    r"\berror\[E0463\]: can't find crate `(?:core|std)`|"
+    r"\berror\[E(?:0460|0461|0464|0514|0786)\]:|"
+    r"\berror\[E0463\]: can't find crate for `(?:alloc|core|proc_macro|std|test)`|"
     r"operation was canceled|job was canceled|exceeded the maximum execution time",
     re.I,
 )
