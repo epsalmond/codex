@@ -123,12 +123,12 @@ pub enum CodexErrorDetails {
     #[error("budget reached")]
     SessionBudgetExceeded,
 
-    /// Returned by ResponsesClient when the SSE stream disconnects or errors out **after** the HTTP
-    /// handshake has succeeded but **before** it finished emitting `response.completed`.
-    ///
-    /// The Session loop treats this as a transient error and will automatically retry the turn.
+    /// A stream-related failure without a known transport disconnect.
     #[error("stream disconnected before completion: {0}")]
     Stream(String),
+    /// An interrupted Responses transport before `response.completed`.
+    #[error("stream disconnected before completion: {0}")]
+    ResponseStreamDisconnected(String),
     /// The peer's WebSocket message size limit requires sending this request over HTTP.
     #[error("websocket request exceeds the peer's message size limit")]
     WebsocketMessageTooLarge,
@@ -429,6 +429,7 @@ impl CodexErr {
 
     codex_err_tuple_constructors!(
         Stream(message: String),
+        ResponseStreamDisconnected(message: String),
         ThreadNotFound(thread_id: ThreadId),
         UnexpectedStatus(error: UnexpectedResponseError),
         InvalidRequest(message: String),
@@ -540,6 +541,7 @@ impl CodexErr {
             | CodexErrorDetails::RetryLimit(_) => RetryPolicy::ServerDirected,
             CodexErrorDetails::WebsocketMessageTooLarge => RetryPolicy::FallBackToHttp,
             CodexErrorDetails::Stream(..)
+            | CodexErrorDetails::ResponseStreamDisconnected(..)
             | CodexErrorDetails::ContentFilter
             | CodexErrorDetails::RateLimitExceeded(_)
             | CodexErrorDetails::Timeout
@@ -627,6 +629,11 @@ impl CodexErr {
             CodexErrorDetails::ResponseStreamFailed(_) => {
                 CodexErrorInfo::ResponseStreamConnectionFailed {
                     http_status_code: self.http_status_code_value(),
+                }
+            }
+            CodexErrorDetails::ResponseStreamDisconnected(_) => {
+                CodexErrorInfo::ResponseStreamDisconnected {
+                    http_status_code: None,
                 }
             }
             CodexErrorDetails::RefreshTokenFailed(_) => CodexErrorInfo::Unauthorized,

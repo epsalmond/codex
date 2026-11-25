@@ -165,6 +165,7 @@ impl Transport {
             ApiError::Retryable { .. }
             | ApiError::RateLimitExceeded { .. }
             | ApiError::Stream(_)
+            | ApiError::ResponseStreamDisconnected(_)
             | ApiError::WebsocketMessageTooLarge
             | ApiError::ContentFilter
             | ApiError::ServerOverloaded { .. }
