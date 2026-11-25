@@ -2,6 +2,7 @@
 
 use crate::config::BrokerConfig;
 use crate::config::RootIdentity;
+use crate::index;
 use crate::metrics::Metrics;
 use crate::pool::Pool;
 use crate::resource::ResourceLimits;
@@ -27,6 +28,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +48,7 @@ pub struct Broker {
 struct Inner {
     config: BrokerConfig,
     identities: Vec<RootIdentity>,
+    index_identities: Vec<RootIdentity>,
     pool: Pool,
     queries: Arc<Semaphore>,
 }
@@ -65,12 +68,19 @@ impl Broker {
             .map(|w| RootIdentity::read(&w.root))
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| BrokerError(e.to_string()))?;
+        let index_identities = config
+            .indexed_workspaces
+            .iter()
+            .map(|workspace| RootIdentity::read(&workspace.checkout))
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|error| BrokerError(error.to_string()))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 queries: Arc::new(Semaphore::new(config.limits.max_queries)),
                 pool: Pool::new(config.limits.clone()),
                 config,
                 identities,
+                index_identities,
             }),
             metrics: None,
         })
@@ -156,9 +166,51 @@ impl Broker {
         fit_response(result.clone(), budget).unwrap_or(result)
     }
 
+    fn indexed_workspace(
+        &self,
+        request: &NavigationRequest,
+    ) -> Option<(usize, &index::IndexConfig, String)> {
+        self.inner
+            .config
+            .indexed_workspaces
+            .iter()
+            .enumerate()
+            .filter_map(|(position, workspace)| {
+                let cwd = request.cwd.strip_prefix(&workspace.checkout).ok()?;
+                let from_checkout = workspace.matches_path(&request.path);
+                let from_cwd = (workspace.valid_source_path(&request.path)
+                    && !cwd.as_os_str().is_empty())
+                .then(|| cwd.join(&request.path));
+                let from_cwd = from_cwd
+                    .as_deref()
+                    .and_then(Path::to_str)
+                    .filter(|path| workspace.matches_path(path));
+                let path = if from_checkout
+                    && (from_cwd.is_none()
+                        || workspace.has_source(&request.path)
+                        || from_cwd.is_some_and(|path| !workspace.has_source(path)))
+                {
+                    &request.path
+                } else {
+                    from_cwd?
+                };
+                Some((position, workspace, path.to_owned()))
+            })
+            .max_by_key(|(_, workspace, path)| {
+                (
+                    workspace.checkout.components().count(),
+                    Path::new(path).starts_with(&workspace.project),
+                    request
+                        .cwd
+                        .starts_with(workspace.checkout.join(&workspace.project)),
+                    workspace.project.components().count(),
+                )
+            })
+    }
+
     async fn query_inner(
         &self,
-        request: NavigationRequest,
+        mut request: NavigationRequest,
         deadline: Instant,
         cancel: CancellationToken,
     ) -> NavigationResponse {
@@ -177,6 +229,27 @@ impl Broker {
         };
         if !request.cwd.is_absolute() {
             return status(Status::InvalidRequest, "invalid_cwd");
+        }
+        if let Some((position, workspace, path)) = self.indexed_workspace(&request) {
+            if !fs::canonicalize(&request.cwd).is_ok_and(|cwd| cwd == request.cwd && cwd.is_dir()) {
+                return status(Status::InvalidRequest, "invalid_cwd");
+            }
+            if crosses_checkout_boundary(&workspace.checkout, &request.cwd) {
+                return status(Status::Unavailable, "unregistered_workspace");
+            }
+            if ResourceLimits::validate(&self.inner.config.limits).is_err() {
+                return status(Status::Unavailable, "resource_limit_unavailable");
+            }
+            request.path = path;
+            return index::query(
+                workspace,
+                &self.inner.index_identities[position],
+                &request,
+                deadline,
+                cancel,
+                permit,
+            )
+            .await;
         }
         let Some((index, workspace)) = self
             .inner
@@ -337,14 +410,19 @@ impl Broker {
         let budget = request.max_response_bytes.min(MAX_RESPONSE_BYTES);
         let measurement = self.metrics.as_ref().map(|metrics| {
             let workspace = self
-                .inner
-                .config
-                .workspaces
-                .iter()
-                .find(|workspace| request.cwd.starts_with(&workspace.root));
+                .indexed_workspace(&request)
+                .map(|(_, workspace, _)| (workspace.id.as_str(), workspace.language.as_str()))
+                .or_else(|| {
+                    self.inner.config.workspaces.iter().find_map(|workspace| {
+                        request
+                            .cwd
+                            .starts_with(&workspace.root)
+                            .then_some((workspace.id.as_str(), workspace.language.as_str()))
+                    })
+                });
             (
                 metrics,
-                metrics.lookup_key(workspace.map(Arc::as_ref), request.operation),
+                metrics.lookup_key(workspace, request.operation),
                 Instant::now(),
             )
         });
@@ -373,6 +451,17 @@ impl Broker {
         }
         send_response(&mut writer, response, budget).await;
     }
+}
+
+fn crosses_checkout_boundary(checkout: &Path, cwd: &Path) -> bool {
+    cwd.ancestors()
+        .take_while(|ancestor| *ancestor != checkout)
+        .any(
+            |ancestor| match fs::symlink_metadata(ancestor.join(".git")) {
+                Ok(_) => true,
+                Err(error) => error.kind() != io::ErrorKind::NotFound,
+            },
+        )
 }
 
 pub(crate) async fn await_response(
@@ -514,9 +603,67 @@ mod tests {
                 typescript_tsserver: None,
                 rustc: None,
             })],
+            indexed_workspaces: Vec::new(),
             limits: PoolLimits::default(),
         };
         (root, config)
+    }
+
+    #[test]
+    fn indexed_checkout_routing_stops_at_nested_git_worktree() {
+        let checkout = tempfile::tempdir().expect("checkout");
+        let linked = checkout.path().join(".worktrees/feature");
+        let app = linked.join("apps/project");
+        fs::create_dir_all(&app).expect("linked app");
+        fs::write(
+            linked.join(".git"),
+            "gitdir: /operator/private/worktrees/feature\n",
+        )
+        .expect("worktree marker");
+        assert!(crosses_checkout_boundary(checkout.path(), &app));
+        assert!(!crosses_checkout_boundary(&linked, &app));
+    }
+
+    #[test]
+    fn managed_index_accepts_paths_from_checkout_and_app() {
+        let (root, mut config) = fixture();
+        let index_dir = tempfile::tempdir().expect("private index directory");
+        fs::set_permissions(index_dir.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory permissions");
+        let project = PathBuf::from("apps/project");
+        let app = root.path().join(&project);
+        fs::create_dir(root.path().join(".git")).expect("checkout marker");
+        fs::create_dir_all(app.join("src")).expect("app source directory");
+        fs::write(app.join("src/source.py"), "value = 1\n").expect("app source");
+        config.indexed_workspaces.push(index::IndexConfig {
+            id: "indexed_app".into(),
+            checkout: root.path().to_owned(),
+            project: project.clone(),
+            language: "python".into(),
+            database: index_dir.path().join("app.sqlite3"),
+            inputs: vec![project],
+            generated_dirs: Vec::new(),
+        });
+        let mut request = request(&config);
+        let broker = Broker::new(config).expect("broker");
+        request.path = "apps/project/src/source.py".into();
+        assert_eq!(
+            broker.indexed_workspace(&request).map(|route| route.2),
+            Some(request.path.clone())
+        );
+        request.cwd = app;
+        request.path = "src/source.py".into();
+        assert_eq!(
+            broker.indexed_workspace(&request).map(|route| route.2),
+            Some("apps/project/src/source.py".into())
+        );
+        request.path = "../project/src/source.py".into();
+        assert!(broker.indexed_workspace(&request).is_none());
+        request.path = "src/removed.py".into();
+        assert_eq!(
+            broker.indexed_workspace(&request).map(|route| route.2),
+            Some("apps/project/src/removed.py".into())
+        );
     }
     fn request(config: &BrokerConfig) -> NavigationRequest {
         NavigationRequest {
