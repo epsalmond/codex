@@ -158,9 +158,13 @@ pub(crate) mod tests {
         assert!(result.status.success(), "{:?}", result);
     }
 
-    pub(crate) fn make_linked_checkout(directory: &Path) -> (PathBuf, PathBuf) {
+    pub(crate) fn make_linked_checkout(directory: &Path, nested: bool) -> (PathBuf, PathBuf) {
         let repository = directory.join("repository");
-        let linked = directory.join("elsewhere");
+        let linked = if nested {
+            repository.join(".worktrees/feature")
+        } else {
+            directory.join("elsewhere")
+        };
         fs::create_dir(&repository).unwrap();
         git(&repository, &[OsStr::new("init")]);
         git(
@@ -191,7 +195,7 @@ pub(crate) mod tests {
     #[test]
     fn linked_checkout_requires_a_bidirectional_link_to_the_enrolled_repository() {
         let directory = tempfile::tempdir().unwrap();
-        let (repository, linked) = make_linked_checkout(directory.path());
+        let (repository, linked) = make_linked_checkout(directory.path(), false);
         let fake = directory.path().join("unregistered");
         let anchor = CheckoutAnchor::new(&repository).unwrap();
         let subdir = linked.join("apps/studio");

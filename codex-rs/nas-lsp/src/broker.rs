@@ -208,12 +208,12 @@ impl Broker {
             .any(Option::is_some)
             .then(|| linked_checkout::nearest_checkout(&request.cwd))
             .flatten();
-        let has_live_workspace = self
+        let live_workspace = self
             .inner
             .config
             .workspaces
             .iter()
-            .any(|workspace| request.cwd.starts_with(&workspace.root));
+            .find(|workspace| request.cwd.starts_with(&workspace.root));
         self.inner
             .config
             .indexed_workspaces
@@ -223,7 +223,11 @@ impl Broker {
                 let anchor = self.inner.checkout_anchors[position].as_ref();
                 let (checkout, identity) = if let Some(anchor) = anchor {
                     let checkout = nearest_checkout?;
-                    if checkout != workspace.checkout && has_live_workspace {
+                    if checkout != workspace.checkout
+                        && live_workspace.is_some_and(|live| {
+                            live.root.starts_with(checkout) && live.language == workspace.language
+                        })
+                    {
                         return None;
                     }
                     (checkout, anchor.resolve(checkout).ok()?)
@@ -764,7 +768,7 @@ mod tests {
     fn prepared_linked_checkout_preserves_explicit_registrations() {
         let (_ordinary, mut config) = fixture();
         let temp = tempfile::tempdir().expect("Git fixture");
-        let (repository, linked) = linked_checkout::tests::make_linked_checkout(temp.path());
+        let (repository, linked) = linked_checkout::tests::make_linked_checkout(temp.path(), true);
         let catalog = temp.path().join("catalog");
         fs::create_dir(&catalog).expect("catalog");
         fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).expect("catalog mode");
@@ -792,19 +796,45 @@ mod tests {
             Some(linked.as_path())
         );
 
+        Arc::make_mut(&mut config.workspaces[0]).root = repository.clone();
+        let broker = Broker::new(config.clone()).expect("broker with language server at main root");
+        assert_eq!(
+            broker
+                .indexed_workspace(&request)
+                .map(|route| route.checkout),
+            Some(linked.as_path()),
+        );
+
         Arc::make_mut(&mut config.workspaces[0]).root = linked.clone();
-        let broker = Broker::new(config.clone()).expect("broker with explicit language server");
+        let mut typescript = config.clone();
+        typescript.indexed_workspaces[0].language = "typescript".into();
+        request.path = "source.ts".into();
+        let broker =
+            Broker::new(typescript).expect("broker with live Python and indexed TypeScript");
+        assert_eq!(
+            broker
+                .indexed_workspace(&request)
+                .map(|route| route.checkout),
+            Some(linked.as_path()),
+        );
+
+        request.path = "source.py".into();
+        let broker = Broker::new(config.clone()).expect("broker with explicit Python server");
         assert!(broker.indexed_workspace(&request).is_none());
         request.cwd = repository;
         assert!(broker.indexed_workspace(&request).is_some());
 
         config.workspaces.clear();
+        let explicit_index_dir = temp.path().join("explicit-index");
+        fs::create_dir(&explicit_index_dir).expect("explicit index directory");
+        fs::set_permissions(&explicit_index_dir, fs::Permissions::from_mode(0o700))
+            .expect("explicit index directory mode");
         config.indexed_workspaces.insert(
             0,
             index::IndexConfig {
                 id: "explicit".into(),
                 checkout: linked.clone(),
-                database: Some(catalog.join("explicit.sqlite3")),
+                database: Some(explicit_index_dir.join("explicit.sqlite3")),
                 prepared: None,
                 ..prepared
             },

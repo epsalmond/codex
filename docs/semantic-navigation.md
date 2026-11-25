@@ -227,8 +227,8 @@ whose Git administration directory and reverse link match its `.git`.
 Checkout and Git metadata must belong to the service user. The operator's
 service group may share write access. A separate clone needs its own explicit
 registration even if its remote or commit matches.
-An explicit live language-server registration retains precedence over automatic
-attachment for a linked worktree.
+An explicit live language server registered within a linked worktree retains
+precedence over automatic attachment for queries in its scope and language.
 
 The publisher records its authoritative source commit and publishes a private
 schema-version-1 `ready_for_broker` receipt at
