@@ -377,13 +377,16 @@ generation; every warm query still needs a fresh readiness permit.
 
 ## Dedicated Linux user service
 
-Build the broker from the same reviewed source as the Codex client:
+Build the broker from the same reviewed source as the Codex client. Use a
+release build for the service. Managed index lookups hash the saved inputs
+before and after reading the index, so unoptimized builds can add seconds to
+each lookup.
 
 ```bash
 # In your isolated source worktree:
 eval "$(codex-worktree env "$PWD")"
-cargo build --manifest-path codex-rs/Cargo.toml -p codex-nas-lsp --bin codex-nas-lsp
-install -Dm755 "$CARGO_TARGET_DIR/debug/codex-nas-lsp" \
+(cd codex-rs && cargo build --locked --release -p codex-nas-lsp --bin codex-nas-lsp)
+install -Dm755 "$CARGO_TARGET_DIR/release/codex-nas-lsp" \
   "$HOME/.local/libexec/codex-nas-lsp"
 ```
 
