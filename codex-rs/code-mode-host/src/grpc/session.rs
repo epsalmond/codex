@@ -127,12 +127,9 @@ impl GrpcHostState {
     ) -> Result<GrpcStream<proto::SessionEvent>, Status> {
         let id = Uuid::new_v4();
         let (events, receiver) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
-        let closed = CancellationToken::new();
-        let event_sender = EventSender::new(events.clone(), closed.clone());
         let session = GrpcSession::new(
             id,
-            event_sender,
-            closed,
+            events.clone(),
             Arc::clone(&self.delegate_permits),
             options,
             terminal_ready,
@@ -236,14 +233,15 @@ impl GrpcHostState {
 impl GrpcSession {
     fn new(
         id: Uuid,
-        events: EventSender,
-        closed: CancellationToken,
+        output: mpsc::Sender<Result<proto::SessionEvent, Status>>,
         delegate_permits: Arc<Semaphore>,
         options: CodeModeSessionOptions,
         terminal_ready: TerminalReadyWire,
         max_pending_delegate_calls: usize,
         tool_preloads: &'static [ToolPreload],
     ) -> Arc<Self> {
+        let closed = CancellationToken::new();
+        let events = EventSender::new(output, closed.clone());
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let failure_session = weak.clone();
             let failure_handler = Arc::new(move |reason: String| {

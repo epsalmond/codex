@@ -8,8 +8,6 @@ use codex_core::config::ConfigOverrides;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::SandboxPolicy;
-use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::responses;
 use core_test_support::skip_if_remote;
 use core_test_support::test_codex::test_codex;

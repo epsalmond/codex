@@ -742,7 +742,7 @@ mod tests {
                     let mut remote = environment.clone();
                     remote = crate::session::turn_context::TurnEnvironment::new(
                         remote.selection.clone(),
-                        remote.config_origin.clone(),
+                        remote.config_origin,
                         Arc::new(
                             codex_exec_server::Environment::create_for_tests(Some(
                                 "ws://127.0.0.1:8765".into(),

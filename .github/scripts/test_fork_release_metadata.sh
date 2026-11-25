@@ -14,6 +14,9 @@ git -C "$fixture" config user.email test@example.com
 git -C "$fixture" config user.name "Release Test"
 mkdir -p "$fixture/codex-rs"
 printf '[workspace.package]\nversion = "0.154.0"\n' > "$fixture/codex-rs/Cargo.toml"
+# The reader must drain Git's output after finding the version. Otherwise a
+# larger workspace file can terminate git show with SIGPIPE under pipefail.
+awk 'BEGIN { for (i = 0; i < 4000; i++) print "# workspace fixture padding" }' >> "$fixture/codex-rs/Cargo.toml"
 printf 'base\n' > "$fixture/README.md"
 printf '[Doc](codex-rs/docs/example.md)\n' > "$fixture/RELEASE_NOTES.md"
 git -C "$fixture" add .
@@ -134,7 +137,8 @@ fi
 grep -Fq 'bash "$GITHUB_WORKSPACE/fork-release-tools/.github/scripts/fork-release-notes.sh"' "$workflow_file"
 grep -Fq '      - "local-features-v*"' "$workflow_file"
 grep -Fq 'group: ${{ github.workflow }}-${{ github.ref }}' "$workflow_file"
-grep -Fq "if: github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN" "$workflow_file"
+grep -Fq "(github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN) &&" "$workflow_file"
+grep -Fq "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" "$workflow_file"
 grep -Fq "HAS_APP_PRIVATE_KEY: \${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}" "$workflow_file"
 grep -Fq 'uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0' "$workflow_file"
 grep -Fq 'client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}' "$workflow_file"
@@ -165,9 +169,11 @@ config_line=$(grep -n '^      - name: Verify release publisher configuration$' "
 validate_line=$(grep -n '^  validate:$' "$workflow_file" | cut -d: -f1)
 verify_artifacts_line=$(grep -n '^      - name: Verify artifacts and compose release body$' "$workflow_file" | cut -d: -f1)
 token_line=$(grep -n '^      - name: Create release publisher token$' "$workflow_file" | cut -d: -f1)
+verify_mac_line=$(grep -n '^      - name: Verify and download pinned Mac files from the staging draft$' "$workflow_file" | cut -d: -f1)
 publish_line=$(grep -n '^      - name: Create immutable release after identity verification$' "$workflow_file" | cut -d: -f1)
 [[ "$metadata_line" -lt "$config_line" && "$config_line" -lt "$validate_line" ]]
 [[ "$verify_artifacts_line" -lt "$token_line" && "$token_line" -lt "$publish_line" ]]
+[[ "$verify_mac_line" -lt "$verify_artifacts_line" ]]
 sample_release_tag="local-features-v0.154.0-main-r20260914110830.$(git -C "$fixture" rev-parse --short=12 "$merge_sha")"
 body=$(bash "$script_dir/fork-release-notes.sh" \
   "$fixture" epsalmond/codex main "$merge_sha" \

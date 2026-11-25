@@ -230,6 +230,39 @@ async fn next_callback_event(
 }
 
 #[tokio::test]
+async fn package_host_executes_v8() {
+    let host_program = match std::env::var_os("CODEX_PACKAGE_CODE_MODE_HOST") {
+        Some(path) => path.into(),
+        None => codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+    };
+    let provider = ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(host_program);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let session = provider.create_session().await.expect("open gRPC session");
+        let actual = execute_to_terminal(
+            &session,
+            execute_request(r#"text("v8-smoke:" + (6 * 7));"#),
+            Arc::new(RecordingDelegate::default()),
+        )
+        .await;
+        assert_eq!(
+            actual,
+            RuntimeResponse::Result {
+                code_mode_host_duration: actual.code_mode_host_duration(),
+                cell_id: cell_id("1"),
+                content_items: vec![FunctionCallOutputContentItem::InputText {
+                    text: "v8-smoke:42".to_string(),
+                }],
+                result_buffered_for: Duration::ZERO,
+                error_text: None,
+            },
+        );
+        session.shutdown().await.expect("close gRPC session");
+    })
+    .await
+    .expect("packaged Code Mode smoke test timed out");
+}
+
+#[tokio::test]
 async fn interrupt_yields_observations_without_stopping_the_cell() {
     let provider = ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
         codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),

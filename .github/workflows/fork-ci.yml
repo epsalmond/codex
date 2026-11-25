@@ -287,8 +287,13 @@ jobs:
         working-directory: .
         shell: pwsh
         run: |
-          Expand-Archive -Path "dist/$env:WINDOWS_ARCHIVE" -DestinationPath "$env:RUNNER_TEMP/windows-package-smoke"
-          python scripts/smoke_codex_package.py --package-dir "$env:RUNNER_TEMP/windows-package-smoke"
+          $packageDir = Join-Path $env:RUNNER_TEMP 'windows-package-smoke'
+          Expand-Archive -Path "dist/$env:WINDOWS_ARCHIVE" -DestinationPath $packageDir
+          python scripts/smoke_codex_package.py --package-dir $packageDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CODEX_PACKAGE_CODE_MODE_HOST = Join-Path $packageDir 'bin/codex-code-mode-host.exe'
+          Set-Location codex-rs
+          cargo test --locked -p codex-code-mode-host --test stdio package_host_executes_v8 -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Windows test build
