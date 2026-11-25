@@ -21,12 +21,27 @@ struct Args {
     /// Classify lookups in this registered fixture workspace as synthetic.
     #[arg(long, requires = "metrics_file")]
     synthetic_workspace: Vec<String>,
+    /// Print the selected managed project's saved input manifest for the index producer.
+    #[arg(long, value_name = "WORKSPACE_ID")]
+    manifest: Option<String>,
 }
 #[cfg(target_os = "linux")]
 #[tokio::main(worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let mut broker = Broker::new(BrokerConfig::load(&args.config)?)?;
+    let config = BrokerConfig::load(&args.config)?;
+    if let Some(id) = args.manifest {
+        let workspace = config
+            .indexed_workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .ok_or("unknown indexed workspace")?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let manifest = workspace.manifest(deadline)?;
+        serde_json::to_writer(std::io::stdout().lock(), &manifest)?;
+        return Ok(());
+    }
+    let mut broker = Broker::new(config)?;
     if let Some(path) = args.metrics_file {
         broker = broker.with_metrics(path, args.synthetic_workspace)?;
     }

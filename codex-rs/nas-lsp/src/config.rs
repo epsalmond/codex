@@ -51,6 +51,7 @@ impl Readiness {
 pub struct BrokerConfig {
     pub socket_path: PathBuf,
     pub workspaces: Vec<Arc<WorkspaceConfig>>,
+    pub indexed_workspaces: Vec<crate::index::IndexConfig>,
     pub limits: PoolLimits,
 }
 
@@ -85,7 +86,10 @@ struct Registry {
     socket_path: PathBuf,
     #[serde(default)]
     limits: LimitsWire,
+    #[serde(default)]
     workspaces: Vec<WorkspaceWire>,
+    #[serde(default)]
+    indexed_workspaces: Vec<crate::index::IndexConfig>,
 }
 
 #[derive(Deserialize)]
@@ -131,7 +135,7 @@ struct WorkspaceWire {
     #[serde(default)]
     rustc: Option<PathBuf>,
 }
-fn extensions(language: &str) -> &[&str] {
+pub(crate) fn extensions(language: &str) -> &[&str] {
     match language {
         "python" => &["py", "pyi"],
         "typescript" => &["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"],
@@ -215,6 +219,7 @@ impl BrokerConfig {
         let config = Self {
             socket_path: registry.socket_path,
             workspaces,
+            indexed_workspaces: registry.indexed_workspaces,
             limits: PoolLimits {
                 max_workers: l.max_workers,
                 max_queue_per_worker: l.max_queue_per_worker,
@@ -243,7 +248,7 @@ impl BrokerConfig {
         {
             return Err(invalid("invalid pool limits"));
         }
-        if self.workspaces.is_empty() || self.workspaces.len() > 128 {
+        if !(1..=128).contains(&(self.workspaces.len() + self.indexed_workspaces.len())) {
             return Err(invalid("invalid workspace count"));
         }
         let mut ids = HashSet::new();
@@ -311,6 +316,19 @@ impl BrokerConfig {
                 })
             {
                 return Err(invalid("invalid source policy"));
+            }
+        }
+        for (index, workspace) in self.indexed_workspaces.iter().enumerate() {
+            workspace.validate()?;
+            if !ids.insert(&workspace.id)
+                || self.indexed_workspaces[..index].iter().any(|other| {
+                    other.database == workspace.database
+                        || (other.checkout == workspace.checkout
+                            && other.project == workspace.project
+                            && other.language == workspace.language)
+                })
+            {
+                return Err(invalid("duplicate index registration"));
             }
         }
         Ok(())
@@ -555,6 +573,7 @@ readiness = "pyrefly_lazy_blocking"
                     .expect("daemon")
                     .join("language-profile.sock"),
                 workspaces: vec![Arc::new(workspace.clone())],
+                indexed_workspaces: Vec::new(),
                 limits: PoolLimits::default(),
             }
             .validate()

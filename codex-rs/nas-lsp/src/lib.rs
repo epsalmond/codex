@@ -7,6 +7,7 @@
 pub mod broker;
 pub mod config;
 pub mod freshness;
+pub mod index;
 mod language;
 pub mod lsp;
 mod metrics;

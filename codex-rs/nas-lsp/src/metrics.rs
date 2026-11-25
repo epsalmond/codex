@@ -1,5 +1,3 @@
-use crate::config::Readiness;
-use crate::config::WorkspaceConfig;
 use codex_lsp_protocol::Operation;
 use codex_lsp_protocol::Status;
 use std::collections::BTreeMap;
@@ -49,20 +47,21 @@ impl Metrics {
 
     pub(crate) fn lookup_key(
         &self,
-        workspace: Option<&WorkspaceConfig>,
+        workspace: Option<(&str, &str)>,
         operation: Operation,
     ) -> LookupKey {
         let (traffic, language) = match workspace {
-            Some(workspace) => {
-                let traffic = if self.synthetic_workspace_ids.contains(&workspace.id) {
+            Some((id, language)) => {
+                let traffic = if self.synthetic_workspace_ids.contains(id) {
                     "synthetic"
                 } else {
                     "operator"
                 };
-                let language = match workspace.readiness {
-                    Readiness::PyreflyLazyBlocking => "python",
-                    Readiness::TypeScriptProject => "typescript",
-                    Readiness::RustAnalyzerProject => "rust",
+                let language = match language {
+                    "python" => "python",
+                    "typescript" => "typescript",
+                    "rust" => "rust",
+                    _ => "unknown",
                 };
                 (traffic, language)
             }
@@ -189,6 +188,9 @@ fn reason_label(reason: Option<&str>) -> &'static str {
         "deadline_exceeded",
         "external_result",
         "files_changed_during_query",
+        "index_generation_changed",
+        "index_not_built",
+        "index_source_not_covered",
         "indexing",
         "invalid_cwd",
         "invalid_path",

@@ -172,6 +172,73 @@ expire after the idle TTL. Changes to registrations require a broker restart.
 A missing registered executable is allowed at startup and produces
 `server_unavailable` when queried.
 
+### Managed project indexes
+
+A large Python or TypeScript project can register an offline occurrence index
+in the same broker. The producer uses a pinned compiler in an isolated
+checkout snapshot. The broker reads its private SQLite artifact. Navigation
+calls never launch a compiler or load project plugins for these entries.
+
+```toml
+[[indexed_workspaces]]
+id = "studio"
+checkout = "/srv/arcade/monorepo"
+project = "apps/studio-ui"
+language = "typescript"
+inputs = ["apps/studio-ui", "packages/typescript-config", "package.json", "yarn.lock"]
+database = "/srv/navigation/indexes/studio.sqlite3"
+```
+
+Use a canonical checkout directory and a private owner-only database directory
+outside it. `project` selects the primary subproject for routing. `inputs`
+includes the subproject and any explicitly admitted shared source and project
+configuration inputs. Use `project = ""` for a standalone checkout. With `inputs = [""]`,
+its scan starts at the checkout root. The manifest reads only source for the
+chosen language and named language configuration/lockfile types. It skips
+Git metadata, the standard worktree directory and local dependency caches.
+For TypeScript, explicitly list any other JSON files the producer uses, including
+inherited compiler configuration and imported JSON source.
+When the producer resolves imports against package source, `generated_dirs`
+can exclude exact checkout-relative build output trees, such as `packages/ui/dist`.
+Each tree must be inside a registered input and cannot contain an input or project root.
+The managed profile bounds scans to 20,000 files, 80,000 directory entries,
+4 MiB per input, 192 MiB total, and 128 directory levels. Its index limit is
+2 GiB. The broker's query, deadline, framing, and kernel resource limits still
+apply.
+
+You can pass a checkout-relative path or use a path relative to your current
+directory. If both files exist, the checkout-relative path takes precedence.
+Returned locations are checkout-relative, including shared source. Register each
+linked checkout explicitly with its own database and workspace ID. Sessions
+inside an unregistered nested checkout cannot fall through to its enclosing
+checkout's index.
+
+To build or refresh an index, capture the selected project's input manifest:
+
+```bash
+codex-nas-lsp --config "$nav_dir/navigation.toml" --manifest studio > studio-inputs.json
+```
+
+Stage and verify the listed files against their SHA-256 values. Run the
+pinned producer over that staged source with only the project's approved
+dependency inputs. Normalize the compiler's document paths and positions
+into the navigation artifact, binding it to the canonical checkout path,
+workspace ID, and manifest fingerprint. Verify the saved manifest again
+before publishing. Publish a complete mode-`0600` database using an atomic
+rename. The version-1 artifact contains a single `generation(workspace,
+checkout, fingerprint)` row, `documents(path)`, and `occurrences(path,
+start_line, start_column, end_line, end_column, symbol, definition)`, with
+checkout-relative paths and one-based Unicode scalar positions. Include
+indexes for coordinate and symbol lookups. Set `PRAGMA user_version = 1`.
+
+The broker verifies the saved input manifest against the artifact before
+and after a lookup. An edit, addition, deletion or relevant config change
+returns `stale` until an index for the new bytes is ready. A missing artifact
+returns `indexing`. If the compiler leaves a source file outside its project,
+lookups in it return `index_source_not_covered`. Refreshing an artifact in its
+registered path takes effect on the next lookup. Registering a new linked
+checkout requires a registry update and reload.
+
 ### Python
 
 Use the qualified Pyrefly 1.2.0 profile with lazy-blocking indexing and one
