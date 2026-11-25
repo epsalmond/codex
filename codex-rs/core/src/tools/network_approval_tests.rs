@@ -1113,7 +1113,7 @@ async fn idle_code_mode_network_request_is_refused_without_prompt() {
             cancellation_token: CancellationToken::new(),
             code_mode_context: Some(CodeModeNetworkApprovalContext {
                 turn: Arc::clone(&turn),
-                settings: turn.next_step_settings.load_full(),
+                settings: Arc::clone(&turn.initial_settings),
             }),
         })
         .await;

@@ -884,7 +884,7 @@ async fn reused_elicitation_senders_follow_each_servers_latest_permission_author
 
 fn verification_fixture(
     approval_policy: AskForApproval,
-    reviewer: Option<Arc<RecordingReviewer>>,
+    reviewer: Option<ElicitationReviewerHandle>,
 ) -> (ElicitationRequestManager, Receiver<Event>, SendElicitation) {
     let mut config = test_elicitation_config(
         crate::CODEX_APPS_MCP_SERVER_NAME,
@@ -904,7 +904,7 @@ fn verification_fixture(
     Arc::make_mut(&mut config).mcp_server_catalog = catalog.build();
     let manager = ElicitationRequestManager::new(
         config,
-        reviewer.map(|reviewer| reviewer as Arc<dyn ElicitationReviewer>),
+        reviewer,
         /*lifecycle*/ None,
         ElicitationRequestRouter::default(),
     );
