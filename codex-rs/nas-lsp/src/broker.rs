@@ -2,6 +2,7 @@
 
 use crate::config::BrokerConfig;
 use crate::config::RootIdentity;
+use crate::metrics::Metrics;
 use crate::pool::Pool;
 use crate::resource::ResourceLimits;
 use crate::worker::WorkerQuery;
@@ -40,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct Broker {
     inner: Arc<Inner>,
+    metrics: Option<Arc<Metrics>>,
 }
 struct Inner {
     config: BrokerConfig,
@@ -70,7 +72,63 @@ impl Broker {
                 config,
                 identities,
             }),
+            metrics: None,
         })
+    }
+
+    pub fn with_metrics(
+        mut self,
+        file: PathBuf,
+        synthetic_workspace_ids: Vec<String>,
+    ) -> io::Result<Self> {
+        if !file.is_absolute() || file.extension() != Some(std::ffi::OsStr::new("prom")) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "metrics file must be an absolute .prom path",
+            ));
+        }
+        if synthetic_workspace_ids.iter().any(|id| {
+            !self
+                .inner
+                .config
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == *id)
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "synthetic workspace must be registered",
+            ));
+        }
+        self.metrics = Some(Arc::new(Metrics::new(
+            file,
+            synthetic_workspace_ids.into_iter().collect(),
+        )));
+        Ok(self)
+    }
+
+    async fn publish_metrics(self, metrics: Arc<Metrics>, shutdown: CancellationToken) {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut reported_failure = false;
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {
+                    let workers = self.inner.pool.active_workers().await;
+                    let valid_limits = ResourceLimits::validate(&self.inner.config.limits).is_ok();
+                    let metrics = metrics.clone();
+                    let published = tokio::task::spawn_blocking(move || {
+                        metrics.publish(workers, valid_limits)
+                    }).await.is_ok_and(|result| result.is_ok());
+                    if !published && !reported_failure {
+                        eprintln!("semantic navigation metrics snapshot could not be published");
+                    }
+                    reported_failure = !published;
+                }
+            }
+        }
     }
 
     pub async fn query(
@@ -190,6 +248,12 @@ impl Broker {
 
     pub async fn serve(self, shutdown: CancellationToken) -> io::Result<()> {
         let (listener, _guard) = bind(&self.inner.config.socket_path).await?;
+        let metrics_task = self.metrics.as_ref().map(|metrics| {
+            tokio::spawn(
+                self.clone()
+                    .publish_metrics(metrics.clone(), shutdown.child_token()),
+            )
+        });
         let connection_slots = Arc::new(Semaphore::new(self.inner.config.limits.max_connections));
         let mut handlers = JoinSet::new();
         let maintenance_broker = self.clone();
@@ -234,6 +298,9 @@ impl Broker {
             tokio::join!(
                 async {
                     let _ = maintenance.await;
+                    if let Some(metrics_task) = metrics_task {
+                        let _ = metrics_task.await;
+                    }
                 },
                 self.inner.pool.shutdown(),
                 async { while handlers.join_next().await.is_some() {} }
@@ -268,6 +335,19 @@ impl Broker {
             }
         };
         let budget = request.max_response_bytes.min(MAX_RESPONSE_BYTES);
+        let measurement = self.metrics.as_ref().map(|metrics| {
+            let workspace = self
+                .inner
+                .config
+                .workspaces
+                .iter()
+                .find(|workspace| request.cwd.starts_with(&workspace.root));
+            (
+                metrics,
+                metrics.lookup_key(workspace.map(Arc::as_ref), request.operation),
+                Instant::now(),
+            )
+        });
         let (mut reader, mut writer) = stream.into_split();
         let request_cancel = cancel.child_token();
         let operation = self.query(request, request_cancel.clone());
@@ -275,8 +355,22 @@ impl Broker {
         let mut extra = [0u8; 1];
         let response = tokio::select! {
             response = &mut operation=>response,
-            _ = reader.read(&mut extra)=> {request_cancel.cancel();return;}
+            _ = reader.read(&mut extra) => {
+                request_cancel.cancel();
+                if let Some((metrics, key, start)) = measurement {
+                    metrics.record(key, Status::Cancelled, Some("client_disconnected"), start.elapsed());
+                }
+                return;
+            }
         };
+        if let Some((metrics, key, start)) = measurement {
+            metrics.record(
+                key,
+                response.status,
+                response.reason.as_deref(),
+                start.elapsed(),
+            );
+        }
         send_response(&mut writer, response, budget).await;
     }
 }
@@ -497,6 +591,70 @@ mod tests {
             .query(request(&config), CancellationToken::new())
             .await;
         assert_eq!(response.reason.as_deref(), Some("server_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn decoded_requests_are_counted_by_operator_registered_traffic() {
+        let (root, mut config) = fixture();
+        let operator_root = tempfile::tempdir().expect("operator root");
+        let mut operator = (*config.workspaces[0]).clone();
+        operator.id = "operator-private-id".to_owned();
+        operator.root = operator_root.path().to_owned();
+        config.workspaces.push(Arc::new(operator));
+        let metrics_path = root.path().join("navigation.prom");
+        let broker = Broker::new(config.clone())
+            .expect("broker")
+            .with_metrics(metrics_path.clone(), vec!["fixture".to_owned()])
+            .expect("metrics");
+
+        for (cwd, operation) in [
+            (root.path(), Operation::Definition),
+            (operator_root.path(), Operation::References),
+            (std::path::Path::new("/"), Operation::References),
+        ] {
+            let (mut client, server) = UnixStream::pair().expect("pair");
+            let service = broker.clone();
+            let task = tokio::spawn(async move {
+                service.connection(server, CancellationToken::new()).await;
+            });
+            let mut request = request(&config);
+            request.cwd = cwd.to_owned();
+            request.operation = operation;
+            request.path = "private-absent-file.py".to_owned();
+            write_frame(
+                &mut client,
+                &serde_json::to_vec(&request).expect("request JSON"),
+                MAX_REQUEST_BYTES,
+            )
+            .await
+            .expect("write");
+            read_frame(&mut client, MAX_RESPONSE_BYTES)
+                .await
+                .expect("response");
+            task.await.expect("handler");
+        }
+        broker
+            .metrics
+            .as_ref()
+            .expect("metrics")
+            .publish(0, false)
+            .expect("snapshot");
+        let snapshot = fs::read_to_string(metrics_path).expect("metrics snapshot");
+        for labels in [
+            r#"traffic="synthetic",language="python",operation="definition",status="invalid_request",reason="invalid_source_path""#,
+            r#"traffic="operator",language="python",operation="references",status="invalid_request",reason="invalid_source_path""#,
+            r#"traffic="unknown",language="unknown",operation="references",status="unavailable",reason="unregistered_workspace""#,
+        ] {
+            assert!(
+                snapshot.contains(&format!(
+                    "codex_semantic_navigation_lookups_total{{{labels}}} 1"
+                )),
+                "{snapshot}"
+            );
+        }
+        assert!(!snapshot.contains("operator-private-id"));
+        assert!(!snapshot.contains("private-absent-file.py"));
+        assert!(!snapshot.contains("lookup_duration_seconds_count"));
     }
 
     #[tokio::test]

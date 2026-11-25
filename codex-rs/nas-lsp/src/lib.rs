@@ -9,6 +9,7 @@ pub mod config;
 pub mod freshness;
 mod language;
 pub mod lsp;
+mod metrics;
 pub mod pool;
 pub mod resource;
 pub mod worker;

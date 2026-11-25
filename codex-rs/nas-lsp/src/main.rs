@@ -15,12 +15,21 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     #[arg(long)]
     config: PathBuf,
+    /// Publish broker metrics to this Prometheus textfile.
+    #[arg(long)]
+    metrics_file: Option<PathBuf>,
+    /// Classify lookups in this registered fixture workspace as synthetic.
+    #[arg(long, requires = "metrics_file")]
+    synthetic_workspace: Vec<String>,
 }
 #[cfg(target_os = "linux")]
 #[tokio::main(worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let broker = Broker::new(BrokerConfig::load(&args.config)?)?;
+    let mut broker = Broker::new(BrokerConfig::load(&args.config)?)?;
+    if let Some(path) = args.metrics_file {
+        broker = broker.with_metrics(path, args.synthetic_workspace)?;
+    }
     let shutdown = CancellationToken::new();
     let signal_shutdown = shutdown.clone();
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

@@ -78,6 +78,15 @@ impl Pool {
         }
     }
 
+    pub(crate) async fn active_workers(&self) -> usize {
+        self.slots
+            .lock()
+            .await
+            .values()
+            .filter(|slot| slot.state.pid.load(Ordering::Relaxed) != 0)
+            .count()
+    }
+
     /// A full leased pool returns Busy. Idle replacement waits for broker-owned
     /// retirement within this caller's deadline and cancellation token.
     #[expect(

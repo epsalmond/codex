@@ -410,3 +410,36 @@ matching files. Text matches still need inspection to identify the right symbol.
 
 For qualification and the distinction between executor tests and an interactive
 model session, see the [acceptance evidence](../.codex/design/nas-lsp-acceptance.md).
+
+## Broker metrics
+
+To collect metrics, add an absolute Prometheus textfile path to the broker's
+service command, for example
+`--metrics-file /var/lib/node_exporter/textfile_collector/codex-semantic-navigation.prom`.
+The service user needs write access to the collector directory. Keep that
+directory outside registered roots so snapshot publication cannot invalidate
+worker indexes. The broker publishes atomically after listening and every
+15 seconds. A write failure
+leaves navigation available. Use the heartbeat timestamp to detect a stale
+snapshot, allowing for your scrape interval.
+
+Add `--synthetic-workspace <registered-id>` for each dedicated canary root.
+Lookups in these roots have `traffic="synthetic"`. Other registered roots
+have `traffic="operator"`. A request without a matching root has
+`traffic="unknown"` and `language="unknown"`.
+
+| Metric | Meaning |
+| --- | --- |
+| `codex_semantic_navigation_broker_heartbeat_timestamp_seconds` | Unix time of the published snapshot |
+| `codex_semantic_navigation_broker_active_workers` | Worker slots with a language-server PID |
+| `codex_semantic_navigation_broker_resource_limits_valid` | Whether the broker's cgroup limits passed validation |
+| `codex_semantic_navigation_lookups_total` | Decoded broker requests by traffic, language, operation, status, and bounded reason |
+| `codex_semantic_navigation_lookup_duration_seconds` | Histogram by traffic, language, and operation for broker responses with status `ok` |
+
+The latency covers broker processing after request decoding, including queue
+time and worker startup. Both Direct and Code Mode use this broker boundary.
+Client errors before connection and connections rejected before decoding fall
+outside the counters. Counters reset when the broker restarts. An `ok` result
+can be empty or truncated. Canary checks against expected locations are the
+separate measure of lookup correctness. The broker metrics contain no paths,
+workspace IDs, symbols, or source contents.
