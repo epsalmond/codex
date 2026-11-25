@@ -352,6 +352,8 @@ pub struct ConfigLayerStack {
     /// `.codex` folders a child agent's directory added; their layers are capped so they
     /// cannot grant approval or reviewer authority, and refreshes keep that cap.
     child_directory_folders: Vec<AbsolutePathBuf>,
+    /// Parent working directories that supplied project layers to a directory child.
+    child_directory_parents: Vec<AbsolutePathBuf>,
     /// Effective decision and config key selected during project discovery.
     pub project_trust: Option<crate::loader::ProjectTrustDecision>,
 }
@@ -373,6 +375,7 @@ impl PartialEq for ConfigLayerStack {
             is_projectless,
             project_config_ignored: _,
             child_directory_folders: _,
+            child_directory_parents: _,
             project_trust,
         } = self;
         applied_config_server == &other.applied_config_server
@@ -431,6 +434,7 @@ impl ConfigLayerStack {
             is_projectless: false,
             project_config_ignored: false,
             child_directory_folders: Vec::new(),
+            child_directory_parents: Vec::new(),
             project_trust: None,
         };
         stack.validate_project_mitm_profiles()?;
@@ -634,9 +638,17 @@ impl ConfigLayerStack {
         &self.child_directory_folders
     }
 
-    /// Marks `folders` as a child directory's layers and caps them with
+    pub fn child_directory_parents(&self) -> &[AbsolutePathBuf] {
+        &self.child_directory_parents
+    }
+
+    /// Records the inherited project contexts and caps `folders` with
     /// [`cap_child_directory_layer`].
-    pub fn with_child_directory_folders(&self, folders: Vec<AbsolutePathBuf>) -> Self {
+    pub fn with_child_directory_layers(
+        &self,
+        parents: Vec<AbsolutePathBuf>,
+        folders: Vec<AbsolutePathBuf>,
+    ) -> Self {
         let mut stack = self.clone();
         for layer in &mut stack.layers {
             if layer
@@ -647,6 +659,7 @@ impl ConfigLayerStack {
             }
         }
         stack.child_directory_folders = folders;
+        stack.child_directory_parents = parents;
         stack
     }
 
@@ -766,6 +779,7 @@ impl ConfigLayerStack {
             project_trust: self.project_trust.clone(),
             project_config_ignored: self.project_config_ignored,
             child_directory_folders: self.child_directory_folders.clone(),
+            child_directory_parents: self.child_directory_parents.clone(),
         })
     }
 
@@ -908,6 +922,7 @@ impl ConfigLayerStack {
             is_projectless: self.is_projectless,
             project_config_ignored: self.project_config_ignored,
             child_directory_folders: self.child_directory_folders.clone(),
+            child_directory_parents: self.child_directory_parents.clone(),
             project_trust: self.project_trust.clone(),
         }
     }
