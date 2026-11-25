@@ -54,6 +54,7 @@ pub(crate) enum SelectionError {
 pub(crate) struct SelectedDatabase {
     pub file: File,
     pub checkout: PathBuf,
+    pub fingerprint: String,
 }
 
 impl PreparedIndex {
@@ -77,6 +78,7 @@ impl PreparedIndex {
         workspace: &str,
         current: &Manifest,
         max_database: u64,
+        verify_other_generation: bool,
     ) -> Result<SelectedDatabase, SelectionError> {
         use SelectionError::*;
 
@@ -118,8 +120,14 @@ impl PreparedIndex {
         {
             return Err(Invalid);
         }
-        if receipt.manifest_fingerprint != current.fingerprint {
-            return Err(if historical { Invalid } else { NoMatch });
+        let matches_current = receipt.manifest_fingerprint == current.fingerprint;
+        if !matches_current {
+            if historical {
+                return Err(Invalid);
+            }
+            if !verify_other_generation {
+                return Err(NoMatch);
+            }
         }
         let generations = self.catalog.join("generations");
         let generation = generations.join(format!(
@@ -136,7 +144,13 @@ impl PreparedIndex {
         let (manifest_file, _) =
             private_file(&receipt.manifest, MAX_MANIFEST, true).map_err(|_| Invalid)?;
         let manifest: Manifest = read_json(manifest_file, MAX_MANIFEST).map_err(|_| Invalid)?;
-        if manifest != *current || receipt.verified_documents > manifest.files.len() {
+        let manifest_matches = if matches_current {
+            manifest == *current
+        } else {
+            manifest.fingerprint == receipt.manifest_fingerprint
+                && manifest.fingerprint == Manifest::fingerprint_for(&manifest.files)
+        };
+        if !manifest_matches || receipt.verified_documents > manifest.files.len() {
             return Err(Invalid);
         }
         let (database, size) =
@@ -150,6 +164,7 @@ impl PreparedIndex {
         Ok(SelectedDatabase {
             file: database,
             checkout: receipt.checkout,
+            fingerprint: receipt.manifest_fingerprint,
         })
     }
 }

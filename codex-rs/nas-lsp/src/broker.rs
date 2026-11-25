@@ -5,6 +5,7 @@ use crate::config::RootIdentity;
 use crate::index;
 use crate::linked_checkout;
 use crate::linked_checkout::CheckoutAnchor;
+use crate::linked_checkout::CheckoutError;
 use crate::metrics::Metrics;
 use crate::pool::Pool;
 use crate::resource::ResourceLimits;
@@ -33,6 +34,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -52,7 +54,7 @@ struct Inner {
     config: BrokerConfig,
     identities: Vec<RootIdentity>,
     index_identities: Vec<RootIdentity>,
-    checkout_anchors: Vec<Option<CheckoutAnchor>>,
+    checkout_anchors: Vec<Option<IndexCheckoutAnchors>>,
     pool: Pool,
     queries: Arc<Semaphore>,
 }
@@ -64,6 +66,62 @@ fn status(s: Status, reason: &str) -> NavigationResponse {
 }
 
 type WorkspaceLabel<'a> = (&'a str, &'a str);
+
+struct IndexCheckoutAnchors {
+    primary: CheckoutAnchor,
+    publisher: Option<CheckoutAnchor>,
+    publisher_warning: Once,
+}
+
+impl IndexCheckoutAnchors {
+    fn new(workspace: &index::IndexConfig) -> io::Result<Option<Self>> {
+        let Some(prepared) = &workspace.prepared else {
+            return Ok(None);
+        };
+        let primary = CheckoutAnchor::new(&workspace.checkout)?;
+        let publisher = if workspace.database.is_some()
+            && prepared.publisher_checkout != workspace.checkout
+        {
+            match CheckoutAnchor::new(&prepared.publisher_checkout) {
+                Ok(anchor) => Some(anchor),
+                Err(error) => {
+                    eprintln!(
+                        "semantic navigation publisher route for workspace {:?} was skipped ({:?}). Restart the broker once an owned canonical publisher checkout is available",
+                        workspace.id,
+                        error.kind(),
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Some(Self {
+            primary,
+            publisher,
+            publisher_warning: Once::new(),
+        }))
+    }
+
+    fn resolve(&self, workspace: &str, checkout: &Path) -> Option<(&CheckoutAnchor, RootIdentity)> {
+        if let Ok(identity) = self.primary.resolve(checkout) {
+            return Some((&self.primary, identity));
+        }
+        let publisher = self.publisher.as_ref()?;
+        match publisher.resolve(checkout) {
+            Ok(identity) => Some((publisher, identity)),
+            Err(CheckoutError::InvalidLink) => None,
+            Err(CheckoutError::AnchorChanged) => {
+                self.publisher_warning.call_once(|| {
+                    eprintln!(
+                        "semantic navigation publisher identity for workspace {workspace:?} is unavailable or changed. Verify the publisher checkout and restart the broker"
+                    );
+                });
+                None
+            }
+        }
+    }
+}
 
 impl Broker {
     pub fn new(config: BrokerConfig) -> Result<Self, BrokerError> {
@@ -84,18 +142,12 @@ impl Broker {
             .indexed_workspaces
             .iter()
             .map(|workspace| {
-                workspace
-                    .prepared
-                    .as_ref()
-                    .map(|_| {
-                        CheckoutAnchor::new(&workspace.checkout).map_err(|error| {
-                            BrokerError(format!(
-                                "prepared workspace {} needs a canonical primary Git checkout owned by the service: {error}",
-                                workspace.id,
-                            ))
-                        })
-                    })
-                    .transpose()
+                IndexCheckoutAnchors::new(workspace).map_err(|error| {
+                    BrokerError(format!(
+                        "prepared workspace {} needs canonical primary Git checkouts owned by the service: {error}",
+                        workspace.id,
+                    ))
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
@@ -220,8 +272,9 @@ impl Broker {
             .iter()
             .enumerate()
             .filter_map(|(position, workspace)| {
-                let anchor = self.inner.checkout_anchors[position].as_ref();
-                let (checkout, identity) = if let Some(anchor) = anchor {
+                let (checkout, identity, anchor) = if let Some(anchors) =
+                    &self.inner.checkout_anchors[position]
+                {
                     let checkout = nearest_checkout?;
                     if checkout != workspace.checkout
                         && live_workspace.is_some_and(|live| {
@@ -230,11 +283,13 @@ impl Broker {
                     {
                         return None;
                     }
-                    (checkout, anchor.resolve(checkout).ok()?)
+                    let (anchor, identity) = anchors.resolve(&workspace.id, checkout)?;
+                    (checkout, identity, Some(anchor))
                 } else {
                     (
                         workspace.checkout.as_path(),
                         self.inner.index_identities[position].clone(),
+                        None,
                     )
                 };
                 let cwd = request.cwd.strip_prefix(checkout).ok()?;
@@ -274,6 +329,7 @@ impl Broker {
                         .starts_with(route.checkout.join(&route.workspace.project)),
                     route.workspace.project.components().count(),
                     route.anchor.is_none(),
+                    route.checkout == route.workspace.checkout,
                 )
             })
     }
@@ -315,8 +371,7 @@ impl Broker {
             if ResourceLimits::validate(&self.inner.config.limits).is_err() {
                 return status(Status::Unavailable, "resource_limit_unavailable");
             }
-            let mut workspace = route.workspace.clone();
-            workspace.checkout = route.checkout.to_owned();
+            let workspace = route.index_config();
             let mut request = request.clone();
             request.path = route.path;
             let response = index::query(
@@ -550,6 +605,17 @@ struct IndexRoute<'a> {
     path: String,
 }
 
+impl IndexRoute<'_> {
+    fn index_config(&self) -> index::IndexConfig {
+        let mut workspace = self.workspace.clone();
+        if self.checkout != workspace.checkout {
+            workspace.checkout = self.checkout.to_owned();
+            workspace.database = None;
+        }
+        workspace
+    }
+}
+
 fn crosses_checkout_boundary(checkout: &Path, cwd: &Path) -> bool {
     cwd.ancestors()
         .take_while(|ancestor| *ancestor != checkout)
@@ -678,6 +744,7 @@ mod tests {
     use crate::config::WorkspaceConfig;
     use codex_lsp_protocol::Operation;
     use codex_lsp_protocol::Position;
+    use std::ffi::OsStr;
     use tokio::io::AsyncWriteExt;
 
     fn fixture() -> (tempfile::TempDir, BrokerConfig) {
@@ -779,7 +846,7 @@ mod tests {
             language: "python".into(),
             database: None,
             prepared: Some(index::PreparedIndex {
-                catalog: catalog.clone(),
+                catalog,
                 publisher_checkout: temp.path().join("publisher"),
             }),
             inputs: vec![PathBuf::new()],
@@ -847,6 +914,293 @@ mod tests {
                 .map(|route| route.workspace.id.as_str()),
             Some("explicit"),
         );
+    }
+
+    #[tokio::test]
+    async fn dual_source_routes_only_the_two_enrolled_git_repositories() {
+        let (_ordinary, mut config) = fixture();
+        let original = tempfile::tempdir().expect("original");
+        let publisher = tempfile::tempdir().expect("publisher");
+        let unrelated = tempfile::tempdir().expect("unrelated");
+        let (original_root, original_linked) =
+            linked_checkout::tests::make_linked_checkout(original.path(), true);
+        let (publisher_root, publisher_linked) =
+            linked_checkout::tests::make_linked_checkout(publisher.path(), false);
+        let (unrelated_root, unrelated_linked) =
+            linked_checkout::tests::make_linked_checkout(unrelated.path(), false);
+        let catalog = original.path().join("catalog");
+        fs::create_dir(&catalog).expect("catalog");
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).expect("catalog mode");
+        let database = catalog.join("local.sqlite3");
+        config.indexed_workspaces.push(index::IndexConfig {
+            id: "dual".into(),
+            checkout: original_root.clone(),
+            project: PathBuf::new(),
+            language: "python".into(),
+            database: Some(database.clone()),
+            prepared: Some(index::PreparedIndex {
+                catalog,
+                publisher_checkout: publisher_root.clone(),
+            }),
+            inputs: vec![PathBuf::new()],
+            generated_dirs: Vec::new(),
+        });
+        let mut request = request(&config);
+        request.path = "apps/project/importer.py".into();
+        request.position.column = 20;
+        for checkout in [
+            &original_root,
+            &original_linked,
+            &publisher_root,
+            &publisher_linked,
+        ] {
+            let project = checkout.join("apps/project");
+            fs::create_dir_all(&project).expect("create project");
+            fs::write(project.join("importer.py"), "from origin import value\n")
+                .expect("write importer");
+            fs::write(project.join("origin.py"), "value = 1\n").expect("write definition");
+        }
+        let workspace = &config.indexed_workspaces[0];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let manifest = workspace.manifest(deadline).expect("manifest");
+        index::tests::build_database(&database, &workspace.id, &original_root, &manifest).await;
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o600))
+            .expect("private fallback");
+        let different_manifest = {
+            let source = original_root.join("apps/project/origin.py");
+            fs::write(&source, "value = 7\n").expect("change source");
+            let different = workspace.manifest(deadline).expect("different manifest");
+            fs::write(&source, "value = 1\n").expect("restore source");
+            different
+        };
+        let broker = Broker::new(config.clone()).expect("dual-source broker");
+        // Advancing main in place retains the identities the broker enrolled.
+        let git = |checkout: &Path, args: &[&str]| {
+            let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
+            linked_checkout::tests::git(checkout, &args);
+        };
+        git(&publisher_linked, &["checkout", "-b", "advance"]);
+        git(
+            &publisher_linked,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "publish next revision",
+            ],
+        );
+        git(&publisher_root, &["merge", "--ff-only", "advance"]);
+        for (published, rebound_status) in [
+            (None, Status::Indexing),
+            (Some(&different_manifest), Status::Stale),
+            (Some(&manifest), Status::Ok),
+        ] {
+            if let Some(published) = published {
+                index::tests::publish_fixture(
+                    workspace.prepared.as_ref().expect("prepared catalog"),
+                    &workspace.id,
+                    &"a".repeat(40),
+                    published,
+                )
+                .await;
+            }
+            for checkout in [
+                &original_root,
+                &original_linked,
+                &publisher_root,
+                &publisher_linked,
+            ] {
+                request.cwd = checkout.to_path_buf();
+                let route = broker
+                    .indexed_workspace(&request)
+                    .expect("registered route");
+                assert_eq!(route.checkout, checkout);
+                assert_eq!(route.workspace.id, "dual");
+                let routed = route.index_config();
+                assert_eq!(
+                    routed.database.as_ref(),
+                    (checkout == &original_root).then_some(&database)
+                );
+                let response = query_index_route(&broker, &route, &request, deadline).await;
+                let expected = if checkout == &original_root {
+                    Status::Ok
+                } else {
+                    rebound_status
+                };
+                assert_eq!(response.status, expected);
+                if expected == Status::Ok {
+                    assert_eq!(response.locations[0].path, "apps/project/origin.py");
+                }
+            }
+        }
+        for checkout in [unrelated_root, unrelated_linked] {
+            request.cwd = checkout;
+            assert!(broker.indexed_workspace(&request).is_none());
+        }
+
+        let mut with_live = config.clone();
+        Arc::make_mut(&mut with_live.workspaces[0]).root = publisher_linked.clone();
+        let live_broker =
+            Broker::new(with_live).expect("broker with explicit publisher-linked live server");
+        request.cwd = publisher_linked;
+        assert!(live_broker.indexed_workspace(&request).is_none());
+
+        config.indexed_workspaces[0].database = None;
+        let existing = Broker::new(config).expect("prepared-only broker");
+        request.cwd = publisher_root;
+        assert!(existing.indexed_workspace(&request).is_none());
+    }
+
+    #[tokio::test]
+    async fn unavailable_or_replaced_publisher_only_affects_its_optional_routes() {
+        let (_ordinary, mut config) = fixture();
+        Arc::make_mut(&mut config.workspaces[0]).executable =
+            config.workspaces[0].root.join("missing-server");
+        let original = tempfile::tempdir().expect("original");
+        let publisher = tempfile::tempdir().expect("publisher");
+        let (original_root, original_linked) =
+            linked_checkout::tests::make_linked_checkout(original.path(), true);
+        let publisher_root = publisher.path().join("repository");
+        let catalog = original.path().join("catalog");
+        fs::create_dir(&catalog).expect("catalog");
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).expect("catalog mode");
+        let database = catalog.join("local.sqlite3");
+        config.indexed_workspaces.push(index::IndexConfig {
+            id: "dual".into(),
+            checkout: original_root.clone(),
+            project: PathBuf::new(),
+            language: "python".into(),
+            database: Some(database.clone()),
+            prepared: Some(index::PreparedIndex {
+                catalog,
+                publisher_checkout: publisher_root.clone(),
+            }),
+            inputs: vec![PathBuf::new()],
+            generated_dirs: Vec::new(),
+        });
+        let source = original_root.join("apps/project");
+        fs::create_dir_all(&source).expect("source directory");
+        fs::write(source.join("importer.py"), "from origin import value\n").expect("importer");
+        fs::write(source.join("origin.py"), "value = 1\n").expect("definition");
+        let workspace = &config.indexed_workspaces[0];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let manifest = workspace.manifest(deadline).expect("manifest");
+        index::tests::build_database(&database, &workspace.id, &original_root, &manifest).await;
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o600))
+            .expect("private fallback");
+
+        let missing = Broker::new(config.clone()).expect("broker before publisher bootstrap");
+        let (created, publisher_linked) =
+            linked_checkout::tests::make_linked_checkout(publisher.path(), false);
+        assert_eq!(created, publisher_root);
+        let mut indexed = request(&config);
+        indexed.path = "apps/project/importer.py".into();
+        indexed.position.column = 20;
+        let live = request(&config);
+        let enrolled = Broker::new(config.clone()).expect("broker after publisher bootstrap");
+        for checkout in [&publisher_root, &publisher_linked] {
+            indexed.cwd = checkout.clone();
+            assert!(missing.indexed_workspace(&indexed).is_none());
+            assert!(enrolled.indexed_workspace(&indexed).is_some());
+        }
+
+        fs::set_permissions(
+            publisher_root.join(".git"),
+            fs::Permissions::from_mode(0o777),
+        )
+        .expect("set unsafe metadata permissions");
+        let unsafe_git = Broker::new(config.clone()).expect("broker with unsafe publisher");
+        fs::set_permissions(
+            publisher_root.join(".git"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("restore safe metadata permissions");
+
+        let alias = original.path().join("publisher-alias");
+        std::os::unix::fs::symlink(publisher.path(), &alias).expect("publisher alias");
+        let mut noncanonical = config.clone();
+        noncanonical.indexed_workspaces[0]
+            .prepared
+            .as_mut()
+            .expect("prepared")
+            .publisher_checkout = alias.join("repository");
+        let noncanonical = Broker::new(noncanonical).expect("broker with noncanonical publisher");
+        for broker in [&unsafe_git, &noncanonical] {
+            assert!(
+                broker.inner.checkout_anchors[0]
+                    .as_ref()
+                    .expect("primary checkout anchor")
+                    .publisher
+                    .is_none()
+            );
+        }
+
+        fs::rename(&publisher_root, publisher.path().join("old-repository"))
+            .expect("move publisher");
+        fs::rename(&publisher_linked, publisher.path().join("old-worktree"))
+            .expect("move worktree");
+        linked_checkout::tests::make_linked_checkout(publisher.path(), false);
+        for broker in [&missing, &unsafe_git, &noncanonical, &enrolled] {
+            for checkout in [&publisher_root, &publisher_linked] {
+                indexed.cwd = checkout.clone();
+                assert!(broker.indexed_workspace(&indexed).is_none());
+            }
+            indexed.cwd = original_root.clone();
+            let original = broker
+                .indexed_workspace(&indexed)
+                .expect("primary checkout route");
+            assert_eq!(
+                query_index_route(broker, &original, &indexed, deadline)
+                    .await
+                    .status,
+                Status::Ok
+            );
+            indexed.cwd = original_linked.clone();
+            assert!(broker.indexed_workspace(&indexed).is_some());
+            let response = broker.query(live.clone(), CancellationToken::new()).await;
+            assert_eq!(response.reason.as_deref(), Some("server_unavailable"));
+        }
+        assert!(
+            enrolled.inner.checkout_anchors[0]
+                .as_ref()
+                .expect("primary checkout anchor")
+                .publisher_warning
+                .is_completed()
+        );
+        let reloaded = Broker::new(config).expect("broker reloaded after publisher replacement");
+        for checkout in [publisher_root, publisher_linked] {
+            indexed.cwd = checkout;
+            assert!(reloaded.indexed_workspace(&indexed).is_some());
+        }
+    }
+
+    async fn query_index_route(
+        broker: &Broker,
+        route: &IndexRoute<'_>,
+        request: &NavigationRequest,
+        deadline: Instant,
+    ) -> NavigationResponse {
+        let mut request = request.clone();
+        request.path.clone_from(&route.path);
+        index::query(
+            &route.index_config(),
+            &route.identity,
+            &request,
+            deadline,
+            CancellationToken::new(),
+            broker
+                .inner
+                .queries
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("permit"),
+        )
+        .await
     }
 
     fn request(config: &BrokerConfig) -> NavigationRequest {

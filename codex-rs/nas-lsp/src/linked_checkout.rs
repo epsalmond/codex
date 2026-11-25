@@ -24,6 +24,11 @@ pub(crate) struct CheckoutAnchor {
     common_identity: RootIdentity,
 }
 
+pub(crate) enum CheckoutError {
+    AnchorChanged,
+    InvalidLink,
+}
+
 impl CheckoutAnchor {
     pub(crate) fn new(root: &Path) -> io::Result<Self> {
         let common_directory = root.join(".git");
@@ -36,15 +41,20 @@ impl CheckoutAnchor {
     }
 
     /// The selected root must be the nearest Git boundary to the request cwd.
-    pub(crate) fn resolve(&self, checkout: &Path) -> io::Result<RootIdentity> {
-        if owned_directory(&self.root)? != self.root_identity
-            || owned_directory(&self.common_directory)? != self.common_identity
+    pub(crate) fn resolve(&self, checkout: &Path) -> Result<RootIdentity, CheckoutError> {
+        if owned_directory(&self.root).ok().as_ref() != Some(&self.root_identity)
+            || owned_directory(&self.common_directory).ok().as_ref() != Some(&self.common_identity)
         {
-            return Err(invalid());
+            return Err(CheckoutError::AnchorChanged);
         }
         if checkout == self.root {
             return Ok(self.root_identity.clone());
         }
+        self.resolve_link(checkout)
+            .map_err(|_| CheckoutError::InvalidLink)
+    }
+
+    fn resolve_link(&self, checkout: &Path) -> io::Result<RootIdentity> {
         let checkout_identity = owned_directory(checkout)?;
         let pointer = checkout.join(".git");
         let gitdir_contents = read_metadata(&pointer)?;
@@ -143,7 +153,7 @@ pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
-    fn git(cwd: &Path, args: &[&OsStr]) {
+    pub(crate) fn git(cwd: &Path, args: &[&OsStr]) {
         let result = Command::new("git")
             .current_dir(cwd)
             .env_remove("GIT_DIR")
@@ -155,7 +165,7 @@ pub(crate) mod tests {
             .args(args)
             .output()
             .unwrap();
-        assert!(result.status.success(), "{:?}", result);
+        assert!(result.status.success(), "{result:?}");
     }
 
     pub(crate) fn make_linked_checkout(directory: &Path, nested: bool) -> (PathBuf, PathBuf) {
