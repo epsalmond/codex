@@ -29,6 +29,10 @@ on:
         description: Exact main parent of the upstream merge.
         required: true
         type: string
+      recover_build_242_3:
+        description: Publish the pinned 0.172.0 build 242.3 from verified existing artifacts without rebuilding it.
+        default: false
+        type: boolean
 
 env:
   FORK_BRANCH: main
@@ -48,7 +52,10 @@ jobs:
     # The App-created tag event is already represented by the branch-merge
     # release run. Skip only that exact App actor; human tag pushes remain the
     # documented recovery path.
-    if: github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN
+    if: >-
+      (github.ref_type != 'tag' || github.actor != vars.RELEASE_APP_BOT_LOGIN) &&
+      (!inputs.recover_build_242_3 || (github.repository == 'epsalmond/codex' &&
+        github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-22.04
     outputs:
       release_sha: ${{ steps.metadata.outputs.release_sha }}
@@ -62,8 +69,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.release_sha || github.sha }}
+          ref: ${{ inputs.recover_build_242_3 && '519814bd087017808daaa05f4e247275c8540031' || inputs.release_sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out metadata helpers for the historical source
+        if: inputs.recover_build_242_3
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: fork-release-tools
+          sparse-checkout: .github/scripts
           persist-credentials: false
 
       - name: Resolve event identity
@@ -79,14 +95,38 @@ jobs:
           UPSTREAM_TAG: ${{ inputs.upstream_tag }}
           UPSTREAM_SHA: ${{ inputs.upstream_sha }}
           FORK_SHA: ${{ inputs.fork_sha }}
+          RECOVER_BUILD_242_3: ${{ inputs.recover_build_242_3 }}
         run: |
           set -euo pipefail
-          .github/scripts/fork-release-metadata.sh \
+          if [[ "$EVENT_NAME" == push && "$EVENT_REF" == refs/heads/main &&
+                "$EVENT_BEFORE" == 519814bd087017808daaa05f4e247275c8540031 ]] &&
+            bash .github/scripts/recover-release-242-3.sh is-recovery-merge "$EVENT_SHA"; then
+            echo '::notice::Recovery setup and CI fixes for build 242.3. The original build artifacts will be used.'
+            exit 0
+          fi
+          metadata_helper=.github/scripts/fork-release-metadata.sh
+          identity_run_number=$GITHUB_RUN_NUMBER
+          identity_run_attempt=$GITHUB_RUN_ATTEMPT
+          if [[ "${RECOVER_BUILD_242_3:-false}" == true ]]; then
+            test "$EVENT_NAME" = workflow_dispatch
+            test "$EVENT_REF" = refs/heads/main
+            test "$EVENT_SHA" = 519814bd087017808daaa05f4e247275c8540031
+            test "$UPSTREAM_TAG" = rust-v0.172.0
+            test "$UPSTREAM_SHA" = 3d86e43b075adeba2193ec5c22ac92f55afd82e6
+            test "$FORK_SHA" = 0edcfc480ecdf3213a22cc7da44bee8d14a0e20a
+            bash fork-release-tools/.github/scripts/recover-release-242-3.sh is-recovery-merge "$GITHUB_SHA"
+            # Compute the identity of the existing artifacts. GITHUB_RUN_* still
+            # identify the new publisher execution, which does not rebuild them.
+            identity_run_number=242
+            identity_run_attempt=3
+            metadata_helper=fork-release-tools/$metadata_helper
+          fi
+          bash "$metadata_helper" \
             --repo-root "$GITHUB_WORKSPACE" \
             --event-name "$EVENT_NAME" \
             --event-ref "$EVENT_REF" \
-            --run-number "$GITHUB_RUN_NUMBER" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --run-number "$identity_run_number" \
+            --run-attempt "$identity_run_attempt" \
             --event-sha "$EVENT_SHA" \
             --event-before "$EVENT_BEFORE" \
             --upstream-url "$UPSTREAM_URL" \
@@ -102,8 +142,14 @@ jobs:
           APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
           APP_BOT_LOGIN: ${{ vars.RELEASE_APP_BOT_LOGIN }}
           HAS_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+          HAS_HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+          RELEASE_SHA: ${{ steps.metadata.outputs.release_sha }}
+          RECOVER_BUILD_242_3: ${{ inputs.recover_build_242_3 }}
         run: |
           set -euo pipefail
+          if [[ -z "$RELEASE_SHA" ]]; then
+            exit 0
+          fi
           if [[ -z "$APP_CLIENT_ID" ]]; then
             echo "::error::Set the RELEASE_APP_CLIENT_ID repository variable before release publishing" >&2
             exit 1
@@ -116,9 +162,14 @@ jobs:
             echo "::error::Set the RELEASE_APP_PRIVATE_KEY repository secret before release publishing" >&2
             exit 1
           fi
+          if [[ "${RECOVER_BUILD_242_3:-false}" == true && "$HAS_HOMEBREW_TAP_TOKEN" != true ]]; then
+            echo '::error::Build 242.3 recovery requires the HOMEBREW_TAP_TOKEN repository secret' >&2
+            exit 1
+          fi
 
   validate:
     name: Validate workflow and updater
+    if: ${{ !inputs.recover_build_242_3 && needs.prepare.outputs.release_sha != '' }}
     needs: prepare
     permissions:
       contents: read
@@ -131,6 +182,7 @@ jobs:
 
   build:
     name: Build - ${{ matrix.target }}
+    if: ${{ !inputs.recover_build_242_3 && needs.prepare.outputs.release_sha != '' }}
     needs: [prepare, validate]
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -360,12 +412,65 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  recover_mac:
+    name: Stage verified native Mac artifacts
+    if: >-
+      inputs.recover_build_242_3 && github.repository == 'epsalmond/codex' &&
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: prepare
+    runs-on: ubuntu-22.04
+    permissions:
+      # GitHub only gives callers with push access visibility into drafts.
+      # This job makes GET requests only and has no publisher App credentials.
+      contents: write
+    outputs:
+      artifact_id: ${{ steps.stage.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Verify and download pinned Mac files from the staging draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
+        run: bash .github/scripts/recover-release-242-3.sh download-mac
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        id: stage
+        with:
+          name: recovery-242-3-native-mac-${{ github.run_attempt }}
+          path: |
+            dist/codex-aarch64-apple-darwin.tar.gz
+            dist/codex-symbols-aarch64-apple-darwin.tar.gz
+            dist/native-macos-receipt.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Require the exact staged artifact ID
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.stage.outputs.artifact-id }}
+        run: test -n "$ARTIFACT_ID" && [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+
   publish:
     name: Publish release
-    needs: [prepare, validate, build]
+    needs: [prepare, validate, build, recover_mac]
+    if: >-
+      !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.release_sha != '' &&
+      ((inputs.recover_build_242_3 && needs.validate.result == 'skipped' &&
+        needs.build.result == 'skipped' && needs.recover_mac.result == 'success') ||
+       (!inputs.recover_build_242_3 && needs.validate.result == 'success' &&
+        needs.build.result == 'success' && needs.recover_mac.result == 'skipped'))
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -385,6 +490,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify prepared workflow attempt
+        if: ${{ !inputs.recover_build_242_3 }}
         shell: bash
         env:
           PREPARED_ATTEMPT: ${{ needs.prepare.outputs.build_attempt }}
@@ -396,10 +502,34 @@ jobs:
           fi
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !inputs.recover_build_242_3 }}
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
+
+      - name: Verify original run and download pinned Linux artifacts
+        if: inputs.recover_build_242_3
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
+        run: bash fork-release-tools/.github/scripts/recover-release-242-3.sh linux
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.recover_build_242_3
+        with:
+          artifact-ids: ${{ needs.recover_mac.outputs.artifact_id }}
+          path: dist
+
+      - name: Verify staged Mac files before packaging
+        if: inputs.recover_build_242_3
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
+        run: bash fork-release-tools/.github/scripts/recover-release-242-3.sh verify-mac
 
       # The amd64 .deb builder (including older release_sha copies) expects
       # this legacy filename. Only x86_64 metadata may supply its glibc floor.
@@ -416,6 +546,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          RECOVER_BUILD_242_3: ${{ inputs.recover_build_242_3 }}
         run: |
           set -euo pipefail
           out=$(bash .github/scripts/build-fork-deb.sh \
@@ -424,6 +555,12 @@ jobs:
           deb_path=$(sed -n 's/^deb_path=//p' <<<"$out" | tail -n1)
           test -n "$deb_path"
           test -s "$deb_path"
+          if [[ "${RECOVER_BUILD_242_3:-false}" == true ]]; then
+            test "$(dpkg-deb -f "$deb_path" Package)" = codex-shake
+            test "$(dpkg-deb -f "$deb_path" Architecture)" = amd64
+            test "$(dpkg-deb -f "$deb_path" Version)" = '0.172.0+r20261124135104.10610.242.3'
+            dpkg-deb -f "$deb_path" Depends | grep -Fq 'libc6 (>= 2.35)'
+          fi
           echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
           echo "deb_name=$(basename "$deb_path")" >> "$GITHUB_OUTPUT"
 
@@ -439,6 +576,7 @@ jobs:
           INCLUDED_UPSTREAM_MAIN_SHA: ${{ needs.prepare.outputs.included_upstream_main_sha }}
           SOURCE_KIND: ${{ needs.prepare.outputs.source_kind }}
           DEB_NAME: ${{ steps.deb.outputs.deb_name }}
+          RECOVER_BUILD_242_3: ${{ inputs.recover_build_242_3 }}
         run: |
           set -euo pipefail
           test "$(git rev-parse --verify 'HEAD^{commit}')" = "$RELEASE_SHA"
@@ -484,6 +622,15 @@ jobs:
             "$INCLUDED_UPSTREAM_MAIN_SHA" "$(sed -n '1p' dist/glibc-version-x86_64-unknown-linux-gnu.txt)" \
             "$SOURCE_KIND" "$RELEASE_TAG" "$DEB_NAME" "$previous_tag" \
             "$(sed -n '1p' dist/glibc-version-aarch64-unknown-linux-gnu.txt)" > release-body.md
+          if [[ "${RECOVER_BUILD_242_3:-false}" == true ]]; then
+            cat <<'EOF' >> release-body.md
+
+          ### Build provenance
+
+          The Linux archives and symbols come from [GitHub Actions build 242.3](https://github.com/epsalmond/codex/actions/runs/45419143302/attempts/3).
+          The macOS ARM64 job was canceled while waiting for a hosted runner. The macOS archive and symbols were built natively on a maintainer Mac from the same source commit and stamped with build identity 242.3.
+          EOF
+          fi
 
       - name: Create release publisher token
         id: publisher-token
@@ -501,12 +648,27 @@ jobs:
         env:
           APP_SLUG: ${{ steps.publisher-token.outputs.app-slug }}
           EXPECTED_BOT_LOGIN: ${{ vars.RELEASE_APP_BOT_LOGIN }}
+          RECOVER_BUILD_242_3: ${{ inputs.recover_build_242_3 }}
         run: |
           set -euo pipefail
           if [[ "${APP_SLUG}[bot]" != "$EXPECTED_BOT_LOGIN" ]]; then
             echo "::error::RELEASE_APP_BOT_LOGIN must exactly match the publisher App's bot login" >&2
             exit 1
           fi
+          if [[ "${RECOVER_BUILD_242_3:-false}" == true ]]; then
+            test "$EXPECTED_BOT_LOGIN" = 'epsalmond-codex-releases[bot]'
+          fi
+
+      - name: Recheck release, tag and tap state before recovery publishing
+        if: inputs.recover_build_242_3
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.publisher-token.outputs.token }}
+          GH_ACTIONS_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: bash fork-release-tools/.github/scripts/recover-release-242-3.sh state
 
       - name: Create immutable release after identity verification
         shell: bash
@@ -575,9 +737,18 @@ jobs:
           # A workflow retry has a fresh tag. Never replace published bytes,
           # even if a duplicate invocation somehow reaches this exact identity.
           gh release create "$RELEASE_TAG" -R "$FORK_REPO" \
-            --target "$RELEASE_SHA" --prerelease \
+            --verify-tag --target "$RELEASE_SHA" --prerelease \
             --title "$release_title" \
             --notes-file release-body.md "${assets[@]}"
+
+      - name: Verify all published recovery assets before updating Homebrew
+        if: inputs.recover_build_242_3
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
+        run: bash fork-release-tools/.github/scripts/recover-release-242-3.sh published
 
       - name: Update Homebrew tap
         shell: bash
@@ -585,6 +756,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RECOVER_BUILD_242_3: ${{ inputs.recover_build_242_3 }}
         run: |
           set -euo pipefail
           if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
@@ -609,6 +781,11 @@ jobs:
           git -c credential.helper= clone --quiet \
             "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/epsalmond/homebrew-codex-shake" \
             "$tap_dir" >/dev/null 2>&1
+
+          if [[ "${RECOVER_BUILD_242_3:-false}" == true ]]; then
+            # The earlier check cannot cover the time spent publishing.
+            test "$(git -C "$tap_dir" rev-parse HEAD)" = 07a2d4a3f13670ebf2d40507dfd7b2f1b3815d1e
+          fi
 
           mkdir -p "$tap_dir/Formula"
           if [[ -f "$tap_dir/Formula/codex-shake.rb" ]] && \

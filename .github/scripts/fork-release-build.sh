@@ -38,7 +38,7 @@ workspace_version() {
     awk '
       /^\[workspace\.package\]$/ { in_workspace = 1; next }
       /^\[/ { in_workspace = 0 }
-      in_workspace && /^version = / { print; exit }
+      in_workspace && !found && /^version = / { print; found = 1 }
     ' |
     sed -n 's/^version = "\([^"]*\)".*/\1/p'
 }

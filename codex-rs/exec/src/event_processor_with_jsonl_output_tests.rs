@@ -78,8 +78,11 @@ async fn failed_final_output_does_not_skip_cleanup() {
             _config: &codex_core::config::Config,
             _prompt: &str,
             _session: &codex_protocol::protocol::SessionConfiguredEvent,
+            _workspace_roots: &[PathUri],
         ) {
         }
+
+        fn print_thread_started(&mut self, _thread_id: &str) {}
 
         fn process_server_notification(
             &mut self,

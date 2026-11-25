@@ -70,6 +70,12 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
         entered,
         release: Mutex::new(Some(gate_release)),
     });
+    let startup = codex_core::build_startup_models(
+        &test.config,
+        test.thread_manager.auth_manager(),
+        "goal-injection-test".to_string(),
+        codex_core::test_support::fixed_model_catalog(test.thread_manager.get_models_manager()),
+    );
     let manager = Arc::new_cyclic(|manager| {
         let mut extensions = ExtensionRegistryBuilder::new();
         install_with_backend(
@@ -87,8 +93,7 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
         extensions.turn_lifecycle_contributor(gate.clone());
         ThreadManager::new(
             &test.config,
-            test.thread_manager.auth_manager(),
-            test.thread_manager.get_models_manager(),
+            startup,
             CodexAppsToolsCache::default(),
             SessionSource::Exec,
             test.thread_manager.environment_manager(),
@@ -98,7 +103,6 @@ async fn goal_objective_update_during_queue_turn_registration_reaches_model() ->
             test.thread_manager.image_store(),
             Arc::clone(&test.thread_store),
             codex_core::local_agent_graph_store_from_state_db(Some(&state_db)),
-            "goal-injection-test".to_string(),
             /*attestation_provider*/ None,
             /*external_time_provider*/ None,
         )

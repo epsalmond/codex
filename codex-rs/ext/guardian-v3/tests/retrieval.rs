@@ -199,6 +199,7 @@ fn reviewer_tool_call(name: &ToolName, arguments: &Value, byte_limit: i64) -> To
         codex_turn_metadata: None,
         truncation_policy: TruncationPolicyConfig::bytes(byte_limit).into(),
         source: ToolCallSource::Direct,
+        cancellation_token: Default::default(),
         conversation_history: Default::default(),
         turn_item_emitter: Arc::new(codex_tools::NoopTurnItemEmitter),
         attachment_store: Arc::new(codex_attachment_store::InlineAttachmentStore),

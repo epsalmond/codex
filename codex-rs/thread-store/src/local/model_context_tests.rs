@@ -43,22 +43,16 @@ fn terminal_event_scan_stops_at_a_newer_turn_before_opening_ancestors() {
         uuid,
         [turn_complete("older-turn"), turn_started("newer-turn")],
     );
-    let lineage = RolloutLineage {
-        segments: vec![
-            super::super::rollout_lineage::RolloutLineageSegment {
-                rollout_id: ThreadId::new(),
-                rollout_path: home.path().join("must-not-open-missing-ancestor.jsonl"),
-                start_ordinal: 1,
-                end: None,
-            },
-            super::super::rollout_lineage::RolloutLineageSegment {
-                rollout_id: thread_id,
-                rollout_path: path,
-                start_ordinal: 1,
-                end: None,
-            },
+    let lineage = RolloutLineage::for_terminal_scan_test(
+        thread_id,
+        [
+            (
+                ThreadId::new(),
+                home.path().join("must-not-open-missing-ancestor.jsonl"),
+            ),
+            (thread_id, path),
         ],
-    };
+    );
     assert!(
         scan_turn_terminal_event(&lineage, "older-turn", || false)
             .expect("stop at latest boundary")
@@ -75,20 +69,14 @@ fn terminal_event_scan_stops_at_a_newer_turn_before_opening_ancestors() {
 fn terminal_event_scan_limits_records_without_an_opening_boundary() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(9005);
+    let thread_id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
     let path = write_ordinaled_paginated_rollout(
         home.path(),
         "2025-01-03T13-09-05",
         uuid,
         std::iter::repeat_with(|| turn_complete("unrelated-turn")).take(4097),
     );
-    let lineage = RolloutLineage {
-        segments: vec![super::super::rollout_lineage::RolloutLineageSegment {
-            rollout_id: ThreadId::from_string(&uuid.to_string()).expect("thread id"),
-            rollout_path: path,
-            start_ordinal: 1,
-            end: None,
-        }],
-    };
+    let lineage = RolloutLineage::for_terminal_scan_test(thread_id, [(thread_id, path)]);
     let error =
         scan_turn_terminal_event(&lineage, "absent-turn", || false).expect_err("bounded scan");
     assert!(error.to_string().contains("record limit"));

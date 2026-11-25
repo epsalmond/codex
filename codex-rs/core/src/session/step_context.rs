@@ -246,7 +246,7 @@ mod navigation_authority_tests {
         // Same id and local-looking cwd, but the actual executor is remote.
         environment = crate::session::turn_context::TurnEnvironment::new(
             environment.selection.clone(),
-            environment.config_origin.clone(),
+            environment.config_origin,
             Arc::new(
                 Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_owned()))
                     .expect("remote environment"),
