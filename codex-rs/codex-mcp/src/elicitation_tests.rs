@@ -1131,6 +1131,30 @@ async fn user_verification_rejects_attached_servers_even_if_they_use_the_plugin_
     }
 }
 
+#[test]
+fn idle_code_mode_elicitation_matches_guardian_call_identity() {
+    let apps = McpServerKey::unscoped(crate::CODEX_APPS_MCP_SERVER_NAME);
+    let external = McpServerKey::in_environment("other", "server");
+
+    let meta = json!({
+        "callId": "standard-call",
+        "_codex_apps": {"call_id": "apps-call"},
+    });
+    assert_eq!(
+        elicitation_call_id(&apps, meta.as_object()),
+        Some("apps-call")
+    );
+    assert_eq!(
+        elicitation_call_id(&external, meta.as_object()),
+        Some("standard-call")
+    );
+
+    let standard_only = json!({"callId": "standard-call"});
+    assert_eq!(elicitation_call_id(&apps, standard_only.as_object()), None);
+    let apps_only = json!({"_codex_apps": {"call_id": "apps-call"}});
+    assert_eq!(elicitation_call_id(&external, apps_only.as_object()), None);
+}
+
 struct IdleReviewer {
     reviews: AtomicUsize,
 }

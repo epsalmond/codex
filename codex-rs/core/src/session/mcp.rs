@@ -21,8 +21,8 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
-use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_mcp::McpServerKey;
+use codex_mcp::elicitation_call_id;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -1096,14 +1096,7 @@ async fn review_guardian_mcp_elicitation(
         return Ok(None);
     };
     // A callback for a running call keeps the permissions captured by that call.
-    let call_id = request
-        .elicitation
-        .meta()
-        .and_then(|meta| match request.server_name.as_str() {
-            CODEX_APPS_MCP_SERVER_NAME => meta.get(MCP_TOOL_CODEX_APPS_META_KEY)?.get("call_id"),
-            _ => meta.get("callId"),
-        })
-        .and_then(Value::as_str);
+    let call_id = elicitation_call_id(&request.server_key, request.elicitation.meta());
     let approval_context = call_id
         .and_then(|call_id| session.mcp_tool_approval_metadata(&request.server_key, call_id));
     let step_settings = turn_context.next_step_settings.load_full();

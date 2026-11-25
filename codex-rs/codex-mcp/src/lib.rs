@@ -17,6 +17,7 @@ pub use elicitation::ElicitationLifecycle;
 pub use elicitation::ElicitationReviewRequest;
 pub use elicitation::ElicitationReviewer;
 pub use elicitation::ElicitationReviewerHandle;
+pub use elicitation::elicitation_call_id;
 pub use ema_auth::ema_auth_scope;
 pub use event_stream::McpEventStreamOpener;
 pub use resource_client::CodexAppsResourceListParams;

@@ -81,20 +81,18 @@ pub trait ElicitationReviewer: Send + Sync {
 }
 
 /// The model tool call ID echoed by an elicitation, when the server supplies it.
-pub(crate) fn elicitation_call_id<'a>(
+pub fn elicitation_call_id<'a>(
     server: &McpServerKey,
     meta: Option<&'a serde_json::Map<String, Value>>,
 ) -> Option<&'a str> {
     let meta = meta?;
-    if server.name() == crate::CODEX_APPS_MCP_SERVER_NAME
-        && let Some(call_id) = meta
-            .get(crate::MCP_TOOL_CODEX_APPS_META_KEY)
-            .and_then(|apps| apps.get("call_id"))
-            .and_then(Value::as_str)
-    {
-        return Some(call_id);
+    match server.name() {
+        crate::CODEX_APPS_MCP_SERVER_NAME => meta
+            .get(crate::MCP_TOOL_CODEX_APPS_META_KEY)?
+            .get("call_id"),
+        _ => meta.get("callId"),
     }
-    meta.get("callId").and_then(Value::as_str)
+    .and_then(Value::as_str)
 }
 
 pub type ElicitationReviewerHandle = Arc<dyn ElicitationReviewer>;

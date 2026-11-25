@@ -4,6 +4,8 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::handlers::mcp_resource_spec::create_read_mcp_resource_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::protocol::McpInvocation;
 use codex_tools::ToolName;
@@ -87,10 +89,17 @@ impl ReadMcpResourceHandler {
             let server_key = server_key?;
             let _code_mode_call = session.register_code_mode_mcp_call(server_key, &call_id);
             let mut params = ReadResourceRequestParams::new(uri.clone());
-            params.meta.get_or_insert_default().insert(
+            let meta = params.meta.get_or_insert_default();
+            meta.insert(
                 "callId".to_owned(),
                 serde_json::Value::String(call_id.clone()),
             );
+            if server_key.name() == CODEX_APPS_MCP_SERVER_NAME {
+                meta.insert(
+                    MCP_TOOL_CODEX_APPS_META_KEY.to_owned(),
+                    serde_json::json!({"call_id": call_id}),
+                );
+            }
             let result = mcp.read_resource(server_key, params).await.map_err(|err| {
                 FunctionCallError::RespondToModel(format!("resources/read failed: {err:#}"))
             })?;
