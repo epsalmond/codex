@@ -71,9 +71,28 @@ pub trait ElicitationReviewer: Send + Sync {
     ///
     /// The owner uses this when nobody can answer, such as a Code Mode cell that keeps
     /// calling an MCP server after its turn ended.
-    fn idle_refusal(&self, _server_key: &McpServerKey) -> BoxFuture<'static, Option<String>> {
+    fn idle_refusal(
+        &self,
+        _server_key: &McpServerKey,
+        _call_id: Option<&str>,
+    ) -> BoxFuture<'static, Option<String>> {
         futures::future::ready(None).boxed()
     }
+}
+
+/// The model tool call ID echoed by an elicitation, when the server supplies it.
+pub fn elicitation_call_id<'a>(
+    server: &McpServerKey,
+    meta: Option<&'a serde_json::Map<String, Value>>,
+) -> Option<&'a str> {
+    let meta = meta?;
+    match server.name() {
+        crate::CODEX_APPS_MCP_SERVER_NAME => meta
+            .get(crate::MCP_TOOL_CODEX_APPS_META_KEY)?
+            .get("call_id"),
+        _ => meta.get("callId"),
+    }
+    .and_then(Value::as_str)
 }
 
 pub type ElicitationReviewerHandle = Arc<dyn ElicitationReviewer>;
@@ -537,7 +556,13 @@ impl ElicitationRequestManager {
                         let Some(reviewer) = reviewer.as_ref() else {
                             return Ok(strict_auto_review_decline());
                         };
-                        if let Some(reason) = reviewer.idle_refusal(&server_key).await {
+                        if let Some(reason) = reviewer
+                            .idle_refusal(
+                                &server_key,
+                                elicitation_call_id(&server_key, elicitation.meta()),
+                            )
+                            .await
+                        {
                             return Ok(idle_refusal_decline(reason));
                         }
                         let _active_elicitation =
@@ -591,7 +616,12 @@ impl ElicitationRequestManager {
                 }
 
                 if let Some(reviewer) = reviewer
-                    && let Some(reason) = reviewer.idle_refusal(&server_key).await
+                    && let Some(reason) = reviewer
+                        .idle_refusal(
+                            &server_key,
+                            elicitation_call_id(&server_key, elicitation.meta()),
+                        )
+                        .await
                 {
                     return Ok(idle_refusal_decline(reason));
                 }

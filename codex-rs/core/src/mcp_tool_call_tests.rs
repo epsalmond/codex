@@ -3985,7 +3985,7 @@ async fn idle_code_mode_mcp_elicitations_are_refused() {
     let reviewer = session.mcp_elicitation_reviewer();
     let docs = McpServerKey::in_environment("env-a", "docs");
     assert_eq!(
-        reviewer.idle_refusal(&docs).await,
+        reviewer.idle_refusal(&docs, /*call_id*/ None).await,
         None,
         "elicitations outside Code Mode keep their current routing"
     );
@@ -4010,7 +4010,7 @@ async fn idle_code_mode_mcp_elicitations_are_refused() {
     })
     .await;
     let refusal = reviewer
-        .idle_refusal(&docs)
+        .idle_refusal(&docs, Some("call-1"))
         .await
         .expect("a server elicitation for an idle cell is refused");
     assert!(
@@ -4020,10 +4020,34 @@ async fn idle_code_mode_mcp_elicitations_are_refused() {
     );
     assert_eq!(
         reviewer
-            .idle_refusal(&McpServerKey::in_environment("env-b", "docs"))
+            .idle_refusal(
+                &McpServerKey::in_environment("env-b", "docs"),
+                Some("call-1")
+            )
             .await,
         None,
     );
+    assert_eq!(reviewer.idle_refusal(&docs, Some("other-call")).await, None);
+    assert!(
+        reviewer
+            .idle_refusal(&docs, /*call_id*/ None)
+            .await
+            .is_some()
+    );
+
+    // `resources/read` owns a call ID without inheriting tool approval metadata.
+    let resource = crate::tools::scope_code_mode_nested_call(/*nested*/ true, async {
+        session.register_code_mode_mcp_call(&docs, "resource-1")
+    })
+    .await;
+    assert!(
+        reviewer
+            .idle_refusal(&docs, Some("resource-1"))
+            .await
+            .is_some()
+    );
+    drop(resource);
+    assert_eq!(reviewer.idle_refusal(&docs, Some("resource-1")).await, None);
 
     // Codex's own elicitations from an idle nested call are refused without an event.
     let outcome = crate::tools::scope_code_mode_nested_call(
@@ -4046,6 +4070,6 @@ async fn idle_code_mode_mcp_elicitations_are_refused() {
 
     // Once a turn is active, the elicitation is routed as usual.
     *session.active_turn.lock().await = Some(ActiveTurn::default());
-    assert_eq!(reviewer.idle_refusal(&docs).await, None);
+    assert_eq!(reviewer.idle_refusal(&docs, Some("call-1")).await, None);
     drop(call);
 }

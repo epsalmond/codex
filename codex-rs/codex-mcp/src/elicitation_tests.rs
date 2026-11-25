@@ -13,6 +13,7 @@ use serde_json::Map;
 use serde_json::json;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 
 type ReviewerResponse = std::result::Result<Option<ElicitationResponse>, &'static str>;
 
@@ -883,7 +884,7 @@ async fn reused_elicitation_senders_follow_each_servers_latest_permission_author
 
 fn verification_fixture(
     approval_policy: AskForApproval,
-    reviewer: Option<Arc<RecordingReviewer>>,
+    reviewer: Option<ElicitationReviewerHandle>,
 ) -> (ElicitationRequestManager, Receiver<Event>, SendElicitation) {
     let mut config = test_elicitation_config(
         crate::CODEX_APPS_MCP_SERVER_NAME,
@@ -903,7 +904,7 @@ fn verification_fixture(
     Arc::make_mut(&mut config).mcp_server_catalog = catalog.build();
     let manager = ElicitationRequestManager::new(
         config,
-        reviewer.map(|reviewer| reviewer as Arc<dyn ElicitationReviewer>),
+        reviewer,
         /*lifecycle*/ None,
         ElicitationRequestRouter::default(),
     );
@@ -1130,6 +1131,30 @@ async fn user_verification_rejects_attached_servers_even_if_they_use_the_plugin_
     }
 }
 
+#[test]
+fn idle_code_mode_elicitation_matches_guardian_call_identity() {
+    let apps = McpServerKey::unscoped(crate::CODEX_APPS_MCP_SERVER_NAME);
+    let external = McpServerKey::in_environment("other", "server");
+
+    let meta = json!({
+        "callId": "standard-call",
+        "_codex_apps": {"call_id": "apps-call"},
+    });
+    assert_eq!(
+        elicitation_call_id(&apps, meta.as_object()),
+        Some("apps-call")
+    );
+    assert_eq!(
+        elicitation_call_id(&external, meta.as_object()),
+        Some("standard-call")
+    );
+
+    let standard_only = json!({"callId": "standard-call"});
+    assert_eq!(elicitation_call_id(&apps, standard_only.as_object()), None);
+    let apps_only = json!({"_codex_apps": {"call_id": "apps-call"}});
+    assert_eq!(elicitation_call_id(&external, apps_only.as_object()), None);
+}
+
 struct IdleReviewer {
     reviews: AtomicUsize,
 }
@@ -1143,10 +1168,46 @@ impl ElicitationReviewer for IdleReviewer {
         async { Ok(None) }.boxed()
     }
 
-    fn idle_refusal(&self, server_key: &McpServerKey) -> BoxFuture<'static, Option<String>> {
+    fn idle_refusal(
+        &self,
+        server_key: &McpServerKey,
+        _call_id: Option<&str>,
+    ) -> BoxFuture<'static, Option<String>> {
         let reason = format!("MCP elicitation from `{server_key}` needs approval");
         async move { Some(reason) }.boxed()
     }
+}
+
+#[tokio::test]
+async fn idle_user_verification_returns_approval_unavailable_without_prompt() {
+    let reviewer = Arc::new(IdleReviewer {
+        reviews: AtomicUsize::default(),
+    });
+    let (_manager, events, sender) =
+        verification_fixture(AskForApproval::OnRequest, Some(reviewer.clone()));
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        sender(
+            RequestId::Number(8),
+            Elicitation::UserVerification {
+                meta: Some(json!({"_codex_apps": {"call_id": "nested-call"}})),
+                title: "Approve purchase".into(),
+                description: "Pay $200".into(),
+                challenge: "AQID".into(),
+            },
+        ),
+    )
+    .await
+    .expect("idle verification must not wait for a user")
+    .unwrap();
+    assert_eq!(response.action, ElicitationAction::Cancel);
+    assert_eq!(response.content, None);
+    assert_eq!(
+        response.meta,
+        Some(codex_rmcp_client::UserVerificationReason::ApprovalUnavailable.into_meta())
+    );
+    assert_eq!(reviewer.reviews.load(Relaxed), 0);
+    assert!(events.try_recv().is_err(), "no elicitation is surfaced");
 }
 
 #[tokio::test]

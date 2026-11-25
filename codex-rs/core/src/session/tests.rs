@@ -7343,6 +7343,7 @@ pub(crate) async fn make_session_and_context_with_session_source(
         mcp_refresh: McpRefresh::new(),
         cloud_catalog_preparation: Default::default(),
         mcp_tool_approval_metadata: Default::default(),
+        code_mode_mcp_calls: Default::default(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -9732,6 +9733,7 @@ where
         mcp_refresh: McpRefresh::new(),
         cloud_catalog_preparation: Default::default(),
         mcp_tool_approval_metadata: Default::default(),
+        code_mode_mcp_calls: Default::default(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -12314,9 +12316,9 @@ async fn recv_terminal_event(
 }
 
 #[derive(Clone, Copy)]
-struct NeverEndingTask {
-    kind: TaskKind,
-    listen_to_cancellation_token: bool,
+pub(crate) struct NeverEndingTask {
+    pub(crate) kind: TaskKind,
+    pub(crate) listen_to_cancellation_token: bool,
 }
 
 impl SessionTask for NeverEndingTask {

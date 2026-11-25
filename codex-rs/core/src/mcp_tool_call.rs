@@ -1398,8 +1398,7 @@ pub(crate) struct McpToolApprovalContext {
     pub(crate) invocation: Option<McpInvocation>,
     pub(crate) metadata: McpToolApprovalMetadata,
     pub(crate) review_context: GuardianReviewContext,
-    /// Whether a Code Mode cell's nested call made this MCP call.
-    pub(crate) code_mode_nested: bool,
+    _code_mode_call: Option<Arc<()>>,
     pub(crate) requested_reviewer: ApprovalsReviewer,
     /// Rules captured when MCP prepared this call, if the server belongs to an environment.
     pub(crate) environment_permissions: Option<(String, Arc<FileSystemSandboxContext>)>,
@@ -1436,7 +1435,7 @@ impl Session {
             .then(|| invocation.clone()),
             metadata,
             review_context,
-            code_mode_nested: crate::tools::in_code_mode_nested_call(),
+            _code_mode_call: self.register_code_mode_mcp_call(server_key, call_id),
             requested_reviewer,
             environment_permissions,
         });
@@ -1463,15 +1462,43 @@ impl Session {
             .and_then(std::sync::Weak::upgrade)
     }
 
-    /// True while a Code Mode nested call to `server` is still running.
-    pub(crate) fn code_mode_mcp_tool_call_in_flight(&self, server: &McpServerKey) -> bool {
-        self.mcp_tool_approval_metadata
+    /// Keeps an exact nested call registered while its request can elicit input.
+    pub(crate) fn register_code_mode_mcp_call(
+        &self,
+        server: &McpServerKey,
+        call_id: &str,
+    ) -> Option<Arc<()>> {
+        if !crate::tools::in_code_mode_nested_call() {
+            return None;
+        }
+        let call = Arc::new(());
+        let mut registry = self
+            .code_mode_mcp_calls
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        registry.retain(|_, entry| entry.strong_count() != 0);
+        registry.insert((server.clone(), call_id.to_owned()), Arc::downgrade(&call));
+        Some(call)
+    }
+
+    /// Use server-level attribution only when the elicitation has no call ID.
+    pub(crate) fn code_mode_mcp_call_in_flight(
+        &self,
+        server: &McpServerKey,
+        call_id: Option<&str>,
+    ) -> bool {
+        let registry = self
+            .code_mode_mcp_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(call_id) = call_id {
+            return registry
+                .get(&(server.clone(), call_id.to_owned()))
+                .is_some_and(|entry| entry.strong_count() != 0);
+        }
+        registry
             .iter()
-            .filter(|((entry_server, _), _)| entry_server == server)
-            .filter_map(|(_, metadata)| metadata.upgrade())
-            .any(|metadata| metadata.code_mode_nested)
+            .any(|((entry_server, _), entry)| entry_server == server && entry.strong_count() != 0)
     }
 }
 

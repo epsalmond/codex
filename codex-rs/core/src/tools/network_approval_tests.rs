@@ -816,7 +816,7 @@ async fn register_call_with_default_shell_trigger(
             permission_profile: PermissionProfile::workspace_write(),
             environments: TurnEnvironmentSnapshot::default(),
             cancellation_token: cancellation_token.clone(),
-            code_mode_step: None,
+            code_mode_context: None,
         })
         .await;
     cancellation_token
@@ -848,7 +848,7 @@ async fn active_call_preserves_triggering_command_context() {
             permission_profile: PermissionProfile::workspace_write(),
             environments: TurnEnvironmentSnapshot::default(),
             cancellation_token: CancellationToken::new(),
-            code_mode_step: None,
+            code_mode_context: None,
         })
         .await;
 
@@ -1111,7 +1111,10 @@ async fn idle_code_mode_network_request_is_refused_without_prompt() {
             permission_profile: PermissionProfile::workspace_write(),
             environments: TurnEnvironmentSnapshot::default(),
             cancellation_token: CancellationToken::new(),
-            code_mode_step: Some(StepContext::for_test(Arc::clone(&turn))),
+            code_mode_context: Some(CodeModeNetworkApprovalContext {
+                turn: Arc::clone(&turn),
+                settings: Arc::clone(&turn.initial_settings),
+            }),
         })
         .await;
 
