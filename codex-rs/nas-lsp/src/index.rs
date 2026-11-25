@@ -1,6 +1,8 @@
 //! Read-only navigation over an operator-built saved project index.
 
 use crate::config::RootIdentity;
+pub use crate::prepared::PreparedIndex;
+use crate::prepared::SelectionError;
 use codex_lsp_protocol::Location;
 use codex_lsp_protocol::NavigationRequest;
 use codex_lsp_protocol::NavigationResponse;
@@ -51,14 +53,15 @@ pub struct IndexConfig {
     /// Checkout-relative subproject. An empty path is the checkout itself.
     pub project: PathBuf,
     pub language: String,
-    pub database: PathBuf,
+    pub database: Option<PathBuf>,
+    pub prepared: Option<PreparedIndex>,
     pub inputs: Vec<PathBuf>,
     /// Generated output trees excluded from the operator's source snapshot.
     #[serde(default)]
     pub generated_dirs: Vec<PathBuf>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Manifest {
     pub fingerprint: String,
     pub files: BTreeMap<String, String>,
@@ -110,8 +113,16 @@ impl IndexConfig {
             return Err(invalid("index checkout must have Git worktree metadata"));
         }
         RootIdentity::read(&self.checkout.join(&self.project))?;
-        let parent = self
-            .database
+        let database = match (&self.database, &self.prepared) {
+            (None, Some(prepared)) => return prepared.validate(&self.checkout),
+            (Some(database), None) => database,
+            _ => {
+                return Err(invalid(
+                    "configure exactly one database or prepared catalog",
+                ));
+            }
+        };
+        let parent = database
             .parent()
             .filter(|parent| parent.is_absolute() && !parent.starts_with(&self.checkout))
             .ok_or_else(|| invalid("index must be outside its checkout"))?;
@@ -150,21 +161,21 @@ impl IndexConfig {
         normal(path) && self.source(path)
     }
 
-    pub(crate) fn has_source(&self, path: &str) -> bool {
-        self.open_source(Path::new(path))
+    pub(crate) fn has_source(checkout: &Path, path: &str) -> bool {
+        Self::open_source(checkout, Path::new(path))
             .is_ok_and(|file| file.metadata().is_ok_and(|metadata| metadata.is_file()))
     }
 
-    fn checkout_directory(&self) -> Result<File, &'static str> {
+    fn checkout_directory(checkout: &Path) -> Result<File, &'static str> {
         OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&self.checkout)
+            .open(checkout)
             .map_err(|_| "index_input_unreadable")
     }
 
-    fn open_source(&self, path: &Path) -> Result<File, &'static str> {
-        let mut file = self.checkout_directory()?;
+    fn open_source(checkout: &Path, path: &Path) -> Result<File, &'static str> {
+        let mut file = Self::checkout_directory(checkout)?;
         for part in path.components() {
             file = open_child(&file, part.as_os_str())?;
         }
@@ -208,7 +219,7 @@ impl IndexConfig {
         deadline: Instant,
         cancel: &CancellationToken,
     ) -> Result<Manifest, &'static str> {
-        let root = self.checkout_directory()?;
+        let root = Self::checkout_directory(&self.checkout)?;
         let mut scan = Inventory {
             config: self,
             files: BTreeMap::new(),
@@ -358,11 +369,11 @@ fn status(state: Status, reason: &'static str) -> NavigationResponse {
     NavigationResponse::status(state, reason)
 }
 
-fn database(config: &IndexConfig) -> io::Result<File> {
+fn open_database(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&config.database)?;
+        .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.uid() != unsafe { libc::geteuid() }
@@ -423,6 +434,43 @@ pub(crate) async fn query(
     result.unwrap_or_else(|response| response)
 }
 
+async fn select_database(
+    config: &IndexConfig,
+    current: Option<Arc<Manifest>>,
+    work: &LookupWork,
+) -> Result<(File, PathBuf), NavigationResponse> {
+    let not_built = || status(Status::Indexing, "index_not_built");
+    let invalid = || status(Status::Unavailable, "invalid_index");
+    if let Some(prepared) = &config.prepared {
+        let current = current.ok_or_else(invalid)?;
+        let prepared = prepared.clone();
+        let workspace = config.id.clone();
+        let permit = work.permit.clone();
+        return tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            prepared.select(&workspace, &current, MAX_DATABASE)
+        })
+        .await
+        .map_err(|_| invalid())?
+        .map(|selected| (selected.file, selected.checkout))
+        .map_err(|error| match error {
+            SelectionError::NotBuilt => not_built(),
+            SelectionError::NoMatch => status(Status::Stale, "index_generation_changed"),
+            SelectionError::Invalid => invalid(),
+        });
+    }
+    let database = config.database.as_deref().ok_or_else(invalid)?;
+    open_database(database)
+        .map(|database| (database, config.checkout.clone()))
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                not_built()
+            } else {
+                invalid()
+            }
+        })
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "Read sealed external artifacts via an owned file descriptor, without a mutable state connection"
@@ -441,13 +489,12 @@ async fn lookup(
         }
     };
     check_root()?;
-    let database = database(config).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            status(Status::Indexing, "index_not_built")
-        } else {
-            status(Status::Unavailable, "invalid_index")
-        }
-    })?;
+    let current = if config.prepared.is_some() {
+        Some(Arc::new(captured(config, work).await?))
+    } else {
+        None
+    };
+    let (database, expected_checkout) = select_database(config, current.clone(), work).await?;
     let invalid = |_| status(Status::Unavailable, "invalid_index");
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
@@ -477,9 +524,12 @@ async fn lookup(
     let [(id, checkout, fingerprint)] = generations.as_slice() else {
         return Err(status(Status::Unavailable, "invalid_index_generation"));
     };
-    let current = captured(config, work).await?;
+    let current = match current {
+        Some(current) => current,
+        None => Arc::new(captured(config, work).await?),
+    };
     if id != &config.id
-        || Path::new(checkout) != config.checkout
+        || Path::new(checkout) != expected_checkout
         || fingerprint != &current.fingerprint
     {
         return Err(status(Status::Stale, "index_generation_changed"));
@@ -577,7 +627,8 @@ mod tests {
             checkout,
             project: PathBuf::from("apps/project"),
             language: "python".to_owned(),
-            database: database_dir.join("project.sqlite3"),
+            database: Some(database_dir.join("project.sqlite3")),
+            prepared: None,
             inputs: vec![PathBuf::from("apps/project")],
             generated_dirs: vec![PathBuf::from("apps/project/generated")],
         }
@@ -640,20 +691,19 @@ mod tests {
         assert_ne!(before.fingerprint, manifest().fingerprint);
     }
 
-    #[tokio::test]
     #[expect(
         clippy::disallowed_methods,
         reason = "Create one private immutable test artifact for the read-side API"
     )]
-    async fn references_are_checkout_relative_and_fail_closed_after_another_file_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = fixture(dir.path());
-        config.validate().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let manifest = config.manifest(deadline).unwrap();
+    async fn build_database(
+        database: &Path,
+        workspace: &str,
+        checkout: &Path,
+        manifest: &Manifest,
+    ) {
         let mut connection = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
-                .filename(&config.database)
+                .filename(database)
                 .create_if_missing(true),
         )
         .await
@@ -673,16 +723,17 @@ mod tests {
         .await
         .unwrap();
         sqlx::query("INSERT INTO generation VALUES (?, ?, ?)")
-            .bind(&config.id)
-            .bind(config.checkout.to_str().unwrap())
-            .bind(manifest.fingerprint)
+            .bind(workspace)
+            .bind(checkout.to_str().unwrap())
+            .bind(&manifest.fingerprint)
             .execute(&mut connection)
             .await
             .unwrap();
         connection.close().await.unwrap();
-        fs::set_permissions(&config.database, fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
-        let mut request = NavigationRequest {
+    fn definition_request(config: &IndexConfig) -> NavigationRequest {
+        NavigationRequest {
             version: codex_lsp_protocol::PROTOCOL_VERSION,
             cwd: config.checkout.clone(),
             path: "apps/project/importer.py".to_owned(),
@@ -694,13 +745,31 @@ mod tests {
             max_results: 10,
             max_response_bytes: 2048,
             timeout_ms: 1000,
-        };
-        let identity = RootIdentity::read(&config.checkout).unwrap();
-        let work = LookupWork {
+        }
+    }
+
+    async fn test_work(deadline: Instant) -> LookupWork {
+        LookupWork {
             deadline,
             cancel: CancellationToken::new(),
             permit: Arc::new(Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap()),
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn references_are_checkout_relative_and_fail_closed_after_another_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fixture(dir.path());
+        config.validate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let manifest = config.manifest(deadline).unwrap();
+        let database = config.database.as_ref().unwrap();
+        build_database(database, &config.id, &config.checkout, &manifest).await;
+        fs::set_permissions(database, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut request = definition_request(&config);
+        let identity = RootIdentity::read(&config.checkout).unwrap();
+        let work = test_work(deadline).await;
         let definition = lookup(&config, &identity, &request, &work).await.unwrap();
         assert_eq!(definition.locations[0].path, "apps/project/origin.py");
         request.operation = Operation::References;
@@ -716,5 +785,101 @@ mod tests {
             .unwrap_err();
         assert_eq!(changed.status, Status::Stale);
         assert!(changed.locations.is_empty());
+    }
+
+    async fn publish_fixture(
+        prepared: &PreparedIndex,
+        workspace: &str,
+        source_commit: &str,
+        manifest: &Manifest,
+    ) -> PathBuf {
+        use serde_json::json;
+
+        let producer = "a".repeat(64);
+        let manifest_tool = "b".repeat(64);
+        let history = prepared.catalog.join("by-fingerprint");
+        let generations = prepared.catalog.join("generations");
+        let generation = generations.join(format!(
+            "{}-{producer}-{manifest_tool}",
+            manifest.fingerprint
+        ));
+        for directory in [&history, &generations, &generation] {
+            fs::create_dir_all(directory).unwrap();
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let database = generation.join("index.sqlite3");
+        let manifest_path = generation.join("manifest.json");
+        build_database(&database, workspace, &prepared.publisher_checkout, manifest).await;
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        for immutable in [&database, &manifest_path] {
+            fs::set_permissions(immutable, fs::Permissions::from_mode(0o400)).unwrap();
+        }
+        let receipt = serde_json::to_vec(&json!({
+            "schema_version": 1, "state": "ready_for_broker", "workspace": workspace,
+            "checkout": prepared.publisher_checkout,
+            "git_common_dir": prepared.publisher_checkout.join(".git"),
+            "source_commit": source_commit,
+            "manifest_fingerprint": manifest.fingerprint, "manifest": manifest_path,
+            "database": database,
+            "database_sha256": format!("{:x}", Sha256::digest(fs::read(&database).unwrap())),
+            "database_size_bytes": fs::metadata(&database).unwrap().len(),
+            "verified_documents": 2, "manifest_tool_commit": "c".repeat(40),
+            "manifest_tool_sha256": manifest_tool, "producer_sha256": producer,
+        }))
+        .unwrap();
+        let by_fingerprint = history.join(format!("{}.json", manifest.fingerprint));
+        for path in [&by_fingerprint, &prepared.catalog.join("candidate.json")] {
+            fs::write(path, &receipt).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        by_fingerprint
+    }
+
+    #[tokio::test]
+    async fn matching_saved_inputs_select_a_retained_generation_from_an_independent_publisher() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = fixture(dir.path());
+        let prepared = PreparedIndex {
+            catalog: config.database.take().unwrap().parent().unwrap().to_owned(),
+            publisher_checkout: dir.path().join("independent-publisher-clone"),
+        };
+        config.prepared = Some(prepared.clone());
+        config.validate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let saved = config.manifest(deadline).unwrap();
+        let old_receipt = publish_fixture(&prepared, &config.id, &"a".repeat(40), &saved).await;
+        let source = config.checkout.join("apps/project/origin.py");
+        let original = fs::read(&source).unwrap();
+        fs::write(&source, "value = 7\n").unwrap();
+        let newer = config.manifest(deadline).unwrap();
+        assert_ne!(newer.fingerprint, saved.fingerprint);
+        publish_fixture(&prepared, &config.id, &"b".repeat(40), &newer).await;
+        fs::write(&source, &original).unwrap();
+
+        let request = definition_request(&config);
+        let identity = RootIdentity::read(&config.checkout).unwrap();
+        let work = test_work(deadline).await;
+        let definition = lookup(&config, &identity, &request, &work).await.unwrap();
+        assert_eq!(definition.locations[0].path, "apps/project/origin.py");
+        assert!(!prepared.publisher_checkout.exists());
+
+        fs::write(&source, "value = 9\n").unwrap();
+        let stale = lookup(&config, &identity, &request, &work)
+            .await
+            .unwrap_err();
+        assert_eq!(stale.status, Status::Stale);
+        assert!(stale.locations.is_empty());
+
+        fs::write(&source, &original).unwrap();
+        let receipt_bytes = fs::read(&old_receipt).unwrap();
+        let mut invalid_receipt: serde_json::Value =
+            serde_json::from_slice(&receipt_bytes).unwrap();
+        invalid_receipt["checkout"] = serde_json::json!(config.checkout);
+        fs::write(old_receipt, serde_json::to_vec(&invalid_receipt).unwrap()).unwrap();
+        let invalid = lookup(&config, &identity, &request, &work)
+            .await
+            .unwrap_err();
+        assert_eq!(invalid.status, Status::Unavailable);
+        assert!(invalid.locations.is_empty());
     }
 }

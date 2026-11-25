@@ -209,9 +209,47 @@ apply.
 You can pass a checkout-relative path or use a path relative to your current
 directory. If both files exist, the checkout-relative path takes precedence.
 Returned locations are checkout-relative, including shared source. Register each
-linked checkout explicitly with its own database and workspace ID. Sessions
-inside an unregistered nested checkout cannot fall through to its enclosing
-checkout's index.
+linked checkout separately when using a fixed `database`. A nested Git checkout
+must qualify for its own registration or for the prepared catalog below.
+
+#### Sharing a prepared catalog with linked worktrees
+
+For a repository with a trusted publisher, replace `database` with a catalog
+binding in the indexed workspace registration.
+
+```toml
+prepared = { catalog = "/srv/navigation/published/studio", publisher_checkout = "/srv/navigation/clones/monorepo" }
+```
+
+In this mode, `checkout` is the canonical primary checkout of the operator's
+repository. The broker accepts that checkout and genuine linked worktrees
+whose Git administration directory and reverse link match its `.git`.
+Checkout and Git metadata must belong to the service user. The operator's
+service group may share write access. A separate clone needs its own explicit
+registration even if its remote or commit matches.
+An explicit live language server registered within a linked worktree retains
+precedence over automatic attachment for queries in its scope and language.
+
+The publisher records its authoritative source commit and publishes a private
+schema-version-1 `ready_for_broker` receipt at
+`by-fingerprint/<manifest fingerprint>.json`. It pairs a read-only
+`manifest.json` and `index.sqlite3` under
+`generations/<manifest fingerprint>-<producer SHA256>-<manifest tool SHA256>/`.
+The catalog and its artifact directories are canonical and owner-only. The
+receipt includes the workspace, publisher checkout and Git common directory,
+source and manifest-tool commits, manifest fingerprint, artifact paths,
+producer, manifest-tool and database SHA-256 values, database size and verified
+document count. A matching `candidate.json` can also serve during migration.
+The publisher verifies the database digest before publication. The broker checks
+the artifact's private read-only mode, size, and SQLite generation row.
+
+The broker compares the immutable source manifest against the request
+checkout's saved inputs and validates the SQLite generation against that
+manifest and the configured publisher. All locations are relative to the
+request checkout. Older matching worktrees keep using their retained artifact
+after the publisher advances. A saved change outside the published manifests
+returns stale and leaves the worktree and catalog untouched. Freshness covers
+the registered input files and the producer's declared project dependencies.
 
 To build or refresh an index, capture the selected project's input manifest:
 

@@ -322,7 +322,12 @@ impl BrokerConfig {
             workspace.validate()?;
             if !ids.insert(&workspace.id)
                 || self.indexed_workspaces[..index].iter().any(|other| {
-                    other.database == workspace.database
+                    workspace.database.is_some() && other.database == workspace.database
+                        || workspace
+                            .prepared
+                            .as_ref()
+                            .zip(other.prepared.as_ref())
+                            .is_some_and(|(left, right)| left.catalog == right.catalog)
                         || (other.checkout == workspace.checkout
                             && other.project == workspace.project
                             && other.language == workspace.language)
