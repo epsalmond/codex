@@ -229,8 +229,14 @@ Checkout and Git metadata must belong to the service user. The operator's
 service group may share write access. In a registration with both sources, the
 broker also accepts the explicitly configured `publisher_checkout` and its
 verified linked worktrees when the publisher is present as an owned, canonical
-primary checkout at startup. Other independent clones need their own explicit
-registration even if their remote or commit matches.
+primary checkout at startup. An unavailable or unsafe publisher checkout
+leaves the configured primary and its linked worktrees available. The broker
+logs a diagnostic if it skips publisher enrollment or detects a change to the
+enrolled publisher's checkout or Git directory identity. After the publisher's
+first clone or a replacement clone, verify the checkout and restart the broker
+to enroll the new identity. Ordinary Git fast-forwards and newly published
+generations take effect without a restart. Other independent clones need their
+own explicit registration even if their remote or commit matches.
 An explicit live language server registered within a linked worktree retains
 precedence over automatic attachment for queries in its scope and language.
 
@@ -255,9 +261,12 @@ after the publisher advances. With both sources configured, a trusted checkout
 uses an exact prepared generation when available. Only the configured primary
 checkout can use the fixed database when the catalog has no candidate or its
 valid candidate has different saved inputs. The fixed database must match its
-registered workspace, checkout, and saved inputs. Invalid catalog artifacts
-fail the lookup. When the available generations describe different saved
-inputs, the lookup reports stale without changing the worktree or catalog.
+registered workspace, checkout, and saved inputs. A missing or unsafe catalog
+directory, unreadable history, or invalid published artifact fails the lookup.
+If a different candidate is present, each fallback lookup also reads its
+bounded manifest and checks its SQLite generation before opening the fixed
+database. When the available generations describe different saved inputs,
+the lookup reports stale without changing the worktree or catalog.
 Freshness covers the registered input files and the producer's declared project
 dependencies.
 

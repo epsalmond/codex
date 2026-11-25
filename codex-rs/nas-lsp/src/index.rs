@@ -921,8 +921,11 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = fixture(dir.path());
         let database = config.database.as_ref().unwrap();
+        let catalog = dir.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
         let prepared = PreparedIndex {
-            catalog: database.parent().unwrap().to_owned(),
+            catalog,
             publisher_checkout: dir.path().join("publisher"),
         };
         config.prepared = Some(prepared.clone());
@@ -937,6 +940,23 @@ pub(crate) mod tests {
         let work = test_work(deadline).await;
         let definition = || lookup(&config, &identity, &request, &work);
         assert_eq!(definition().await.unwrap().status, Status::Ok);
+
+        let moved_catalog = dir.path().join("moved-catalog");
+        fs::rename(&prepared.catalog, &moved_catalog).unwrap();
+        let missing_catalog = definition().await.unwrap_err();
+        assert_eq!(missing_catalog.reason.as_deref(), Some("invalid_index"));
+        std::os::unix::fs::symlink(&moved_catalog, &prepared.catalog).unwrap();
+        let unsafe_catalog = definition().await.unwrap_err();
+        assert_eq!(unsafe_catalog.reason.as_deref(), Some("invalid_index"));
+        fs::remove_file(&prepared.catalog).unwrap();
+        fs::rename(&moved_catalog, &prepared.catalog).unwrap();
+
+        let history = prepared.catalog.join("by-fingerprint");
+        fs::create_dir(&history).unwrap();
+        fs::set_permissions(&history, fs::Permissions::from_mode(0o755)).unwrap();
+        let unsafe_history = definition().await.unwrap_err();
+        assert_eq!(unsafe_history.reason.as_deref(), Some("invalid_index"));
+        fs::remove_dir(&history).unwrap();
 
         let source = config.checkout.join("apps/project/origin.py");
         fs::write(&source, "value = 7\n").unwrap();
