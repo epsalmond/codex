@@ -332,6 +332,13 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(
                 payload["validation_result"], "infrastructure_failure", kind
             )
+            self.assertEqual(
+                payload["failure_reason"],
+                "setup_or_identity_failure"
+                if kind in {"identity", "prepare", "setup"}
+                else "validation_cancelled_or_incomplete",
+                kind,
+            )
 
     def test_wrong_deployment_provenance_cannot_dedupe(self):
         for field, value in [
@@ -376,6 +383,27 @@ class LogTests(unittest.TestCase):
                 result = self.collect(log, RELEASE_CHECK_STEP)
                 self.assertEqual(result["validation_result"], "infrastructure_failure")
                 self.assertEqual(result["failure_reason"], reason)
+
+    def test_rustc_toolchain_and_cache_errors_dominate_source_diagnostics(self):
+        for step in (RELEASE_CHECK_STEP, "Test scoped release behavior"):
+            for error in (
+                b"error[E0461]: couldn't find crate `kit` with expected target triple",
+                b"error[E0514]: found crate `kit` compiled by an incompatible version of rustc",
+                b"error[E0786]: found invalid metadata files for crate `kit`",
+                b"error[E0463]: can't find crate `std`",
+            ):
+                with self.subTest(step=step, error=error):
+                    result = self.collect(RELEASE_CHECK_LOGS[0] + error, step)
+                    self.assertEqual(
+                        result["validation_result"], "infrastructure_failure"
+                    )
+                    self.assertEqual(
+                        result["failure_reason"], "infrastructure_diagnostics"
+                    )
+            result = self.collect(
+                b"error[E0463]: can't find crate `app_dependency`", step
+            )
+            self.assertEqual(result["validation_result"], "source_failure")
 
     def test_conservative_source_whitelist_and_infra_precedence(self):
         for log in (

@@ -42,6 +42,8 @@ INFRA = re.compile(
     r"toolchain .* (?:not installed|is not available)|"
     r"error: (?:could not|failed to) (?:download|fetch)|"
     r"command not found|process didn't exit successfully.*(?:signal: 9|SIGKILL)|"
+    r"\berror\[E(?:0461|0514|0786)\]:|"
+    r"\berror\[E0463\]: can't find crate `(?:core|std)`|"
     r"operation was canceled|job was canceled|exceeded the maximum execution time",
     re.I,
 )
@@ -602,17 +604,20 @@ def verify(api, identity):
     if tag.get("type") != "commit" or tag.get("sha") != identity.upstream_sha:
         raise HandoffError("upstream tag moved before validation handoff")
     classification = collect_log(api.log_chunks(job_id), failed_step)
-    if (
-        not ready
-        or not exact
-        or validation.get("conclusion") != "failure"
+    if not ready or not exact:
+        classification.update(
+            validation_result="infrastructure_failure",
+            failure_reason="setup_or_identity_failure",
+        )
+    elif (
+        validation.get("conclusion") != "failure"
         or not failed
         or failed[0].get("conclusion") != "failure"
         or failed[0].get("status") != "completed"
     ):
         classification.update(
             validation_result="infrastructure_failure",
-            failure_reason="setup_or_identity_failure",
+            failure_reason="validation_cancelled_or_incomplete",
         )
     return {
         "schema_version": 3,

@@ -165,14 +165,17 @@ updater run, which is still delivering the feedback. It also rechecks current
 The processor independently verifies API provenance and logs; payload context is
 untrusted diagnostic data, never permission to change acceptance or budgets.
 
-Only `Check formatting` with an actual formatter diff, or `Test scoped release
-behavior` with rustc error codes or named test failures, can classify as
-`source_failure`. Setup/identity failures, cancellation/timeouts, toolchain,
+`Check formatting` can classify an actual formatter diff as `source_failure`.
+`Check release-only code paths` and `Test scoped release behavior` can classify
+coded Rust compiler diagnostics as source failures. Only `Test scoped release
+behavior` can classify named test failures as source failures.
+Setup/identity failures, cancellation/timeouts, toolchain,
 network/disk/resource diagnostics, and unknown output classify as
 `infrastructure_failure`. Infrastructure diagnostics anywhere in the bounded
 log take precedence over incidental source text. Failed helper tests remain
 unclassified infrastructure outcomes. A source classification additionally
-requires successful prepare and candidate identity steps. A killed workflow may
+requires successful prepare and candidate identity steps and a completed step
+reported as failed. A killed workflow may
 prevent any feedback job; Actions failure and the existing stalled-handoff
 check remain the available evidence in that case.
 
