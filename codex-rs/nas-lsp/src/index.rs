@@ -67,6 +67,19 @@ pub struct Manifest {
     pub files: BTreeMap<String, String>,
 }
 
+impl Manifest {
+    pub(crate) fn fingerprint_for(files: &BTreeMap<String, String>) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"codex-managed-index-v1\0");
+        for (path, digest) in files {
+            hash.update((path.len() as u64).to_le_bytes());
+            hash.update(path.as_bytes());
+            hash.update(digest.as_bytes());
+        }
+        format!("{:x}", hash.finalize())
+    }
+}
+
 fn invalid(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, reason)
 }
@@ -113,14 +126,15 @@ impl IndexConfig {
             return Err(invalid("index checkout must have Git worktree metadata"));
         }
         RootIdentity::read(&self.checkout.join(&self.project))?;
-        let database = match (&self.database, &self.prepared) {
-            (None, Some(prepared)) => return prepared.validate(&self.checkout),
-            (Some(database), None) => database,
-            _ => {
-                return Err(invalid(
-                    "configure exactly one database or prepared catalog",
-                ));
-            }
+        if let Some(prepared) = &self.prepared {
+            prepared.validate(&self.checkout)?;
+        }
+        let Some(database) = &self.database else {
+            return if self.prepared.is_some() {
+                Ok(())
+            } else {
+                Err(invalid("configure a database or prepared catalog"))
+            };
         };
         let parent = database
             .parent()
@@ -248,15 +262,8 @@ impl IndexConfig {
                 return Err("invalid_index_input");
             }
         }
-        let mut hash = Sha256::new();
-        hash.update(b"codex-managed-index-v1\0");
-        for (path, digest) in &scan.files {
-            hash.update((path.len() as u64).to_le_bytes());
-            hash.update(path.as_bytes());
-            hash.update(digest.as_bytes());
-        }
         Ok(Manifest {
-            fingerprint: format!("{:x}", hash.finalize()),
+            fingerprint: Manifest::fingerprint_for(&scan.files),
             files: scan.files,
         })
     }
@@ -446,18 +453,36 @@ async fn select_database(
         let prepared = prepared.clone();
         let workspace = config.id.clone();
         let permit = work.permit.clone();
-        return tokio::task::spawn_blocking(move || {
+        let can_fallback = config.database.is_some();
+        let current_fingerprint = current.fingerprint.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            prepared.select(&workspace, &current, MAX_DATABASE)
+            prepared.select(&workspace, &current, MAX_DATABASE, can_fallback)
         })
         .await
-        .map_err(|_| invalid())?
-        .map(|selected| (selected.file, selected.checkout))
-        .map_err(|error| match error {
-            SelectionError::NotBuilt => not_built(),
-            SelectionError::NoMatch => status(Status::Stale, "index_generation_changed"),
-            SelectionError::Invalid => invalid(),
-        });
+        .map_err(|_| invalid())?;
+        match prepared {
+            Ok(selected) if selected.fingerprint == current_fingerprint => {
+                return Ok((selected.file, selected.checkout));
+            }
+            Ok(selected) => {
+                // A nonmatching candidate can permit fallback only after its
+                // own database generation has been verified.
+                let (_, generation) = open_generation(&selected.file).await?;
+                if generation.0 != config.id
+                    || Path::new(&generation.1) != selected.checkout
+                    || generation.2 != selected.fingerprint
+                {
+                    return Err(invalid());
+                }
+            }
+            Err(SelectionError::NotBuilt) if can_fallback => {}
+            Err(SelectionError::NotBuilt) => return Err(not_built()),
+            Err(SelectionError::NoMatch) => {
+                return Err(status(Status::Stale, "index_generation_changed"));
+            }
+            Err(SelectionError::Invalid) => return Err(invalid()),
+        }
     }
     let database = config.database.as_deref().ok_or_else(invalid)?;
     open_database(database)
@@ -475,26 +500,9 @@ async fn select_database(
     clippy::disallowed_methods,
     reason = "Read sealed external artifacts via an owned file descriptor, without a mutable state connection"
 )]
-async fn lookup(
-    config: &IndexConfig,
-    identity: &RootIdentity,
-    request: &NavigationRequest,
-    work: &LookupWork,
-) -> Result<NavigationResponse, NavigationResponse> {
-    let check_root = || {
-        if RootIdentity::read(&config.checkout).ok().as_ref() == Some(identity) {
-            Ok(())
-        } else {
-            Err(status(Status::Stale, "index_checkout_changed"))
-        }
-    };
-    check_root()?;
-    let current = if config.prepared.is_some() {
-        Some(Arc::new(captured(config, work).await?))
-    } else {
-        None
-    };
-    let (database, expected_checkout) = select_database(config, current.clone(), work).await?;
+async fn open_generation(
+    database: &File,
+) -> Result<(SqliteConnection, (String, String, String)), NavigationResponse> {
     let invalid = |_| status(Status::Unavailable, "invalid_index");
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
@@ -521,16 +529,41 @@ async fn lookup(
     .fetch_all(&mut connection)
     .await
     .map_err(invalid)?;
-    let [(id, checkout, fingerprint)] = generations.as_slice() else {
+    let Ok([generation]) = <[_; 1]>::try_from(generations) else {
         return Err(status(Status::Unavailable, "invalid_index_generation"));
     };
+    Ok((connection, generation))
+}
+
+async fn lookup(
+    config: &IndexConfig,
+    identity: &RootIdentity,
+    request: &NavigationRequest,
+    work: &LookupWork,
+) -> Result<NavigationResponse, NavigationResponse> {
+    let check_root = || {
+        if RootIdentity::read(&config.checkout).ok().as_ref() == Some(identity) {
+            Ok(())
+        } else {
+            Err(status(Status::Stale, "index_checkout_changed"))
+        }
+    };
+    check_root()?;
+    let current = if config.prepared.is_some() {
+        Some(Arc::new(captured(config, work).await?))
+    } else {
+        None
+    };
+    let (database, expected_checkout) = select_database(config, current.clone(), work).await?;
+    let (mut connection, (id, checkout, fingerprint)) = open_generation(&database).await?;
+    let invalid = |_| status(Status::Unavailable, "invalid_index");
     let current = match current {
         Some(current) => current,
         None => Arc::new(captured(config, work).await?),
     };
-    if id != &config.id
-        || Path::new(checkout) != expected_checkout
-        || fingerprint != &current.fingerprint
+    if id != config.id
+        || Path::new(&checkout) != expected_checkout
+        || fingerprint != current.fingerprint
     {
         return Err(status(Status::Stale, "index_generation_changed"));
     }
@@ -603,7 +636,7 @@ async fn lookup(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
@@ -695,7 +728,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "Create one private immutable test artifact for the read-side API"
     )]
-    async fn build_database(
+    pub(crate) async fn build_database(
         database: &Path,
         workspace: &str,
         checkout: &Path,
@@ -787,7 +820,7 @@ mod tests {
         assert!(changed.locations.is_empty());
     }
 
-    async fn publish_fixture(
+    pub(crate) async fn publish_fixture(
         prepared: &PreparedIndex,
         workspace: &str,
         source_commit: &str,
@@ -881,5 +914,55 @@ mod tests {
             .unwrap_err();
         assert_eq!(invalid.status, Status::Unavailable);
         assert!(invalid.locations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dual_source_falls_back_only_when_no_valid_prepared_match_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = fixture(dir.path());
+        let database = config.database.as_ref().unwrap();
+        let prepared = PreparedIndex {
+            catalog: database.parent().unwrap().to_owned(),
+            publisher_checkout: dir.path().join("publisher"),
+        };
+        config.prepared = Some(prepared.clone());
+        config.validate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let saved = config.manifest(deadline).unwrap();
+        build_database(database, &config.id, &config.checkout, &saved).await;
+        fs::set_permissions(database, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let request = definition_request(&config);
+        let identity = RootIdentity::read(&config.checkout).unwrap();
+        let work = test_work(deadline).await;
+        let definition = || lookup(&config, &identity, &request, &work);
+        assert_eq!(definition().await.unwrap().status, Status::Ok);
+
+        let source = config.checkout.join("apps/project/origin.py");
+        fs::write(&source, "value = 7\n").unwrap();
+        let newer = config.manifest(deadline).unwrap();
+        publish_fixture(&prepared, &config.id, &"a".repeat(40), &newer).await;
+        // The older SQLite is stale at this fingerprint. A successful result
+        // proves the prepared generation was selected instead.
+        assert_eq!(definition().await.unwrap().status, Status::Ok);
+
+        fs::write(&source, "value = 8\n").unwrap();
+        assert_eq!(definition().await.unwrap_err().status, Status::Stale);
+        fs::write(&source, "value = 1\n").unwrap();
+        assert_eq!(definition().await.unwrap().status, Status::Ok);
+
+        let candidate = prepared.catalog.join("candidate.json");
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&candidate).unwrap()).unwrap();
+        let published = Path::new(receipt["database"].as_str().unwrap());
+        let saved_database = fs::read(published).unwrap();
+        fs::set_permissions(published, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(published, vec![0; saved_database.len()]).unwrap();
+        fs::set_permissions(published, fs::Permissions::from_mode(0o400)).unwrap();
+        // The nonmatching candidate is present with a same-size invalid file.
+        assert_eq!(definition().await.unwrap_err().status, Status::Unavailable);
+
+        fs::write(&candidate, b"malformed receipt").unwrap();
+        assert_eq!(definition().await.unwrap_err().status, Status::Unavailable);
     }
 }

@@ -155,7 +155,7 @@ pub(crate) mod tests {
             .args(args)
             .output()
             .unwrap();
-        assert!(result.status.success(), "{:?}", result);
+        assert!(result.status.success(), "{result:?}");
     }
 
     pub(crate) fn make_linked_checkout(directory: &Path, nested: bool) -> (PathBuf, PathBuf) {
