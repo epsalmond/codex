@@ -174,7 +174,7 @@ A missing registered executable is allowed at startup and produces
 
 ### Managed project indexes
 
-A large Python or TypeScript project can register an offline occurrence index
+A large Python, TypeScript, or Rust project can register an offline occurrence index
 in the same broker. The producer uses a pinned compiler in an isolated
 checkout snapshot. The broker reads its private SQLite artifact. Navigation
 calls never launch a compiler or load project plugins for these entries.
@@ -193,9 +193,9 @@ Use a canonical checkout directory and a private owner-only database directory
 outside it. `project` selects the primary subproject for routing. `inputs`
 includes the subproject and any explicitly admitted shared source and project
 configuration inputs. Use `project = ""` for a standalone checkout. With `inputs = [""]`,
-its scan starts at the checkout root. The manifest reads only source for the
-chosen language and named language configuration/lockfile types. It skips
-Git metadata, the standard worktree directory and local dependency caches.
+its scan starts at the checkout root. The manifest skips Git metadata, the
+standard worktree directory and local dependency caches. For Python and
+TypeScript, it reads language source and named configuration and lockfiles.
 For TypeScript, explicitly list any other JSON files the producer uses, including
 inherited compiler configuration and imported JSON source.
 When the producer resolves imports against package source, `generated_dirs`
@@ -205,6 +205,28 @@ The managed profile bounds scans to 20,000 files, 80,000 directory entries,
 4 MiB per input, 192 MiB total, and 128 directory levels. Its index limit is
 2 GiB. The broker's query, deadline, framing, and kernel resource limits still
 apply.
+
+For Rust, register the Cargo project root as an input. The manifest hashes all
+regular files under it, including Cargo manifests, lockfiles, toolchain
+settings, and assets used by `include_bytes!` or `include_str!`. Register any
+Cargo configuration files in checkout-relative ancestor directories explicitly.
+The two possible names, `.cargo/config` and `.cargo/config.toml`, may be
+registered before they exist. Adding a registered file changes the fingerprint.
+An unregistered ancestor Cargo configuration or an in-scope symlink causes the
+lookup to fail closed. Use `generated_dirs` for the Cargo build output tree and
+use the same input policy for the producer and broker. Only `.rs` files are
+eligible for Rust queries and result locations.
+
+```toml
+[[indexed_workspaces]]
+id = "codex-rust"
+checkout = "/srv/navigation/codex"
+project = "codex-rs"
+language = "rust"
+inputs = ["codex-rs", ".cargo/config.toml", ".cargo/config"]
+generated_dirs = ["codex-rs/target"]
+database = "/srv/navigation/indexes/codex-rust.sqlite3"
+```
 
 You can pass a checkout-relative path or use a path relative to your current
 directory. If both files exist, the checkout-relative path takes precedence.

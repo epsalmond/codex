@@ -44,6 +44,7 @@ const MAX_INPUT_FILE: u64 = 4 * 1024 * 1024;
 const MAX_INPUT_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_DATABASE: u64 = 2 * 1024 * 1024 * 1024;
 const SCHEMA_VERSION: i64 = 1;
+const CARGO_CONFIG_NAMES: [&str; 2] = ["config", "config.toml"];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,7 +103,7 @@ impl IndexConfig {
     pub(crate) fn validate(&self) -> io::Result<()> {
         if self.id.is_empty()
             || self.id.len() > 128
-            || !matches!(self.language.as_str(), "python" | "typescript")
+            || !matches!(self.language.as_str(), "python" | "typescript" | "rust")
             || (!self.project.as_os_str().is_empty() && !normal(&self.project))
             || self.inputs.is_empty()
             || self.inputs.len() > 64
@@ -119,6 +120,17 @@ impl IndexConfig {
             })
         {
             return Err(invalid("invalid index workspace"));
+        }
+        if self.language == "rust"
+            && (!self.inputs.contains(&self.project)
+                || self.inputs.iter().any(|input| {
+                    input != &self.project
+                        && !self.ancestor_cargo_configs().any(|path| path == *input)
+                }))
+        {
+            return Err(invalid(
+                "Rust index inputs must be its project and explicit ancestor Cargo configs",
+            ));
         }
         RootIdentity::read(&self.checkout)?;
         let git = fs::symlink_metadata(self.checkout.join(".git"))?;
@@ -170,6 +182,13 @@ impl IndexConfig {
             && self.inputs.iter().any(|input| input == path)
     }
 
+    fn ancestor_cargo_configs(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.project
+            .ancestors()
+            .skip(1)
+            .flat_map(|ancestor| CARGO_CONFIG_NAMES.map(|name| ancestor.join(".cargo").join(name)))
+    }
+
     pub(crate) fn valid_source_path(&self, path: &str) -> bool {
         let path = Path::new(path);
         normal(path) && self.source(path)
@@ -189,11 +208,7 @@ impl IndexConfig {
     }
 
     fn open_source(checkout: &Path, path: &Path) -> Result<File, &'static str> {
-        let mut file = Self::checkout_directory(checkout)?;
-        for part in path.components() {
-            file = open_child(&file, part.as_os_str())?;
-        }
-        Ok(file)
+        open_relative(&Self::checkout_directory(checkout)?, path).map_err(input_error)
     }
 
     fn source(&self, path: &Path) -> bool {
@@ -243,23 +258,37 @@ impl IndexConfig {
             cancel,
         };
         for input in &self.inputs {
-            let mut file = root.try_clone().map_err(|_| "index_input_unreadable")?;
-            for part in input.components() {
-                file = open_child(&file, part.as_os_str())?;
+            if self.language == "rust" && input != &self.project {
+                continue;
             }
+            let mut file = open_relative(&root, input).map_err(input_error)?;
             if file
                 .metadata()
                 .map_err(|_| "index_input_unreadable")?
                 .is_dir()
             {
                 scan.directory(&file, input)?;
-            } else if self.source(input)
-                || self.metadata(input.file_name().unwrap_or_default())
-                || self.explicit_json(input)
+            } else if self.language != "rust"
+                && (self.source(input)
+                    || self.metadata(input.file_name().unwrap_or_default())
+                    || self.explicit_json(input))
             {
                 scan.file(&mut file, input)?;
             } else {
                 return Err("invalid_index_input");
+            }
+        }
+        if self.language == "rust" {
+            // Cargo also searches ancestor directories. An absent config is
+            // allowed, but saving an unregistered one must invalidate lookups.
+            for path in self.ancestor_cargo_configs() {
+                scan.check_deadline()?;
+                match open_relative(&root, &path) {
+                    Ok(mut file) if self.inputs.contains(&path) => scan.file(&mut file, &path)?,
+                    Ok(_) => return Err("unregistered_cargo_config"),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(input_error(error)),
+                }
             }
         }
         Ok(Manifest {
@@ -309,10 +338,16 @@ impl Inventory<'_> {
             }
             let kind = entry.file_type().map_err(|_| "index_input_unreadable")?;
             if kind.is_dir() {
-                let child = open_child(directory, &name)?;
+                let child = open_child(directory, &name).map_err(input_error)?;
                 self.directory(&child, &path)?;
-            } else if self.config.source(&path) || self.config.metadata(&name) {
-                let mut file = open_child(directory, &name)?;
+            } else if self.config.language == "rust"
+                || self.config.source(&path)
+                || self.config.metadata(&name)
+            {
+                if self.config.language == "rust" && !kind.is_file() {
+                    return Err("index_input_unreadable");
+                }
+                let mut file = open_child(directory, &name).map_err(input_error)?;
                 self.file(&mut file, &path)?;
             }
         }
@@ -357,8 +392,24 @@ impl Inventory<'_> {
 
 // Every path component is opened relative to a held descriptor. A worktree
 // symlink or a concurrent directory replacement cannot redirect the data read.
-fn open_child(parent: &File, name: &OsStr) -> Result<File, &'static str> {
-    let name = CString::new(name.as_bytes()).map_err(|_| "index_input_encoding")?;
+fn open_relative(parent: &File, path: &Path) -> io::Result<File> {
+    let mut file = parent.try_clone()?;
+    for part in path.components() {
+        file = open_child(&file, part.as_os_str())?;
+    }
+    Ok(file)
+}
+
+fn input_error(error: io::Error) -> &'static str {
+    if error.kind() == io::ErrorKind::InvalidInput {
+        "index_input_encoding"
+    } else {
+        "index_input_unreadable"
+    }
+}
+
+fn open_child(parent: &File, name: &OsStr) -> io::Result<File> {
+    let name = CString::new(name.as_bytes())?;
     let fd = unsafe {
         libc::openat(
             parent.as_raw_fd(),
@@ -367,7 +418,7 @@ fn open_child(parent: &File, name: &OsStr) -> Result<File, &'static str> {
         )
     };
     if fd < 0 {
-        return Err("index_input_unreadable");
+        return Err(io::Error::last_os_error());
     }
     Ok(unsafe { File::from_raw_fd(fd) })
 }
@@ -541,6 +592,9 @@ async fn lookup(
     request: &NavigationRequest,
     work: &LookupWork,
 ) -> Result<NavigationResponse, NavigationResponse> {
+    if !config.matches_path(&request.path) {
+        return Err(status(Status::InvalidRequest, "invalid_source_path"));
+    }
     let check_root = || {
         if RootIdentity::read(&config.checkout).ok().as_ref() == Some(identity) {
             Ok(())
@@ -605,7 +659,7 @@ async fn lookup(
     let mut locations = Vec::with_capacity(rows.len().min(limit));
     for (path, start_line, start_column, end_line, end_column) in rows.into_iter().take(limit) {
         if !current.files.contains_key(&path)
-            || !(config.source(Path::new(&path)) || config.explicit_json(Path::new(&path)))
+            || !(config.matches_path(&path) || config.explicit_json(Path::new(&path)))
             || start_line == 0
             || start_column == 0
             || end_line == 0
@@ -641,6 +695,9 @@ pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
     use tokio::sync::Semaphore;
+
+    const PYTHON_SOURCES: (&str, &str) = ("apps/project/importer.py", "apps/project/origin.py");
+    const RUST_SOURCES: (&str, &str) = ("codex-rs/src/importer.rs", "codex-rs/src/origin.rs");
 
     fn fixture(root: &Path) -> IndexConfig {
         let checkout = root.join("checkout");
@@ -724,15 +781,104 @@ pub(crate) mod tests {
         assert_ne!(before.fingerprint, manifest().fingerprint);
     }
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "Create one private immutable test artifact for the read-side API"
-    )]
+    fn rust_fixture(root: &Path) -> IndexConfig {
+        let mut config = fixture(root);
+        config.language = "rust".to_owned();
+        config.project = PathBuf::from("codex-rs");
+        config.inputs = ["codex-rs", ".cargo/config.toml", ".cargo/config"]
+            .map(PathBuf::from)
+            .to_vec();
+        config.generated_dirs = vec![PathBuf::from("codex-rs/target")];
+        for dir in [".cargo", "codex-rs/.cargo", "codex-rs/src"] {
+            fs::create_dir_all(config.checkout.join(dir)).unwrap();
+        }
+        for (path, source) in [
+            (".cargo/config.toml", "[build]\n"),
+            ("codex-rs/.cargo/config.toml", "[env]\n"),
+            ("codex-rs/Cargo.toml", "[workspace]\n"),
+            ("codex-rs/Cargo.lock", "version = 4\n"),
+            ("codex-rs/rust-toolchain.toml", "[toolchain]\n"),
+            ("codex-rs/src/data.bin", "opaque data"),
+            (RUST_SOURCES.0, "fn run() { origin::value(); }\n"),
+            (RUST_SOURCES.1, "pub fn value() {}\n"),
+        ] {
+            fs::write(config.checkout.join(path), source).unwrap();
+        }
+        config.validate().unwrap();
+        config
+    }
+
+    #[test]
+    fn rust_manifest_covers_saved_project_and_ancestor_cargo_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = rust_fixture(dir.path());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let before = config.manifest(deadline).unwrap();
+        assert_eq!(before.files.len(), 8);
+        for path in before.files.keys() {
+            let path = config.checkout.join(path);
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, b"edited").unwrap();
+            assert_ne!(before, config.manifest(deadline).unwrap());
+            fs::write(path, original).unwrap();
+        }
+        for folder in ["codex-rs/target", "codex-rs/vendor"] {
+            let output = config.checkout.join(folder);
+            fs::create_dir(&output).unwrap();
+            fs::write(output.join("artifact.rs"), "ignored").unwrap();
+        }
+        fs::write(config.checkout.join("outside.rs"), "out of scope").unwrap();
+        assert_eq!(before, config.manifest(deadline).unwrap());
+
+        let legacy = config.checkout.join(".cargo/config");
+        fs::write(&legacy, "[env]\n").unwrap();
+        assert_ne!(before, config.manifest(deadline).unwrap());
+        config
+            .inputs
+            .retain(|path| path != Path::new(".cargo/config"));
+        assert_eq!(config.manifest(deadline), Err("unregistered_cargo_config"));
+        fs::remove_file(legacy).unwrap();
+        assert_eq!(before, config.manifest(deadline).unwrap());
+
+        config.inputs.push(PathBuf::from("outside.rs"));
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rust_manifest_rejects_large_and_unsafe_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = rust_fixture(dir.path());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let path = config.checkout.join("codex-rs/src/include.dat");
+        File::create(&path)
+            .unwrap()
+            .set_len(MAX_INPUT_FILE + 1)
+            .unwrap();
+        assert_eq!(config.manifest(deadline), Err("index_input_limit"));
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("external.dat"), path).unwrap();
+        assert_eq!(config.manifest(deadline), Err("index_input_unreadable"));
+    }
+
     pub(crate) async fn build_database(
         database: &Path,
         workspace: &str,
         checkout: &Path,
         manifest: &Manifest,
+    ) {
+        build_database_with_sources(database, workspace, checkout, manifest, PYTHON_SOURCES).await;
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Create one private immutable test artifact for the read-side API"
+    )]
+    async fn build_database_with_sources(
+        database: &Path,
+        workspace: &str,
+        checkout: &Path,
+        manifest: &Manifest,
+        sources: (&str, &str),
     ) {
         let mut connection = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
@@ -746,12 +892,24 @@ pub(crate) mod tests {
              CREATE TABLE generation (workspace TEXT, checkout TEXT, fingerprint TEXT);
              CREATE TABLE documents (path TEXT);
              CREATE TABLE occurrences (path TEXT, start_line INTEGER, start_column INTEGER,
-                end_line INTEGER, end_column INTEGER, symbol TEXT, definition INTEGER);
-             INSERT INTO documents VALUES('apps/project/importer.py'), ('apps/project/origin.py');
-             INSERT INTO occurrences VALUES
-                ('apps/project/importer.py', 1, 20, 1, 25, 'origin:value', 0),
-                ('apps/project/origin.py', 1, 1, 1, 6, 'origin:value', 1);",
+                end_line INTEGER, end_column INTEGER, symbol TEXT, definition INTEGER);",
         )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO documents VALUES (?), (?)")
+            .bind(sources.0)
+            .bind(sources.1)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO occurrences VALUES
+             (?, 1, 20, 1, 25, 'origin:value', 0),
+             (?, 1, 1, 1, 6, 'origin:value', 1)",
+        )
+        .bind(sources.0)
+        .bind(sources.1)
         .execute(&mut connection)
         .await
         .unwrap();
@@ -826,6 +984,17 @@ pub(crate) mod tests {
         source_commit: &str,
         manifest: &Manifest,
     ) -> PathBuf {
+        publish_fixture_with_sources(prepared, workspace, source_commit, manifest, PYTHON_SOURCES)
+            .await
+    }
+
+    async fn publish_fixture_with_sources(
+        prepared: &PreparedIndex,
+        workspace: &str,
+        source_commit: &str,
+        manifest: &Manifest,
+        sources: (&str, &str),
+    ) -> PathBuf {
         use serde_json::json;
 
         let producer = "a".repeat(64);
@@ -842,7 +1011,14 @@ pub(crate) mod tests {
         }
         let database = generation.join("index.sqlite3");
         let manifest_path = generation.join("manifest.json");
-        build_database(&database, workspace, &prepared.publisher_checkout, manifest).await;
+        build_database_with_sources(
+            &database,
+            workspace,
+            &prepared.publisher_checkout,
+            manifest,
+            sources,
+        )
+        .await;
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         for immutable in [&database, &manifest_path] {
             fs::set_permissions(immutable, fs::Permissions::from_mode(0o400)).unwrap();
@@ -866,6 +1042,95 @@ pub(crate) mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
         }
         by_fingerprint
+    }
+
+    #[tokio::test]
+    async fn rust_lookup_selects_historical_index_by_exact_saved_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = rust_fixture(dir.path());
+        let prepared = PreparedIndex {
+            catalog: config.database.take().unwrap().parent().unwrap().to_owned(),
+            publisher_checkout: dir.path().join("publisher"),
+        };
+        config.prepared = Some(prepared.clone());
+        config.validate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let old = config.manifest(deadline).unwrap();
+        publish_fixture_with_sources(&prepared, &config.id, &"a".repeat(40), &old, RUST_SOURCES)
+            .await;
+        let cargo_lock = config.checkout.join("codex-rs/Cargo.lock");
+        let original_lock = fs::read(&cargo_lock).unwrap();
+        fs::write(&cargo_lock, b"version = 5\n").unwrap();
+        let current = config.manifest(deadline).unwrap();
+        publish_fixture_with_sources(
+            &prepared,
+            &config.id,
+            &"b".repeat(40),
+            &current,
+            RUST_SOURCES,
+        )
+        .await;
+
+        let mut request = definition_request(&config);
+        request.path = RUST_SOURCES.0.to_owned();
+        let identity = RootIdentity::read(&config.checkout).unwrap();
+        let work = test_work(deadline).await;
+        let current_definition = lookup(&config, &identity, &request, &work).await.unwrap();
+        assert_eq!(current_definition.locations[0].path, RUST_SOURCES.1);
+
+        fs::write(&cargo_lock, original_lock).unwrap();
+        request.operation = Operation::References;
+        let historical_references = lookup(&config, &identity, &request, &work).await.unwrap();
+        assert_eq!(historical_references.locations.len(), 2);
+
+        for input in [
+            ".cargo/config.toml",
+            "codex-rs/src/data.bin",
+            RUST_SOURCES.0,
+        ] {
+            let path = config.checkout.join(input);
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, b"local edit").unwrap();
+            let stale = lookup(&config, &identity, &request, &work)
+                .await
+                .unwrap_err();
+            assert_eq!(stale.status, Status::Stale);
+            assert!(stale.locations.is_empty());
+            fs::write(path, original).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn rust_lookup_rejects_artifact_locations_outside_its_source_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = rust_fixture(dir.path());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let manifest = config.manifest(deadline).unwrap();
+        let identity = RootIdentity::read(&config.checkout).unwrap();
+        let work = test_work(deadline).await;
+        let mut request = definition_request(&config);
+        request.path = RUST_SOURCES.0.to_owned();
+        let database = config.database.as_ref().unwrap();
+        for bad_location in [
+            "codex-rs/src/data.bin",
+            "outside.rs",
+            "codex-rs/target/example.rs",
+        ] {
+            build_database_with_sources(
+                database,
+                &config.id,
+                &config.checkout,
+                &manifest,
+                (RUST_SOURCES.0, bad_location),
+            )
+            .await;
+            fs::set_permissions(database, fs::Permissions::from_mode(0o600)).unwrap();
+            let response = lookup(&config, &identity, &request, &work)
+                .await
+                .unwrap_err();
+            assert_eq!(response.reason.as_deref(), Some("invalid_index_location"));
+            fs::remove_file(database).unwrap();
+        }
     }
 
     #[tokio::test]
