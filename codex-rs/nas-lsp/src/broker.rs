@@ -832,6 +832,52 @@ mod tests {
     }
 
     #[test]
+    fn managed_rust_index_only_routes_rust_source_in_its_project() {
+        let (root, mut config) = fixture();
+        let index_dir = tempfile::tempdir().expect("private index directory");
+        fs::set_permissions(index_dir.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory permissions");
+        let project = PathBuf::from("codex-rs");
+        let app = root.path().join(&project);
+        fs::create_dir(root.path().join(".git")).expect("checkout marker");
+        fs::create_dir_all(app.join("src")).expect("project source directory");
+        fs::write(app.join("src/lib.rs"), "pub fn value() {}\n").expect("Rust source");
+        config.indexed_workspaces.push(index::IndexConfig {
+            id: "indexed_rust".into(),
+            checkout: root.path().to_owned(),
+            project: project.clone(),
+            language: "rust".into(),
+            database: Some(index_dir.path().join("index.sqlite3")),
+            prepared: None,
+            inputs: vec![project, PathBuf::from(".cargo/config.toml")],
+            generated_dirs: vec![PathBuf::from("codex-rs/target")],
+        });
+        let mut request = request(&config);
+        let broker = Broker::new(config).expect("broker with live Python and indexed Rust");
+        for path in [
+            "outside.rs",
+            ".cargo/config.toml",
+            "codex-rs/target/generated.rs",
+            "codex-rs/src/source.py",
+        ] {
+            request.path = path.into();
+            assert!(broker.indexed_workspace(&request).is_none());
+        }
+        for (cwd, path) in [
+            (root.path(), "codex-rs/src/lib.rs"),
+            (app.as_path(), "src/lib.rs"),
+        ] {
+            request.cwd = cwd.to_owned();
+            request.path = path.into();
+            let route = broker
+                .indexed_workspace(&request)
+                .expect("Rust index route");
+            assert_eq!(route.workspace.language, "rust");
+            assert_eq!(route.path, "codex-rs/src/lib.rs");
+        }
+    }
+
+    #[test]
     fn prepared_linked_checkout_preserves_explicit_registrations() {
         let (_ordinary, mut config) = fixture();
         let temp = tempfile::tempdir().expect("Git fixture");
